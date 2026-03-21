@@ -1,15 +1,55 @@
 use crate::lexer::token::Span;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Statement<'i> {
-    Let(LetStatement<'i>),
+    Let(Let<'i>),
+    Return(Return<'i>),
+    If(If<'i>),
+    While(While<'i>),
+    Expr(Expression<'i>, Span),
+    Block(Block<'i>),
 }
 
-#[derive(Debug)]
-pub struct LetStatement<'i> {
+#[derive(Debug, PartialEq)]
+pub struct Let<'i> {
     mutable: bool,
     name: &'i str,
     typ: Option<Type>,
+    value: Option<Expression<'i>>,
+    span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Return<'i> {
+    value: Option<Expression<'i>>,
+    span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct If<'i> {
+    condition: Expression<'i>,
+    then_branch: Block<'i>,
+    else_branch: Option<Box<Else<'i>>>,
+    span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct While<'i> {
+    condition: Expression<'i>,
+    body: Expression<'i>,
+    span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Block<'i> {
+    statements: Vec<Statement<'i>>,
+    span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Else<'i> {
+    If(If<'i>),
+    Block(Block<'i>),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
