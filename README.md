@@ -9,7 +9,7 @@ Nyx is designed for performance without sacrificing safety and clarity. It is a 
 ## Philosophy
 
 - **Strict by Design**: Minimal implicit behaviour, maximizing type safety.
-- **Modern Syntax**: Clean, readable and *subjectively* aesthetic syntax.
+- **Modern Syntax**: Clean, readable and _subjectively_ aesthetic syntax.
 - **Compiled Performance**: Direct compilation for high-performance execution.
 - **Simplicity**: Build without unnecessary complexity.
 
@@ -31,8 +31,9 @@ fn main() {
 ## Current Status
 
 Nyx is currently in early development.
+
 - [x] Lexical Analyzer
-- [/] Parser
+- [] Parser
 - [ ] Semantic Analyzer
 - [ ] Intermediate Representation
 - [ ] Code Generation
