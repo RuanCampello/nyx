@@ -46,6 +46,16 @@ impl LexError {
         let end = Position::new(pos.offset + ch.len_utf8(), pos.line, pos.column + 1);
         Self::new(LexErrorKind::UnexpectedChar(ch), Span::new(pos, end))
     }
+
+    #[inline]
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    #[inline]
+    pub fn help(&self) -> Option<&str> {
+        self.help.as_deref()
+    }
 }
 
 impl fmt::Display for LexError {

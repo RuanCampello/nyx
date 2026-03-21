@@ -18,12 +18,12 @@ pub trait Tokenize<'src> {
 /// A single token produced by the lexer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token<'src> {
-    pub(in crate::lexer) kind: TokenKind<'src>,
-    pub(in crate::lexer) span: Span,
+    pub kind: TokenKind<'src>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::lexer) enum TokenKind<'src> {
+pub enum TokenKind<'src> {
     Integer(i64),
     Float(f64),
     String(&'src str),

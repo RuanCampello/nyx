@@ -33,7 +33,7 @@ fn main() {
 Nyx is currently in early development.
 
 - [x] Lexical Analyzer
-- [] Parser
+- [ ] Parser
 - [ ] Semantic Analyzer
 - [ ] Intermediate Representation
 - [ ] Code Generation
