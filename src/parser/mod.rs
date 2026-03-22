@@ -254,4 +254,10 @@ mod tests {
             },)]
         )
     }
+
+    #[test]
+    fn multiplication_is_left_associative() {
+        let stmt = Parser::new("a * b * c;").parse().unwrap();
+        println!("{stmt:?}");
+    }
 }

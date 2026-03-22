@@ -85,7 +85,7 @@ impl<'i> Expression<'i> {
                 break;
             }
 
-            left = Self::parse_infix(parser, left, next_precedence)?;
+            left = Self::parse_infix(parser, left, next_precedence - 1)?;
         }
 
         Ok(left)
@@ -241,7 +241,7 @@ impl<'i> Expression<'i> {
                     }
                 };
 
-                let right = Self::parse_expr(parser, precedence - 1)?;
+                let right = Self::parse_expr(parser, precedence)?;
                 let span = Span::new(left.span().start, right.span().end);
 
                 Ok(Expression::Binary {
