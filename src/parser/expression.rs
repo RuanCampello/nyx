@@ -85,7 +85,7 @@ impl<'i> Expression<'i> {
                 break;
             }
 
-            left = Self::parse_infix(parser, left, next_precedence - 1)?;
+            left = Self::parse_infix(parser, left, next_precedence)?;
         }
 
         Ok(left)

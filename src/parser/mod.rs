@@ -257,7 +257,62 @@ mod tests {
 
     #[test]
     fn multiplication_is_left_associative() {
-        let stmt = Parser::new("a * b * c;").parse().unwrap();
-        println!("{stmt:?}");
+        let statements = Parser::new("a * b * c;").parse().unwrap();
+
+        let a = Box::new(Expression::Identifier(
+            "a",
+            Span::new(Position::new(0, 1, 1), Position::new(1, 1, 2)),
+        ));
+        let b = Box::new(Expression::Identifier(
+            "b",
+            Span::new(Position::new(4, 1, 5), Position::new(5, 1, 6)),
+        ));
+        let c = Box::new(Expression::Identifier(
+            "c",
+            Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
+        ));
+
+        assert_eq!(
+            statements,
+            vec![Statement::Expr(
+                Expression::Binary {
+                    left: Box::new(Expression::Binary {
+                        left: a,
+                        operator: BinaryOperator::Mul,
+                        right: b,
+                        span: Span::new(Position::new(0, 1, 1), Position::new(5, 1, 6)),
+                    }),
+                    operator: BinaryOperator::Mul,
+                    right: c,
+                    span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
+                },
+                Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
+            )]
+        );
+    }
+
+    #[test]
+    fn assignment_is_right_associative() {
+        let statements = Parser::new("a = b = c;").parse().unwrap();
+        let b_eq_c = Box::new(Expression::Assignment {
+            target: "b",
+            value: Box::new(Expression::Identifier(
+                "c",
+                Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
+            )),
+            span: Span::new(Position::new(4, 1, 5), Position::new(9, 1, 10)),
+        });
+
+        assert_eq!(
+            statements,
+            vec![Statement::Expr(
+                Expression::Assignment {
+                    target: "a",
+                    value: b_eq_c,
+                    span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
+                },
+                Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
+            )]
+        );
     }
 }
