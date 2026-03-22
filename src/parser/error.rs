@@ -15,7 +15,7 @@ pub enum ParseErrorKind<'i> {
     #[error(transparent)]
     Lexical(#[from] LexError),
 
-    #[error("expected {expected}, found {found}")]
+    #[error("expected `{expected}`, but found {found}")]
     Expected {
         expected: TokenKind<'i>,
         found: TokenKind<'i>,

@@ -168,3 +168,52 @@ impl<'i> Parser<'i> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_semicolon() {
+        let err = Parser::new("let value = 1").parse().unwrap_err();
+
+        assert_eq!(
+            err.kind,
+            ParseErrorKind::Expected {
+                expected: TokenKind::Punct(Punct::Semicolon),
+                found: TokenKind::Eof
+            }
+        );
+
+        assert_eq!(err.span.start.column, 14);
+        assert_eq!(err.span.end.column, 14);
+    }
+
+    #[test]
+    fn missing_expression() {
+        let err = Parser::new("let value = ;").parse().unwrap_err();
+        assert_eq!(
+            err.kind,
+            ParseErrorKind::ExpectedExpression {
+                found: TokenKind::Punct(Punct::Semicolon)
+            }
+        );
+
+        assert_eq!(err.span.start.column, 13);
+        assert_eq!(err.span.end.column, 14);
+    }
+
+    #[test]
+    fn invalid_identifier() {
+        let err = Parser::new("let 123: i32 = 1;").parse().unwrap_err();
+        assert_eq!(
+            err.kind,
+            ParseErrorKind::ExpectedIdentifier {
+                found: TokenKind::Integer(123)
+            }
+        );
+
+        assert_eq!(err.span.start.column, 5);
+        assert_eq!(err.span.end.column, 8);
+    }
+}
