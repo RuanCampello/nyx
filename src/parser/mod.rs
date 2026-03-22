@@ -171,6 +171,14 @@ impl<'i> Parser<'i> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        lexer::token::Position,
+        parser::{
+            expression::{Expression, UnaryOperator},
+            statement::Return,
+        },
+    };
+
     use super::*;
 
     #[test]
@@ -215,5 +223,35 @@ mod tests {
 
         assert_eq!(err.span.start.column, 5);
         assert_eq!(err.span.end.column, 8);
+    }
+
+    #[test]
+    fn invalid_and_valid_return() {
+        let err = Parser::new("return +1;").parse().unwrap_err();
+        assert_eq!(
+            err.kind,
+            ParseErrorKind::ExpectedExpression {
+                found: TokenKind::Punct(Punct::Plus)
+            }
+        );
+
+        assert_eq!(err.span.start.column, 8);
+        assert_eq!(err.span.end.column, 9);
+
+        let statement = Parser::new("return -1;").parse().unwrap();
+        assert_eq!(
+            statement,
+            vec![Statement::Return(Return {
+                span: Span::new(Position::new(0, 1, 1), Position::new(10, 1, 11)),
+                value: Some(Expression::Unary {
+                    operator: UnaryOperator::Neg,
+                    span: Span::new(Position::new(7, 1, 8), Position::new(9, 1, 10)),
+                    expr: Box::new(Expression::Integer(
+                        1,
+                        Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10))
+                    )),
+                }),
+            },)]
+        )
     }
 }
