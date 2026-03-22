@@ -133,24 +133,21 @@ impl Type {
 impl<'i> Parsable<'i> for Let<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let let_token = parser.expect_keyword(Keyword::Let)?;
-
-        let mutable = parser.consume_optional(TokenKind::Keyword(Keyword::Mut));
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let typ = if parser.consume_optional(TokenKind::Punct(Punct::Colon)) {
-            Some(Type::parse(parser)?)
-        } else {
-            None
+        let typ = match parser.consume_punct(Punct::Colon)? {
+            true => Some(parser.parse_node::<Type>()?),
+            false => None,
         };
 
-        let value = if parser.consume_optional(TokenKind::Punct(Punct::Eq)) {
-            Some(Expression::parse(parser)?)
-        } else {
-            None
+        let value = match parser.consume_punct(Punct::Eq)? {
+            true => Some(parser.parse_node::<Expression>()?),
+            false => None,
         };
 
-        let semi_token = parser.expect_punct(Punct::Semicolon)?;
-        let span = Span::new(let_token.span.start, semi_token.span.end);
+        let semicolon = parser.expect_punct(Punct::Semicolon)?;
+        let span = Span::new(let_token.span.start, semicolon.span.end);
 
         Ok(Let {
             mutable,
@@ -245,7 +242,33 @@ impl<'i> Parsable<'i> for While<'i> {
 impl<'i> Parsable<'i> for Block<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let open_brace = parser.expect_punct(Punct::OpenBrace)?;
+        let mut statements = Vec::new();
 
-        todo!()
+        let close_brace = loop {
+            let token = parser
+                .peek()
+                .and_then(|r| r.as_ref().ok())
+                .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, open_brace.span))?;
+
+            if let TokenKind::Punct(Punct::CloseBrace) = token.kind {
+                let close = parser.expect_punct(Punct::CloseBrace)?;
+                break close;
+            }
+
+            if let TokenKind::Eof = token.kind {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+            }
+
+            statements.push(parser.parse_node::<Statement>()?);
+        };
+
+        let span = Span::new(open_brace.span.start, close_brace.span.end);
+        Ok(Self { span, statements })
+    }
+}
+
+impl<'i> Parsable<'i> for Type {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        Type::parse(parser)
     }
 }

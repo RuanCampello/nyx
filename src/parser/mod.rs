@@ -139,4 +139,32 @@ impl<'i> Parser<'i> {
 
         false
     }
+
+    #[inline(always)]
+    pub fn consume_keyword(&mut self, keyword: Keyword) -> Result<bool, ParserError> {
+        self.consume_token(TokenKind::Keyword(keyword))
+    }
+
+    #[inline(always)]
+    pub fn consume_punct(&mut self, punct: Punct) -> Result<bool, ParserError> {
+        self.consume_token(TokenKind::Punct(punct))
+    }
+
+    fn consume_token(&mut self, kind: TokenKind) -> Result<bool, ParserError> {
+        match self.peek() {
+            Some(Ok(token)) if token.kind == kind => {
+                self.next_token()?;
+                Ok(true)
+            }
+
+            Some(Err(err)) => {
+                return Err(ParserError::new(
+                    ParseErrorKind::Lexical(err.clone()),
+                    err.span(),
+                ));
+            }
+
+            _ => Ok(false),
+        }
+    }
 }
