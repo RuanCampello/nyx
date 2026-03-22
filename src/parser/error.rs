@@ -30,6 +30,12 @@ pub enum ParseErrorKind<'i> {
     #[error("unexpected binary operator: {found}")]
     InvalidBinaryOperator { found: TokenKind<'i> },
 
+    #[error("unexpected unary operator: {found}")]
+    InvalidUnaryOperator { found: TokenKind<'i> },
+
+    #[error("expected expression, found: {found}")]
+    ExpectedExpression { found: TokenKind<'i> },
+
     #[error("expected type identifier, found `{found}`")]
     ExpectedTypeIdentifier { found: String },
 

@@ -94,7 +94,46 @@ impl<'i> Expression<'i> {
     fn parse_prefix(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let token = parser.expect_next()?;
 
-        todo!()
+        match token.kind {
+            TokenKind::Integer(n) => Ok(Expression::Integer(n, token.span)),
+            TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
+            TokenKind::String(s) => Ok(Expression::String(s, token.span)),
+            TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
+            TokenKind::Identifier(id) => Ok(Expression::Identifier(id, token.span)),
+            TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
+                let operator = match token.kind {
+                    TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
+                    TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
+
+                    _ => {
+                        return Err(ParserError::new(
+                            ParseErrorKind::InvalidUnaryOperator { found: token.kind },
+                            token.span,
+                        ));
+                    }
+                };
+
+                let expr = Self::parse_expr(parser, 10)?;
+                let span = Span::new(token.span.start, expr.span().end);
+
+                Ok(Expression::Unary {
+                    operator,
+                    expr: Box::new(expr),
+                    span,
+                })
+            }
+
+            TokenKind::Punct(Punct::OpenParen) => {
+                let expr = parser.parse_node::<Expression<'i>>()?;
+                parser.expect_punct(Punct::CloseParen)?;
+                Ok(expr)
+            }
+
+            _ => Err(ParserError::new(
+                ParseErrorKind::ExpectedExpression { found: token.kind },
+                token.span,
+            )),
+        }
     }
 
     #[inline(always)]

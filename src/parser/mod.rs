@@ -60,6 +60,7 @@ impl<'i> Parser<'i> {
         self.cursor.peek()
     }
 
+    #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
         match self.cursor.next() {
             Some(Ok(token)) => {
@@ -74,6 +75,7 @@ impl<'i> Parser<'i> {
         }
     }
 
+    #[inline(always)]
     pub fn unexpected(&self, found: TokenKind<'i>, expected: TokenKind<'i>) -> ParserError<'i> {
         ParserError::new(
             ParseErrorKind::Expected { expected, found },
@@ -81,12 +83,14 @@ impl<'i> Parser<'i> {
         )
     }
 
+    #[inline(always)]
     pub fn expect_next(&mut self) -> Result<Token<'i>, ParserError<'i>> {
         self.next_token()?.ok_or_else(|| {
             ParserError::new(ParseErrorKind::UnexpectedEof, self.last.unwrap_or_default())
         })
     }
 
+    #[inline(always)]
     pub fn expect_token(&mut self, expected: TokenKind<'i>) -> Result<Token<'i>, ParserError<'i>> {
         let token = self.expect_next()?;
         match token.kind == expected {
@@ -101,14 +105,17 @@ impl<'i> Parser<'i> {
         }
     }
 
+    #[inline(always)]
     pub fn expect_keyword(&mut self, expected: Keyword) -> Result<Token<'i>, ParserError<'i>> {
         self.expect_token(TokenKind::Keyword(expected))
     }
 
+    #[inline(always)]
     pub fn expect_punct(&mut self, punct: Punct) -> Result<Token<'i>, ParserError<'i>> {
         self.expect_token(TokenKind::Punct(punct))
     }
 
+    #[inline(always)]
     pub fn expect_identifier(&mut self) -> Result<(&'i str, Span), ParserError<'i>> {
         let token = self.expect_next()?;
 
@@ -121,6 +128,7 @@ impl<'i> Parser<'i> {
         }
     }
 
+    #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
         if let Some(Ok(token)) = self.peek() {
             if token.kind == kind {
