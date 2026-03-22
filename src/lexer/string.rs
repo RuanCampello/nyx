@@ -16,7 +16,7 @@ impl<'src> Tokenize<'src> for StringLiteral {
         // consume the opening `"`
         cursor.advance();
 
-        let content_start = cursor.position().offset;
+        let content_start = cursor.position().offset();
         let mut has_invalid_escape = false;
         let mut invalid_escape_char = ' ';
         let mut invalid_escape_pos = cursor.position();
@@ -31,7 +31,7 @@ impl<'src> Tokenize<'src> for StringLiteral {
                 }
 
                 Some('"') => {
-                    let content_end = cursor.position().offset;
+                    let content_end = cursor.position().offset();
                     cursor.advance(); // consume closing `"
                     let span = Span::new(start, cursor.position());
                     let content = &cursor.source()[content_start..content_end];

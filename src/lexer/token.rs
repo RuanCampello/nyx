@@ -86,9 +86,9 @@ pub enum Punct {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Position {
-    pub offset: usize,
-    pub line: u32,
-    pub column: u32,
+    pub offset: u32,
+    pub line: u16,
+    pub column: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,12 +99,16 @@ pub struct Span {
 
 impl Position {
     #[inline]
-    pub const fn new(offset: usize, line: u32, column: u32) -> Self {
+    pub const fn new(offset: u32, line: u16, column: u16) -> Self {
         Self {
             offset,
             line,
             column,
         }
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.offset as usize
     }
 }
 

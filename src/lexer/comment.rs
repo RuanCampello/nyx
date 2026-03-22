@@ -28,7 +28,7 @@ impl BlockComment {
                 None => {
                     let span = Span::new(
                         Position::new(
-                            self.open_offset,
+                            self.open_offset as u32,
                             start_pos.line,
                             start_pos.column.saturating_sub(2),
                         ),

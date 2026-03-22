@@ -167,12 +167,12 @@ impl<'src> Lexer<'src> {
                     LineComment.skip(&mut self.cursor);
                 }
                 (Some('/'), Some('*')) => {
-                    let offset = self.cursor.position().offset;
+                    let offset = self.cursor.position().offset();
                     self.cursor.advance(); // consume `/`
                     self.cursor.advance(); // consume `*`
 
                     BlockComment {
-                        open_offset: offset,
+                        open_offset: offset as usize,
                     }
                     .skip(&mut self.cursor)?;
                 }

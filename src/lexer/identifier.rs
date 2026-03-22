@@ -15,7 +15,7 @@ impl<'src> Tokenize<'src> for Identifier {
         cursor.advance();
         cursor.consume_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
 
-        let text = cursor.slice_from(start.offset);
+        let text = cursor.slice_from(start.offset());
         let span = Span::new(start, cursor.position());
 
         let kind = match text {

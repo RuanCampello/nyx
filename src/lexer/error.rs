@@ -43,7 +43,7 @@ impl LexError {
     }
 
     pub fn unexpected_char(ch: char, pos: Position) -> Self {
-        let end = Position::new(pos.offset + ch.len_utf8(), pos.line, pos.column + 1);
+        let end = Position::new(pos.offset + ch.len_utf8() as u32, pos.line, pos.column + 1);
         Self::new(LexErrorKind::UnexpectedChar(ch), Span::new(pos, end))
     }
 

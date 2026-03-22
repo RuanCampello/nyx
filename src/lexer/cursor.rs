@@ -62,7 +62,7 @@ impl<'src> Cursor<'src> {
             _ => self.position.column += 1,
         }
 
-        self.position.offset += len;
+        self.position.offset += len as u32;
 
         Some(c)
     }
@@ -91,6 +91,6 @@ impl<'src> Cursor<'src> {
 
     #[inline]
     pub fn slice_from(&self, from: usize) -> &'src str {
-        &self.source[from..self.position.offset]
+        &self.source[from..self.position.offset()]
     }
 }

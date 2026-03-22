@@ -174,7 +174,7 @@ mod tests {
     use crate::{
         lexer::token::Position,
         parser::{
-            expression::{Expression, UnaryOperator},
+            expression::{BinaryOperator, Expression, UnaryOperator},
             statement::Return,
         },
     };

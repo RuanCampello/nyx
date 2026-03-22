@@ -28,7 +28,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
             _ => false,
         };
 
-        let text = cursor.slice_from(start.offset);
+        let text = cursor.slice_from(start.offset());
         let span = Span::new(start, cursor.position());
 
         let clean: String;
