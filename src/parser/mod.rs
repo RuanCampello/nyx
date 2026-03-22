@@ -141,16 +141,16 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
-    pub fn consume_keyword(&mut self, keyword: Keyword) -> Result<bool, ParserError> {
+    pub fn consume_keyword(&mut self, keyword: Keyword) -> Result<bool, ParserError<'i>> {
         self.consume_token(TokenKind::Keyword(keyword))
     }
 
     #[inline(always)]
-    pub fn consume_punct(&mut self, punct: Punct) -> Result<bool, ParserError> {
+    pub fn consume_punct(&mut self, punct: Punct) -> Result<bool, ParserError<'i>> {
         self.consume_token(TokenKind::Punct(punct))
     }
 
-    fn consume_token(&mut self, kind: TokenKind) -> Result<bool, ParserError> {
+    fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.kind == kind => {
                 self.next_token()?;

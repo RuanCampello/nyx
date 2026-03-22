@@ -231,6 +231,7 @@ impl<'i> Parsable<'i> for While<'i> {
         let condition = Expression::parse(parser)?;
         let body = Block::parse(parser)?;
         let span = Span::new(while_token.span.start, body.span.end);
+
         Ok(While {
             condition,
             body,
