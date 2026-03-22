@@ -1,42 +1,38 @@
-use crate::lexer::{error::LexError, token::Span};
-use std::error::Error;
+use crate::lexer::{
+    error::LexError,
+    token::{Span, TokenKind},
+};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParserError {
-    pub(in crate::parser) kind: ParseErrorKind,
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("{kind}")]
+pub struct ParserError<'i> {
+    pub(in crate::parser) kind: ParseErrorKind<'i>,
     pub(in crate::parser) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParseErrorKind {
-    Lexical(LexError),
-    Unexpected { expected: String, found: String },
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ParseErrorKind<'i> {
+    #[error(transparent)]
+    Lexical(#[from] LexError),
+
+    #[error("expected {expected}, found {found}")]
+    Expected {
+        expected: TokenKind<'i>,
+        found: TokenKind<'i>,
+    },
+
+    #[error("expected identifier, found {found}")]
+    ExpectedIdentifier { found: TokenKind<'i> },
+
+    #[error("expected type identifier, found `{found}`")]
+    ExpectedTypeIdentifier { found: String },
+
+    #[error("unexpected end of file")]
+    UnexpectedEof,
 }
 
-impl Error for ParserError {}
-
-impl std::fmt::Display for ParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = match &self.kind {
-            ParseErrorKind::Lexical(lex) => lex.to_string(),
-            ParseErrorKind::Unexpected { expected, found } => {
-                format!("expected {expected}, found {found}")
-            }
-        };
-
-        write!(
-            f,
-            "error: {msg}\n --> {}:{}\n",
-            self.span.start.line, self.span.start.column
-        )
-    }
-}
-
-impl From<LexError> for ParserError {
-    fn from(value: LexError) -> Self {
-        Self {
-            kind: ParseErrorKind::Lexical(value.to_owned()),
-            span: value.span(),
-        }
+impl<'i> ParserError<'i> {
+    pub fn new(kind: ParseErrorKind<'i>, span: Span) -> Self {
+        Self { kind, span }
     }
 }

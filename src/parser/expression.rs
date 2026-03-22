@@ -1,7 +1,6 @@
-use crate::lexer::token::{Position, Punct, Span, TokenKind};
-use crate::parser::error::{ParseErrorKind, ParserError};
+use crate::lexer::token::{Span, TokenKind};
+use crate::parser::error::ParserError;
 use crate::parser::{Parsable, Parser};
-use std::hint::unreachable_unchecked;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression<'i> {
@@ -56,7 +55,7 @@ pub enum BinaryOperator {
 }
 
 impl<'i> Parsable<'i> for Expression<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         Self::parse_expr(parser, 0)
     }
 }
@@ -77,18 +76,18 @@ impl<'i> Expression<'i> {
         }
     }
 
-    fn parse_expr(parser: &mut Parser<'i>, precedence: u8) -> Result<Self, ParserError> {
+    fn parse_expr(parser: &mut Parser<'i>, precedence: u8) -> Result<Self, ParserError<'i>> {
         todo!()
     }
 
-    fn parse_prefix(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let token = parser.expect_next("expression")?;
+    fn parse_prefix(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let token = parser.expect_next()?;
 
         todo!()
     }
 
     #[inline(always)]
-    const fn infix_precedence(kind: TokenKind) -> u8 {
+    const fn infix_precedence(_kind: TokenKind<'i>) -> u8 {
         todo!()
     }
 
@@ -96,7 +95,7 @@ impl<'i> Expression<'i> {
         parser: &mut Parser<'i>,
         left: Expression<'i>,
         precedence: u8,
-    ) -> Result<Self, ParserError> {
+    ) -> Result<Self, ParserError<'i>> {
         todo!()
     }
 }

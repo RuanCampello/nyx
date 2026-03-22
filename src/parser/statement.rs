@@ -66,28 +66,35 @@ pub enum Type {
 }
 
 impl<'i> Parsable<'i> for Statement<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let token = match parser.peek() {
-            Some(Ok(token)) => token,
-            _ => return Err(parser.unexpected("statement", "EOF")),
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let kind = match parser.peek() {
+            Some(Ok(token)) => &token.kind,
+            _ => {
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
+            }
         };
 
-        Ok(match token.kind {
-            TokenKind::Keyword(Keyword::Let) => Statement::Let(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::If) => Statement::If(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::While) => Statement::While(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::Return) => Statement::Return(parser.parse_node()?),
-            TokenKind::Punct(Punct::OpenBrace) => Statement::Block(parser.parse_node()?),
-            TokenKind::Eof => return Err(parser.unexpected("statement", "EOF")),
-
+        match kind {
+            TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
+            TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
+            TokenKind::Eof => Err(ParserError::new(
+                ParseErrorKind::UnexpectedEof,
+                Span::default(),
+            )),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 parser.expect_punct(Punct::Semicolon)?;
                 let span = Span::new(expr.span().start, expr.span().end);
 
-                return Ok(Statement::Expr(expr, span));
+                Ok(Statement::Expr(expr, span))
             }
-        })
+        }
     }
 }
 
@@ -104,7 +111,7 @@ impl Type {
         }
     }
 
-    pub fn parse(parser: &mut Parser<'_>) -> Result<Self, ParserError> {
+    pub fn parse<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let (name, span) = parser.expect_identifier()?;
         match name {
             "i32" => Ok(Type::I32 { span }),
@@ -113,46 +120,34 @@ impl Type {
             "f64" => Ok(Type::F64 { span }),
             "bool" => Ok(Type::Bool { span }),
             "String" => Ok(Type::String { span }),
-            _ => Err(ParserError {
-                kind: ParseErrorKind::Unexpected {
-                    expected: "type identifier".to_string(),
+            _ => Err(ParserError::new(
+                ParseErrorKind::ExpectedTypeIdentifier {
                     found: name.to_string(),
                 },
                 span,
-            }),
+            )),
         }
     }
 }
 
 impl<'i> Parsable<'i> for Let<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let let_token = parser.next_token()?.unwrap();
-        let mut mutable = false;
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let let_token = parser.expect_keyword(Keyword::Let)?;
 
-        if let Some(Ok(token)) = parser.peek() {
-            if token.kind == TokenKind::Keyword(Keyword::Mut) {
-                parser.next_token()?;
-                mutable = true;
-            }
-        }
-
+        let mutable = parser.consume_optional(TokenKind::Keyword(Keyword::Mut));
         let (name, _) = parser.expect_identifier()?;
 
-        let mut typ = None;
-        if let Some(Ok(token)) = parser.peek() {
-            if token.kind == TokenKind::Punct(Punct::Colon) {
-                parser.expect_punct(Punct::Colon)?;
-                typ = Some(Type::parse(parser)?);
-            }
-        }
+        let typ = if parser.consume_optional(TokenKind::Punct(Punct::Colon)) {
+            Some(Type::parse(parser)?)
+        } else {
+            None
+        };
 
-        let mut value = None;
-        if let Some(Ok(token)) = parser.peek() {
-            if token.kind == TokenKind::Punct(Punct::Eq) {
-                parser.expect_punct(Punct::Eq)?;
-                value = Some(Expression::parse(parser)?);
-            }
-        }
+        let value = if parser.consume_optional(TokenKind::Punct(Punct::Eq)) {
+            Some(Expression::parse(parser)?)
+        } else {
+            None
+        };
 
         let semi_token = parser.expect_punct(Punct::Semicolon)?;
         let span = Span::new(let_token.span.start, semi_token.span.end);
@@ -168,8 +163,9 @@ impl<'i> Parsable<'i> for Let<'i> {
 }
 
 impl<'i> Parsable<'i> for Return<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let return_token = parser.next_token()?.unwrap();
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let return_token = parser.expect_keyword(Keyword::Return)?;
+
         let mut value = None;
         if let Some(Ok(token)) = parser.peek() {
             if token.kind != TokenKind::Punct(Punct::Semicolon) {
@@ -178,13 +174,14 @@ impl<'i> Parsable<'i> for Return<'i> {
         }
         let semi_token = parser.expect_punct(Punct::Semicolon)?;
         let span = Span::new(return_token.span.start, semi_token.span.end);
+
         Ok(Return { value, span })
     }
 }
 
 impl<'i> Parsable<'i> for If<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let if_token = parser.next_token()?.unwrap();
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let if_token = parser.expect_keyword(Keyword::If)?;
 
         let condition = Expression::parse(parser)?;
         let then_branch = Block::parse(parser)?;
@@ -192,29 +189,32 @@ impl<'i> Parsable<'i> for If<'i> {
         let mut else_branch = None;
         let mut end_pos = then_branch.span.end;
 
-        if let Some(Ok(token)) = parser.peek() {
-            if token.kind == TokenKind::Keyword(Keyword::Else) {
-                parser.next_token()?;
-
-                if let Some(Ok(next_token)) = parser.peek() {
-                    if next_token.kind == TokenKind::Keyword(Keyword::If) {
-                        let else_if = If::parse(parser)?;
-                        end_pos = else_if.span.end;
-                        else_branch = Some(Box::new(Else::If(else_if)));
-                    } else if next_token.kind == TokenKind::Punct(Punct::OpenBrace) {
-                        let else_block = Block::parse(parser)?;
-                        end_pos = else_block.span.end;
-                        else_branch = Some(Box::new(Else::Block(else_block)));
-                    } else {
-                        return Err(ParserError {
-                            kind: ParseErrorKind::Unexpected {
-                                expected: "`if` or `{`".to_string(),
-                                found: next_token.kind.to_string(),
-                            },
-                            span: next_token.span,
-                        });
-                    }
+        if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
+            if let Some(Ok(next_token)) = parser.peek() {
+                if next_token.kind == TokenKind::Keyword(Keyword::If) {
+                    let else_if = If::parse(parser)?;
+                    end_pos = else_if.span.end;
+                    else_branch = Some(Box::new(Else::If(else_if)));
+                } else if next_token.kind == TokenKind::Punct(Punct::OpenBrace) {
+                    let else_block = Block::parse(parser)?;
+                    end_pos = else_block.span.end;
+                    else_branch = Some(Box::new(Else::Block(else_block)));
+                } else {
+                    let find_kind = next_token.kind.clone();
+                    let find_span = next_token.span;
+                    return Err(ParserError::new(
+                        ParseErrorKind::Expected {
+                            expected: TokenKind::Punct(Punct::OpenBrace),
+                            found: find_kind,
+                        },
+                        find_span,
+                    ));
                 }
+            } else {
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
             }
         }
 
@@ -229,8 +229,8 @@ impl<'i> Parsable<'i> for If<'i> {
 }
 
 impl<'i> Parsable<'i> for While<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
-        let while_token = parser.next_token()?.unwrap();
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let while_token = parser.expect_keyword(Keyword::While)?;
         let condition = Expression::parse(parser)?;
         let body = Block::parse(parser)?;
         let span = Span::new(while_token.span.start, body.span.end);
@@ -243,7 +243,7 @@ impl<'i> Parsable<'i> for While<'i> {
 }
 
 impl<'i> Parsable<'i> for Block<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let open_brace = parser.expect_punct(Punct::OpenBrace)?;
 
         todo!()
