@@ -1,8 +1,7 @@
-use crate::lexer::Lexer;
 use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
-use std::iter::Peekable;
+use crate::parser::{Parsable, Parser};
 
 #[derive(Debug, PartialEq)]
 pub enum Statement<'i> {
@@ -12,34 +11,6 @@ pub enum Statement<'i> {
     While(While<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
-}
-
-impl<'i> Statement<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
-        let peeked = parser.peek();
-        match peeked {
-            Some(Ok(token)) => match token.kind {
-                TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(Let::parse(parser)?)),
-                TokenKind::Keyword(Keyword::If) => Ok(Statement::If(If::parse(parser)?)),
-                TokenKind::Keyword(Keyword::While) => Ok(Statement::While(While::parse(parser)?)),
-                TokenKind::Keyword(Keyword::Return) => {
-                    Ok(Statement::Return(Return::parse(parser)?))
-                }
-                TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(Block::parse(parser)?)),
-                _ => {
-                    let expr = Expression::parse(parser)?;
-                    let semi = parser.expect_punct(Punct::Semicolon)?;
-                    let span = Span::new(expr.span().start, semi.span.end);
-                    Ok(Statement::Expr(expr, span))
-                }
-            },
-            Some(Err(_)) => {
-                let _ = parser.next_token()?;
-                unreachable!()
-            }
-            None => unimplemented!("Handle unexpected EOF"),
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -94,6 +65,32 @@ pub enum Type {
     String { span: Span },
 }
 
+impl<'i> Parsable<'i> for Statement<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
+        let token = match parser.peek() {
+            Some(Ok(token)) => token,
+            _ => return Err(parser.unexpected("statement", "EOF")),
+        };
+
+        Ok(match token.kind {
+            TokenKind::Keyword(Keyword::Let) => Statement::Let(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::If) => Statement::If(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::While) => Statement::While(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::Return) => Statement::Return(parser.parse_node()?),
+            TokenKind::Punct(Punct::OpenBrace) => Statement::Block(parser.parse_node()?),
+            TokenKind::Eof => return Err(parser.unexpected("statement", "EOF")),
+
+            _ => {
+                let expr = parser.parse_node::<Expression>()?;
+                parser.expect_punct(Punct::Semicolon)?;
+                let span = Span::new(expr.span().start, expr.span().end);
+
+                return Ok(Statement::Expr(expr, span));
+            }
+        })
+    }
+}
+
 impl Type {
     #[inline(always)]
     pub const fn span(&self) -> Span {
@@ -107,7 +104,7 @@ impl Type {
         }
     }
 
-    pub fn parse(parser: &mut crate::parser::Parser<'_>) -> Result<Self, ParserError> {
+    pub fn parse(parser: &mut Parser<'_>) -> Result<Self, ParserError> {
         let (name, span) = parser.expect_identifier()?;
         match name {
             "i32" => Ok(Type::I32 { span }),
@@ -117,19 +114,18 @@ impl Type {
             "bool" => Ok(Type::Bool { span }),
             "String" => Ok(Type::String { span }),
             _ => Err(ParserError {
-                kind: ParseErrorKind::UnexpectedToken {
-                    expected: "type identifier",
+                kind: ParseErrorKind::Unexpected {
+                    expected: "type identifier".to_string(),
                     found: name.to_string(),
                 },
                 span,
-                help: None,
             }),
         }
     }
 }
 
-impl<'i> Let<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
+impl<'i> Parsable<'i> for Let<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
         let let_token = parser.next_token()?.unwrap();
         let mut mutable = false;
 
@@ -171,8 +167,8 @@ impl<'i> Let<'i> {
     }
 }
 
-impl<'i> Return<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
+impl<'i> Parsable<'i> for Return<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
         let return_token = parser.next_token()?.unwrap();
         let mut value = None;
         if let Some(Ok(token)) = parser.peek() {
@@ -186,8 +182,8 @@ impl<'i> Return<'i> {
     }
 }
 
-impl<'i> If<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
+impl<'i> Parsable<'i> for If<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
         let if_token = parser.next_token()?.unwrap();
 
         let condition = Expression::parse(parser)?;
@@ -211,12 +207,11 @@ impl<'i> If<'i> {
                         else_branch = Some(Box::new(Else::Block(else_block)));
                     } else {
                         return Err(ParserError {
-                            kind: ParseErrorKind::UnexpectedToken {
-                                expected: "`if` or `{`",
+                            kind: ParseErrorKind::Unexpected {
+                                expected: "`if` or `{`".to_string(),
                                 found: next_token.kind.to_string(),
                             },
                             span: next_token.span,
-                            help: None,
                         });
                     }
                 }
@@ -233,8 +228,8 @@ impl<'i> If<'i> {
     }
 }
 
-impl<'i> While<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
+impl<'i> Parsable<'i> for While<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
         let while_token = parser.next_token()?.unwrap();
         let condition = Expression::parse(parser)?;
         let body = Block::parse(parser)?;
@@ -247,42 +242,10 @@ impl<'i> While<'i> {
     }
 }
 
-impl<'i> Block<'i> {
-    pub fn parse(parser: &mut crate::parser::Parser<'i>) -> Result<Self, ParserError> {
+impl<'i> Parsable<'i> for Block<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError> {
         let open_brace = parser.expect_punct(Punct::OpenBrace)?;
-        let mut statements = Vec::new();
 
-        let mut close_brace = None;
-        while let Some(res) = parser.peek() {
-            match res {
-                Ok(token) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
-                    close_brace = Some(parser.next_token()?.unwrap());
-                    break;
-                }
-                Ok(token) if token.kind == TokenKind::Eof => {
-                    return Err(ParserError {
-                        kind: ParseErrorKind::UnterminatedBlock,
-                        span: token.span,
-                        help: None,
-                    });
-                }
-                Ok(_) => {
-                    statements.push(Statement::parse(parser)?);
-                }
-                Err(_) => {
-                    parser.next_token().unwrap_err();
-                    unreachable!()
-                }
-            }
-        }
-
-        let close_brace_token = close_brace.ok_or_else(|| ParserError {
-            kind: ParseErrorKind::UnterminatedBlock,
-            span: open_brace.span,
-            help: None,
-        })?;
-
-        let span = Span::new(open_brace.span.start, close_brace_token.span.end);
-        Ok(Block { statements, span })
+        todo!()
     }
 }

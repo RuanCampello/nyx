@@ -3,7 +3,7 @@
 use crate::{
     lexer::{
         Lexer,
-        token::{Position, Punct, Span, Token, TokenKind},
+        token::{Punct, Span, Token, TokenKind},
     },
     parser::{
         error::{ParseErrorKind, ParserError},
@@ -19,30 +19,39 @@ pub mod statement;
 /// Recursive-descent parser.
 pub struct Parser<'i> {
     cursor: Peekable<Lexer<'i>>,
+    /// Most recently used consumed token, used to place EOF diagnostics.
+    last: Option<Span>,
+}
+
+pub trait Parsable<'i>: Sized {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError>;
 }
 
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
         Self {
             cursor: Lexer::new(source).peekable(),
+            last: None,
         }
     }
 
-    pub fn parse(mut self) -> Result<Vec<statement::Statement<'i>>, ParserError> {
+    pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError> {
         let mut statements = Vec::new();
 
-        while let Some(res) = self.cursor.peek() {
-            match res {
-                Ok(token) if token.kind == crate::lexer::token::TokenKind::Eof => break,
-                Ok(_) => statements.push(Statement::parse(&mut self)?),
-                Err(_) => {
-                    let _ = self.next_token()?;
-                    unreachable!()
-                }
+        loop {
+            match self.peek() {
+                Some(Ok(token)) if token.kind == TokenKind::Eof => break,
+                Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
+                None => break,
+                Some(Err(err)) => return Err(err.clone().into()),
             }
         }
 
         Ok(statements)
+    }
+
+    fn parse_node<N: Parsable<'i>>(&mut self) -> Result<N, ParserError> {
+        N::parse(self)
     }
 
     #[inline(always)]
@@ -52,53 +61,58 @@ impl<'i> Parser<'i> {
 
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError> {
         match self.cursor.next() {
-            Some(Ok(t)) => Ok(Some(t)),
+            Some(Ok(token)) => {
+                self.last = Some(token.span);
+                Ok(Some(token))
+            }
             Some(Err(e)) => Err(e.into()),
             None => Ok(None),
         }
     }
 
-    pub fn expect_punct(&mut self, punct: Punct) -> Result<Token<'i>, ParserError> {
-        let token = self.next_token()?.ok_or_else(|| ParserError {
-            kind: ParseErrorKind::UnexpectedToken {
-                expected: punct.as_str(),
-                found: "EOF".into(),
+    pub fn unexpected(&self, expected: &str, found: &str) -> ParserError {
+        ParserError {
+            kind: ParseErrorKind::Unexpected {
+                expected: expected.to_string(),
+                found: found.to_string(),
             },
-            span: Span::new(Position::new(0, 0, 0), Position::new(0, 0, 0)),
-            help: None,
-        })?;
-
-        match token.kind == TokenKind::Punct(punct) {
-            true => Ok(token),
-            false => Err(ParserError {
-                kind: error::ParseErrorKind::UnexpectedToken {
-                    expected: punct.as_str(),
-                    found: token.kind.to_string(),
-                },
-                span: token.span,
-                help: None,
-            }),
+            span: self.last.unwrap_or_default(),
         }
     }
 
-    pub fn expect_identifier(&mut self) -> Result<(&'i str, Span), ParserError> {
-        let token = self.next_token()?.ok_or_else(|| ParserError {
-            kind: ParseErrorKind::UnexpectedToken {
-                expected: "identifier",
-                found: "EOF".into(),
+    pub fn expect_next(&mut self, expected: &str) -> Result<Token<'i>, ParserError> {
+        self.next_token()?
+            .ok_or_else(|| self.unexpected(expected, "EOF"))
+    }
+
+    pub fn expect_punct(&mut self, punct: Punct) -> Result<Token<'i>, ParserError> {
+        let expected = format!("punctiation `{punct}`");
+        let token = self.expect_next(expected.as_ref())?;
+
+        if TokenKind::Punct(punct) == token.kind {
+            return Ok(token);
+        }
+
+        Err(ParserError {
+            kind: ParseErrorKind::Unexpected {
+                expected,
+                found: token.kind.to_string(),
             },
-            span: Span::new(Position::new(0, 0, 0), Position::new(0, 0, 0)),
-            help: None,
-        })?;
+            span: token.span,
+        })
+    }
+
+    pub fn expect_identifier(&mut self) -> Result<(&'i str, Span), ParserError> {
+        let token = self.expect_next("identifier")?;
 
         match token.kind {
             TokenKind::Identifier(id) => Ok((id, token.span)),
             _ => Err(ParserError {
-                kind: ParseErrorKind::ExpectedIdentifier {
+                kind: ParseErrorKind::Unexpected {
+                    expected: "identifier".to_string(),
                     found: token.kind.to_string(),
                 },
                 span: token.span,
-                help: None,
             }),
         }
     }

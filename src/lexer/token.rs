@@ -84,14 +84,14 @@ pub enum Punct {
     Arrow,     // ->
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Position {
     pub offset: usize,
     pub line: u32,
     pub column: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
@@ -105,12 +105,6 @@ impl Position {
             line,
             column,
         }
-    }
-}
-
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line, self.column)
     }
 }
 
@@ -203,6 +197,12 @@ impl fmt::Display for TokenKind<'_> {
             Self::Punct(p) => write!(f, "{p}"),
             Self::Eof => write!(f, "EOF"),
         }
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
     }
 }
 
