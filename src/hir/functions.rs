@@ -167,7 +167,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let (else_block, else_returns) = match statement.else_branch {
                     Some(ref statement) => match &**statement {
                         Else::If(inner) => {
-                            todo!()
+                            let (block, returns) = self.lower_if(inner, is_tail)?;
+                            (Some(block), returns)
                         }
                         Else::Block(block) => {
                             let (block, returns) = self.lower_block(block, is_tail)?;
@@ -223,6 +224,42 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_expr(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
         todo!()
+    }
+
+    fn lower_if(
+        &mut self,
+        if_stmt: &statement::If<'f>,
+        is_tail: bool,
+    ) -> Result<(Block, bool), HirError<'f>> {
+        let condition = self.lower_expr(&if_stmt.condition)?;
+        self.assert_type(Type::Bool, condition.typ)?;
+
+        let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
+        let (else_block, else_returns) = match if_stmt.else_branch {
+            Some(ref else_branch) => match &**else_branch {
+                Else::If(statement) => {
+                    let (block, returns) = self.lower_if(statement, is_tail)?;
+                    (Some(block), returns)
+                }
+                Else::Block(statement) => {
+                    let (block, returns) = self.lower_block(statement, is_tail)?;
+                    (Some(block), returns)
+                }
+            },
+            _ => (None, false),
+        };
+
+        Ok((
+            Block {
+                statements: vec![Statement::If {
+                    condition,
+                    then_block,
+                    else_block,
+                }],
+                span: if_stmt.span,
+            },
+            then_returns && else_returns,
+        ))
     }
 
     fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
