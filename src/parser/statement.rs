@@ -294,10 +294,11 @@ impl<'i> Parsable<'i> for Function<'i> {
 
                 Ok(_) => {
                     if !params.is_empty() {
-                        parser.expect_punct(Punct::Colon)?;
+                        parser.expect_punct(Punct::Comma)?;
                     }
 
                     let (param_name, param_span) = parser.expect_identifier()?;
+                    parser.expect_punct(Punct::Colon)?;
                     let typ = parser.parse_node::<Type>()?;
                     let span = Span::new(param_span.start, typ.span().end);
 
