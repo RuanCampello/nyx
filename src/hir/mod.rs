@@ -59,7 +59,7 @@ pub struct Function {
     params: Vec<Parameter>,
     locals: Vec<Local>,
     return_type: Type,
-    block: Block,
+    body: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,5 +200,56 @@ impl std::fmt::Display for Type {
 impl std::fmt::Debug for SymbolId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SymbolId({})", self.0.into_usize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+
+    #[test]
+    #[should_panic = "not yet implemented"]
+    fn unknown_identifier() {
+        let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UndeclaredIdentifier {
+                name: "x".to_string()
+            }
+        )
+    }
+
+    #[test]
+    #[should_panic = "not yet implemented"]
+    fn mutability() {
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let x: i32 = 1;
+                x = 2;
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "x".into() });
+
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let mut x: i32 = 1;
+                x = 2;
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        assert!(super::lower(statements).is_ok());
     }
 }

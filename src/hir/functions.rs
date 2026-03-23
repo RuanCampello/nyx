@@ -81,7 +81,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             })
         }
 
-        todo!()
+        let (body, _) = self.lower_block(&function.body, true)?;
+
+        Ok(Function {
+            id,
+            name: symbol,
+            params,
+            locals: self.locals,
+            return_type: self.return_type,
+            body,
+        })
     }
 
     fn lower_block(
@@ -262,8 +271,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         ))
     }
 
+    #[inline(always)]
     fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
-        todo!()
+        let expr = self.lower_expr(expr)?;
+        Ok(expr.typ)
     }
 
     #[inline(always)]
