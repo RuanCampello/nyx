@@ -48,3 +48,9 @@ impl<'i> ParserError<'i> {
         Self { kind, span }
     }
 }
+
+impl<'i> From<&LexError> for ParserError<'i> {
+    fn from(value: &LexError) -> Self {
+        Self::new(ParseErrorKind::Lexical(value.clone()), value.span())
+    }
+}

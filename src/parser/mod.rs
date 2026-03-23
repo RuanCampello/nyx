@@ -156,14 +156,7 @@ impl<'i> Parser<'i> {
                 self.next_token()?;
                 Ok(true)
             }
-
-            Some(Err(err)) => {
-                return Err(ParserError::new(
-                    ParseErrorKind::Lexical(err.clone()),
-                    err.span(),
-                ));
-            }
-
+            Some(Err(err)) => return Err(err.into()),
             _ => Ok(false),
         }
     }
@@ -314,5 +307,13 @@ mod tests {
                 Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
             )]
         );
+    }
+
+    #[test]
+    fn parse_add_function_file() {
+        let source = include_str!("../tests/add.nyx");
+        let statements = Parser::new(source).parse().unwrap();
+
+        assert_eq!(statements.len(), 1);
     }
 }

@@ -107,8 +107,23 @@ impl<'i> Parsable<'i> for Statement<'i> {
             )),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
-                parser.expect_punct(Punct::Semicolon)?;
-                let span = Span::new(expr.span().start, expr.span().end);
+                let end_position = match parser.peek() {
+                    Some(Ok(token))
+                        if matches!(
+                            token.kind,
+                            TokenKind::Punct(Punct::CloseBrace) | TokenKind::Eof
+                        ) =>
+                    {
+                        expr.span().end
+                    }
+                    Some(Err(err)) => return Err(err.into()),
+                    _ => {
+                        parser.expect_punct(Punct::Semicolon)?;
+                        expr.span().end
+                    }
+                };
+
+                let span = Span::new(expr.span().start, end_position);
 
                 Ok(Statement::Expr(expr, span))
             }
@@ -293,12 +308,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                     })
                 }
 
-                Err(err) => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::Lexical(err.clone()),
-                        err.span(),
-                    ));
-                }
+                Err(err) => return Err(err.into()),
             }
         }
 
