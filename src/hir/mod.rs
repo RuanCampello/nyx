@@ -4,12 +4,17 @@
 //! Identifiers are lowered to stable numeric IDs.
 
 use crate::{
+    hir::{error::HirError, symbols::SymbolTable},
     lexer::token::Span,
-    parser::expression::{BinaryOperator, UnaryOperator},
+    parser::{
+        expression::{BinaryOperator, UnaryOperator},
+        statement,
+    },
 };
 use lasso::{Key, Spur};
 
 pub mod error;
+mod functions;
 mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +117,27 @@ pub struct SymbolId(pub Spur);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
+
+/// Lowers the program AST to a HIR program.
+pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
+    let mut symbols = SymbolTable::new();
+
+    todo!()
+}
+
+impl From<statement::Type> for Type {
+    fn from(value: statement::Type) -> Self {
+        use statement::Type as AstType;
+        match value {
+            AstType::I32 { .. } => Type::I32,
+            AstType::I64 { .. } => Type::I64,
+            AstType::F32 { .. } => Type::F32,
+            AstType::F64 { .. } => Type::F64,
+            AstType::Bool { .. } => Type::Bool,
+            AstType::String { .. } => Type::String,
+        }
+    }
+}
 
 impl std::fmt::Debug for SymbolId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
