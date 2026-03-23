@@ -4,7 +4,10 @@
 //! Identifiers are lowered to stable numeric IDs.
 
 use crate::{
-    hir::{error::HirError, symbols::SymbolTable},
+    hir::{
+        error::{HirError, HirErrorKind},
+        symbols::SymbolTable,
+    },
     lexer::token::Span,
     parser::{
         expression::{BinaryOperator, UnaryOperator},
@@ -121,12 +124,42 @@ pub struct LocalId(pub u32);
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
+    let (signatures, functions_map) =
+        functions::collect_function_signatures(&statements, &mut symbols)?;
 
-    todo!()
+    let mut functions = Vec::new();
+    for statement in statements {
+        let function = match statement {
+            statement::Statement::Fn(function) => function,
+            other => {
+                return Err(HirError {
+                    kind: HirErrorKind::TopLevelNonFunction,
+                });
+            }
+        };
+
+        let symbol = symbols.insert(function.name);
+        let id = *functions_map
+            .get(&symbol)
+            .expect("function id assigned during signature collection");
+
+        todo!()
+    }
+
+    Ok(Hir {
+        symbols: symbols.into_symbols(),
+        functions,
+    })
 }
 
 impl From<statement::Type> for Type {
     fn from(value: statement::Type) -> Self {
+        Self::from(&value)
+    }
+}
+
+impl From<&statement::Type> for Type {
+    fn from(value: &statement::Type) -> Self {
         use statement::Type as AstType;
         match value {
             AstType::I32 { .. } => Type::I32,

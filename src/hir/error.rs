@@ -21,6 +21,9 @@ pub enum HirErrorKind<'h> {
     #[error("use of undeclared identifier: `{name}`")]
     UndeclaredIdentifier { name: String },
 
+    #[error("duplicate binding `{name}` in the same scope")]
+    DuplicateBind { name: String },
+
     #[error("re-assignment of immutable bind: `{name}`")]
     ImmutableBind { name: String },
 }

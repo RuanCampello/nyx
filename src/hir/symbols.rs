@@ -23,6 +23,7 @@ impl SymbolTable {
         self.interner.resolve(&id.0)
     }
 
+    #[inline(always)]
     pub fn into_symbols(self) -> Vec<String> {
         self.interner
             .into_iter()
