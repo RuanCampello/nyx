@@ -187,6 +187,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 ))
             }
 
+            Stmt::While(statement) => {
+                let condition = self.lower_expr(&statement.condition)?;
+                self.assert_type(Type::Bool, condition.typ)?;
+
+                // PERFORMANCE: remove loops with constant false conditions
+                let (body, _) = self.lower_block(&statement.body, false)?;
+
+                Ok((Statement::While { condition, body }, false))
+            }
+
             Stmt::Expr(expr, _) => {
                 let expr = self.lower_expr(expr)?;
 
@@ -208,7 +218,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
-            _ => todo!(),
         }
     }
 

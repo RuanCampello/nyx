@@ -38,7 +38,10 @@ pub enum Statement {
         then_block: Block,
         else_block: Option<Block>,
     },
-    While,
+    While {
+        condition: Expression,
+        body: Block,
+    },
     Block(Block),
 }
 
