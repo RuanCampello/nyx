@@ -4,7 +4,7 @@
 use crate::lexer::token::{Position, Span};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
     pub(in crate::lexer) kind: LexErrorKind,
     pub(in crate::lexer) span: Span,
@@ -12,7 +12,7 @@ pub struct LexError {
 }
 
 /// The category of a lexer error.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::lexer) enum LexErrorKind {
     /// An unexpected character was encountered.
     UnexpectedChar(char),

@@ -7,8 +7,16 @@ use crate::{
     lexer::token::Span,
     parser::expression::{BinaryOperator, UnaryOperator},
 };
+use lasso::{Key, Spur};
 
 pub mod error;
+mod symbols;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hir {
+    symbols: Vec<String>,
+    functions: Vec<Function>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -99,8 +107,14 @@ pub enum ExpressionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SymbolId(pub u32);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SymbolId(pub Spur);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
+
+impl std::fmt::Debug for SymbolId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SymbolId({})", self.0.into_usize())
+    }
+}

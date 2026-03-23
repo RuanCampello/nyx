@@ -1,13 +1,19 @@
 use crate::lexer::token::Span;
 use crate::parser::error::ParserError;
 
+#[derive(Debug, PartialEq, Clone, thiserror::Error)]
+#[error("{kind}")]
+pub struct HirError<'h> {
+    kind: HirErrorKind<'h>,
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum HirErrorKind<'h> {
     #[error(transparent)]
     Parser(ParserError<'h>),
 
     #[error("only functions declarations are allowed at top level")]
-    TopLevelNonFunction { span: Span },
+    TopLevelNonFunction,
 
     #[error("duplicate function: `{name}`")]
     DuplicateFunction { name: String },
@@ -17,4 +23,12 @@ pub enum HirErrorKind<'h> {
 
     #[error("re-assignment of immutable bind: `{name}`")]
     ImmutableBind { name: String },
+}
+
+impl<'h> From<ParserError<'h>> for HirError<'h> {
+    fn from(value: ParserError<'h>) -> Self {
+        Self {
+            kind: HirErrorKind::Parser(value),
+        }
+    }
 }
