@@ -168,7 +168,7 @@ mod tests {
         lexer::token::Position,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::Return,
+            statement::{Parameter, Return, Type},
         },
     };
 
@@ -315,5 +315,16 @@ mod tests {
         let statements = Parser::new(source).parse().unwrap();
 
         assert_eq!(statements.len(), 1);
+        let function = match &statements[0] {
+            Statement::Fn(function) => function,
+            other => panic!("expected function, found {other:?}"),
+        };
+
+        assert_eq!(function.name, "add");
+        assert_eq!(function.params.len(), 2);
+        assert_eq!(function.params[0].name, "a");
+        assert!(matches!(function.params[0].typ, Type::I32 { .. }));
+        assert_eq!(function.params[1].name, "b");
+        assert!(matches!(function.params[1].typ, Type::I32 { .. }));
     }
 }
