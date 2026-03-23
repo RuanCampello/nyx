@@ -9,6 +9,7 @@ pub enum Statement<'i> {
     Return(Return<'i>),
     If(If<'i>),
     While(While<'i>),
+    Fn(Function<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
 }
@@ -40,6 +41,22 @@ pub struct If<'i> {
 pub struct While<'i> {
     pub condition: Expression<'i>,
     pub body: Block<'i>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Function<'i> {
+    pub name: &'i str,
+    pub params: Vec<Parameter<'i>>,
+    pub return_type: Option<Type>,
+    pub body: Block<'i>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Parameter<'i> {
+    pub name: &'i str,
+    pub typ: Type,
     pub span: Span,
 }
 
@@ -82,6 +99,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Fn) => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(
                 ParseErrorKind::UnexpectedEof,
@@ -234,6 +252,67 @@ impl<'i> Parsable<'i> for While<'i> {
 
         Ok(While {
             condition,
+            body,
+            span,
+        })
+    }
+}
+
+impl<'i> Parsable<'i> for Function<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let fn_token = parser.expect_keyword(Keyword::Fn)?;
+        let (name, _) = parser.expect_identifier()?;
+        parser.expect_punct(Punct::OpenParen)?;
+
+        let mut params = Vec::new();
+
+        loop {
+            let token = parser
+                .peek()
+                .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, fn_token.span))?;
+
+            match token {
+                Ok(token) if token.kind == TokenKind::Punct(Punct::CloseParen) => {
+                    parser.expect_punct(Punct::CloseParen)?;
+                    break;
+                }
+
+                Ok(_) => {
+                    if !params.is_empty() {
+                        parser.expect_punct(Punct::Colon)?;
+                    }
+
+                    let (param_name, param_span) = parser.expect_identifier()?;
+                    let typ = parser.parse_node::<Type>()?;
+                    let span = Span::new(param_span.start, typ.span().end);
+
+                    params.push(Parameter {
+                        name: param_name,
+                        typ,
+                        span,
+                    })
+                }
+
+                Err(err) => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::Lexical(err.clone()),
+                        err.span(),
+                    ));
+                }
+            }
+        }
+
+        let return_type = match parser.consume_punct(Punct::Colon)? {
+            true => Some(parser.parse_node::<Type>()?),
+            false => None,
+        };
+        let body = Block::parse(parser)?;
+        let span = Span::new(fn_token.span.start, body.span.end);
+
+        Ok(Function {
+            params,
+            name,
+            return_type,
             body,
             span,
         })
