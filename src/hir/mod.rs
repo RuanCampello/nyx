@@ -26,12 +26,18 @@ pub struct Hir {
     functions: Vec<Function>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    Let { id: LocalId },
+    Let {
+        id: LocalId,
+    },
     Expr(),
-    Return(),
-    If,
+    Return(Option<Expression>),
+    If {
+        condition: Expression,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
     While,
     Block(Block),
 }
@@ -43,7 +49,7 @@ pub struct Expression {
     span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     id: FunctionId,
     name: SymbolId,
@@ -68,7 +74,7 @@ pub struct Local {
     mutable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     statements: Vec<Statement>,
     span: Span,

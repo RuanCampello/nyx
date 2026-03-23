@@ -8,7 +8,10 @@ use crate::{
         symbols::SymbolTable,
     },
     lexer::token::Span,
-    parser::{self, expression, statement},
+    parser::{
+        self, expression,
+        statement::{self, Else},
+    },
 };
 
 #[derive(Debug)]
@@ -83,7 +86,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_block(
         &mut self,
-        block: statement::Block<'f>,
+        block: &statement::Block<'f>,
         is_tail: bool,
     ) -> Result<(Block, bool), HirError<'f>> {
         self.push_scope();
@@ -141,6 +144,48 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 Ok((Statement::Let { id }, false))
             }
+
+            Stmt::Return(statement) => {
+                let value = match statement.value {
+                    Some(ref expr) => {
+                        let expr = self.lower_expr(expr)?;
+                        self.assert_type(self.return_type, expr.typ)?;
+                        Some(expr)
+                    }
+                    _ => None,
+                };
+
+                Ok((Statement::Return(value), true))
+            }
+
+            Stmt::If(statement) => {
+                let condition = self.lower_expr(&statement.condition)?;
+                self.assert_type(Type::Bool, condition.typ)?;
+
+                // PERFORMANCE: evaluate constant conditions and prune dead branches
+                let (then_block, returns) = self.lower_block(&statement.then_branch, is_tail)?;
+                let (else_block, else_returns) = match statement.else_branch {
+                    Some(ref statement) => match &**statement {
+                        Else::If(inner) => {
+                            todo!()
+                        }
+                        Else::Block(block) => {
+                            let (block, returns) = self.lower_block(block, is_tail)?;
+                            (Some(block), returns)
+                        }
+                    },
+                    _ => (None, false),
+                };
+
+                Ok((
+                    Statement::If {
+                        condition,
+                        then_block,
+                        else_block,
+                    },
+                    returns && else_returns,
+                ))
+            }
             _ => todo!(),
         }
     }
@@ -154,6 +199,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
+    #[must_use]
     const fn assert_type(&self, expected: Type, found: Type) -> Result<(), HirError<'f>> {
         return Err(HirError {
             kind: HirErrorKind::TypeMismatch { expected, found },
