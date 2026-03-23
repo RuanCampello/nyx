@@ -1,2 +1,5 @@
-pub mod lexer;
+#![allow(unused)]
+
+mod hir;
+mod lexer;
 mod parser;
