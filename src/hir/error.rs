@@ -1,3 +1,4 @@
+use crate::hir::Type;
 use crate::lexer::token::Span;
 use crate::parser::error::ParserError;
 
@@ -23,6 +24,12 @@ pub enum HirErrorKind<'h> {
 
     #[error("duplicate binding `{name}` in the same scope")]
     DuplicateBind { name: String },
+
+    #[error("missing initialiser from `{name}` and type cannot be inferred")]
+    MissingInitialiser { name: String },
+
+    #[error("type mismatch: expected `{expected}`, found `{found}`")]
+    TypeMismatch { expected: Type, found: Type },
 
     #[error("re-assignment of immutable bind: `{name}`")]
     ImmutableBind { name: String },

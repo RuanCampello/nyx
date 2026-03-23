@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use crate::{
     hir::{
-        Function, FunctionId, Local, LocalId, Parameter, SymbolId, Type,
+        Block, Expression, Function, FunctionId, Local, LocalId, Parameter, Statement, SymbolId,
+        Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
     lexer::token::Span,
-    parser::statement,
+    parser::{self, expression, statement},
 };
 
 #[derive(Debug)]
@@ -80,6 +81,85 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         todo!()
     }
 
+    fn lower_block(
+        &mut self,
+        block: statement::Block<'f>,
+        is_tail: bool,
+    ) -> Result<(Block, bool), HirError<'f>> {
+        self.push_scope();
+        let mut statements = Vec::new();
+        let mut returns = false;
+
+        for (idx, statement) in block.statements.iter().enumerate() {
+            let is_tail = is_tail && idx + 1 == block.statements.len();
+            let (statement, did_return) = self.lower_statement(statement, is_tail)?;
+            statements.push(statement);
+            returns |= did_return;
+        }
+
+        self.pop_scope();
+        Ok((
+            Block {
+                statements,
+                span: block.span,
+            },
+            returns,
+        ))
+    }
+
+    fn lower_statement(
+        &mut self,
+        statement: &statement::Statement<'f>,
+        is_tail: bool,
+    ) -> Result<(Statement, bool), HirError<'f>> {
+        use statement::Statement as Stmt;
+
+        match statement {
+            Stmt::Let(statement) => {
+                let typ = match (statement.typ, statement.value.as_ref()) {
+                    (Some(typ), _) => Type::from(typ),
+                    (_, Some(expr)) => self.infer(expr)?,
+                    (None, None) => {
+                        return Err(HirError {
+                            kind: HirErrorKind::MissingInitialiser {
+                                name: statement.name.to_string(),
+                            },
+                        });
+                    }
+                };
+
+                let symbol = self.symbols.insert(statement.name);
+                let id = self.declare_local(symbol, typ, statement.mutable)?;
+                let value = match statement.value {
+                    Some(ref expr) => {
+                        let expr = self.lower_expr(expr)?;
+                        self.assert_type(typ, expr.typ)?;
+                        Some(expr)
+                    }
+                    _ => None,
+                };
+
+                Ok((Statement::Let { id }, false))
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn lower_expr(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
+        todo!()
+    }
+
+    fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
+        todo!()
+    }
+
+    #[inline(always)]
+    const fn assert_type(&self, expected: Type, found: Type) -> Result<(), HirError<'f>> {
+        return Err(HirError {
+            kind: HirErrorKind::TypeMismatch { expected, found },
+        });
+    }
+
     fn declare_local(
         &mut self,
         name: SymbolId,
@@ -111,6 +191,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         });
 
         Ok(id)
+    }
+
+    #[inline(always)]
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new())
+    }
+
+    #[inline(always)]
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
     }
 }
 

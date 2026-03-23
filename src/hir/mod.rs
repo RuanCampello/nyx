@@ -172,6 +172,22 @@ impl From<&statement::Type> for Type {
     }
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Type::I32 => "i32",
+            Type::I64 => "i64",
+            Type::F32 => "f32",
+            Type::F64 => "f64",
+            Type::Bool => "bool",
+            Type::String => "String",
+            Type::Unit => "unit",
+        };
+
+        f.write_str(s)
+    }
+}
+
 impl std::fmt::Debug for SymbolId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SymbolId({})", self.0.into_usize())
