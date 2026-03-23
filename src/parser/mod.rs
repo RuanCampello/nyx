@@ -168,7 +168,7 @@ mod tests {
         lexer::token::Position,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Parameter, Return, Type},
+            statement::{Let, Parameter, Return, Type},
         },
     };
 
@@ -326,5 +326,52 @@ mod tests {
         assert!(matches!(function.params[0].typ, Type::I32 { .. }));
         assert_eq!(function.params[1].name, "b");
         assert!(matches!(function.params[1].typ, Type::I32 { .. }));
+    }
+
+    #[test]
+    fn parse_inference_file() {
+        let source = include_str!("../tests/inference.nyx");
+        let statements = Parser::new(source).parse().unwrap();
+
+        assert_eq!(statements.len(), 1);
+        let function = match &statements[0] {
+            Statement::Fn(function) => function,
+            other => panic!("expected function, found {other:?}"),
+        };
+
+        assert_eq!(function.name, "main");
+        assert!(function.params.is_empty());
+        assert!(function.return_type.is_none());
+        assert_eq!(function.body.statements.len(), 3);
+
+        match &function.body.statements[0] {
+            Statement::Let(Let { name, value, .. }) => {
+                assert_eq!(*name, "x");
+                assert!(matches!(value, Some(Expression::Integer(10, _))));
+            }
+            _ => unreachable!(),
+        };
+
+        match &function.body.statements[1] {
+            Statement::Let(Let { name, value, .. }) => {
+                assert_eq!(*name, "y");
+                assert!(matches!(value, Some(Expression::Integer(20, _))));
+            }
+            _ => unreachable!(),
+        };
+
+        match &function.body.statements[2] {
+            Statement::Let(Let { name, value, .. }) => {
+                assert_eq!(*name, "z");
+                assert!(matches!(
+                    value,
+                    Some(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        ..
+                    })
+                ));
+            }
+            _ => unreachable!(),
+        };
     }
 }
