@@ -31,7 +31,7 @@ pub enum Statement {
     Let {
         id: LocalId,
     },
-    Expr(),
+    Expr(Expression),
     Return(Option<Expression>),
     If {
         condition: Expression,

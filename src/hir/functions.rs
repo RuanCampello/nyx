@@ -186,6 +186,28 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     returns && else_returns,
                 ))
             }
+
+            Stmt::Expr(expr, _) => {
+                let expr = self.lower_expr(expr)?;
+
+                match is_tail {
+                    true => match self.return_type == Type::Unit {
+                        true => Ok((Statement::Expr(expr), false)),
+                        _ => {
+                            self.assert_type(self.return_type, expr.typ)?;
+                            Ok((Statement::Return(Some(expr)), true))
+                        }
+                    },
+                    _ => Ok((Statement::Expr(expr), false)),
+                }
+            }
+
+            Stmt::Block(block) => {
+                let (block, returns) = self.lower_block(block, is_tail)?;
+                Ok((Statement::Block(block), returns))
+            }
+
+            Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             _ => todo!(),
         }
     }
