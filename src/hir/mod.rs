@@ -258,4 +258,101 @@ mod tests {
 
         assert!(super::lower(statements).is_ok());
     }
+
+    #[test]
+    fn while_condition_must_be_bool() {
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let x: i32 = 1;
+                while x { }
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Bool,
+                found: Type::I32
+            }
+        )
+    }
+
+    #[test]
+    #[ignore = "int subtyping"]
+    fn if_condition_must_be_bool() {
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let x: i64 = 1;
+                if x { }
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Bool,
+                found: Type::I64
+            }
+        )
+    }
+
+    #[test]
+    fn duplicated_function() {
+        let statements = Parser::new(
+            r#"
+            fn foo(): i32 { 1 }
+            fn foo(): i32 { 2 }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateFunction { name: "foo".into() }
+        );
+    }
+
+    #[test]
+    fn arity_mismatch_too_many() {
+        let statements = Parser::new(
+            r#"
+            fn add(a: i32, b: i32): i32 { a + b }
+            fn main() { add(1, 2, 3); }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+
+        assert_eq!(
+            err.kind,
+            HirErrorKind::ArityMismatch {
+                name: "add".into(),
+                expected: 2,
+                found: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn top_level_non_function() {
+        let statements = Parser::new("let x: i64 = 1;").parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+
+        assert_eq!(err.kind, HirErrorKind::TopLevelNonFunction)
+    }
 }
