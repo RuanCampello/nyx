@@ -10,7 +10,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         self,
-        expression::{self, UnaryOperator},
+        expression::{self, BinaryOperator, UnaryOperator},
         statement::{self, Else},
     },
 };
@@ -246,8 +246,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let expr = self.lower_type(expr)?;
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
-                    UnaryOperator::Neg => match expr.typ {
-                        Type::I32 | Type::I64 | Type::F32 | Type::F64 => expr.typ,
+                    UnaryOperator::Neg => match expr.typ.is_number() {
+                        true => expr.typ,
                         _ => {
                             return Err(HirError {
                                 kind: HirErrorKind::TypeMismatch {
@@ -281,7 +281,18 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let left = self.lower_expr(left)?;
                 let right = self.lower_expr(right)?;
 
-                todo!()
+                // PERFORMANCE: constant fold binary operator on literals
+                let result = self.type_for_binary(operator, left.typ, right.typ, span)?;
+
+                Ok(Expression {
+                    kind: ExpressionKind::Binary {
+                        operator: *operator,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    typ: result,
+                    span: *span,
+                })
             }
 
             Expr::Assignment {
@@ -385,6 +396,60 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             },
             then_returns && else_returns,
         ))
+    }
+
+    fn type_for_binary(
+        &self,
+        operator: &BinaryOperator,
+        left: Type,
+        right: Type,
+        span: &Span,
+    ) -> Result<Type, HirError<'f>> {
+        match operator {
+            BinaryOperator::Add
+            | BinaryOperator::Sub
+            | BinaryOperator::Mul
+            | BinaryOperator::Div => {
+                self.assert_type(left, right)?;
+                match left.is_number() {
+                    true => Ok(left),
+                    other => Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::I32,
+                            found: left,
+                        },
+                    }),
+                }
+            }
+
+            BinaryOperator::Eq | BinaryOperator::Ne => {
+                self.assert_type(left, right)?;
+                Ok(Type::Bool)
+            }
+
+            BinaryOperator::Lt
+            | BinaryOperator::LtEq
+            | BinaryOperator::Gt
+            | BinaryOperator::GtEq => {
+                self.assert_type(left, right)?;
+                match left.is_number() {
+                    true => Ok(Type::Bool),
+                    _ => Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::I32,
+                            found: left,
+                        },
+                    }),
+                }
+            }
+
+            BinaryOperator::And | BinaryOperator::Or => {
+                self.assert_type(Type::Bool, left)?;
+                self.assert_type(Type::Bool, right)?;
+
+                Ok(Type::Bool)
+            }
+        }
     }
 
     #[inline(always)]

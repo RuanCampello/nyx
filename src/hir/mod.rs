@@ -161,6 +161,12 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     })
 }
 
+impl Type {
+    pub(in crate::hir) const fn is_number(&self) -> bool {
+        matches!(self, Self::I32 | Self::I64 | Self::F32 | Self::F64)
+    }
+}
+
 impl From<statement::Type> for Type {
     fn from(value: statement::Type) -> Self {
         Self::from(&value)
