@@ -145,7 +145,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let id = self.declare_local(symbol, typ, statement.mutable)?;
                 let value = match statement.value {
                     Some(ref expr) => {
-                        let expr = self.lower_expr(expr)?;
+                        let expr = self.lower_typed_expr(expr, Some(typ))?;
                         self.assert_type(typ, expr.typ)?;
                         Some(expr)
                     }
@@ -420,6 +420,30 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 span: *span,
             }),
             _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    fn lower_typed_expr(
+        &mut self,
+        expr: &expression::Expression,
+        hint: Option<Type>,
+    ) -> Result<Expression, HirError<'f>> {
+        use expression::Expression as Expr;
+
+        match (expr, hint) {
+            (Expr::Integer(value, span), Some(hint @ (Type::I32 | Type::I64))) => Ok(Expression {
+                kind: ExpressionKind::Integer(*value),
+                typ: hint,
+                span: *span,
+            }),
+
+            (Expr::Float(value, span), Some(hint @ (Type::F32 | Type::F64))) => Ok(Expression {
+                kind: ExpressionKind::Float(*value),
+                typ: hint,
+                span: *span,
+            }),
+
+            _ => self.lower_expr(expr),
         }
     }
 

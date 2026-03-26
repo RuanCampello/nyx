@@ -283,7 +283,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "int subtyping"]
     fn if_condition_must_be_bool() {
         let statements = Parser::new(
             r#"
@@ -382,6 +381,15 @@ mod tests {
                 found: Type::I32
             }
         )
+    }
+
+    #[test]
+    fn type_inference_from_expr() {
+        let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
+        let hir = super::lower(statements);
+
+        // TODO: exact assertion here of expected state
+        assert!(hir.is_ok())
     }
 
     #[test]
