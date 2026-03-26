@@ -2,14 +2,15 @@ use std::collections::HashMap;
 
 use crate::{
     hir::{
-        Block, Expression, Function, FunctionId, Local, LocalId, Parameter, Statement, SymbolId,
-        Type,
+        Block, Expression, ExpressionKind, Function, FunctionId, Local, LocalId, Parameter,
+        Statement, SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
     lexer::token::Span,
     parser::{
-        self, expression,
+        self,
+        expression::{self, UnaryOperator},
         statement::{self, Else},
     },
 };
@@ -232,7 +233,122 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     fn lower_expr(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
-        todo!()
+        use expression::Expression as Expr;
+
+        match expr {
+            expr if expr.is_type() => self.lower_type(expr),
+
+            Expr::Unary {
+                operator,
+                expr,
+                span,
+            } => {
+                let expr = self.lower_type(expr)?;
+                // PERFORMANCE: fold unary operations when operand is a constant literal
+                let expected = match operator {
+                    UnaryOperator::Neg => match expr.typ {
+                        Type::I32 | Type::I64 | Type::F32 | Type::F64 => expr.typ,
+                        _ => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::I32,
+                                    found: expr.typ,
+                                },
+                            });
+                        }
+                    },
+                    UnaryOperator::Not => Type::Bool,
+                };
+
+                self.assert_type(expected, expr.typ)?;
+
+                Ok(Expression {
+                    typ: expr.typ,
+                    span: *span,
+                    kind: ExpressionKind::Unary {
+                        operator: *operator,
+                        expr: Box::new(expr),
+                    },
+                })
+            }
+
+            Expr::Binary {
+                left,
+                operator,
+                right,
+                span,
+            } => {
+                let left = self.lower_expr(left)?;
+                let right = self.lower_expr(right)?;
+
+                todo!()
+            }
+
+            Expr::Assignment {
+                target,
+                value,
+                span,
+            } => {
+                let symbol = self.symbols.insert(target);
+                let id = self.resolve_local(symbol, span)?;
+
+                if !self.locals[id.0 as usize].mutable {
+                    return Err(HirError {
+                        kind: HirErrorKind::ImmutableBind {
+                            name: target.to_string(),
+                        },
+                    });
+                }
+
+                let value = self.lower_expr(value)?;
+                let target = self.locals[id.0 as usize].typ;
+
+                self.assert_type(target, value.typ)?;
+
+                Ok(Expression {
+                    kind: ExpressionKind::Assign {
+                        target: id,
+                        value: Box::new(value),
+                    },
+                    typ: target,
+                    span: *span,
+                })
+            }
+
+            _ => todo!(),
+        }
+    }
+
+    #[inline(always)]
+    fn lower_type(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
+        use expression::Expression as Expr;
+
+        match expr {
+            Expr::Integer(value, span) => Ok(Expression {
+                kind: ExpressionKind::Integer(*value),
+                typ: Type::I32,
+                span: *span,
+            }),
+
+            Expr::Float(value, span) => Ok(Expression {
+                kind: ExpressionKind::Float(*value),
+                typ: Type::F64,
+                span: *span,
+            }),
+
+            Expr::String(value, span) => Ok(Expression {
+                kind: ExpressionKind::String((*value).to_string()),
+                typ: Type::String,
+                span: *span,
+            }),
+
+            Expr::Bool(value, span) => Ok(Expression {
+                kind: ExpressionKind::Bool(*value),
+                typ: Type::Bool,
+                span: *span,
+            }),
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
     }
 
     fn lower_if(
@@ -316,6 +432,20 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         });
 
         Ok(id)
+    }
+
+    fn resolve_local(&mut self, name: SymbolId, span: &Span) -> Result<LocalId, HirError<'f>> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(id) = scope.get(&name) {
+                return Ok(*id);
+            }
+        }
+
+        Err(HirError {
+            kind: HirErrorKind::UndeclaredIdentifier {
+                name: self.symbols.get(name).to_string(),
+            },
+        })
     }
 
     #[inline(always)]

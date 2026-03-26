@@ -76,6 +76,14 @@ impl<'i> Expression<'i> {
         }
     }
 
+    #[inline(always)]
+    pub const fn is_type(&self) -> bool {
+        matches!(
+            self,
+            Self::Integer { .. } | Self::Float { .. } | Self::String { .. } | Self::Bool { .. }
+        )
+    }
+
     fn parse_expr(parser: &mut Parser<'i>, precedence: u8) -> Result<Self, ParserError<'i>> {
         let mut left = Self::parse_prefix(parser)?;
 
