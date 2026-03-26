@@ -6,6 +6,7 @@
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},
+        functions::FunctionBuilder,
         symbols::SymbolTable,
     },
     lexer::token::Span,
@@ -152,7 +153,8 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
             .get(&symbol)
             .expect("function id assigned during signature collection");
 
-        todo!()
+        let function = FunctionBuilder::new(&signatures, &functions_map, &mut symbols, function);
+        functions.push(function.lower()?);
     }
 
     Ok(Hir {

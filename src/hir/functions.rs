@@ -36,7 +36,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 
 impl<'s, 'f> FunctionBuilder<'s, 'f> {
-    fn new(
+    pub fn new(
         signatures: &'s [FunctionSignature],
         functions: &'s Functions,
         symbols: &'s mut SymbolTable,
