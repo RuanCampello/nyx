@@ -349,6 +349,42 @@ mod tests {
     }
 
     #[test]
+    fn unknown_function() {
+        let statements = Parser::new("fn main() { foo(); }").parse().unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UnknownFunction { name: "foo".into() }
+        );
+    }
+
+    #[test]
+    fn type_mismatch_in_let() {
+        let statements = Parser::new(
+            r#"
+            fn add(a: i32, b: i32): i32 { a + b }
+            fn main() {
+                let x: i32 = add(1, 2);
+                let y: bool = add(1, 2);
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let err = super::lower(statements).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Bool,
+                found: Type::I32
+            }
+        )
+    }
+
+    #[test]
     fn top_level_non_function() {
         let statements = Parser::new("let x: i64 = 1;").parse().unwrap();
         let err = super::lower(statements).unwrap_err();
