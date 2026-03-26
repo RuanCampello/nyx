@@ -236,7 +236,20 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         use expression::Expression as Expr;
 
         match expr {
-            expr if expr.is_type() => self.lower_type(expr),
+            Expr::Integer { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {
+                self.lower_type(expr)
+            }
+
+            Expr::Identifier(name, span) => {
+                let symbol = self.symbols.insert(name);
+                let id = self.resolve_local(symbol, span)?;
+
+                Ok(Expression {
+                    kind: ExpressionKind::Local(id),
+                    typ: self.locals[id.0 as usize].typ,
+                    span: *span,
+                })
+            }
 
             Expr::Unary {
                 operator,
@@ -375,8 +388,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     },
                 })
             }
-
-            _ => todo!(),
         }
     }
 
