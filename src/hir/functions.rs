@@ -326,6 +326,56 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 })
             }
 
+            Expr::Call { callee, args, span } => {
+                let (function, signature) = match callee.as_ref() {
+                    Expr::Identifier(name, _) => {
+                        let symbol = self.symbols.insert(name);
+                        let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
+                            kind: HirErrorKind::UnknownFunction {
+                                name: name.to_string(),
+                            },
+                        })?;
+
+                        (id, &self.signatures[id.0 as usize])
+                    }
+
+                    other => {
+                        return Err(HirError {
+                            kind: HirErrorKind::UnknownFunction {
+                                name: format!("{other:?}"),
+                            },
+                        });
+                    }
+                };
+
+                if signature.params.len() != args.len() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ArityMismatch {
+                            name: self.symbols.get(signature.name).to_string(),
+                            expected: signature.params.len(),
+                            found: args.len(),
+                        },
+                    });
+                }
+
+                let mut lowered_args = Vec::with_capacity(args.len());
+
+                for (expr, typ) in args.iter().zip(signature.params.iter()) {
+                    let expr = self.lower_expr(expr)?;
+                    self.assert_type(*typ, expr.typ)?;
+                    lowered_args.push(expr);
+                }
+
+                Ok(Expression {
+                    typ: signature.return_type,
+                    span: *span,
+                    kind: ExpressionKind::Call {
+                        function: function,
+                        args: lowered_args,
+                    },
+                })
+            }
+
             _ => todo!(),
         }
     }

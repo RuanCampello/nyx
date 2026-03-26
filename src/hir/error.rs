@@ -22,6 +22,16 @@ pub enum HirErrorKind<'h> {
     #[error("use of undeclared identifier: `{name}`")]
     UndeclaredIdentifier { name: String },
 
+    #[error("unknown function: `{name}`")]
+    UnknownFunction { name: String },
+
+    #[error("call to `{name}` expects {expected} arguments but {found} where provided")]
+    ArityMismatch {
+        name: String,
+        expected: usize,
+        found: usize,
+    },
+
     #[error("duplicate binding `{name}` in the same scope")]
     DuplicateBind { name: String },
 
