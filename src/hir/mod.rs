@@ -399,4 +399,39 @@ mod tests {
 
         assert_eq!(err.kind, HirErrorKind::TopLevelNonFunction)
     }
+
+    #[test]
+    #[should_panic]
+    fn integer_literal_as_function_arg_typed_i64() {
+        let statements = Parser::new(
+            r#"
+            fn foo(x: i64): i64 { x }
+            fn main() { foo(1); }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        assert!(super::lower(statements).is_ok());
+    }
+
+    #[test]
+    fn float_literal_defaults_to_f64() {
+        let statements = Parser::new("fn main() { let x = 3.14; }").parse().unwrap();
+        assert!(super::lower(statements).is_ok());
+    }
+
+    #[test]
+    fn integer_literal_defaults_to_i32_in_binary_expr() {
+        let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
+        assert!(super::lower(statements).is_ok());
+    }
+
+    #[test]
+    fn float_literal_widens_to_f32() {
+        let statements = Parser::new("fn main() { let x: f32 = 3.14; }")
+            .parse()
+            .unwrap();
+        assert!(super::lower(statements).is_ok());
+    }
 }
