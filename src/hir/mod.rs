@@ -217,7 +217,6 @@ mod tests {
     use crate::parser::Parser;
 
     #[test]
-    #[should_panic = "not yet implemented"]
     fn unknown_identifier() {
         let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
         let err = super::lower(statements).unwrap_err();
@@ -231,7 +230,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "not yet implemented"]
     fn mutability() {
         let statements = Parser::new(
             r#"

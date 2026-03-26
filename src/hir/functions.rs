@@ -521,10 +521,13 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     #[inline(always)]
     #[must_use]
-    const fn assert_type(&self, expected: Type, found: Type) -> Result<(), HirError<'f>> {
-        return Err(HirError {
-            kind: HirErrorKind::TypeMismatch { expected, found },
-        });
+    fn assert_type(&self, expected: Type, found: Type) -> Result<(), HirError<'f>> {
+        match expected == found {
+            true => Ok(()),
+            false => Err(HirError {
+                kind: HirErrorKind::TypeMismatch { expected, found },
+            }),
+        }
     }
 
     fn declare_local(
