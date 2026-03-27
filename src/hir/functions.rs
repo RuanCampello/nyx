@@ -70,17 +70,21 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             .expect("function id present for this name");
         let signatures = &self.signatures[id.0 as usize];
 
-        let mut params = Vec::new();
-        for (parameter, &typ) in function.params.iter().zip(signatures.params.iter()) {
-            let symbol = self.symbols.insert(parameter.name);
-            let id = self.declare_local(symbol, typ, true)?;
+        let params = function
+            .params
+            .iter()
+            .zip(signatures.params.iter())
+            .map(|(parameter, &typ)| -> Result<_, HirError> {
+                let symbol = self.symbols.insert(parameter.name);
+                let id = self.declare_local(symbol, typ, true)?;
 
-            params.push(Parameter {
-                typ: typ,
-                id,
-                name: symbol,
+                Ok(Parameter {
+                    typ,
+                    id,
+                    name: symbol,
+                })
             })
-        }
+            .collect::<Result<Vec<_>, _>>()?;
 
         let (body, _) = self.lower_block(&function.body, true)?;
 
@@ -100,15 +104,19 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         is_tail: bool,
     ) -> Result<(Block, bool), HirError<'f>> {
         self.push_scope();
-        let mut statements = Vec::new();
-        let mut returns = false;
+        let last_idx = block.statements.len().saturating_sub(1);
 
-        for (idx, statement) in block.statements.iter().enumerate() {
-            let is_tail = is_tail && idx + 1 == block.statements.len();
-            let (statement, did_return) = self.lower_statement(statement, is_tail)?;
-            statements.push(statement);
-            returns |= did_return;
-        }
+        let (statements, returns) = block.statements.iter().enumerate().try_fold(
+            (Vec::new(), false),
+            |(mut statements, mut returns), (idx, statement)| -> Result<_, HirError> {
+                let (statement, did_return) =
+                    self.lower_statement(statement, is_tail && idx == last_idx)?;
+                statements.push(statement);
+
+                returns |= did_return;
+                Ok((statements, returns))
+            },
+        )?;
 
         self.pop_scope();
         Ok((
@@ -431,7 +439,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         let (else_block, else_returns) = if_stmt
             .else_branch
             .as_ref()
-            .map(|else_branch| -> Result<_, HirError<'f>> {
+            .map(|else_branch| -> Result<_, HirError> {
                 match else_branch.as_ref() {
                     Else::If(block) => {
                         let (statement, returns) = self.lower_if(block, is_tail)?;
@@ -565,18 +573,17 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         Ok(id)
     }
 
+    #[inline(always)]
     fn resolve_local(&mut self, name: SymbolId, span: &Span) -> Result<LocalId, HirError<'f>> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(id) = scope.get(&name) {
-                return Ok(*id);
-            }
-        }
-
-        Err(HirError {
-            kind: HirErrorKind::UndeclaredIdentifier {
-                name: self.symbols.get(name).to_string(),
-            },
-        })
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&name).copied())
+            .ok_or_else(|| HirError {
+                kind: HirErrorKind::UndeclaredIdentifier {
+                    name: self.symbols.get(name).to_string(),
+                },
+            })
     }
 
     #[inline(always)]
@@ -619,13 +626,8 @@ pub fn collect_function_signatures<'h>(
         let function_id = FunctionId(signatures.len() as u32);
         functions.insert(symbol, function_id);
 
-        let params = function
-            .params
-            .iter()
-            .map(|param| Type::from(param.typ))
-            .collect::<Vec<_>>();
+        let params = function.params.iter().map(|p| Type::from(p.typ)).collect();
         let return_type = function.return_type.map(From::from).unwrap_or(Type::Unit);
-
         signatures.push(FunctionSignature {
             return_type,
             params,
