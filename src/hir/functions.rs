@@ -168,35 +168,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 Ok((Statement::Return(value), true))
             }
 
-            Stmt::If(statement) => {
-                let condition = self.lower_expr(&statement.condition)?;
-                self.assert_type(Type::Bool, condition.typ)?;
-
-                // PERFORMANCE: evaluate constant conditions and prune dead branches
-                let (then_block, returns) = self.lower_block(&statement.then_branch, is_tail)?;
-                let (else_block, else_returns) = match statement.else_branch {
-                    Some(ref statement) => match &**statement {
-                        Else::If(inner) => {
-                            let (block, returns) = self.lower_if(inner, is_tail)?;
-                            (Some(block), returns)
-                        }
-                        Else::Block(block) => {
-                            let (block, returns) = self.lower_block(block, is_tail)?;
-                            (Some(block), returns)
-                        }
-                    },
-                    _ => (None, false),
-                };
-
-                Ok((
-                    Statement::If {
-                        condition,
-                        then_block,
-                        else_block,
-                    },
-                    returns && else_returns,
-                ))
-            }
+            Stmt::If(statement) => self.lower_if(statement, is_tail),
 
             Stmt::While(statement) => {
                 let condition = self.lower_expr(&statement.condition)?;
@@ -451,33 +423,39 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         &mut self,
         if_stmt: &statement::If<'f>,
         is_tail: bool,
-    ) -> Result<(Block, bool), HirError<'f>> {
+    ) -> Result<(Statement, bool), HirError<'f>> {
         let condition = self.lower_expr(&if_stmt.condition)?;
         self.assert_type(Type::Bool, condition.typ)?;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
-        let (else_block, else_returns) = match if_stmt.else_branch {
-            Some(ref else_branch) => match &**else_branch {
-                Else::If(statement) => {
-                    let (block, returns) = self.lower_if(statement, is_tail)?;
-                    (Some(block), returns)
+        let (else_block, else_returns) = if_stmt
+            .else_branch
+            .as_ref()
+            .map(|else_branch| -> Result<_, HirError<'f>> {
+                match else_branch.as_ref() {
+                    Else::If(block) => {
+                        let (statement, returns) = self.lower_if(block, is_tail)?;
+                        let block = Block {
+                            span: block.span,
+                            statements: vec![statement],
+                        };
+
+                        Ok((Some(block), returns))
+                    }
+                    Else::Block(block) => {
+                        let (block, returns) = self.lower_block(block, is_tail)?;
+                        Ok((Some(block), returns))
+                    }
                 }
-                Else::Block(statement) => {
-                    let (block, returns) = self.lower_block(statement, is_tail)?;
-                    (Some(block), returns)
-                }
-            },
-            _ => (None, false),
-        };
+            })
+            .transpose()?
+            .unwrap_or((None, false));
 
         Ok((
-            Block {
-                statements: vec![Statement::If {
-                    condition,
-                    then_block,
-                    else_block,
-                }],
-                span: if_stmt.span,
+            Statement::If {
+                condition,
+                then_block,
+                else_block,
             },
             then_returns && else_returns,
         ))
