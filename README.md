@@ -11,11 +11,11 @@ Nyx is designed for performance without sacrificing safety and clarity. It is a 
 - **Strict by Design**: Minimal implicit behaviour, maximizing type safety.
 - **Modern Syntax**: Clean, readable and _subjectively_ aesthetic syntax.
 - **Compiled Performance**: Direct compilation for high-performance execution.
-- **Simplicity**: Build without unnecessary complexity.
+- **Simplicity**: Build without unnecessary complexity focused on learning.
 
 ## The Nyx Look
 
-```nyx
+```rust
 fn add(a: i32, b: i32): i32 {
   a + b
 }
@@ -33,8 +33,8 @@ fn main() {
 Nyx is currently in early development.
 
 - [x] Lexical Analyzer
-- [ ] Parser
-- [ ] Semantic Analyzer
+- [x] Parser
+- [x] Semantic Analyzer
 - [ ] Intermediate Representation
 - [ ] Code Generation
 
