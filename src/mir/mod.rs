@@ -23,6 +23,18 @@ use crate::{
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
+pub mod error;
+mod lower;
+
+/// Complete MIR program.
+/// That's a flat list of functions.
+///
+/// `symbols` are carried through from HIR for diagostic/debug use.
+pub struct Mir {
+    symbols: Vec<String>,
+    functions: Vec<Function>,
+}
+
 /// Single side-effecting or value-producing operation.
 ///
 /// Every instruction has the form `dest = <rhs>`

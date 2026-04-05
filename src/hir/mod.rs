@@ -23,8 +23,8 @@ mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {
-    symbols: Vec<String>,
-    functions: Vec<Function>,
+    pub symbols: Vec<String>,
+    pub functions: Vec<Function>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,19 +48,19 @@ pub enum Statement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
-    kind: ExpressionKind,
-    typ: Type,
+    pub(crate) kind: ExpressionKind,
+    pub(crate) typ: Type,
     span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-    id: FunctionId,
-    name: SymbolId,
-    params: Vec<Parameter>,
-    locals: Vec<Local>,
-    return_type: Type,
-    body: Block,
+    pub(crate) id: FunctionId,
+    pub(crate) name: SymbolId,
+    pub(crate) params: Vec<Parameter>,
+    pub(crate) locals: Vec<Local>,
+    pub(crate) return_type: Type,
+    pub(crate) body: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,15 +72,15 @@ pub struct Parameter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Local {
-    id: LocalId,
+    pub(crate) id: LocalId,
     name: SymbolId,
-    typ: Type,
+    pub(crate) typ: Type,
     mutable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
-    statements: Vec<Statement>,
+    pub(crate) statements: Vec<Statement>,
     span: Span,
 }
 
