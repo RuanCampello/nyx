@@ -401,7 +401,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn integer_literal_as_function_arg_typed_i64() {
         let statements = Parser::new(
             r#"
@@ -411,6 +410,8 @@ mod tests {
         )
         .parse()
         .unwrap();
+
+        println!("{statements:#?}");
 
         assert!(super::lower(statements).is_ok());
     }

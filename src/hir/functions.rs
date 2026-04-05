@@ -151,14 +151,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 let symbol = self.symbols.insert(statement.name);
                 let id = self.declare_local(symbol, typ, statement.mutable)?;
-                let value = match statement.value {
-                    Some(ref expr) => {
-                        let expr = self.lower_typed_expr(expr, Some(typ))?;
-                        self.assert_type(typ, expr.typ)?;
-                        Some(expr)
-                    }
-                    _ => None,
-                };
+
+                if let Some(ref expr) = statement.value {
+                    // we pass the declared type so int/float literals are widen
+                    let expr = self.lower_expr(expr, Some(typ))?;
+                    self.assert_type(typ, expr.typ)?;
+                }
 
                 Ok((Statement::Let { id }, false))
             }
@@ -166,7 +164,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             Stmt::Return(statement) => {
                 let value = match statement.value {
                     Some(ref expr) => {
-                        let expr = self.lower_expr(expr)?;
+                        let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ)?;
                         Some(expr)
                     }
@@ -179,7 +177,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             Stmt::If(statement) => self.lower_if(statement, is_tail),
 
             Stmt::While(statement) => {
-                let condition = self.lower_expr(&statement.condition)?;
+                let condition = self.lower_expr(&statement.condition, None)?;
                 self.assert_type(Type::Bool, condition.typ)?;
 
                 // PERFORMANCE: remove loops with constant false conditions
@@ -189,7 +187,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Stmt::Expr(expr, _) => {
-                let expr = self.lower_expr(expr)?;
+                let hint = match is_tail && self.return_type != Type::Unit {
+                    true => Some(self.return_type),
+                    _ => None,
+                };
+                let expr = self.lower_expr(expr, hint)?;
 
                 match is_tail {
                     true => match self.return_type == Type::Unit {
@@ -212,13 +214,57 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    fn lower_expr(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
+    /// Lowers an expression with an optional type hint flowing downward (biderectional checking).
+    ///
+    /// The hint is used to resolve the concrete type of integer and float literals when the
+    /// expected type is known from context (call arguments, let bindings, assignments, etc.).
+    ///
+    /// When the hint is `None`, literals default to `i32` and `f64` respectively.
+    fn lower_expr(
+        &mut self,
+        expr: &expression::Expression,
+        hint: Option<Type>,
+    ) -> Result<Expression, HirError<'f>> {
         use expression::Expression as Expr;
 
         match expr {
-            Expr::Integer { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {
-                self.lower_type(expr)
+            // literal coercion: use the hint to widen to the expected numeric type.
+            Expr::Integer(value, span) => {
+                let typ = match hint {
+                    Some(t @ (Type::I32 | Type::I64)) => t,
+                    Some(t @ (Type::F32 | Type::F64)) => t,
+                    _ => Type::I32,
+                };
+                Ok(Expression {
+                    kind: ExpressionKind::Integer(*value),
+                    typ,
+                    span: *span,
+                })
             }
+
+            Expr::Float(value, span) => {
+                let typ = match hint {
+                    Some(t @ (Type::F32 | Type::F64)) => t,
+                    _ => Type::F64,
+                };
+                Ok(Expression {
+                    kind: ExpressionKind::Float(*value),
+                    typ,
+                    span: *span,
+                })
+            }
+
+            Expr::String(value, span) => Ok(Expression {
+                kind: ExpressionKind::String((*value).to_string()),
+                typ: Type::String,
+                span: *span,
+            }),
+
+            Expr::Bool(value, span) => Ok(Expression {
+                kind: ExpressionKind::Bool(*value),
+                typ: Type::Bool,
+                span: *span,
+            }),
 
             Expr::Identifier(name, span) => {
                 let symbol = self.symbols.insert(name);
@@ -236,7 +282,13 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 expr,
                 span,
             } => {
-                let expr = self.lower_type(expr)?;
+                // for negation the hint flows through to the operand
+                let inner_hint = match operator {
+                    UnaryOperator::Neg => hint,
+                    UnaryOperator::Not => Some(Type::Bool),
+                };
+                let expr = self.lower_expr(expr, inner_hint)?;
+
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
                     UnaryOperator::Neg => match expr.typ.is_number() {
@@ -271,8 +323,26 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 right,
                 span,
             } => {
-                let left = self.lower_expr(left)?;
-                let right = self.lower_expr(right)?;
+                // for arithmetic or comparison, we propagate the hint to the left side first to
+                // resolve the concrete numeric type, then use that resolved type as the hint
+                // for the right side.
+                //
+                // this ensures `x + 1` where `x: i64` correctly widens the literal `1` to `i64`
+                let left = self.lower_expr(left, hint)?;
+                let right_hint = match operator {
+                    BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Lt
+                    | BinaryOperator::LtEq
+                    | BinaryOperator::Gt
+                    | BinaryOperator::GtEq
+                    | BinaryOperator::Eq
+                    | BinaryOperator::Ne => Some(left.typ),
+                    BinaryOperator::And | BinaryOperator::Or => Some(Type::Bool),
+                };
+                let right = self.lower_expr(right, right_hint)?;
 
                 // PERFORMANCE: constant fold binary operator on literals
                 let result = self.type_for_binary(operator, left.typ, right.typ, span)?;
@@ -304,17 +374,18 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     });
                 }
 
-                let value = self.lower_expr(value)?;
-                let target = self.locals[id.0 as usize].typ;
+                let target_typ = self.locals[id.0 as usize].typ;
+                // we need to pass the targets type as a hint :D
+                let value = self.lower_expr(value, Some(target_typ))?;
 
-                self.assert_type(target, value.typ)?;
+                self.assert_type(target_typ, value.typ)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Assign {
                         target: id,
                         value: Box::new(value),
                     },
-                    typ: target,
+                    typ: target_typ,
                     span: *span,
                 })
             }
@@ -353,17 +424,20 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 let mut lowered_args = Vec::with_capacity(args.len());
 
-                for (expr, typ) in args.iter().zip(signature.params.iter()) {
-                    let expr = self.lower_expr(expr)?;
-                    self.assert_type(*typ, expr.typ)?;
+                for (expr, &param_typ) in args.iter().zip(signature.params.iter()) {
+                    // each parameters declared type as the hint
+                    // that allows `foo(1)` to work when `foo` expects an `i64`.
+                    let expr = self.lower_expr(expr, Some(param_typ))?;
+                    self.assert_type(param_typ, expr.typ)?;
                     lowered_args.push(expr);
                 }
 
+                let return_type = signature.return_type;
                 Ok(Expression {
-                    typ: signature.return_type,
+                    typ: return_type,
                     span: *span,
                     kind: ExpressionKind::Call {
-                        function: function,
+                        function,
                         args: lowered_args,
                     },
                 })
@@ -403,36 +477,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    fn lower_typed_expr(
-        &mut self,
-        expr: &expression::Expression,
-        hint: Option<Type>,
-    ) -> Result<Expression, HirError<'f>> {
-        use expression::Expression as Expr;
-
-        match (expr, hint) {
-            (Expr::Integer(value, span), Some(hint @ (Type::I32 | Type::I64))) => Ok(Expression {
-                kind: ExpressionKind::Integer(*value),
-                typ: hint,
-                span: *span,
-            }),
-
-            (Expr::Float(value, span), Some(hint @ (Type::F32 | Type::F64))) => Ok(Expression {
-                kind: ExpressionKind::Float(*value),
-                typ: hint,
-                span: *span,
-            }),
-
-            _ => self.lower_expr(expr),
-        }
-    }
-
     fn lower_if(
         &mut self,
         if_stmt: &statement::If<'f>,
         is_tail: bool,
     ) -> Result<(Statement, bool), HirError<'f>> {
-        let condition = self.lower_expr(&if_stmt.condition)?;
+        let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::Bool, condition.typ)?;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
@@ -525,7 +575,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     #[inline(always)]
     fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
-        let expr = self.lower_expr(expr)?;
+        let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
 
