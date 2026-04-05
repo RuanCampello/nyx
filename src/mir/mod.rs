@@ -34,6 +34,24 @@ pub struct Instruction {
     kind: InstructionKind,
 }
 
+pub struct Function {
+    id: FunctionId,
+    return_type: Type,
+    locals: Vec<(ValueId, Type)>,
+    blocks: Vec<Block>,
+}
+
+/// A single-entry, single-exit sequence of instructions.
+///
+/// All instructions execute Unconditionally top-to-bottom. Only one [terminator](self::Terminator) can transfer the
+/// control.
+/// This invariant allow code generation to translate blocks independently.
+pub struct Block {
+    id: BlockId,
+    instructions: Vec<Instruction>,
+    terminator: Terminator,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum InstructionKind {
     /// `dest = operand` (copy or constant load)
@@ -79,6 +97,24 @@ pub enum Const {
     Float(f64, Type),
     Bool(bool),
     Unit,
+}
+
+/// The last instruction of a [basic block](self::Block). Always exactly one per block.
+/// Terminator's are the *only* place where control flow is expressed.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Terminator {
+    /// Unconditional jump
+    Jump(BlockId),
+
+    /// Conditional branch: if `condition` is true
+    Branch {
+        condition: Operand,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
+
+    /// Return from the function, optionally carrying a returned value
+    Return(Option<Operand>),
 }
 
 /// An assigned unique value id.
