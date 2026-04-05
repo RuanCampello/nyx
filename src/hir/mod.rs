@@ -411,21 +411,51 @@ mod tests {
         .parse()
         .unwrap();
 
-        println!("{statements:#?}");
+        let hir = super::lower(statements).unwrap();
 
-        assert!(super::lower(statements).is_ok());
+        assert_eq!(hir.functions.len(), 2);
+        let foo = &hir.functions[0];
+        assert_eq!(foo.return_type, Type::I64);
+        assert_eq!(foo.params.len(), 1);
+        assert_eq!(foo.params[0].typ, Type::I64);
+
+        let main = &hir.functions[1];
+        let call_expr = match &main.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            other => panic!("expected Expr statement, got {other:?}"),
+        };
+        assert_eq!(call_expr.typ, Type::I64);
+        let arg = match &call_expr.kind {
+            ExpressionKind::Call { args, .. } => {
+                assert_eq!(args.len(), 1);
+                &args[0]
+            }
+            other => panic!("expected Call expression, got {other:?}"),
+        };
+        assert_eq!(arg.typ, Type::I64);
+        assert!(matches!(arg.kind, ExpressionKind::Integer(1)));
     }
 
     #[test]
     fn float_literal_defaults_to_f64() {
         let statements = Parser::new("fn main() { let x = 3.14; }").parse().unwrap();
-        assert!(super::lower(statements).is_ok());
+        let hir = super::lower(statements).unwrap();
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals.len(), 1);
+        assert_eq!(func.locals[0].typ, Type::F64);
     }
 
     #[test]
     fn integer_literal_defaults_to_i32_in_binary_expr() {
         let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
-        assert!(super::lower(statements).is_ok());
+        let hir = super::lower(statements).unwrap();
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals[0].typ, Type::I32);
+
+        let stmt = &func.body.statements[0];
+        assert!(matches!(stmt, Statement::Let { id: LocalId(0) }));
     }
 
     #[test]
@@ -433,6 +463,67 @@ mod tests {
         let statements = Parser::new("fn main() { let x: f32 = 3.14; }")
             .parse()
             .unwrap();
-        assert!(super::lower(statements).is_ok());
+        let hir = super::lower(statements).unwrap();
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals.len(), 1);
+        assert_eq!(func.locals[0].typ, Type::F32);
+    }
+
+    #[test]
+    fn mutable_assign_widens_literal() {
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let mut x: i64 = 0;
+                x = 99;
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        let hir = super::lower(statements).unwrap();
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals.len(), 1);
+        assert_eq!(func.locals[0].typ, Type::I64);
+        assert_eq!(func.locals[0].mutable, true);
+
+        let assign_expr = match &func.body.statements[1] {
+            Statement::Expr(expr) => expr,
+            other => panic!("expected Expr statement, got {other:?}"),
+        };
+        assert_eq!(assign_expr.typ, Type::I64);
+        let (target_id, value) = match &assign_expr.kind {
+            ExpressionKind::Assign { target, value } => (target, value.as_ref()),
+            other => panic!("expected Assign expression, got {other:?}"),
+        };
+
+        assert_eq!(*target_id, LocalId(0));
+        assert_eq!(value.typ, Type::I64);
+        assert!(matches!(value.kind, ExpressionKind::Integer(99)));
+    }
+
+    #[test]
+    fn integer_literal_widens_in_binary_with_i64_local() {
+        let statements = Parser::new(
+            r#"
+            fn main() {
+                let x: i64 = 10;
+                let y = x + 1;
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        let hir = super::lower(statements).unwrap();
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals.len(), 2);
+        assert_eq!(func.locals[0].typ, Type::I64);
+        assert_eq!(func.locals[1].typ, Type::I64);
+
+        let y_stmt = &func.body.statements[1];
+        assert!(matches!(y_stmt, Statement::Let { id: LocalId(1) }));
     }
 }
