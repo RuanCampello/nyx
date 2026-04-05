@@ -24,6 +24,7 @@ use crate::{
 };
 
 pub mod error;
+pub use lower::lower;
 mod lower;
 
 /// Complete MIR program.
@@ -156,5 +157,31 @@ impl Const {
             Self::Bool(_) => Type::Bool,
             Self::Unit => Type::Unit,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{hir, mir, parser::Parser};
+
+    fn parse_and_lower(src: &str) -> Mir {
+        let statements = Parser::new(src).parse().unwrap();
+        let hir = hir::lower(statements).unwrap();
+
+        mir::lower(hir).unwrap()
+    }
+
+    #[test]
+    fn trivial_return_unit() {
+        let mir = parse_and_lower("fn main() { }");
+        assert_eq!(mir.functions.len(), 1);
+
+        let function = &mir.functions[0];
+
+        assert_eq!(function.return_type, Type::Unit);
+        assert_eq!(function.blocks.len(), 1);
+        assert_eq!(function.blocks[0].instructions.len(), 0);
+        assert_eq!(function.blocks[0].terminator, Terminator::Return(None));
     }
 }
