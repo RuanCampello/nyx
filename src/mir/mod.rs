@@ -184,4 +184,66 @@ mod tests {
         assert_eq!(function.blocks[0].instructions.len(), 0);
         assert_eq!(function.blocks[0].terminator, Terminator::Return(None));
     }
+
+    #[test]
+    fn let_binding_and_return() {
+        let mir = parse_and_lower("fn foo(): i32 { let x: i32 = 42; x }");
+        let f = &mir.functions[0];
+        assert_eq!(f.return_type, Type::I32);
+
+        let assigns: Vec<_> = f.blocks[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i.kind, InstructionKind::Assign(_)))
+            .collect();
+        assert!(
+            !assigns.is_empty(),
+            "expected at least one Assign instruction"
+        );
+
+        assert!(f.locals.iter().any(|(_, t)| *t == Type::I32));
+    }
+
+    #[test]
+    fn call_produces_call_instruction() {
+        let mir = parse_and_lower(
+            r#"
+            fn add(a: i32, b: i32): i32 { a + b }
+            fn main() { add(1, 2); }
+        "#,
+        );
+
+        let main = &mir.functions[1];
+        let has_call = main.blocks[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
+
+        assert!(has_call, "expected a Call instruction in main");
+    }
+
+    #[test]
+    fn binary_expression_lowers_to_instructions() {
+        let mir = parse_and_lower("fn add(a: i32, b: i32): i32 { a + b }");
+        let f = &mir.functions[0];
+
+        assert!(f.locals.len() >= 2);
+        assert!(f.locals.iter().all(|(_, t)| *t == Type::I32));
+
+        let has_add = f.blocks[0].instructions.iter().any(|i| {
+            matches!(
+                i.kind,
+                InstructionKind::Binary {
+                    operation: BinaryOperator::Add,
+                    ..
+                }
+            )
+        });
+        assert!(has_add, "expected Binary(Add) instruction");
+
+        assert!(matches!(
+            f.blocks[0].terminator,
+            Terminator::Return(Some(_))
+        ));
+    }
 }
