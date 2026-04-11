@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::{
-    mir::ValueId,
-    regalloc::colouring::{Allocation, Location, Reg},
+    mir::{Function, ValueId},
+    regalloc::{
+        colouring::{Allocation, Location, Reg},
+        liveness::Liveness,
+    },
 };
+use std::collections::{HashMap, HashSet};
 
 /// Undirected interference graph.
 ///
@@ -14,93 +16,55 @@ pub struct Interference {
 }
 
 impl Interference {
-    pub fn colour(self) -> Allocation {
-        let k = Reg::k();
-        let all = self.nodes().collect::<Vec<_>>();
+    pub fn build(function: &Function) -> Self {
+        let liveness = Liveness::analyse(function);
+        let mut graph = Self::default();
 
-        if all.is_empty() {
-            return Allocation::default();
+        // ensure every value has a node, even isolated ones
+        for (id, _) in &function.locals {
+            graph.add_node(*id);
         }
 
-        let mut degree: HashMap<_, _> = all.iter().map(|&id| (id, self.degree(id))).collect();
+        for (block_idx, block) in function.blocks.iter().enumerate() {
+            let il = liveness.instruction_liveness(function, block_idx);
 
-        let mut removed = HashSet::new();
-        let mut stack = Vec::new();
+            // walk instructions forward: il.points[i] is live before instruction i
+            for (i, instr) in block.instructions.iter().enumerate() {
+                let live_before = &il.points[i];
 
-        loop {
-            // simplify: push any node with degree < K
-            let simplifiable: Vec<_> = degree
-                .iter()
-                .filter(|&(id, degree)| !removed.contains(id) && *degree < k)
-                .map(|(&id, _)| id)
-                .collect();
-
-            if !simplifiable.is_empty() {
-                for id in simplifiable {
-                    self.push_node(id, &mut stack, &mut removed, &mut degree);
+                // the defined value interferes with everything live at this point
+                for &live_val in live_before {
+                    graph.add_edge(instr.dest.id, live_val);
                 }
 
-                continue;
-            }
-
-            // all remaining nodes have degree >= K — spill the highest-degree one
-            let remaining: Vec<_> = degree
-                .keys()
-                .filter(|id| !removed.contains(id))
-                .copied()
-                .collect();
-
-            match remaining.iter().max_by_key(|&&id| degree[&id]) {
-                None => break, // graph is empty,
-                Some(&spill) => self.push_node(spill, &mut stack, &mut removed, &mut degree),
-            }
-        }
-
-        let mut colour_map: HashMap<ValueId, Option<Reg>> = HashMap::new();
-        let mut spill_offset = 0;
-        let mut locations = HashMap::new();
-
-        while let Some(id) = stack.pop() {
-            let forbidden: HashSet<_> = self
-                .neighbours(id)
-                .iter()
-                .filter_map(|nb| match colour_map.get(nb) {
-                    Some(Some(reg)) => Some(*reg),
-                    _ => None,
-                })
-                .collect();
-
-            let assigned = Reg::ALL
-                .iter()
-                .find(|reg| !forbidden.contains(reg))
-                .copied();
-
-            colour_map.insert(id, assigned);
-
-            let location = match assigned {
-                Some(reg) => Location::Register(reg),
-                None => {
-                    // TODO: i32 slot generalise to type size later
-
-                    spill_offset -= 4;
-                    Location::Stack(spill_offset)
+                // all simultaneously live values interfere with each other
+                let live_vec: Vec<ValueId> = live_before.iter().copied().collect();
+                for j in 0..live_vec.len() {
+                    for k in (j + 1)..live_vec.len() {
+                        graph.add_edge(live_vec[j], live_vec[k]);
+                    }
                 }
-            };
 
-            locations.insert(id, location);
+                graph.add_node(instr.dest.id);
+            }
+
+            // terminator: values it reads are live at the block exit
+            // they all interfere with each other
+            let live_out = &liveness.blocks[block_idx].live_out;
+            let live_out_vec: Vec<ValueId> = live_out.iter().copied().collect();
+
+            for i in 0..live_out_vec.len() {
+                for j in (i + 1)..live_out_vec.len() {
+                    graph.add_edge(live_out_vec[i], live_out_vec[j]);
+                }
+            }
         }
 
-        let raw = spill_offset.unsigned_abs();
-        let frame_size = (raw + 15) & !15;
-
-        Allocation {
-            locations,
-            frame_size,
-        }
+        graph
     }
 
     #[inline(always)]
-    fn nodes(&self) -> impl Iterator<Item = ValueId> + '_ {
+    pub(in crate::regalloc) fn nodes(&self) -> impl Iterator<Item = ValueId> + '_ {
         self.edges.keys().copied()
     }
 
@@ -109,7 +73,7 @@ impl Interference {
         self.edges.entry(id).or_default();
     }
 
-    fn push_node(
+    pub(in crate::regalloc) fn push_node(
         &self,
         id: ValueId,
         stack: &mut Vec<ValueId>,

@@ -52,7 +52,7 @@ pub struct Instruction {
 pub struct Function {
     id: FunctionId,
     return_type: Type,
-    locals: Vec<(ValueId, Type)>,
+    pub(crate) locals: Vec<(ValueId, Type)>,
     pub(crate) blocks: Vec<Block>,
 }
 

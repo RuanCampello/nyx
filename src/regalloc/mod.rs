@@ -5,3 +5,5 @@
 mod colouring;
 mod interference;
 mod liveness;
+
+pub use colouring::{Allocation, Location, Reg};

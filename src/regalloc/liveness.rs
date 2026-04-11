@@ -12,14 +12,14 @@ use std::collections::HashSet;
 
 /// Full liveness for a funciton
 pub struct Liveness {
-    blocks: Vec<BlockLiveness>,
+    pub(in crate::regalloc) blocks: Vec<BlockLiveness>,
 }
 
 /// Live sets for each basic block
 #[derive(Debug, Default, Clone)]
 pub struct BlockLiveness {
     live_in: HashSet<ValueId>,
-    live_out: HashSet<ValueId>,
+    pub(in crate::regalloc) live_out: HashSet<ValueId>,
 }
 
 /// Live set at each instruction boundary within a basic block.
@@ -29,7 +29,7 @@ pub struct BlockLiveness {
 /// `points[instructions.len()]` is `live_out` for the block.
 #[derive(Debug)]
 pub struct InstructionLiveness {
-    points: Vec<HashSet<ValueId>>,
+    pub(in crate::regalloc) points: Vec<HashSet<ValueId>>,
 }
 
 impl Liveness {
