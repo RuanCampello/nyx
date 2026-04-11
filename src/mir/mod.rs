@@ -65,7 +65,7 @@ pub struct Function {
 pub struct Block {
     id: BlockId,
     pub(crate) instructions: Vec<Instruction>,
-    terminator: Terminator,
+    pub(crate) terminator: Terminator,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -144,6 +144,7 @@ pub struct ValueId(pub u32);
 pub struct BlockId(pub u32);
 
 impl InstructionKind {
+    #[inline(always)]
     pub fn uses_of(&self) -> Vec<ValueId> {
         match self {
             Self::Assign(op) => op.value().into_iter().collect(),
@@ -152,6 +153,17 @@ impl InstructionKind {
                 [lhs.value(), rhs.value()].into_iter().flatten().collect()
             }
             Self::Call { args, .. } => args.iter().filter_map(|op| op.value()).collect(),
+        }
+    }
+}
+
+impl Terminator {
+    #[inline(always)]
+    pub fn uses_of(&self) -> Vec<ValueId> {
+        match self {
+            Terminator::Return(Some(op)) => op.value().into_iter().collect(),
+            Terminator::Branch { condition, .. } => condition.value().into_iter().collect(),
+            Terminator::Return(None) | Terminator::Jump(_) => vec![],
         }
     }
 }
