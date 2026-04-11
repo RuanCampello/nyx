@@ -184,3 +184,136 @@ impl Reg {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{hir, mir, parser::Parser};
+
+    fn allocate_for(src: &str) -> (mir::Mir, Allocation) {
+        let stmts = Parser::new(src).parse().unwrap();
+        let hir = hir::lower(stmts).unwrap();
+        let mir = mir::lower(hir).unwrap();
+        let alloc = Allocation::allocate(&mir.functions[0]);
+
+        (mir, alloc)
+    }
+
+    #[test]
+    fn empty_function_needs_no_allocation() {
+        let (_, alloc) = allocate_for("fn main() { }");
+
+        assert!(alloc.locations.is_empty());
+        assert_eq!(alloc.frame_size, 0);
+    }
+
+    #[test]
+    fn single_value_gets_a_register() {
+        let (mir, alloc) = allocate_for("fn foo(): i32 { let x: i32 = 1; x }");
+        let f = &mir.functions[0];
+
+        for (id, _) in &f.locals {
+            let loc = alloc.location_of(*id);
+            assert!(
+                matches!(loc, Location::Register(_)),
+                "single value with no pressure should land in a register, got {loc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_non_interfering_values_may_share_register() {
+        // x and y never live at the same time so they CAN get the same register
+        let (mir, alloc) = allocate_for(
+            r#"
+            fn foo(): i32 {
+                let x: i32 = 1; let y: i32 = 2; y;
+            }
+        "#,
+        );
+        let f = &mir.functions[0];
+
+        for (id, _) in &f.locals {
+            let _ = alloc.location_of(*id);
+        }
+    }
+
+    #[test]
+    fn interfering_values_get_different_registers() {
+        // a and b are simultaneously live for `a + b`
+        let (mir, alloc) = allocate_for("fn add(a: i32, b: i32): i32 { a + b }");
+        let a = ValueId(0);
+        let b = ValueId(1);
+
+        let loc_a = alloc.location_of(a);
+        let loc_b = alloc.location_of(b);
+
+        assert_ne!(
+            loc_a, loc_b,
+            "interfering values must not share a location: both got {loc_a:?}"
+        );
+    }
+
+    #[test]
+    fn more_values_than_registers_causes_spill() {
+        let src = r#"
+            fn pressure(
+                a: i32, b: i32, c: i32, d: i32, e: i32,
+                f: i32, g: i32, h: i32, i: i32, j: i32
+            ): i32 {
+                a + b + c + d + e + f + g + h + i + j
+            }
+        "#;
+        let (mir, alloc) = allocate_for(src);
+        let f = &mir.functions[0];
+
+        let spilled = alloc
+            .locations
+            .values()
+            .filter(|l| matches!(l, Location::Stack(_)))
+            .count();
+
+        assert!(
+            spilled > 0,
+            "with 10+ simultaneously live values and K=9, at least one must spill"
+        );
+        assert!(
+            alloc.frame_size > 0,
+            "spilled values require stack frame space"
+        );
+
+        assert_eq!(
+            alloc.frame_size % 16,
+            0,
+            "frame size must be 16-byte aligned"
+        );
+    }
+
+    fn frame_size_is_always_16_byte_aligned() {
+        let src = r#"
+            fn many(
+                a: i32, b: i32, c: i32, d: i32, e: i32,
+                f: i32, g: i32, h: i32, i: i32, j: i32
+            ): i32 {
+                a + b + c + d + e + f + g + h + i + j
+            }
+        "#;
+
+        let (_, alloc) = allocate_for(src);
+        assert_eq!(alloc.frame_size % 16, 0);
+    }
+
+    #[test]
+    fn all_values_are_allocated() {
+        let src = "fn add(a: i32, b: i32): i32 { a + b }";
+        let (mir, alloc) = allocate_for(src);
+        let f = &mir.functions[0];
+
+        for (id, _) in &f.locals {
+            assert!(
+                alloc.locations.contains_key(id),
+                "every local must receive a location: {id:?} missing"
+            );
+        }
+    }
+}

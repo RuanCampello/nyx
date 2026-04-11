@@ -34,7 +34,7 @@ mod lower;
 #[derive(Debug, PartialEq)]
 pub struct Mir {
     symbols: Vec<String>,
-    functions: Vec<Function>,
+    pub(crate) functions: Vec<Function>,
 }
 
 /// Single side-effecting or value-producing operation.
