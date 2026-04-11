@@ -1,21 +1,20 @@
 //! Graph-colouring register allocation algorithm.
 //!
 //! Algorithm:
-//!   1. Simplify — repeatedly remove nodes with degree < K, push to stack.
-//!   2. Spill    — if stuck, pick the highest-degree node as a potential spill.
-//!   3. Select   — pop stack, assign the lowest-numbered free colour;
+//!  - 1. Simplify — repeatedly remove nodes with degree < K, push to stack.
+//!  - 2. Spill    — if stuck, pick the highest-degree node as a potential spill.
+//!  - 3. Select   — pop stack, assign the lowest-numbered free colour;
 //!                 if none available the node becomes an actual spill → stack slot.
 
+use crate::mir::ValueId;
 use std::collections::HashMap;
 
-use crate::mir::ValueId;
-
 /// Complete allocation result for a function.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Allocation {
-    locations: HashMap<ValueId, Location>,
+    pub(in crate::regalloc) locations: HashMap<ValueId, Location>,
     /// Total stack frame size in bytes, 16 aligned.
-    frame_size: u32,
+    pub(in crate::regalloc) frame_size: u32,
 }
 
 /// x86-64 general-purpose registers available for allocation.

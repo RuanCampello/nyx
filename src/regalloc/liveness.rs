@@ -120,9 +120,9 @@ impl Block {
             defs.insert(instruction.dest.id);
         }
 
-        for v in self.terminator.uses_of() {
-            if !defs.contains(&v) {
-                uses.insert(v);
+        for id in self.terminator.uses_of() {
+            if !defs.contains(&id) {
+                uses.insert(id);
             }
         }
 
