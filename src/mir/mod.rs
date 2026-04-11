@@ -44,8 +44,8 @@ pub struct Mir {
 /// Instructions never nest.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Instruction {
-    dest: Place,
-    kind: InstructionKind,
+    pub(crate) dest: Place,
+    pub(crate) kind: InstructionKind,
 }
 
 #[derive(Debug, PartialEq)]
@@ -53,7 +53,7 @@ pub struct Function {
     id: FunctionId,
     return_type: Type,
     locals: Vec<(ValueId, Type)>,
-    blocks: Vec<Block>,
+    pub(crate) blocks: Vec<Block>,
 }
 
 /// A single-entry, single-exit sequence of instructions.
@@ -64,7 +64,7 @@ pub struct Function {
 #[derive(Debug, PartialEq)]
 pub struct Block {
     id: BlockId,
-    instructions: Vec<Instruction>,
+    pub(crate) instructions: Vec<Instruction>,
     terminator: Terminator,
 }
 
@@ -136,18 +136,39 @@ pub enum Terminator {
 /// An assigned unique value id.
 /// This covers both source locals (LocalId) and fresh temporaries
 /// introduced during expresion lowering.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct ValueId(pub u32);
 
 /// Stable index into a function's `blocks` vec.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
 
+impl InstructionKind {
+    pub fn uses_of(&self) -> Vec<ValueId> {
+        match self {
+            Self::Assign(op) => op.value().into_iter().collect(),
+            Self::Unary { rhs, .. } => rhs.value().into_iter().collect(),
+            Self::Binary { lhs, rhs, .. } => {
+                [lhs.value(), rhs.value()].into_iter().flatten().collect()
+            }
+            Self::Call { args, .. } => args.iter().filter_map(|op| op.value()).collect(),
+        }
+    }
+}
+
 impl Operand {
     pub const fn typ(&self) -> Type {
         match self {
             Self::Place(p) => p.typ,
             Self::Const(c) => c.typ(),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn value(&self) -> Option<ValueId> {
+        match self {
+            Self::Place(p) => Some(p.id),
+            _ => None,
         }
     }
 }
