@@ -107,8 +107,13 @@ impl FunctionLower {
         use hir::Statement as Stmt;
 
         match statement {
-            Stmt::Let { .. } => {
-                // the locals ValueId was pre-allocated in `run` no instruction needed
+            Stmt::Let { id, init } => {
+                if let Some(expr) = init {
+                    let src = self.lower_expr(expr)?;
+                    let dest = self.place_for_local(*id, expr.typ);
+
+                    self.emit(dest, InstructionKind::Assign(src));
+                }
             }
 
             Stmt::Expr(expr) => {

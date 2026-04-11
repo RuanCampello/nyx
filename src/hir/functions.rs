@@ -152,13 +152,17 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let symbol = self.symbols.insert(statement.name);
                 let id = self.declare_local(symbol, typ, statement.mutable)?;
 
-                if let Some(ref expr) = statement.value {
-                    // we pass the declared type so int/float literals are widen
-                    let expr = self.lower_expr(expr, Some(typ))?;
-                    self.assert_type(typ, expr.typ)?;
-                }
+                let init = match statement.value {
+                    Some(ref expr) => {
+                        let expr = self.lower_expr(expr, Some(typ))?;
+                        self.assert_type(typ, expr.typ)?;
 
-                Ok((Statement::Let { id }, false))
+                        Some(expr)
+                    }
+                    _ => None,
+                };
+
+                Ok((Statement::Let { id, init }, false))
             }
 
             Stmt::Return(statement) => {

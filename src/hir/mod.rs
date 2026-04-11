@@ -31,6 +31,7 @@ pub struct Hir {
 pub enum Statement {
     Let {
         id: LocalId,
+        init: Option<Expression>,
     },
     Expr(Expression),
     Return(Option<Expression>),
@@ -455,7 +456,7 @@ mod tests {
         assert_eq!(func.locals[0].typ, Type::I32);
 
         let stmt = &func.body.statements[0];
-        assert!(matches!(stmt, Statement::Let { id: LocalId(0) }));
+        assert!(matches!(stmt, Statement::Let { id: LocalId(0), .. }));
     }
 
     #[test]
@@ -524,6 +525,6 @@ mod tests {
         assert_eq!(func.locals[1].typ, Type::I64);
 
         let y_stmt = &func.body.statements[1];
-        assert!(matches!(y_stmt, Statement::Let { id: LocalId(1) }));
+        assert!(matches!(y_stmt, Statement::Let { id: LocalId(1), .. }));
     }
 }

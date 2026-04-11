@@ -31,6 +31,7 @@ mod lower;
 /// That's a flat list of functions.
 ///
 /// `symbols` are carried through from HIR for diagostic/debug use.
+#[derive(Debug, PartialEq)]
 pub struct Mir {
     symbols: Vec<String>,
     functions: Vec<Function>,
@@ -47,6 +48,7 @@ pub struct Instruction {
     kind: InstructionKind,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Function {
     id: FunctionId,
     return_type: Type,
@@ -59,6 +61,7 @@ pub struct Function {
 /// All instructions execute Unconditionally top-to-bottom. Only one [terminator](self::Terminator) can transfer the
 /// control.
 /// This invariant allow code generation to translate blocks independently.
+#[derive(Debug, PartialEq)]
 pub struct Block {
     id: BlockId,
     instructions: Vec<Instruction>,
@@ -190,6 +193,8 @@ mod tests {
         let mir = parse_and_lower("fn foo(): i32 { let x: i32 = 42; x }");
         let f = &mir.functions[0];
         assert_eq!(f.return_type, Type::I32);
+
+        println!("mir: {mir:?}");
 
         let assigns: Vec<_> = f.blocks[0]
             .instructions
