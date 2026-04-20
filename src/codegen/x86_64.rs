@@ -576,4 +576,25 @@ mod tests {
         assert!(asm.contains("jmp"));
         assert!(asm.contains(".L_block_"));
     }
+
+    #[test]
+    fn complex_arithmetic_expression() {
+        let asm = compile("fn expr(a: i32, b: i32, c: i32): i32 { (a + b) * c }");
+
+        assert!(asm.contains("addl"));
+        assert!(asm.contains("imul"));
+    }
+
+    #[test]
+    fn nested_comparisons() {
+        let src = r#"
+            fn complex(a: i32, b: i32, c: i32): bool {
+                (a < b) && (b < c)
+            }
+        "#;
+        let asm = compile(src);
+
+        assert!(asm.contains("cmpl"));
+        assert!(asm.contains("andl"));
+    }
 }
