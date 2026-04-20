@@ -172,9 +172,25 @@ impl<'e> FunctionEmitter<'e> {
 
                     BinaryOperator::Div => {
                         // integer division is complex: requires %rax/%rdx setup
-                        // TODO: (assumes values fit in registers)
-                        writeln!(self.out, "    # TODO: div requires rax/rdx handling").unwrap();
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        //
+                        // requires: dividend in %eax (32-bit) or %rax (64-bit)
+                        //           %edx/%rdx must be sign-extended from %eax/%rax
+                        // result: quotient in %eax/%rax, remainder in %edx/%rdx
+
+                        let (rax, rdx, extend_instr) = match instruction.dest.typ {
+                            Type::I32 => ("%eax", "%edx", "cltd"), // sign-extend eax -> edx:eax
+                            Type::I64 => ("%rax", "%rdx", "cqto"), // sign-extend rax -> rdx:rax
+                            _ => unreachable!(),
+                        };
+
+                        // move dividend (lhs) to %rax/%eax
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, rax).unwrap();
+                        // sign-extend to rdx:rax or edx:eax
+                        writeln!(self.out, "    {}", extend_instr).unwrap();
+                        // divide by divisor (rhs) - quotient ends up in %rax/%eax
+                        writeln!(self.out, "    idiv{}   {}", suffix, rhs).unwrap();
+                        // move result to destination
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, rax, dest).unwrap();
                     }
 
                     // comparison operators: set dest to 0 or 1
