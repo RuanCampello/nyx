@@ -10,7 +10,7 @@
 
 use crate::{
     hir::Type,
-    mir::{Const, Function, Mir, Operand, Place},
+    mir::{Const, Function, Instruction, Mir, Operand, Place, Terminator},
     regalloc::{Allocation, Location, Reg},
 };
 use std::fmt::{Display, Write};
@@ -42,12 +42,26 @@ impl<'e> FunctionEmitter<'e> {
 
     #[inline(always)]
     fn emit_body(&mut self) {
-        todo!()
+        for (idx, block) in self.function.blocks.iter().enumerate() {
+            // emit block label (skip for entry block)
+            if idx > 0 {
+                writeln!(self.out, ".L_block_{}:", idx).unwrap();
+            }
+
+            // emit all instructions in the block
+            for instr in &block.instructions {
+                self.emit_instruction(instr);
+            }
+
+            // emit the block terminator
+            self.emit_terminator(&block.terminator);
+        }
     }
 
     /// Prologue: label and frame setup
     #[inline(always)]
     fn emit_prologue(&mut self) {
+        // TODO: get actual function name for symbols
         writeln!(self.out, ".nyx_function:").unwrap();
         writeln!(self.out, "    push    %rbp").unwrap();
         writeln!(self.out, "    mov     %rsp, %rbp").unwrap();
@@ -68,6 +82,151 @@ impl<'e> FunctionEmitter<'e> {
         writeln!(self.out, "    mov     %rbp, %rsp").unwrap();
         writeln!(self.out, "    pop     %rbp").unwrap();
         writeln!(self.out, "    ret").unwrap();
+    }
+
+    fn emit_instruction(&mut self, instruction: &Instruction) {
+        use crate::mir::InstructionKind;
+        use crate::parser::expression::{BinaryOperator, UnaryOperator};
+
+        let dest = place_str(&instruction.dest, self.allocation);
+        let suffix = instruction.dest.typ.size_suffix();
+
+        match &instruction.kind {
+            InstructionKind::Assign(operand) => {
+                // dest = operand
+                let src = operand_str(operand, self.allocation);
+                writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
+            }
+
+            InstructionKind::Unary { operation, rhs } => {
+                let src = operand_str(rhs, self.allocation);
+
+                match operation {
+                    UnaryOperator::Neg => {
+                        // dest = -rhs
+                        // strategy: mov rhs to dest, then neg dest
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
+                        writeln!(self.out, "    neg{}    {}", suffix, dest).unwrap();
+                    }
+
+                    UnaryOperator::Not => {
+                        // dest = !rhs (logical not for bool)
+                        // Strategy: xor with 1 (0 -> 1, 1 -> 0)
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
+                        writeln!(self.out, "    xor{}    $1, {}", suffix, dest).unwrap();
+                    }
+                }
+            }
+
+            InstructionKind::Binary {
+                operation,
+                rhs,
+                lhs,
+            } => {
+                let lhs = operand_str(lhs, self.allocation);
+                let rhs = operand_str(rhs, self.allocation);
+
+                match operation {
+                    BinaryOperator::Add => {
+                        // dest = lhs + rhs
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        writeln!(self.out, "    add{}    {}, {}", suffix, rhs, dest).unwrap();
+                    }
+
+                    BinaryOperator::Sub => {
+                        // dest = lhs - rhs
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        writeln!(self.out, "    sub{}    {}, {}", suffix, rhs, dest).unwrap();
+                    }
+
+                    BinaryOperator::Mul => {
+                        // dest = lhs * rhs
+                        // imul can do 2-operand form: imul src, dest (dest *= src)
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        writeln!(self.out, "    imul{}   {}, {}", suffix, rhs, dest).unwrap();
+                    }
+
+                    BinaryOperator::Div => {
+                        // integer division is complex: requires %rax/%rdx setup
+                        // TODO: (assumes values fit in registers)
+                        writeln!(self.out, "    # TODO: div requires rax/rdx handling").unwrap();
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                    }
+
+                    // comparison operators: set dest to 0 or 1
+                    BinaryOperator::Eq => self.emit_comp("sete", lhs, rhs, dest, suffix),
+                    BinaryOperator::Ne => self.emit_comp("setne", lhs, rhs, dest, suffix),
+                    BinaryOperator::Lt => self.emit_comp("setl", lhs, rhs, dest, suffix),
+                    BinaryOperator::LtEq => self.emit_comp("setle", lhs, rhs, dest, suffix),
+                    BinaryOperator::Gt => self.emit_comp("setg", lhs, rhs, dest, suffix),
+                    BinaryOperator::GtEq => self.emit_comp("setge", lhs, rhs, dest, suffix),
+
+                    BinaryOperator::And => {
+                        // logical and: both operands are bool (0 or 1)
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        writeln!(self.out, "    and{}    {}, {}", suffix, rhs, dest).unwrap();
+                    }
+
+                    BinaryOperator::Or => {
+                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
+                        writeln!(self.out, "    or{}     {}, {}", suffix, rhs, dest).unwrap();
+                    }
+                }
+            }
+
+            InstructionKind::Call { callee, args } => {
+                todo!()
+            }
+        }
+    }
+
+    /// Emit a comparison operation that sets dest to 0 or 1
+    #[inline(always)]
+    fn emit_comp(&mut self, set_instr: &str, lhs: String, rhs: String, dest: String, suffix: &str) {
+        // strategy:
+        // 1. cmp rhs, lhs  (sets flags based on lhs - rhs)
+        // 2. set<cc> %al   (sets low byte of %rax to 0 or 1)
+        // 3. movzbl %al, dest (zero-extend byte to 32-bit)
+
+        writeln!(self.out, "    cmp{}    {}, {}", suffix, rhs, lhs).unwrap();
+        writeln!(self.out, "    {}     %al", set_instr).unwrap();
+        writeln!(self.out, "    movzbl   %al, {}", dest).unwrap();
+    }
+
+    /// Emit a block terminator
+    fn emit_terminator(&mut self, term: &Terminator) {
+        match term {
+            Terminator::Return(None) => {} // epilogue handles cleanup
+            Terminator::Return(Some(operand)) => {
+                // move return value to %rax/%eax
+                let src = operand_str(operand, self.allocation);
+                let suffix = operand.typ().size_suffix();
+                let ret_reg = match operand.typ() {
+                    Type::I32 | Type::Bool => "%eax",
+                    Type::I64 | Type::String => "%rax",
+                    _ => unimplemented!(),
+                };
+
+                writeln!(self.out, "    mov{}    {}, {}", suffix, src, ret_reg).unwrap();
+            }
+
+            Terminator::Jump(target) => {
+                writeln!(self.out, "    jmp      .L_block_{}", target.0).unwrap()
+            }
+
+            Terminator::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                let cond = operand_str(condition, self.allocation);
+
+                // test if condition is non-zero (true)
+                writeln!(self.out, "    testl    {}, {}", cond, cond).unwrap();
+                writeln!(self.out, "    jne      .L_block_{}", then_block.0).unwrap();
+                writeln!(self.out, "    jmp      .L_block_{}", else_block.0).unwrap();
+            }
+        }
     }
 }
 
