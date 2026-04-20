@@ -471,4 +471,77 @@ mod tests {
         assert!(asm.contains("cqto")); // sign-extend for 64-bit
         assert!(asm.contains("idivq"));
     }
+
+    #[test]
+    fn negation_emits_neg_instruction() {
+        let asm = compile("fn neg(x: i32): i32 { -x }");
+
+        assert!(asm.contains("negl"));
+    }
+
+    #[test]
+    fn logical_not_emits_xor() {
+        let asm = compile("fn not(x: bool): bool { !x }");
+
+        assert!(asm.contains("xorl"));
+        assert!(asm.contains("$1"));
+    }
+
+    #[test]
+    fn comparison_eq_emits_sete() {
+        let asm = compile("fn eq(a: i32, b: i32): bool { a == b }");
+
+        assert!(asm.contains("cmpl"));
+        assert!(asm.contains("sete"));
+        assert!(asm.contains("movzbl"));
+    }
+
+    #[test]
+    fn comparison_ne_emits_setne() {
+        let asm = compile("fn ne(a: i32, b: i32): bool { a != b }");
+
+        assert!(asm.contains("setne"));
+    }
+
+    #[test]
+    fn comparison_lt_emits_setl() {
+        let asm = compile("fn lt(a: i32, b: i32): bool { a < b }");
+
+        assert!(asm.contains("setl"));
+    }
+
+    #[test]
+    fn comparison_le_emits_setle() {
+        let asm = compile("fn le(a: i32, b: i32): bool { a <= b }");
+
+        assert!(asm.contains("setle"));
+    }
+
+    #[test]
+    fn comparison_gt_emits_setg() {
+        let asm = compile("fn gt(a: i32, b: i32): bool { a > b }");
+
+        assert!(asm.contains("setg"));
+    }
+
+    #[test]
+    fn comparison_ge_emits_setge() {
+        let asm = compile("fn ge(a: i32, b: i32): bool { a >= b }");
+
+        assert!(asm.contains("setge"));
+    }
+
+    #[test]
+    fn logical_and_emits_and_instruction() {
+        let asm = compile("fn and(a: bool, b: bool): bool { a && b }");
+
+        assert!(asm.contains("andl"));
+    }
+
+    #[test]
+    fn logical_or_emits_or_instruction() {
+        let asm = compile("fn or(a: bool, b: bool): bool { a || b }");
+
+        assert!(asm.contains("orl"));
+    }
 }
