@@ -544,4 +544,36 @@ mod tests {
 
         assert!(asm.contains("orl"));
     }
+
+    #[test]
+    fn if_statement_emits_branch() {
+        let src = r#"
+            fn test(x: bool): i32 {
+                if x { 1 } else { 2 }
+            }
+        "#;
+        let asm = compile(src);
+
+        assert!(asm.contains("testl"));
+        assert!(asm.contains("jne"));
+        assert!(asm.contains(".L_block_"));
+    }
+
+    #[test]
+    fn while_loop_emits_jump_back() {
+        let src = r#"
+            fn loop_test(x: i32): i32 {
+                let mut i: i32 = 0;
+                while i < x {
+                    i = i + 1;
+                }
+                i
+            }
+        "#;
+        let asm = compile(src);
+
+        // should have conditional branch and backward jump
+        assert!(asm.contains("jmp"));
+        assert!(asm.contains(".L_block_"));
+    }
 }
