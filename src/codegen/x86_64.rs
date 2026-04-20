@@ -175,7 +175,27 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             InstructionKind::Call { callee, args } => {
-                todo!()
+                // System V AMD64 calling convention for function calls
+                const ARG_REGS_32: &[&str] = &["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
+                const ARG_REGS_64: &[&str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx >= 6 {
+                        unreachable!("stack argument: {idx}");
+                    }
+
+                    let src = operand_str(arg, self.allocation);
+                    let typ = arg.typ();
+                    let suffix = typ.size_suffix();
+
+                    let dest_reg = match typ {
+                        Type::I32 | Type::Bool => ARG_REGS_32[idx],
+                        Type::I64 | Type::String => ARG_REGS_64[idx],
+                        _ => unimplemented!("unsupported argument type"),
+                    };
+
+                    writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest_reg).unwrap();
+                }
             }
         }
     }
