@@ -19,6 +19,7 @@ struct FunctionEmitter<'e> {
     out: &'e mut String,
     allocation: &'e Allocation,
     function: &'e Function,
+    symbols: &'e [String],
 }
 
 /// Emit full assembly program.
@@ -32,11 +33,22 @@ pub fn emit(mir: &Mir) -> String {
 }
 
 impl<'e> FunctionEmitter<'e> {
-    fn new(out: &'e mut String, alloc: &'e Allocation, function: &'e Function) -> Self {
+    // System V AMD64 calling convention for function calls
+
+    const ARG_REGS_32: &'e [&'e str] = &["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
+    const ARG_REGS_64: &'e [&'e str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+    fn new(
+        out: &'e mut String,
+        alloc: &'e Allocation,
+        function: &'e Function,
+        symbols: &'e [String],
+    ) -> Self {
         Self {
             out,
             allocation: alloc,
             function,
+            symbols,
         }
     }
 
@@ -175,10 +187,6 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             InstructionKind::Call { callee, args } => {
-                // System V AMD64 calling convention for function calls
-                const ARG_REGS_32: &[&str] = &["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
-                const ARG_REGS_64: &[&str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
-
                 for (idx, arg) in args.iter().enumerate() {
                     if idx >= 6 {
                         unreachable!("stack argument: {idx}");
@@ -189,13 +197,30 @@ impl<'e> FunctionEmitter<'e> {
                     let suffix = typ.size_suffix();
 
                     let dest_reg = match typ {
-                        Type::I32 | Type::Bool => ARG_REGS_32[idx],
-                        Type::I64 | Type::String => ARG_REGS_64[idx],
+                        Type::I32 | Type::Bool => Self::ARG_REGS_32[idx],
+                        Type::I64 | Type::String => Self::ARG_REGS_64[idx],
                         _ => unimplemented!("unsupported argument type"),
                     };
 
                     writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest_reg).unwrap();
                 }
+
+                // emit function call
+                // TODO: actually get the function name from symbols
+                let callee_name = format!("nyx_func_{}", callee.0);
+                writeln!(self.out, "    call     {}", callee_name).unwrap();
+
+                // move return value from %rax/%eax to destination
+                let ret_type = instruction.dest.typ;
+                let suffix = ret_type.size_suffix();
+                let src_reg = match ret_type {
+                    Type::I32 | Type::Bool => "%eax",
+                    Type::I64 | Type::String => "%rax",
+                    Type::Unit => return,
+                    _ => unimplemented!(),
+                };
+
+                writeln!(self.out, "    mov{}    {}, {}", suffix, src_reg, dest).unwrap();
             }
         }
     }
@@ -248,12 +273,43 @@ impl<'e> FunctionEmitter<'e> {
             }
         }
     }
+
+    fn emit_argument_moves(&mut self) {
+        // TODO: need to get actual parameters from function
+        // for now, we infer from first n locals that match calling convention
+        let params = &self.function.locals[0..6.min(self.function.locals.len())];
+
+        for (idx, (param_id, param_type)) in params.iter().enumerate() {
+            if idx >= 6 {
+                break;
+            }
+
+            let dest = self.allocation.location_of(*param_id);
+            let suffix = param_type.size_suffix();
+
+            let src_reg = match param_type {
+                Type::I32 | Type::Bool => Self::ARG_REGS_32[idx],
+                Type::I64 | Type::String => Self::ARG_REGS_64[idx],
+                _ => continue,
+            };
+
+            let dest_str = match dest {
+                Location::Register(reg) => format!("%{}", reg_name(reg, *param_type)),
+                Location::Stack(offset) => format!("{}(%rbp)", offset),
+            };
+
+            // only emit move if source and destination are different
+            if src_reg != dest_str {
+                writeln!(self.out, "    mov{}    {}, {}", suffix, src_reg, dest_str).unwrap();
+            }
+        }
+    }
 }
 
 impl Function {
-    fn emit(&self, out: &mut String) {
+    fn emit(&self, out: &mut String, symbols: &[String]) {
         let alloc = Allocation::allocate(self);
-        let mut emitter = FunctionEmitter::new(out, &alloc, self);
+        let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols);
 
         emitter.emit_prologue();
         emitter.emit_body();
