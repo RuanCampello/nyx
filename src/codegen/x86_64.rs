@@ -408,4 +408,51 @@ mod tests {
         // should allocate stack frame for spills
         assert!(asm.contains("sub"));
     }
+
+    #[test]
+    fn simple_return_constant() {
+        let asm = compile("fn foo(): i32 { 42 }");
+
+        // should move constant to eax and return
+        assert!(asm.contains("movl"));
+        assert!(asm.contains("$42"));
+        assert!(asm.contains("%eax"));
+    }
+
+    #[test]
+    fn add_operation_emits_add_instruction() {
+        let asm = compile("fn add(a: i32, b: i32): i32 { a + b }");
+
+        assert!(asm.contains("addl"));
+    }
+
+    #[test]
+    fn sub_operation_emits_sub_instruction() {
+        let asm = compile("fn sub(a: i32, b: i32): i32 { a - b }");
+
+        assert!(asm.contains("subl"));
+    }
+
+    #[test]
+    fn mul_operation_emits_imul_instruction() {
+        let asm = compile("fn mul(a: i32, b: i32): i32 { a * b }");
+
+        assert!(asm.contains("imul"));
+    }
+
+    #[test]
+    fn div_operation_emits_idiv_with_setup() {
+        let asm = compile("fn div(a: i32, b: i32): i32 { a / b }");
+
+        assert!(asm.contains("cltd")); // sign-extend for 32-bit
+        assert!(asm.contains("idivl"));
+    }
+
+    #[test]
+    fn div_64bit_uses_cqto() {
+        let asm = compile("fn div64(a: i64, b: i64): i64 { a / b }");
+
+        assert!(asm.contains("cqto")); // sign-extend for 64-bit
+        assert!(asm.contains("idivq"));
+    }
 }
