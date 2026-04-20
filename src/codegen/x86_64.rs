@@ -29,7 +29,11 @@ pub fn emit(mir: &Mir) -> String {
 
     writeln!(out, "    .text").unwrap();
 
-    todo!()
+    for function in &mir.functions {
+        function.emit(&mut out, &mir.symbols);
+    }
+
+    out
 }
 
 impl<'e> FunctionEmitter<'e> {
@@ -73,8 +77,13 @@ impl<'e> FunctionEmitter<'e> {
     /// Prologue: label and frame setup
     #[inline(always)]
     fn emit_prologue(&mut self) {
-        // TODO: get actual function name for symbols
-        writeln!(self.out, ".nyx_function:").unwrap();
+        // TODO: get actual function index
+        let func_idx = 0;
+        let name = format!("nyx_func_{func_idx}");
+
+        // .globl directive makes function visible to linker
+        writeln!(self.out, "    .globl {}", name).unwrap();
+        writeln!(self.out, "{}:", name).unwrap();
         writeln!(self.out, "    push    %rbp").unwrap();
         writeln!(self.out, "    mov     %rsp, %rbp").unwrap();
 
@@ -86,6 +95,9 @@ impl<'e> FunctionEmitter<'e> {
             )
             .unwrap();
         }
+
+        // move the arguments from registers to their allocated locations
+        self.emit_argument_moves();
     }
 
     /// Epilogue: clean-up and return
@@ -365,5 +377,35 @@ fn place_str(place: &Place, allocation: &Allocation) -> String {
     match loc {
         Location::Register(reg) => format!("%{}", reg_name(reg, place.typ)),
         Location::Stack(offset) => format!("{}(%rbp)", offset),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{hir, mir, parser::Parser};
+
+    fn compile(src: &str) -> String {
+        let statements = Parser::new(src).parse().unwrap();
+        let hir = hir::lower(statements).unwrap();
+        let mir = mir::lower(hir).unwrap();
+
+        emit(&mir)
+    }
+
+    #[test]
+    fn function_with_spills_allocates_frame() {
+        let src = r#"
+            fn pressure(
+                a: i32, b: i32, c: i32, d: i32, e: i32,
+                f: i32, g: i32, h: i32, i: i32, j: i32
+            ): i32 {
+                a + b + c + d + e + f + g + h + i + j
+            }
+        "#;
+        let asm = compile(src);
+
+        // should allocate stack frame for spills
+        assert!(asm.contains("sub"));
     }
 }
