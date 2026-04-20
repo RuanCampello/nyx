@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 pub struct Allocation {
     pub(in crate::regalloc) locations: HashMap<ValueId, Location>,
     /// Total stack frame size in bytes, 16 aligned.
-    pub(in crate::regalloc) frame_size: u32,
+    pub(crate) frame_size: u32,
 }
 
 /// x86-64 general-purpose registers available for allocation.
