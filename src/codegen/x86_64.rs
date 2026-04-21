@@ -5,6 +5,7 @@
 //! - Sizes: `l` suffix for 32-bit (i32/bool), `q` for 64-bit (i64/pointers)
 //! - Frame: System V AMD64 — `push %rbp; mov %rsp, %rbp; sub $N, %rsp`
 //! - Args: First 6 int args in `%rdi %rsi %rdx %rcx %r8 %r9`
+//!         After that, the next arguments are pushed onto stack in reverse order
 //! - Return: `%rax` (32-bit result in `%eax`)
 //! - Spills: `-N(%rbp)` stack slots
 
@@ -215,11 +216,19 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             InstructionKind::Call { callee, args } => {
-                for (idx, arg) in args.iter().enumerate() {
-                    if idx >= 6 {
-                        unreachable!("stack argument: {idx}");
-                    }
+                // stack args are pushed in reverse order (right-to-left)
+                let stack_args = args.iter().skip(6).rev().collect::<Vec<_>>();
 
+                for arg in stack_args {
+                    let src = operand_str(arg, self.allocation);
+                    let typ = arg.typ();
+                    let suffix = typ.size_suffix();
+
+                    writeln!(self.out, "    push{}   {}", suffix, src).unwrap();
+                }
+
+                // move the first 6 args to registers
+                for (idx, arg) in args.iter().take(6).enumerate() {
                     let src = operand_str(arg, self.allocation);
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
@@ -237,6 +246,12 @@ impl<'e> FunctionEmitter<'e> {
                 let name = self.all_functions[callee.0 as usize].name_symbol;
                 let callee_name = format!("nyx_func_{}", name);
                 writeln!(self.out, "    call     {}", callee_name).unwrap();
+
+                // clean up stack arguments
+                let stack_bytes = args.len().saturating_sub(6) * 8;
+                if stack_bytes > 0 {
+                    writeln!(self.out, "    add     ${}, %rsp", stack_bytes).unwrap();
+                }
 
                 // move return value from %rax/%eax to destination
                 let ret_type = instruction.dest.typ;
