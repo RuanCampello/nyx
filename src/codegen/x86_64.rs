@@ -19,6 +19,8 @@ struct FunctionEmitter<'e> {
     out: &'e mut String,
     allocation: &'e Allocation,
     function: &'e Function,
+    /// all functions in the program, used to resolve the callee name
+    all_functions: &'e [Function],
     symbols: &'e [String],
 }
 
@@ -30,7 +32,7 @@ pub fn emit(mir: &Mir) -> String {
     writeln!(out, "    .text").unwrap();
 
     for function in &mir.functions {
-        function.emit(&mut out, &mir.symbols);
+        function.emit(&mut out, &mir.symbols, &mir.functions);
     }
 
     out
@@ -47,12 +49,14 @@ impl<'e> FunctionEmitter<'e> {
         alloc: &'e Allocation,
         function: &'e Function,
         symbols: &'e [String],
+        all_functions: &'e [Function],
     ) -> Self {
         Self {
             out,
             allocation: alloc,
             function,
             symbols,
+            all_functions,
         }
     }
 
@@ -76,11 +80,7 @@ impl<'e> FunctionEmitter<'e> {
 
     /// Prologue: label and frame setup
     #[inline(always)]
-    fn emit_prologue(&mut self) {
-        // TODO: get actual function index
-        let func_idx = 0;
-        let name = format!("nyx_func_{func_idx}");
-
+    fn emit_prologue(&mut self, name: &str) {
         // .globl directive makes function visible to linker
         writeln!(self.out, "    .globl {}", name).unwrap();
         writeln!(self.out, "{}:", name).unwrap();
@@ -135,7 +135,7 @@ impl<'e> FunctionEmitter<'e> {
 
                     UnaryOperator::Not => {
                         // dest = !rhs (logical not for bool)
-                        // Strategy: xor with 1 (0 -> 1, 1 -> 0)
+                        // strategy: xor with 1 (0 -> 1, 1 -> 0)
                         writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
                         writeln!(self.out, "    xor{}    $1, {}", suffix, dest).unwrap();
                     }
@@ -234,8 +234,8 @@ impl<'e> FunctionEmitter<'e> {
                 }
 
                 // emit function call
-                // TODO: actually get the function name from symbols
-                let callee_name = format!("nyx_func_{}", callee.0);
+                let name = self.all_functions[callee.0 as usize].name_symbol;
+                let callee_name = format!("nyx_func_{}", name);
                 writeln!(self.out, "    call     {}", callee_name).unwrap();
 
                 // move return value from %rax/%eax to destination
@@ -335,11 +335,12 @@ impl<'e> FunctionEmitter<'e> {
 }
 
 impl Function {
-    fn emit(&self, out: &mut String, symbols: &[String]) {
+    fn emit(&self, out: &mut String, symbols: &[String], all_functions: &[Function]) {
         let alloc = Allocation::allocate(self);
-        let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols);
+        let name = function_label(self.name_symbol, symbols);
+        let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols, all_functions);
 
-        emitter.emit_prologue();
+        emitter.emit_prologue(&name);
         emitter.emit_body();
         emitter.emit_epilogue();
     }
@@ -365,6 +366,14 @@ const fn reg_name<'r>(reg: Reg, typ: Type) -> &'r str {
         Type::F32 | Type::F64 => panic!("float registers not yet supported"),
         Type::Unit => panic!("unit type has no runtime representation"),
     }
+}
+
+#[inline(always)]
+fn function_label(symbol: usize, symbols: &[String]) -> String {
+    symbols
+        .get(symbol)
+        .map(|name| format!("nyx_{name}"))
+        .unwrap_or_else(|| format!("nyx_func_{symbol}"))
 }
 
 /// Format an operand as AT&T assembly source

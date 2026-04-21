@@ -66,9 +66,9 @@ pub struct Function {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parameter {
-    id: LocalId,
+    pub(crate) id: LocalId,
     name: SymbolId,
-    typ: Type,
+    pub(crate) typ: Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

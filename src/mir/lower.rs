@@ -7,6 +7,7 @@ use crate::{
         Terminator, ValueId, error::MirError,
     },
 };
+use lasso::Key;
 
 struct PartialBlock {
     id: BlockId,
@@ -39,6 +40,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 impl FunctionLower {
     fn run(function: hir::Function) -> Result<mir::Function, MirError> {
         let id = function.id;
+        let name_symbol = function.name.0.into_usize();
         let return_type = function.return_type;
         let n_hir_locals = function.locals.len();
 
@@ -50,6 +52,15 @@ impl FunctionLower {
             local_map[local.id.0 as usize] = value_id;
             locals.push((value_id, local.typ));
         }
+
+        let params = function
+            .params
+            .iter()
+            .map(|param| {
+                let id = local_map[param.id.0 as usize];
+                (id, param.typ)
+            })
+            .collect();
 
         let next = locals.len() as u32;
 
@@ -79,6 +90,8 @@ impl FunctionLower {
             id,
             blocks,
             return_type,
+            params,
+            name_symbol,
             locals: builder.locals,
         })
     }

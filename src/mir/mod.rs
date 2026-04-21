@@ -51,7 +51,14 @@ pub struct Instruction {
 #[derive(Debug, PartialEq)]
 pub struct Function {
     id: FunctionId,
+    /// index into `Mir::symbols` giving function's source name
+    pub(crate) name_symbol: usize,
     return_type: Type,
+    /// params in declaration order.
+    /// these are the first entries of `locals` but are kept separated
+    /// so that codegen can emit the correct argument-register moves without
+    /// having to guess which locals were params
+    pub(crate) params: Vec<(ValueId, Type)>,
     pub(crate) locals: Vec<(ValueId, Type)>,
     pub(crate) blocks: Vec<Block>,
 }
