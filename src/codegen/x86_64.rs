@@ -77,7 +77,7 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     #[inline(always)]
-    fn emit_body(&mut self, fn_name: &str) {
+    fn emit_body(&mut self, fn_name: &str, label: &str) {
         for (idx, block) in self.function.blocks.iter().enumerate() {
             // emit block label (skip for entry block), scoped to the function
             // to avoid collisions when multiple functions have the same block index
@@ -91,36 +91,60 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             // emit the block terminator
-            self.emit_terminator(&block.terminator, fn_name);
+            self.emit_terminator(&block.terminator, fn_name, label);
         }
     }
 
     /// Prologue: label and frame setup
     #[inline(always)]
-    fn emit_prologue(&mut self, name: &str) {
+    fn emit_prologue(&mut self, name: &str, saved_regs: &[Reg], frame_size: u32) {
         // .globl directive makes function visible to linker
         writeln!(self.out, "    .globl {}", name).unwrap();
         writeln!(self.out, "{}:", name).unwrap();
         writeln!(self.out, "    push    %rbp").unwrap();
         writeln!(self.out, "    mov     %rsp, %rbp").unwrap();
 
-        if self.allocation.frame_size > 0 {
-            writeln!(
-                self.out,
-                "    sub     ${}, %rsp",
-                self.allocation.frame_size
-            )
-            .unwrap();
+        // save callee-saved registers this function uses
+        //
+        // ABI requires them to be preserved across calls (callers depend on this)
+        for reg in saved_regs {
+            writeln!(self.out, "    push    %{}", reg.as_str_64()).unwrap();
+        }
+
+        if frame_size > 0 {
+            writeln!(self.out, "    sub     ${}, %rsp", frame_size).unwrap();
         }
 
         // move the arguments from registers to their allocated locations
         self.emit_argument_moves();
     }
 
+    /// Returns callee-saved registers actually used by this function's allocation,
+    /// in a stable order so prologue and epilogue pushes/pops match.
+    fn used_callee_saved(&self) -> Vec<Reg> {
+        Reg::CALLEE_SAVED
+            .iter()
+            .copied()
+            .filter(|reg| {
+                self.allocation
+                    .locations
+                    .values()
+                    .any(|loc| *loc == Location::Register(*reg))
+            })
+            .collect()
+    }
+
     /// Epilogue: clean-up and return
     #[inline(always)]
-    fn emit_epilogue(&mut self) {
+    fn emit_epilogue(&mut self, label: &str) {
+        writeln!(self.out, "{label}:").unwrap();
         writeln!(self.out, "    mov     %rbp, %rsp").unwrap();
+
+        // restore callee-saved registers in reverse push order
+        for reg in self.used_callee_saved().into_iter().rev() {
+            writeln!(self.out, "    pop     %{}", reg.as_str_64()).unwrap();
+        }
+
         writeln!(self.out, "    pop     %rbp").unwrap();
         writeln!(self.out, "    ret").unwrap();
     }
@@ -170,6 +194,8 @@ impl<'e> FunctionEmitter<'e> {
                 rhs,
                 lhs,
             } => {
+                let is_rhs_const = matches!(rhs, Operand::Const(_));
+
                 let lhs = operand_str(lhs, self.allocation);
                 let rhs = operand_str(rhs, self.allocation);
 
@@ -210,8 +236,21 @@ impl<'e> FunctionEmitter<'e> {
                         emit!("mov{suffix}    {lhs}, {rax}",);
                         // sign-extend to rdx:rax or edx:eax
                         emit!("{extend_instr}");
-                        // divide by divisor (rhs) - quotient ends up in %rax/%eax
-                        emit!("idiv{suffix}   {rhs}");
+
+                        // PERFORMANCE: maybe we could optimise this out before it reaches here
+                        match is_rhs_const {
+                            true => {
+                                // `idiv` doesn't accept immediates, so materialise constants on stack
+                                emit!("sub     $8, %rsp");
+                                emit!("mov{suffix}    {rhs}, (%rsp)");
+                                emit!("idiv{suffix}   (%rsp)");
+                                emit!("add     $8, %rsp");
+                            }
+                            false => {
+                                emit!("idiv{suffix}    {rhs}");
+                            }
+                        };
+
                         // move result to destination
                         emit!("mov{suffix}    {rax}, {dest}");
                     }
@@ -300,15 +339,26 @@ impl<'e> FunctionEmitter<'e> {
         // 2. set<cc> %al   (sets low byte of %rax to 0 or 1)
         // 3. movzbl %al, dest (zero-extend byte to 32-bit)
 
+        let preserves_rax = !matches!(dest.as_str(), "%al" | "%ax" | "%eax" | "%rax");
+        if preserves_rax {
+            writeln!(self.out, "    push    %rax").unwrap();
+        }
+
         writeln!(self.out, "    cmp{suffix}    {rhs}, {lhs}",).unwrap();
         writeln!(self.out, "    {set_instr}     %al").unwrap();
         writeln!(self.out, "    movzbl   %al, {dest}").unwrap();
+
+        if preserves_rax {
+            writeln!(self.out, "    pop     %rax").unwrap();
+        }
     }
 
     /// Emit a block terminator
-    fn emit_terminator(&mut self, term: &Terminator, fn_name: &str) {
+    fn emit_terminator(&mut self, term: &Terminator, fn_name: &str, label: &str) {
         match term {
-            Terminator::Return(None) => {} // epilogue handles cleanup
+            Terminator::Return(None) => {
+                writeln!(self.out, "    jmp      {label}").unwrap();
+            }
             Terminator::Return(Some(operand)) => {
                 // move return value to %rax/%eax
                 let src = operand_str(operand, self.allocation);
@@ -320,6 +370,7 @@ impl<'e> FunctionEmitter<'e> {
                 };
 
                 writeln!(self.out, "    mov{suffix}    {src}, {ret_reg}").unwrap();
+                writeln!(self.out, "    jmp      {label}").unwrap();
             }
 
             Terminator::Jump(target) => {
@@ -367,6 +418,13 @@ impl<'e> FunctionEmitter<'e> {
             }
         }
     }
+
+    #[inline(always)]
+    const fn frame_size_for_calls(&self, saved_regs: usize) -> u32 {
+        // keep %rsp 16-byte aligned at call sites
+        let alignment_pad = if saved_regs % 2 == 1 { 8 } else { 0 };
+        self.allocation.frame_size + alignment_pad
+    }
 }
 
 impl Function {
@@ -374,10 +432,14 @@ impl Function {
         let alloc = Allocation::allocate(self);
         let name = function_label(self.name_symbol, symbols);
         let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols, all_functions);
+        let label = format!(".L_{name}_epilogue");
 
-        emitter.emit_prologue(&name);
-        emitter.emit_body(&name);
-        emitter.emit_epilogue();
+        let saved_regs = emitter.used_callee_saved();
+        let frame_size = emitter.frame_size_for_calls(saved_regs.len());
+
+        emitter.emit_prologue(&name, &saved_regs, frame_size);
+        emitter.emit_body(&name, &label);
+        emitter.emit_epilogue(&label);
     }
 }
 

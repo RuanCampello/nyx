@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 /// Complete allocation result for a function.
 #[derive(Debug, Default)]
 pub struct Allocation {
-    pub(in crate::regalloc) locations: HashMap<ValueId, Location>,
+    pub(crate) locations: HashMap<ValueId, Location>,
     /// Total stack frame size in bytes, 16 aligned.
     pub(crate) frame_size: u32,
 }
@@ -164,13 +164,11 @@ impl Reg {
     /// Callee-saved are listed first so the allocator
     /// prefers them for long-lived values: they survive calls without restriction
     pub const ALL: &'static [Reg] = &[
-        // callee-saved
         Reg::Rbx,
         Reg::R12,
         Reg::R13,
         Reg::R14,
         Reg::R15,
-        // caller-saved
         Reg::Rax,
         Reg::Rcx,
         Reg::Rdx,
@@ -194,6 +192,9 @@ impl Reg {
         Reg::R10,
         Reg::R11,
     ];
+
+    /// Registers that must be preserved across calls (callee saves them).
+    pub const CALLEE_SAVED: &'static [Reg] = &[Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
 
     pub const fn k() -> usize {
         Self::ALL.len()
@@ -234,6 +235,17 @@ impl Reg {
             Reg::R13 => "r13",
             Reg::R14 => "r14",
             Reg::R15 => "r15",
+        }
+    }
+
+    pub const fn priority(&self) -> usize {
+        match self {
+            Reg::Rbx => 0,
+            Reg::R12 => 1,
+            Reg::R13 => 2,
+            Reg::R14 => 3,
+            Reg::R15 => 4,
+            _ => 5,
         }
     }
 }

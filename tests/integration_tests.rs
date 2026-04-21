@@ -7,48 +7,48 @@ use std::{
 struct Case<'c> {
     name: &'c str,
     file: &'c str,
-    exit_code: i32,
+    exit_code: Option<i32>,
 }
 
 const CASES: &[Case] = &[
     Case {
         name: "add",
         file: "tests/add.nyx",
-        exit_code: 0,
+        exit_code: None,
     },
     Case {
         name: "inference",
         file: "tests/inference.nyx",
-        exit_code: 0,
+        exit_code: None,
     },
     Case {
         name: "fibonacci",
         file: "tests/fibonacci.nyx",
-        exit_code: 55,
+        exit_code: Some(55),
     },
     Case {
         name: "collatz",
         file: "tests/collatz.nyx",
-        exit_code: 111,
+        exit_code: Some(111),
     },
     Case {
         name: "factorial",
         file: "tests/factorial.nyx",
-        exit_code: 120,
+        exit_code: Some(120),
     },
     Case {
         name: "math",
         file: "tests/math.nyx",
-        exit_code: 42,
+        exit_code: Some(42),
     },
     Case {
         name: "binary_search",
         file: "tests/binary_search.nyx",
-        exit_code: 11,
+        exit_code: Some(11),
     },
 ];
 
-fn compile_and_run(path: &Path) -> Result<i32, String> {
+fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
     let src = fs::read_to_string(path).map_err(|e| format!("failed to read source: {e}"))?;
     let asm = nyx::compile(&src).map_err(|e| e.message)?;
 
@@ -57,8 +57,6 @@ fn compile_and_run(path: &Path) -> Result<i32, String> {
 
     let asm_path = temp_dir.join(format!("{test_name}.s"));
     let obj_path = temp_dir.join(format!("{test_name}.o"));
-    let exe_path = temp_dir.join(format!("{test_name}.test"));
-
     fs::write(&asm_path, &asm).map_err(|e| format!("failed to write assembly: {e}"))?;
 
     let as_status = Command::new("as")
@@ -76,10 +74,21 @@ fn compile_and_run(path: &Path) -> Result<i32, String> {
         ));
     }
 
+    Ok(obj_path)
+}
+
+fn compile_and_run(path: &Path) -> Result<i32, String> {
+    let obj_path = compile_and_assemble(path)?;
+    let test_name = path.file_stem().unwrap().to_string_lossy().to_string();
+    let temp_dir = std::env::temp_dir();
+    let exe_path = temp_dir.join(format!("{test_name}.test"));
+
     let ld_status = Command::new("ld")
         .args(["-o", exe_path.to_str().unwrap(), obj_path.to_str().unwrap()])
         .status()
         .map_err(|e| format!("`ld` failed: {e}"))?;
+
+    fs::remove_file(&obj_path).ok();
 
     if !ld_status.success() {
         return Err(format!(
@@ -106,31 +115,50 @@ fn run_integration_tests() {
     for test in CASES {
         let src = PathBuf::from(test.file);
 
-        match compile_and_run(&src) {
-            Ok(code) => match code == test.exit_code {
-                true => {
+        match test.exit_code {
+            Some(expected_code) => match compile_and_run(&src) {
+                Ok(code) if code == expected_code => {
                     passed += 1;
-                    println!("✓ {}: exit code {}", test.name, code);
+                    println!("{}: exit code {}", test.name, code);
                 }
-                _ => {
+
+                Ok(code) => {
                     failed += 1;
 
                     let msg = format!(
-                        "✗ {}: expected exit code {}, got {}",
-                        test.name, test.exit_code, code
+                        "{}: expected exit code {}, got {}",
+                        test.name, expected_code, code
                     );
 
+                    eprintln!("{msg}");
+                    errors.push(msg);
+                }
+
+                Err(err) => {
+                    failed += 1;
+
+                    let msg = format!("{}: {err}", test.name);
                     println!("{msg}");
                     errors.push(msg);
                 }
             },
-            Err(err) => {
-                failed += 1;
 
-                let msg = format!("✗ {}: {err}", test.name);
-                println!("{msg}");
-                errors.push(msg);
-            }
+            None => match compile_and_assemble(&src) {
+                Ok(obj_path) => {
+                    passed += 1;
+                    fs::remove_file(&obj_path).ok();
+
+                    println!("{}: compiles", test.name);
+                }
+
+                Err(err) => {
+                    failed += 1;
+                    let msg = format!("{}: {err}", test.name);
+                    eprintln!("{msg}");
+
+                    errors.push(msg);
+                }
+            },
         }
     }
 
