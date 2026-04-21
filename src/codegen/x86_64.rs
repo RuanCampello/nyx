@@ -116,11 +116,17 @@ impl<'e> FunctionEmitter<'e> {
         let dest = place_str(&instruction.dest, self.allocation);
         let suffix = instruction.dest.typ.size_suffix();
 
+        macro_rules! emit {
+            ($($arg:tt)*) => {
+                writeln!(self.out, "    {}", format_args!($($arg)*)).unwrap();
+            };
+        }
+
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 // dest = operand
                 let src = operand_str(operand, self.allocation);
-                writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
+                emit!("mov{suffix}    {src}, {dest}");
             }
 
             InstructionKind::Unary { operation, rhs } => {
@@ -130,15 +136,15 @@ impl<'e> FunctionEmitter<'e> {
                     UnaryOperator::Neg => {
                         // dest = -rhs
                         // strategy: mov rhs to dest, then neg dest
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
-                        writeln!(self.out, "    neg{}    {}", suffix, dest).unwrap();
+                        emit!("mov{suffix}    {src}, {dest}");
+                        emit!("neg{suffix}    {dest}");
                     }
 
                     UnaryOperator::Not => {
                         // dest = !rhs (logical not for bool)
                         // strategy: xor with 1 (0 -> 1, 1 -> 0)
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest).unwrap();
-                        writeln!(self.out, "    xor{}    $1, {}", suffix, dest).unwrap();
+                        emit!("mov{suffix}    {src}, {dest}");
+                        emit!("xor{suffix}    $1, {dest}");
                     }
                 }
             }
@@ -154,21 +160,21 @@ impl<'e> FunctionEmitter<'e> {
                 match operation {
                     BinaryOperator::Add => {
                         // dest = lhs + rhs
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
-                        writeln!(self.out, "    add{}    {}, {}", suffix, rhs, dest).unwrap();
+                        emit!("mov{suffix}    {lhs}, {dest}");
+                        emit!("add{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Sub => {
                         // dest = lhs - rhs
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
-                        writeln!(self.out, "    sub{}    {}, {}", suffix, rhs, dest).unwrap();
+                        emit!("mov{suffix}    {lhs}, {dest}");
+                        emit!("sub{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Mul => {
                         // dest = lhs * rhs
                         // imul can do 2-operand form: imul src, dest (dest *= src)
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
-                        writeln!(self.out, "    imul{}   {}, {}", suffix, rhs, dest).unwrap();
+                        emit!("mov{suffix}    {lhs}, {dest}");
+                        emit!("imul{suffix}   {rhs}, {dest}");
                     }
 
                     BinaryOperator::Div => {
@@ -185,13 +191,13 @@ impl<'e> FunctionEmitter<'e> {
                         };
 
                         // move dividend (lhs) to %rax/%eax
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, rax).unwrap();
+                        emit!("mov{suffix}    {lhs}, {rax}",);
                         // sign-extend to rdx:rax or edx:eax
-                        writeln!(self.out, "    {}", extend_instr).unwrap();
+                        emit!("{extend_instr}");
                         // divide by divisor (rhs) - quotient ends up in %rax/%eax
-                        writeln!(self.out, "    idiv{}   {}", suffix, rhs).unwrap();
+                        emit!("idiv{suffix}   {rhs}");
                         // move result to destination
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, rax, dest).unwrap();
+                        emit!("mov{suffix}    {rax}, {dest}");
                     }
 
                     // comparison operators: set dest to 0 or 1
@@ -204,13 +210,13 @@ impl<'e> FunctionEmitter<'e> {
 
                     BinaryOperator::And => {
                         // logical and: both operands are bool (0 or 1)
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
-                        writeln!(self.out, "    and{}    {}, {}", suffix, rhs, dest).unwrap();
+                        emit!("mov{suffix}    {lhs}, {dest}");
+                        emit!("and{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Or => {
-                        writeln!(self.out, "    mov{}    {}, {}", suffix, lhs, dest).unwrap();
-                        writeln!(self.out, "    or{}     {}, {}", suffix, rhs, dest).unwrap();
+                        emit!("mov{suffix}    {lhs}, {dest}");
+                        emit!("or{suffix}     {rhs}, {dest}");
                     }
                 }
             }
@@ -224,7 +230,7 @@ impl<'e> FunctionEmitter<'e> {
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
-                    writeln!(self.out, "    push{}   {}", suffix, src).unwrap();
+                    emit!("push{suffix}   {src}");
                 }
 
                 // move the first 6 args to registers
@@ -239,18 +245,18 @@ impl<'e> FunctionEmitter<'e> {
                         _ => unimplemented!("unsupported argument type"),
                     };
 
-                    writeln!(self.out, "    mov{}    {}, {}", suffix, src, dest_reg).unwrap();
+                    emit!("mov{suffix}    {src}, {dest_reg}");
                 }
 
                 // emit function call
                 let name = self.all_functions[callee.0 as usize].name_symbol;
-                let callee_name = format!("nyx_func_{}", name);
-                writeln!(self.out, "    call     {}", callee_name).unwrap();
+                let callee_name = format!("nyx_func_{name}");
+                emit!("call     {callee_name}");
 
                 // clean up stack arguments
                 let stack_bytes = args.len().saturating_sub(6) * 8;
                 if stack_bytes > 0 {
-                    writeln!(self.out, "    add     ${}, %rsp", stack_bytes).unwrap();
+                    emit!("add     ${stack_bytes}, %rsp");
                 }
 
                 // move return value from %rax/%eax to destination
@@ -263,7 +269,7 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                writeln!(self.out, "    mov{}    {}, {}", suffix, src_reg, dest).unwrap();
+                emit!("mov{suffix}    {src_reg}, {dest}");
             }
         }
     }
@@ -276,9 +282,9 @@ impl<'e> FunctionEmitter<'e> {
         // 2. set<cc> %al   (sets low byte of %rax to 0 or 1)
         // 3. movzbl %al, dest (zero-extend byte to 32-bit)
 
-        writeln!(self.out, "    cmp{}    {}, {}", suffix, rhs, lhs).unwrap();
-        writeln!(self.out, "    {}     %al", set_instr).unwrap();
-        writeln!(self.out, "    movzbl   %al, {}", dest).unwrap();
+        writeln!(self.out, "    cmp{suffix}    {rhs}, {lhs}",).unwrap();
+        writeln!(self.out, "    {set_instr}     %al").unwrap();
+        writeln!(self.out, "    movzbl   %al, {dest}").unwrap();
     }
 
     /// Emit a block terminator
@@ -295,7 +301,7 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                writeln!(self.out, "    mov{}    {}, {}", suffix, src, ret_reg).unwrap();
+                writeln!(self.out, "    mov{suffix}    {src}, {ret_reg}").unwrap();
             }
 
             Terminator::Jump(target) => {
@@ -310,7 +316,7 @@ impl<'e> FunctionEmitter<'e> {
                 let cond = operand_str(condition, self.allocation);
 
                 // test if condition is non-zero (true)
-                writeln!(self.out, "    testl    {}, {}", cond, cond).unwrap();
+                writeln!(self.out, "    testl    {cond}, {cond}").unwrap();
                 writeln!(self.out, "    jne      .L_block_{}", then_block.0).unwrap();
                 writeln!(self.out, "    jmp      .L_block_{}", else_block.0).unwrap();
             }
@@ -334,12 +340,12 @@ impl<'e> FunctionEmitter<'e> {
 
             let dest_str = match dest {
                 Location::Register(reg) => format!("%{}", reg_name(reg, *param_type)),
-                Location::Stack(offset) => format!("{}(%rbp)", offset),
+                Location::Stack(offset) => format!("{offset}(%rbp)"),
             };
 
             // only emit move if source and destination are different
             if src_reg != dest_str {
-                writeln!(self.out, "    mov{}    {}, {}", suffix, src_reg, dest_str).unwrap();
+                writeln!(self.out, "    mov{suffix}    {src_reg}, {dest_str}").unwrap();
             }
         }
     }
@@ -412,7 +418,7 @@ fn place_str(place: &Place, allocation: &Allocation) -> String {
     let loc = allocation.location_of(place.id);
     match loc {
         Location::Register(reg) => format!("%{}", reg_name(reg, place.typ)),
-        Location::Stack(offset) => format!("{}(%rbp)", offset),
+        Location::Stack(offset) => format!("{offset}(%rbp)"),
     }
 }
 
