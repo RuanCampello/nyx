@@ -303,11 +303,7 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     fn emit_argument_moves(&mut self) {
-        // TODO: need to get actual parameters from function
-        // for now, we infer from first n locals that match calling convention
-        let params = &self.function.locals[0..6.min(self.function.locals.len())];
-
-        for (idx, (param_id, param_type)) in params.iter().enumerate() {
+        for (idx, (param_id, param_type)) in self.function.params.iter().enumerate() {
             if idx >= 6 {
                 break;
             }
