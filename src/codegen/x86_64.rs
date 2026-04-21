@@ -22,6 +22,7 @@ struct FunctionEmitter<'e> {
     function: &'e Function,
     /// all functions in the program, used to resolve the callee name
     all_functions: &'e [Function],
+    saved_regs: Vec<Reg>,
     symbols: &'e [String],
 }
 
@@ -67,12 +68,24 @@ impl<'e> FunctionEmitter<'e> {
         symbols: &'e [String],
         all_functions: &'e [Function],
     ) -> Self {
+        let saved_regs = Reg::CALLEE_SAVED
+            .iter()
+            .copied()
+            .filter(|reg| {
+                alloc
+                    .locations
+                    .values()
+                    .any(|loc| *loc == Location::Register(*reg))
+            })
+            .collect();
+
         Self {
             out,
             allocation: alloc,
             function,
             symbols,
             all_functions,
+            saved_regs,
         }
     }
 
@@ -82,7 +95,7 @@ impl<'e> FunctionEmitter<'e> {
             // emit block label (skip for entry block), scoped to the function
             // to avoid collisions when multiple functions have the same block index
             if idx > 0 {
-                writeln!(self.out, ".L_{}_block_{}:", fn_name, idx).unwrap();
+                writeln!(self.out, ".L_block_{fn_name}_{idx}:").unwrap();
             }
 
             // emit all instructions in the block
@@ -97,7 +110,7 @@ impl<'e> FunctionEmitter<'e> {
 
     /// Prologue: label and frame setup
     #[inline(always)]
-    fn emit_prologue(&mut self, name: &str, saved_regs: &[Reg], frame_size: u32) {
+    fn emit_prologue(&mut self, name: &str, frame_size: u32) {
         // .globl directive makes function visible to linker
         writeln!(self.out, "    .globl {}", name).unwrap();
         writeln!(self.out, "{}:", name).unwrap();
@@ -107,7 +120,7 @@ impl<'e> FunctionEmitter<'e> {
         // save callee-saved registers this function uses
         //
         // ABI requires them to be preserved across calls (callers depend on this)
-        for reg in saved_regs {
+        for reg in &self.saved_regs {
             writeln!(self.out, "    push    %{}", reg.as_str_64()).unwrap();
         }
 
@@ -119,29 +132,17 @@ impl<'e> FunctionEmitter<'e> {
         self.emit_argument_moves();
     }
 
-    /// Returns callee-saved registers actually used by this function's allocation,
-    /// in a stable order so prologue and epilogue pushes/pops match.
-    fn used_callee_saved(&self) -> Vec<Reg> {
-        Reg::CALLEE_SAVED
-            .iter()
-            .copied()
-            .filter(|reg| {
-                self.allocation
-                    .locations
-                    .values()
-                    .any(|loc| *loc == Location::Register(*reg))
-            })
-            .collect()
-    }
-
     /// Epilogue: clean-up and return
     #[inline(always)]
-    fn emit_epilogue(&mut self, label: &str) {
+    fn emit_epilogue(&mut self, label: &str, frame_size: u32) {
         writeln!(self.out, "{label}:").unwrap();
-        writeln!(self.out, "    mov     %rbp, %rsp").unwrap();
+
+        if frame_size > 0 {
+            writeln!(self.out, "    add     ${}, %rsp", frame_size).unwrap();
+        }
 
         // restore callee-saved registers in reverse push order
-        for reg in self.used_callee_saved().into_iter().rev() {
+        for reg in self.saved_regs.iter().copied().rev() {
             writeln!(self.out, "    pop     %{}", reg.as_str_64()).unwrap();
         }
 
@@ -153,7 +154,7 @@ impl<'e> FunctionEmitter<'e> {
         use crate::mir::InstructionKind;
         use crate::parser::expression::{BinaryOperator, UnaryOperator};
 
-        let dest = place_str(&instruction.dest, self.allocation);
+        let dest = place_str(&instruction.dest, self.allocation, &self.saved_regs);
         let suffix = instruction.dest.typ.size_suffix();
 
         macro_rules! emit {
@@ -165,12 +166,12 @@ impl<'e> FunctionEmitter<'e> {
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 // dest = operand
-                let src = operand_str(operand, self.allocation);
+                let src = operand_str(operand, self.allocation, &self.saved_regs);
                 emit!("mov{suffix}    {src}, {dest}");
             }
 
             InstructionKind::Unary { operation, rhs } => {
-                let src = operand_str(rhs, self.allocation);
+                let src = operand_str(rhs, self.allocation, &self.saved_regs);
 
                 match operation {
                     UnaryOperator::Neg => {
@@ -196,8 +197,8 @@ impl<'e> FunctionEmitter<'e> {
             } => {
                 let is_rhs_const = matches!(rhs, Operand::Const(_));
 
-                let lhs = operand_str(lhs, self.allocation);
-                let rhs = operand_str(rhs, self.allocation);
+                let lhs = operand_str(lhs, self.allocation, &self.saved_regs);
+                let rhs = operand_str(rhs, self.allocation, &self.saved_regs);
 
                 match operation {
                     BinaryOperator::Add => {
@@ -281,7 +282,7 @@ impl<'e> FunctionEmitter<'e> {
                 let stack_args = args.iter().skip(6).rev().collect::<Vec<_>>();
 
                 for arg in stack_args {
-                    let src = operand_str(arg, self.allocation);
+                    let src = operand_str(arg, self.allocation, &self.saved_regs);
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
@@ -290,7 +291,7 @@ impl<'e> FunctionEmitter<'e> {
 
                 // move the first 6 args to registers
                 for (idx, arg) in args.iter().take(6).enumerate() {
-                    let src = operand_str(arg, self.allocation);
+                    let src = operand_str(arg, self.allocation, &self.saved_regs);
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
@@ -361,7 +362,7 @@ impl<'e> FunctionEmitter<'e> {
             }
             Terminator::Return(Some(operand)) => {
                 // move return value to %rax/%eax
-                let src = operand_str(operand, self.allocation);
+                let src = operand_str(operand, self.allocation, &self.saved_regs);
                 let suffix = operand.typ().size_suffix();
                 let ret_reg = match operand.typ() {
                     Type::I32 | Type::Bool => "%eax",
@@ -374,7 +375,7 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             Terminator::Jump(target) => {
-                writeln!(self.out, "    jmp      .L_{fn_name}_block_{}", target.0).unwrap()
+                writeln!(self.out, "    jmp      .L_block_{fn_name}_{}", target.0).unwrap()
             }
 
             Terminator::Branch {
@@ -382,12 +383,12 @@ impl<'e> FunctionEmitter<'e> {
                 then_block,
                 else_block,
             } => {
-                let cond = operand_str(condition, self.allocation);
+                let cond = operand_str(condition, self.allocation, &self.saved_regs);
 
                 // test if condition is non-zero (true)
                 writeln!(self.out, "    testl    {cond}, {cond}").unwrap();
-                writeln!(self.out, "    jne      .L_{fn_name}_block_{}", then_block.0).unwrap();
-                writeln!(self.out, "    jmp      .L_{fn_name}_block_{}", else_block.0).unwrap();
+                writeln!(self.out, "    jne      .L_block_{fn_name}_{}", then_block.0).unwrap();
+                writeln!(self.out, "    jmp      .L_block_{fn_name}_{}", else_block.0).unwrap();
             }
         }
     }
@@ -409,7 +410,10 @@ impl<'e> FunctionEmitter<'e> {
 
             let dest_str = match dest {
                 Location::Register(reg) => format!("%{}", reg_name(reg, *param_type)),
-                Location::Stack(offset) => format!("{offset}(%rbp)"),
+                Location::Stack(offset) => {
+                    let offset = adjust_stack_offset(offset, &self.saved_regs);
+                    format!("{offset}(%rbp)")
+                }
             };
 
             // only emit move if source and destination are different
@@ -420,9 +424,9 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     #[inline(always)]
-    const fn frame_size_for_calls(&self, saved_regs: usize) -> u32 {
+    const fn frame_size_for_calls(&self) -> u32 {
         // keep %rsp 16-byte aligned at call sites
-        let alignment_pad = if saved_regs % 2 == 1 { 8 } else { 0 };
+        let alignment_pad = if self.saved_regs.len() % 2 == 1 { 8 } else { 0 };
         self.allocation.frame_size + alignment_pad
     }
 }
@@ -434,12 +438,11 @@ impl Function {
         let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols, all_functions);
         let label = format!(".L_{name}_epilogue");
 
-        let saved_regs = emitter.used_callee_saved();
-        let frame_size = emitter.frame_size_for_calls(saved_regs.len());
+        let frame_size = emitter.frame_size_for_calls();
 
-        emitter.emit_prologue(&name, &saved_regs, frame_size);
+        emitter.emit_prologue(&name, frame_size);
         emitter.emit_body(&name, &label);
-        emitter.emit_epilogue(&label);
+        emitter.emit_epilogue(&label, frame_size);
     }
 }
 
@@ -475,9 +478,9 @@ fn function_label(symbol: usize, symbols: &[String]) -> String {
 
 /// Format an operand as AT&T assembly source
 #[inline(always)]
-fn operand_str(op: &Operand, alloc: &Allocation) -> String {
+fn operand_str(op: &Operand, alloc: &Allocation, saved_regs: &[Reg]) -> String {
     match op {
-        Operand::Place(place) => place_str(place, alloc),
+        Operand::Place(place) => place_str(place, alloc, saved_regs),
         Operand::Const(c) => c.to_string(),
     }
 }
@@ -494,12 +497,20 @@ impl Display for Const {
 }
 
 #[inline(always)]
-fn place_str(place: &Place, allocation: &Allocation) -> String {
+fn place_str(place: &Place, allocation: &Allocation, saved_regs: &[Reg]) -> String {
     let loc = allocation.location_of(place.id);
     match loc {
         Location::Register(reg) => format!("%{}", reg_name(reg, place.typ)),
-        Location::Stack(offset) => format!("{offset}(%rbp)"),
+        Location::Stack(offset) => {
+            let offset = adjust_stack_offset(offset, saved_regs);
+            format!("{offset}(%rbp)")
+        }
     }
+}
+
+#[inline(always)]
+const fn adjust_stack_offset(offset: i32, saved_regs: &[Reg]) -> i32 {
+    offset - (saved_regs.len() as i32 * 8)
 }
 
 #[cfg(test)]
