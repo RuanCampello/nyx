@@ -36,7 +36,7 @@ Nyx is currently in early development.
 - [x] Parser
 - [x] Semantic Analyzer
 - [x] Intermediate Representation
-- [ ] Code Generation
+- [x] Code Generation (x86_64)
 
 ## License
 
