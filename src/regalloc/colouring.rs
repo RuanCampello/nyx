@@ -7,6 +7,7 @@
 //!                 if none available the node becomes an actual spill → stack slot.
 
 use crate::{
+    hir::Type,
     mir::{Function, ValueId},
     regalloc::interference::Interference,
 };
@@ -23,6 +24,7 @@ pub struct Allocation {
 /// x86-64 general-purpose registers available for allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reg {
+    // caller-saved (clobbered across calls: safe only for values that don't cross call sites)
     Rax,
     Rcx,
     Rdx,
@@ -32,6 +34,12 @@ pub enum Reg {
     R9,
     R10,
     R11,
+    // callee-saved (preserved across calls: safe for values that live across call sites)
+    Rbx,
+    R12,
+    R13,
+    R14,
+    R15,
 }
 
 /// Where a value lives in after allocation
@@ -47,13 +55,15 @@ impl Allocation {
     }
 
     pub fn allocate(function: &Function) -> Allocation {
+        let local_types: HashMap<ValueId, Type> =
+            function.locals.iter().map(|&(id, typ)| (id, typ)).collect();
         let graph = Interference::build(function);
-        Interference::colour(graph)
+        graph.colour(local_types)
     }
 }
 
 impl Interference {
-    pub fn colour(self) -> Allocation {
+    pub fn colour(self, local_types: HashMap<ValueId, Type>) -> Allocation {
         let k = Reg::k();
         let all = self.nodes().collect::<Vec<_>>();
 
@@ -100,7 +110,7 @@ impl Interference {
         let mut locations = HashMap::new();
 
         while let Some(id) = stack.pop() {
-            let forbidden: HashSet<_> = self
+            let mut forbidden: HashSet<_> = self
                 .neighbours(id)
                 .iter()
                 .filter_map(|nb| match colour_map.get(nb) {
@@ -108,6 +118,14 @@ impl Interference {
                     _ => None,
                 })
                 .collect();
+
+            // values whose live range crosses a call site must not land in caller-saved
+            // registers, as those are clobbered by the call
+            if self.call_crossed.contains(&id) {
+                for &reg in Reg::CALLER_SAVED {
+                    forbidden.insert(reg);
+                }
+            }
 
             let assigned = Reg::ALL
                 .iter()
@@ -119,9 +137,8 @@ impl Interference {
             let location = match assigned {
                 Some(reg) => Location::Register(reg),
                 None => {
-                    // TODO: i32 slot generalise to type size later
-
-                    spill_offset -= 4;
+                    let slot_size = slot_bytes(id, &local_types) as i32;
+                    spill_offset -= slot_size;
                     Location::Stack(spill_offset)
                 }
             };
@@ -130,7 +147,10 @@ impl Interference {
         }
 
         let raw = spill_offset.unsigned_abs();
-        let frame_size = (raw + 15) & !15;
+        // `push %rbp` in the prologue shifts %rsp by 8
+        // compensate so that (8 + frame_size) is a multiple of 16, keeping %rsp 16-byte aligned
+        // at every interior call site
+        let frame_size = ((raw + 8 + 15) & !15).saturating_sub(8);
 
         Allocation {
             locations,
@@ -140,7 +160,31 @@ impl Interference {
 }
 
 impl Reg {
+    /// All allocatable registers
+    ///
+    /// Callee-saved are listed first so the allocator
+    /// prefers them for long-lived values: they survive calls without restriction
     pub const ALL: &'static [Reg] = &[
+        // callee-saved
+        Reg::Rbx,
+        Reg::R12,
+        Reg::R13,
+        Reg::R14,
+        Reg::R15,
+        // caller-saved
+        Reg::Rax,
+        Reg::Rcx,
+        Reg::Rdx,
+        Reg::Rsi,
+        Reg::Rdi,
+        Reg::R8,
+        Reg::R9,
+        Reg::R10,
+        Reg::R11,
+    ];
+
+    /// Registers clobbered by calls under System V AMD64.
+    pub const CALLER_SAVED: &'static [Reg] = &[
         Reg::Rax,
         Reg::Rcx,
         Reg::Rdx,
@@ -156,7 +200,7 @@ impl Reg {
         Self::ALL.len()
     }
 
-    pub const fn as_str_32(self) -> &'static str {
+    pub const fn as_str_32<'s>(self) -> &'s str {
         match self {
             Reg::Rax => "eax",
             Reg::Rcx => "ecx",
@@ -167,10 +211,15 @@ impl Reg {
             Reg::R9 => "r9d",
             Reg::R10 => "r10d",
             Reg::R11 => "r11d",
+            Reg::Rbx => "ebx",
+            Reg::R12 => "r12d",
+            Reg::R13 => "r13d",
+            Reg::R14 => "r14d",
+            Reg::R15 => "r15d",
         }
     }
 
-    pub const fn as_str_64(self) -> &'static str {
+    pub const fn as_str_64<'s>(self) -> &'s str {
         match self {
             Reg::Rax => "rax",
             Reg::Rcx => "rcx",
@@ -181,7 +230,21 @@ impl Reg {
             Reg::R9 => "r9",
             Reg::R10 => "r10",
             Reg::R11 => "r11",
+            Reg::Rbx => "rbx",
+            Reg::R12 => "r12",
+            Reg::R13 => "r13",
+            Reg::R14 => "r14",
+            Reg::R15 => "r15",
         }
+    }
+}
+
+/// stack slot size in bytes for the given value
+#[inline(always)]
+fn slot_bytes(id: ValueId, local_types: &HashMap<ValueId, Type>) -> u32 {
+    match local_types.get(&id) {
+        Some(Type::I64 | Type::String) => 8,
+        _ => 4,
     }
 }
 
@@ -256,12 +319,15 @@ mod tests {
 
     #[test]
     fn more_values_than_registers_causes_spill() {
+        // K = 14 (5 callee-saved + 9 caller-saved); need > 14 simultaneously live
+        // values to guarantee at least one spill.
         let src = r#"
             fn pressure(
                 a: i32, b: i32, c: i32, d: i32, e: i32,
-                f: i32, g: i32, h: i32, i: i32, j: i32
+                f: i32, g: i32, h: i32, i: i32, j: i32,
+                k: i32, l: i32, m: i32, n: i32, o: i32, p: i32
             ): i32 {
-                a + b + c + d + e + f + g + h + i + j
+                a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p
             }
         "#;
         let (mir, alloc) = allocate_for(src);
@@ -275,7 +341,7 @@ mod tests {
 
         assert!(
             spilled > 0,
-            "with 10+ simultaneously live values and K=9, at least one must spill"
+            "with 16 simultaneously live values and K=14, at least one must spill"
         );
         assert!(
             alloc.frame_size > 0,

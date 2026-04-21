@@ -36,6 +36,21 @@ pub fn emit(mir: &Mir) -> String {
         function.emit(&mut out, &mir.symbols, &mir.functions);
     }
 
+    // emit a `_start` trampoline if the program defines `fn main`
+    //
+    // this allows the binary to be linked with `ld` directly (no libc)
+    // `_start` calls `nyx_main`, passes its return value to the exit syscall
+    let has_main = mir.symbols.iter().any(|name| name == "main");
+
+    if has_main {
+        writeln!(out, "    .globl _start").unwrap();
+        writeln!(out, "_start:").unwrap();
+        writeln!(out, "    call    nyx_main").unwrap();
+        writeln!(out, "    movl    %eax, %edi").unwrap(); // exit code = return value
+        writeln!(out, "    movl    $60, %eax").unwrap(); // syscall: exit
+        writeln!(out, "    syscall").unwrap();
+    }
+
     out
 }
 
@@ -249,8 +264,10 @@ impl<'e> FunctionEmitter<'e> {
                 }
 
                 // emit function call
-                let name = self.all_functions[callee.0 as usize].name_symbol;
-                let callee_name = format!("nyx_func_{name}");
+                let callee_name = function_label(
+                    self.all_functions[callee.0 as usize].name_symbol,
+                    self.symbols,
+                );
                 emit!("call     {callee_name}");
 
                 // clean up stack arguments
@@ -440,9 +457,10 @@ mod tests {
         let src = r#"
             fn pressure(
                 a: i32, b: i32, c: i32, d: i32, e: i32,
-                f: i32, g: i32, h: i32, i: i32, j: i32
+                f: i32, g: i32, h: i32, i: i32, j: i32,
+                k: i32, l: i32, m: i32, n: i32, o: i32, p: i32
             ): i32 {
-                a + b + c + d + e + f + g + h + i + j
+                a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p
             }
         "#;
         let asm = compile(src);

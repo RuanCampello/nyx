@@ -1,5 +1,5 @@
 use crate::{
-    mir::{Function, ValueId},
+    mir::{Function, InstructionKind, ValueId},
     regalloc::{
         colouring::{Allocation, Location, Reg},
         liveness::Liveness,
@@ -13,6 +13,10 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Default, PartialEq)]
 pub struct Interference {
     edges: HashMap<ValueId, HashSet<ValueId>>,
+    /// values whose live range crosses at least one `call` instruction
+    ///
+    /// the colourer must not assign these to caller-saved registers
+    pub(in crate::regalloc) call_crossed: HashSet<ValueId>,
 }
 
 impl Interference {
@@ -42,6 +46,15 @@ impl Interference {
                 for j in 0..live_vec.len() {
                     for k in (j + 1)..live_vec.len() {
                         graph.add_edge(live_vec[j], live_vec[k]);
+                    }
+                }
+
+                // values live after a call cross the call boundary and must not
+                // be placed in caller-saved registers (they will be clobbered)
+                if matches!(instr.kind, InstructionKind::Call { .. }) {
+                    let live_after = &il.points[i + 1];
+                    for &val in live_after {
+                        graph.call_crossed.insert(val);
                     }
                 }
 
