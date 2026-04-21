@@ -1,0 +1,40 @@
+// binary search
+//
+// searches for a target value in a sorted sequence without arrays,
+// by using a function that represents the sorted sequence: seq(i) = i * 3.
+// finds the index where seq(index) == target, or -1 if not found.
+//
+// demonstrates: while, if/else if/else, multiple locals, bool variables.
+//
+// exit code: binary_search(0, 99, 33) = 11  (because 11 * 3 = 33)
+
+fn seq(i: i32): i32 {
+    i * 3
+}
+
+fn binary_search(lo: i32, hi: i32, target: i32): i32 {
+    let mut left: i32 = lo;
+    let mut right: i32 = hi;
+    let mut result: i32 = -1;
+    let mut found: bool = false;
+
+    while left <= right && !found {
+        let mid = left + (right - left) / 2;
+        let val = seq(mid);
+
+        if val == target {
+            result = mid;
+            found = true;
+        } else if val < target {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    result
+}
+
+fn main(): i32 {
+    binary_search(0, 99, 33)
+}

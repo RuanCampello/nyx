@@ -1,0 +1,19 @@
+// fibonacci — recursive
+//
+// fib(n) returns the n-th fibonacci number (0-indexed).
+//   fib(0) = 0
+//   fib(1) = 1
+//   fib(n) = fib(n-1) + fib(n-2)
+//
+// exit code: fib(10) = 55
+
+fn fib(n: i32): i32 {
+    if n <= 1 {
+        return n;
+    }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main(): i32 {
+    fib(10)
+}

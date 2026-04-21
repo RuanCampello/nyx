@@ -1,0 +1,23 @@
+// factorial — iterative
+//
+// computes n! using a while loop and a mutable accumulator.
+// avoids recursion to show the imperative style.
+//
+// exit code: factorial(7) = 5040 ... too large for a byte exit code.
+// we use factorial(5) = 120 instead — still visible in $?
+
+fn factorial(n: i32): i32 {
+    let mut result: i32 = 1;
+    let mut i: i32 = 2;
+
+    while i <= n {
+        result = result * i;
+        i = i + 1;
+    }
+
+    result
+}
+
+fn main(): i32 {
+    factorial(5)
+}

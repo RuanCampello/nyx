@@ -1,0 +1,35 @@
+// collatz — count steps to reach 1
+//
+// the collatz conjecture: starting from any positive integer n,
+// repeatedly apply:
+//   if n is even → n / 2
+//   if n is odd  → 3 * n + 1
+// the sequence always reaches 1 (unproven, but holds for all known values).
+//
+// we track even/odd without modulo: n is even iff (n / 2) * 2 == n.
+//
+// exit code: collatz_steps(27) = 111
+
+fn is_even(n: i32): bool {
+    (n / 2) * 2 == n
+}
+
+fn collatz_steps(n: i32): i32 {
+    let mut x: i32 = n;
+    let mut steps: i32 = 0;
+
+    while x != 1 {
+        if is_even(x) {
+            x = x / 2;
+        } else {
+            x = 3 * x + 1;
+        }
+        steps = steps + 1;
+    }
+
+    steps
+}
+
+fn main(): i32 {
+    collatz_steps(27)
+}
