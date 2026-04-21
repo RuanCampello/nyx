@@ -77,11 +77,12 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     #[inline(always)]
-    fn emit_body(&mut self) {
+    fn emit_body(&mut self, fn_name: &str) {
         for (idx, block) in self.function.blocks.iter().enumerate() {
-            // emit block label (skip for entry block)
+            // emit block label (skip for entry block), scoped to the function
+            // to avoid collisions when multiple functions have the same block index
             if idx > 0 {
-                writeln!(self.out, ".L_block_{}:", idx).unwrap();
+                writeln!(self.out, ".L_{}_block_{}:", fn_name, idx).unwrap();
             }
 
             // emit all instructions in the block
@@ -90,7 +91,7 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             // emit the block terminator
-            self.emit_terminator(&block.terminator);
+            self.emit_terminator(&block.terminator, fn_name);
         }
     }
 
@@ -305,7 +306,7 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     /// Emit a block terminator
-    fn emit_terminator(&mut self, term: &Terminator) {
+    fn emit_terminator(&mut self, term: &Terminator, fn_name: &str) {
         match term {
             Terminator::Return(None) => {} // epilogue handles cleanup
             Terminator::Return(Some(operand)) => {
@@ -322,7 +323,7 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             Terminator::Jump(target) => {
-                writeln!(self.out, "    jmp      .L_block_{}", target.0).unwrap()
+                writeln!(self.out, "    jmp      .L_{fn_name}_block_{}", target.0).unwrap()
             }
 
             Terminator::Branch {
@@ -334,8 +335,8 @@ impl<'e> FunctionEmitter<'e> {
 
                 // test if condition is non-zero (true)
                 writeln!(self.out, "    testl    {cond}, {cond}").unwrap();
-                writeln!(self.out, "    jne      .L_block_{}", then_block.0).unwrap();
-                writeln!(self.out, "    jmp      .L_block_{}", else_block.0).unwrap();
+                writeln!(self.out, "    jne      .L_{fn_name}_block_{}", then_block.0).unwrap();
+                writeln!(self.out, "    jmp      .L_{fn_name}_block_{}", else_block.0).unwrap();
             }
         }
     }
@@ -375,7 +376,7 @@ impl Function {
         let mut emitter = FunctionEmitter::new(out, &alloc, self, symbols, all_functions);
 
         emitter.emit_prologue(&name);
-        emitter.emit_body();
+        emitter.emit_body(&name);
         emitter.emit_epilogue();
     }
 }
