@@ -147,10 +147,9 @@ impl Interference {
         }
 
         let raw = spill_offset.unsigned_abs();
-        // `push %rbp` in the prologue shifts %rsp by 8
-        // compensate so that (8 + frame_size) is a multiple of 16, keeping %rsp 16-byte aligned
-        // at every interior call site
-        let frame_size = ((raw + 8 + 15) & !15).saturating_sub(8);
+        // after call+push, rsp is 16-aligned again, so frame_size only needs to be a
+        // multiple of 16 to keep the stack aligned before any nested call instruction
+        let frame_size = (raw + 15) & !15;
 
         Allocation {
             locations,

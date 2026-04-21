@@ -422,8 +422,8 @@ fn operand_str(op: &Operand, alloc: &Allocation) -> String {
 impl Display for Const {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Const::Int(n, _) => writeln!(f, "${}", n),
-            Const::Bool(b) => writeln!(f, "${}", if *b { 1 } else { 0 }),
+            Const::Int(n, _) => write!(f, "${n}"),
+            Const::Bool(b) => write!(f, "${}", if *b { 1 } else { 0 }),
             Const::Float(_, _) => unimplemented!("float constants not yet supported"),
             Const::Unit => unreachable!("Unit constant has no runtime representation"),
         }
