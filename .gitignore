@@ -1,1 +1,13 @@
 /target
+
+/.*
+
+# output files for testing
+# *.o
+# *.s
+
+/tests/*
+# allow only source files
+!/tests/**/*.nyx
+!/tests/**/*.rs
+
