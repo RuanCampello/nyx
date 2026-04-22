@@ -32,12 +32,17 @@ macro_rules! emit {
     };
 }
 
+macro_rules! label {
+    ($dst:expr, $($arg:tt)*) => {
+        writeln!($dst, "{}", format_args!($($arg)*)).unwrap();
+    }}
+
 /// Emit full assembly program.
 pub fn emit(mir: &Mir) -> String {
     const DEFAULT_SIZE: usize = 1 << 8;
     let mut out = String::with_capacity(DEFAULT_SIZE);
 
-    emit!(out, ".text");
+    label!(out, ".text");
 
     for function in &mir.functions {
         function.emit(&mut out, &mir.symbols, &mir.functions);
@@ -50,8 +55,9 @@ pub fn emit(mir: &Mir) -> String {
     let has_main = mir.symbols.iter().any(|name| name == "main");
 
     if has_main {
-        emit!(out, ".globl _start");
-        emit!(out, "_start:");
+        label!(out, ".globl _start");
+        label!(out, "_start:");
+
         emit!(out, "call    nyx_main");
         emit!(out, "movl    %eax, %edi"); // exit code = return value
         emit!(out, "movl    $60, %eax"); // syscall: exit
@@ -97,11 +103,13 @@ impl<'e> FunctionEmitter<'e> {
 
     #[inline(always)]
     fn emit_body(&mut self, fn_name: &str, label: &str) {
+        let n = self.function.blocks.len();
+
         for (idx, block) in self.function.blocks.iter().enumerate() {
             // emit block label (skip for entry block), scoped to the function
             // to avoid collisions when multiple functions have the same block index
             if idx > 0 {
-                emit!(self.out, ".L_block_{fn_name}_{idx}:");
+                label!(self.out, ".L_block_{fn_name}_{idx}:");
             }
 
             // emit all instructions in the block
@@ -110,7 +118,7 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             // emit the block terminator
-            self.emit_terminator(&block.terminator, fn_name, label);
+            self.emit_terminator(&block.terminator, fn_name, label, idx == n - 1);
         }
     }
 
@@ -118,8 +126,9 @@ impl<'e> FunctionEmitter<'e> {
     #[inline(always)]
     fn emit_prologue(&mut self, name: &str, frame_size: u32) {
         // .globl directive makes function visible to linker
-        emit!(self.out, ".globl {}", name);
-        emit!(self.out, "{}:", name);
+        label!(self.out, ".globl {}", name);
+        label!(self.out, "{}:", name);
+
         emit!(self.out, "push    %rbp");
         emit!(self.out, "mov     %rsp, %rbp");
 
@@ -141,7 +150,7 @@ impl<'e> FunctionEmitter<'e> {
     /// Epilogue: clean-up and return
     #[inline(always)]
     fn emit_epilogue(&mut self, label: &str, frame_size: u32) {
-        emit!(self.out, "{label}:");
+        label!(self.out, "{label}:");
 
         if frame_size > 0 {
             emit!(self.out, "add     ${}, %rsp", frame_size);
@@ -167,7 +176,10 @@ impl<'e> FunctionEmitter<'e> {
             InstructionKind::Assign(operand) => {
                 // dest = operand
                 let src = operand_str(operand, self.allocation, &self.saved_regs);
-                emit!(self.out, "mov{suffix}    {src}, {dest}");
+                // this arise after register allocation when two values coalesced to the same location
+                if src != dest {
+                    emit!(self.out, "mov{suffix}    {src}, {dest}");
+                }
             }
 
             InstructionKind::Unary { operation, rhs } => {
@@ -355,9 +367,9 @@ impl<'e> FunctionEmitter<'e> {
     }
 
     /// Emit a block terminator
-    fn emit_terminator(&mut self, term: &Terminator, fn_name: &str, label: &str) {
+    fn emit_terminator(&mut self, term: &Terminator, fn_name: &str, label: &str, is_last: bool) {
         match term {
-            Terminator::Return(None) => {
+            Terminator::Return(None) if !is_last => {
                 emit!(self.out, "jmp      {label}");
             }
             Terminator::Return(Some(operand)) => {
@@ -371,7 +383,9 @@ impl<'e> FunctionEmitter<'e> {
                 };
 
                 emit!(self.out, "mov{suffix}    {src}, {ret_reg}");
-                emit!(self.out, "jmp      {label}");
+                if !is_last {
+                    emit!(self.out, "jmp      {label}");
+                }
             }
 
             Terminator::Jump(target) => {
@@ -390,6 +404,8 @@ impl<'e> FunctionEmitter<'e> {
                 emit!(self.out, "jne      .L_block_{fn_name}_{}", then_block.0);
                 emit!(self.out, "jmp      .L_block_{fn_name}_{}", else_block.0);
             }
+
+            _ => {}
         }
     }
 
