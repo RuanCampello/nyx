@@ -67,7 +67,7 @@ impl Allocation {
 
 impl Interference {
     pub fn colour(self, local_types: HashMap<ValueId, Type>) -> Allocation {
-        let k = Reg::k();
+        let k = Self::K;
         let all = self.nodes().collect::<Vec<_>>();
 
         if all.is_empty() {
@@ -167,11 +167,6 @@ impl Reg {
     /// Callee-saved are listed first so the allocator
     /// prefers them for long-lived values: they survive calls without restriction
     pub const ALL: &'static [Reg] = &[
-        Reg::Rbx,
-        Reg::R12,
-        Reg::R13,
-        Reg::R14,
-        Reg::R15,
         Reg::Rax,
         Reg::Rcx,
         Reg::Rdx,
@@ -181,6 +176,11 @@ impl Reg {
         Reg::R9,
         Reg::R10,
         Reg::R11,
+        Reg::Rbx,
+        Reg::R12,
+        Reg::R13,
+        Reg::R14,
+        Reg::R15,
     ];
 
     /// Registers clobbered by calls under System V AMD64.
@@ -198,10 +198,6 @@ impl Reg {
 
     /// Registers that must be preserved across calls (callee saves them).
     pub const CALLEE_SAVED: &'static [Reg] = &[Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
-
-    pub const fn k() -> usize {
-        Self::ALL.len()
-    }
 
     pub const fn as_str_32<'s>(self) -> &'s str {
         match self {

@@ -17,7 +17,7 @@ pub struct Interference {
 }
 
 impl Interference {
-    const K: usize = Reg::ALL.len();
+    pub(in crate::regalloc) const K: usize = Reg::ALL.len();
 
     pub fn build(function: &Function) -> Self {
         let liveness = Liveness::analyse(function);
