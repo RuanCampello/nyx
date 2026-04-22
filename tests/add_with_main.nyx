@@ -1,0 +1,10 @@
+fn main(): i32 {
+    let x = 1;
+    let y = 2;
+    let z = add(x, y);
+    return 0;
+}
+
+fn add(x: i32, y: i32): i32 {
+    x + y
+}
