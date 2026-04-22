@@ -7,9 +7,7 @@ use crate::{
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
-    lexer::token::Span,
     parser::{
-        self,
         expression::{self, BinaryOperator, UnaryOperator},
         statement::{self, Else},
     },
@@ -272,7 +270,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Expr::Identifier(name, span) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.resolve_local(symbol, span)?;
+                let id = self.resolve_local(symbol)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Local(id),
@@ -349,7 +347,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let right = self.lower_expr(right, right_hint)?;
 
                 // PERFORMANCE: constant fold binary operator on literals
-                let result = self.type_for_binary(operator, left.typ, right.typ, span)?;
+                let result = self.type_for_binary(operator, left.typ, right.typ)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Binary {
@@ -368,7 +366,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 span,
             } => {
                 let symbol = self.symbols.insert(target);
-                let id = self.resolve_local(symbol, span)?;
+                let id = self.resolve_local(symbol)?;
 
                 if !self.locals[id.0 as usize].mutable {
                     return Err(HirError {
@@ -449,38 +447,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    #[inline(always)]
-    fn lower_type(&mut self, expr: &expression::Expression) -> Result<Expression, HirError<'f>> {
-        use expression::Expression as Expr;
-
-        match expr {
-            Expr::Integer(value, span) => Ok(Expression {
-                kind: ExpressionKind::Integer(*value),
-                typ: Type::I32,
-                span: *span,
-            }),
-
-            Expr::Float(value, span) => Ok(Expression {
-                kind: ExpressionKind::Float(*value),
-                typ: Type::F64,
-                span: *span,
-            }),
-
-            Expr::String(value, span) => Ok(Expression {
-                kind: ExpressionKind::String((*value).to_string()),
-                typ: Type::String,
-                span: *span,
-            }),
-
-            Expr::Bool(value, span) => Ok(Expression {
-                kind: ExpressionKind::Bool(*value),
-                typ: Type::Bool,
-                span: *span,
-            }),
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }
-    }
-
     fn lower_if(
         &mut self,
         if_stmt: &statement::If<'f>,
@@ -528,7 +494,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         operator: &BinaryOperator,
         left: Type,
         right: Type,
-        span: &Span,
     ) -> Result<Type, HirError<'f>> {
         match operator {
             BinaryOperator::Add
@@ -538,7 +503,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 self.assert_type(left, right)?;
                 match left.is_number() {
                     true => Ok(left),
-                    other => Err(HirError {
+                    _ => Err(HirError {
                         kind: HirErrorKind::TypeMismatch {
                             expected: Type::I32,
                             found: left,
@@ -628,7 +593,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId, span: &Span) -> Result<LocalId, HirError<'f>> {
+    fn resolve_local(&mut self, name: SymbolId) -> Result<LocalId, HirError<'f>> {
         self.scopes
             .iter()
             .rev()
@@ -661,7 +626,7 @@ pub fn collect_function_signatures<'h>(
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(func) => func,
-            other => {
+            _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
                 });

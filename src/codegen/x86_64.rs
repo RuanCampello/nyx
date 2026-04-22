@@ -184,19 +184,25 @@ impl<'e> FunctionEmitter<'e> {
 
             InstructionKind::Unary { operation, rhs } => {
                 let src = operand_str(rhs, self.allocation, &self.saved_regs);
+                let moved = src != dest;
 
                 match operation {
                     UnaryOperator::Neg => {
                         // dest = -rhs
                         // strategy: mov rhs to dest, then neg dest
-                        emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        }
+
                         emit!(self.out, "neg{suffix}    {dest}");
                     }
 
                     UnaryOperator::Not => {
                         // dest = !rhs (logical not for bool)
                         // strategy: xor with 1 (0 -> 1, 1 -> 0)
-                        emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        }
                         emit!(self.out, "xor{suffix}    $1, {dest}");
                     }
                 }
@@ -212,23 +218,31 @@ impl<'e> FunctionEmitter<'e> {
                 let lhs = operand_str(lhs, self.allocation, &self.saved_regs);
                 let rhs = operand_str(rhs, self.allocation, &self.saved_regs);
 
+                let moved = lhs != dest;
+
                 match operation {
                     BinaryOperator::Add => {
                         // dest = lhs + rhs
-                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        }
                         emit!(self.out, "add{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Sub => {
                         // dest = lhs - rhs
-                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        }
                         emit!(self.out, "sub{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Mul => {
                         // dest = lhs * rhs
                         // imul can do 2-operand form: imul src, dest (dest *= src)
-                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        }
                         emit!(self.out, "imul{suffix}   {rhs}, {dest}");
                     }
 
@@ -239,14 +253,16 @@ impl<'e> FunctionEmitter<'e> {
                         //           %edx/%rdx must be sign-extended from %eax/%rax
                         // result: quotient in %eax/%rax, remainder in %edx/%rdx
 
-                        let (rax, rdx, extend_instr) = match instruction.dest.typ {
-                            Type::I32 => ("%eax", "%edx", "cltd"), // sign-extend eax -> edx:eax
-                            Type::I64 => ("%rax", "%rdx", "cqto"), // sign-extend rax -> rdx:rax
+                        let (rax, extend_instr) = match instruction.dest.typ {
+                            Type::I32 => ("%eax", "cltd"), // sign-extend eax -> edx:eax
+                            Type::I64 => ("%rax", "cqto"), // sign-extend rax -> rdx:rax
                             _ => unreachable!(),
                         };
 
-                        // move dividend (lhs) to %rax/%eax
-                        emit!(self.out, "mov{suffix}    {lhs}, {rax}");
+                        if moved {
+                            // move dividend (lhs) to %rax/%eax
+                            emit!(self.out, "mov{suffix}    {lhs}, {rax}");
+                        }
                         // sign-extend to rdx:rax or edx:eax
                         emit!(self.out, "{extend_instr}");
 
@@ -264,8 +280,9 @@ impl<'e> FunctionEmitter<'e> {
                             }
                         };
 
-                        // move result to destination
-                        emit!(self.out, "mov{suffix}    {rax}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {rax}, {dest}");
+                        }
                     }
 
                     // comparison operators: set dest to 0 or 1
@@ -278,12 +295,16 @@ impl<'e> FunctionEmitter<'e> {
 
                     BinaryOperator::And => {
                         // logical and: both operands are bool (0 or 1)
-                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        }
                         emit!(self.out, "and{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Or => {
-                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        }
                         emit!(self.out, "or{suffix}     {rhs}, {dest}");
                     }
                 }
@@ -313,7 +334,9 @@ impl<'e> FunctionEmitter<'e> {
                         _ => unimplemented!("unsupported argument type"),
                     };
 
-                    emit!(self.out, "mov{suffix}    {src}, {dest_reg}");
+                    if src != dest_reg {
+                        emit!(self.out, "mov{suffix}    {src}, {dest_reg}");
+                    }
                 }
 
                 // emit function call
@@ -339,7 +362,9 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                emit!(self.out, "mov{suffix}    {src_reg}, {dest}");
+                if dest != src_reg {
+                    emit!(self.out, "mov{suffix}    {src_reg}, {dest}");
+                }
             }
         }
     }
@@ -382,7 +407,9 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                emit!(self.out, "mov{suffix}    {src}, {ret_reg}");
+                if src != ret_reg {
+                    emit!(self.out, "mov{suffix}    {src}, {ret_reg}");
+                }
                 if !is_last {
                     emit!(self.out, "jmp      {label}");
                 }

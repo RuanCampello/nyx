@@ -1,5 +1,4 @@
 use crate::hir::Type;
-use crate::lexer::token::Span;
 use crate::parser::error::ParserError;
 
 #[derive(Debug, PartialEq, Clone, thiserror::Error)]

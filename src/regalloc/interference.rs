@@ -1,9 +1,6 @@
 use crate::{
-    mir::{Function, InstructionKind, ValueId},
-    regalloc::{
-        colouring::{Allocation, Location, Reg},
-        liveness::Liveness,
-    },
+    mir::{Function, InstructionKind, Operand, ValueId},
+    regalloc::{colouring::Reg, liveness::Liveness},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -20,6 +17,8 @@ pub struct Interference {
 }
 
 impl Interference {
+    const K: usize = Reg::ALL.len();
+
     pub fn build(function: &Function) -> Self {
         let liveness = Liveness::analyse(function);
         let mut graph = Self::default();
@@ -74,6 +73,53 @@ impl Interference {
         }
 
         graph
+    }
+
+    pub fn coalesce(&mut self, function: &Function) {
+        let mut worklist = Vec::new();
+
+        for block in &function.blocks {
+            for instruction in &block.instructions {
+                if let InstructionKind::Assign(Operand::Place(src)) = &instruction.kind {
+                    let dest = instruction.dest.id;
+                    let src = src.id;
+
+                    if dest != src && !self.interferes(&dest, &src) {
+                        worklist.push((dest, src))
+                    }
+                }
+            }
+        }
+
+        for (a, b) in worklist {
+            if self.can_coalesce(a, b) {
+                self.merge(a, b);
+            }
+        }
+    }
+
+    fn can_coalesce(&self, a: ValueId, b: ValueId) -> bool {
+        if self.interferes(&a, &b) {
+            return false;
+        }
+
+        let a = self.neighbours(a).iter().copied().collect::<HashSet<_>>();
+        let b = self.neighbours(b).iter().copied().collect::<HashSet<_>>();
+
+        let degrees = a.union(&b).count();
+        degrees < Self::K
+    }
+
+    fn merge(&mut self, keep: ValueId, remove: ValueId) {
+        let neighbours = self.neighbours(remove).iter().copied().collect::<Vec<_>>();
+
+        for neighbour in neighbours {
+            if neighbour != keep {
+                self.add_edge(keep, neighbour);
+            }
+        }
+
+        self.edges.remove(&remove);
     }
 
     #[inline(always)]

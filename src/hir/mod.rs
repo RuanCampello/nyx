@@ -97,6 +97,7 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(unused)]
 pub enum ExpressionKind {
     Unit,
     Integer(i64),
@@ -142,17 +143,12 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(function) => function,
-            other => {
+            _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
                 });
             }
         };
-
-        let symbol = symbols.insert(function.name);
-        let id = *functions_map
-            .get(&symbol)
-            .expect("function id assigned during signature collection");
 
         let function = FunctionBuilder::new(&signatures, &functions_map, &mut symbols, function);
         functions.push(function.lower()?);

@@ -75,15 +75,6 @@ impl<'i> Parser<'i> {
         }
     }
 
-    #[inline(always)]
-    pub fn unexpected(&self, found: TokenKind<'i>, expected: TokenKind<'i>) -> ParserError<'i> {
-        ParserError::new(
-            ParseErrorKind::Expected { expected, found },
-            self.last.unwrap_or_default(),
-        )
-    }
-
-    #[inline(always)]
     pub fn expect_next(&mut self) -> Result<Token<'i>, ParserError<'i>> {
         self.next_token()?.ok_or_else(|| {
             ParserError::new(ParseErrorKind::UnexpectedEof, self.last.unwrap_or_default())
@@ -168,7 +159,7 @@ mod tests {
         lexer::token::Position,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Let, Parameter, Return, Type},
+            statement::{Let, Return, Type},
         },
     };
 

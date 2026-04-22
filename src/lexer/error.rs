@@ -51,11 +51,6 @@ impl LexError {
     pub const fn span(&self) -> Span {
         self.span
     }
-
-    #[inline]
-    pub fn help(&self) -> Option<&str> {
-        self.help.as_deref()
-    }
 }
 
 impl fmt::Display for LexError {

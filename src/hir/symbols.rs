@@ -1,6 +1,5 @@
 use crate::hir::SymbolId;
 use lasso::Rodeo;
-use std::collections::HashMap;
 
 pub(in crate::hir) struct SymbolTable {
     interner: Rodeo,

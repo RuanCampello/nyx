@@ -1,10 +1,11 @@
 //! Graph-colouring register allocation algorithm.
 //!
 //! Algorithm:
-//!  - 1. Simplify — repeatedly remove nodes with degree < K, push to stack.
-//!  - 2. Spill    — if stuck, pick the highest-degree node as a potential spill.
-//!  - 3. Select   — pop stack, assign the lowest-numbered free colour;
-//!                 if none available the node becomes an actual spill → stack slot.
+//!  - 1. Coalesce: merge non-interfering move-related nodes
+//!  - 2. Simplify: repeatedly remove nodes with degree < K, push to stack
+//!  - 3. Spill:    if stuck, pick the highest-degree node as a potential spill
+//!  - 4. Select:   pop stack, assign the lowest-cost free colour;
+//!                 if none available the node becomes an actual spill → stack slot
 
 use crate::{
     hir::Type,
@@ -57,7 +58,9 @@ impl Allocation {
     pub fn allocate(function: &Function) -> Allocation {
         let local_types: HashMap<ValueId, Type> =
             function.locals.iter().map(|&(id, typ)| (id, typ)).collect();
-        let graph = Interference::build(function);
+        let mut graph = Interference::build(function);
+
+        graph.coalesce(function);
         graph.colour(local_types)
     }
 }
@@ -237,17 +240,6 @@ impl Reg {
             Reg::R15 => "r15",
         }
     }
-
-    pub const fn priority(&self) -> usize {
-        match self {
-            Reg::Rbx => 0,
-            Reg::R12 => 1,
-            Reg::R13 => 2,
-            Reg::R14 => 3,
-            Reg::R15 => 4,
-            _ => 5,
-        }
-    }
 }
 
 /// stack slot size in bytes for the given value
@@ -315,7 +307,7 @@ mod tests {
     #[test]
     fn interfering_values_get_different_registers() {
         // a and b are simultaneously live for `a + b`
-        let (mir, alloc) = allocate_for("fn add(a: i32, b: i32): i32 { a + b }");
+        let (_, alloc) = allocate_for("fn add(a: i32, b: i32): i32 { a + b }");
         let a = ValueId(0);
         let b = ValueId(1);
 
@@ -341,8 +333,7 @@ mod tests {
                 a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p
             }
         "#;
-        let (mir, alloc) = allocate_for(src);
-        let f = &mir.functions[0];
+        let (_, alloc) = allocate_for(src);
 
         let spilled = alloc
             .locations
@@ -366,6 +357,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn frame_size_is_always_16_byte_aligned() {
         let src = r#"
             fn many(

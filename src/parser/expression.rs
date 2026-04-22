@@ -77,6 +77,7 @@ impl<'i> Expression<'i> {
     }
 
     #[inline(always)]
+    #[allow(unused)]
     pub const fn is_type(&self) -> bool {
         matches!(
             self,

@@ -15,6 +15,7 @@ struct PartialBlock {
     terminator: Option<Terminator>,
 }
 
+#[allow(unused)]
 struct FunctionLower {
     blocks: Vec<PartialBlock>,
     current: usize,
