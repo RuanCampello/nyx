@@ -26,12 +26,18 @@ struct FunctionEmitter<'e> {
     symbols: &'e [String],
 }
 
+macro_rules! emit {
+    ($dst:expr, $($arg:tt)*) => {
+        writeln!($dst, "    {}", format_args!($($arg)*)).unwrap();
+    };
+}
+
 /// Emit full assembly program.
 pub fn emit(mir: &Mir) -> String {
     const DEFAULT_SIZE: usize = 1 << 8;
     let mut out = String::with_capacity(DEFAULT_SIZE);
 
-    writeln!(out, "    .text").unwrap();
+    emit!(out, ".text");
 
     for function in &mir.functions {
         function.emit(&mut out, &mir.symbols, &mir.functions);
@@ -44,12 +50,12 @@ pub fn emit(mir: &Mir) -> String {
     let has_main = mir.symbols.iter().any(|name| name == "main");
 
     if has_main {
-        writeln!(out, "    .globl _start").unwrap();
-        writeln!(out, "_start:").unwrap();
-        writeln!(out, "    call    nyx_main").unwrap();
-        writeln!(out, "    movl    %eax, %edi").unwrap(); // exit code = return value
-        writeln!(out, "    movl    $60, %eax").unwrap(); // syscall: exit
-        writeln!(out, "    syscall").unwrap();
+        emit!(out, ".globl _start");
+        emit!(out, "_start:");
+        emit!(out, "call    nyx_main");
+        emit!(out, "movl    %eax, %edi"); // exit code = return value
+        emit!(out, "movl    $60, %eax"); // syscall: exit
+        emit!(out, "syscall");
     }
 
     out
@@ -95,7 +101,7 @@ impl<'e> FunctionEmitter<'e> {
             // emit block label (skip for entry block), scoped to the function
             // to avoid collisions when multiple functions have the same block index
             if idx > 0 {
-                writeln!(self.out, ".L_block_{fn_name}_{idx}:").unwrap();
+                emit!(self.out, ".L_block_{fn_name}_{idx}:");
             }
 
             // emit all instructions in the block
@@ -112,20 +118,20 @@ impl<'e> FunctionEmitter<'e> {
     #[inline(always)]
     fn emit_prologue(&mut self, name: &str, frame_size: u32) {
         // .globl directive makes function visible to linker
-        writeln!(self.out, "    .globl {}", name).unwrap();
-        writeln!(self.out, "{}:", name).unwrap();
-        writeln!(self.out, "    push    %rbp").unwrap();
-        writeln!(self.out, "    mov     %rsp, %rbp").unwrap();
+        emit!(self.out, ".globl {}", name);
+        emit!(self.out, "{}:", name);
+        emit!(self.out, "push    %rbp");
+        emit!(self.out, "mov     %rsp, %rbp");
 
         // save callee-saved registers this function uses
         //
         // ABI requires them to be preserved across calls (callers depend on this)
         for reg in &self.saved_regs {
-            writeln!(self.out, "    push    %{}", reg.as_str_64()).unwrap();
+            emit!(self.out, "push    %{}", reg.as_str_64());
         }
 
         if frame_size > 0 {
-            writeln!(self.out, "    sub     ${}, %rsp", frame_size).unwrap();
+            emit!(self.out, "sub     ${}, %rsp", frame_size);
         }
 
         // move the arguments from registers to their allocated locations
@@ -135,19 +141,19 @@ impl<'e> FunctionEmitter<'e> {
     /// Epilogue: clean-up and return
     #[inline(always)]
     fn emit_epilogue(&mut self, label: &str, frame_size: u32) {
-        writeln!(self.out, "{label}:").unwrap();
+        emit!(self.out, "{label}:");
 
         if frame_size > 0 {
-            writeln!(self.out, "    add     ${}, %rsp", frame_size).unwrap();
+            emit!(self.out, "add     ${}, %rsp", frame_size);
         }
 
         // restore callee-saved registers in reverse push order
         for reg in self.saved_regs.iter().copied().rev() {
-            writeln!(self.out, "    pop     %{}", reg.as_str_64()).unwrap();
+            emit!(self.out, "pop     %{}", reg.as_str_64());
         }
 
-        writeln!(self.out, "    pop     %rbp").unwrap();
-        writeln!(self.out, "    ret").unwrap();
+        emit!(self.out, "pop     %rbp");
+        emit!(self.out, "ret");
     }
 
     fn emit_instruction(&mut self, instruction: &Instruction) {
@@ -157,17 +163,11 @@ impl<'e> FunctionEmitter<'e> {
         let dest = place_str(&instruction.dest, self.allocation, &self.saved_regs);
         let suffix = instruction.dest.typ.size_suffix();
 
-        macro_rules! emit {
-            ($($arg:tt)*) => {
-                writeln!(self.out, "    {}", format_args!($($arg)*)).unwrap();
-            };
-        }
-
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 // dest = operand
                 let src = operand_str(operand, self.allocation, &self.saved_regs);
-                emit!("mov{suffix}    {src}, {dest}");
+                emit!(self.out, "mov{suffix}    {src}, {dest}");
             }
 
             InstructionKind::Unary { operation, rhs } => {
@@ -177,15 +177,15 @@ impl<'e> FunctionEmitter<'e> {
                     UnaryOperator::Neg => {
                         // dest = -rhs
                         // strategy: mov rhs to dest, then neg dest
-                        emit!("mov{suffix}    {src}, {dest}");
-                        emit!("neg{suffix}    {dest}");
+                        emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        emit!(self.out, "neg{suffix}    {dest}");
                     }
 
                     UnaryOperator::Not => {
                         // dest = !rhs (logical not for bool)
                         // strategy: xor with 1 (0 -> 1, 1 -> 0)
-                        emit!("mov{suffix}    {src}, {dest}");
-                        emit!("xor{suffix}    $1, {dest}");
+                        emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        emit!(self.out, "xor{suffix}    $1, {dest}");
                     }
                 }
             }
@@ -203,21 +203,21 @@ impl<'e> FunctionEmitter<'e> {
                 match operation {
                     BinaryOperator::Add => {
                         // dest = lhs + rhs
-                        emit!("mov{suffix}    {lhs}, {dest}");
-                        emit!("add{suffix}    {rhs}, {dest}");
+                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        emit!(self.out, "add{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Sub => {
                         // dest = lhs - rhs
-                        emit!("mov{suffix}    {lhs}, {dest}");
-                        emit!("sub{suffix}    {rhs}, {dest}");
+                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        emit!(self.out, "sub{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Mul => {
                         // dest = lhs * rhs
                         // imul can do 2-operand form: imul src, dest (dest *= src)
-                        emit!("mov{suffix}    {lhs}, {dest}");
-                        emit!("imul{suffix}   {rhs}, {dest}");
+                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        emit!(self.out, "imul{suffix}   {rhs}, {dest}");
                     }
 
                     BinaryOperator::Div => {
@@ -234,26 +234,26 @@ impl<'e> FunctionEmitter<'e> {
                         };
 
                         // move dividend (lhs) to %rax/%eax
-                        emit!("mov{suffix}    {lhs}, {rax}",);
+                        emit!(self.out, "mov{suffix}    {lhs}, {rax}");
                         // sign-extend to rdx:rax or edx:eax
-                        emit!("{extend_instr}");
+                        emit!(self.out, "{extend_instr}");
 
                         // PERFORMANCE: maybe we could optimise this out before it reaches here
                         match is_rhs_const {
                             true => {
                                 // `idiv` doesn't accept immediates, so materialise constants on stack
-                                emit!("sub     $8, %rsp");
-                                emit!("mov{suffix}    {rhs}, (%rsp)");
-                                emit!("idiv{suffix}   (%rsp)");
-                                emit!("add     $8, %rsp");
+                                emit!(self.out, "sub     $8, %rsp");
+                                emit!(self.out, "mov{suffix}    {rhs}, (%rsp)");
+                                emit!(self.out, "idiv{suffix}   (%rsp)");
+                                emit!(self.out, "add     $8, %rsp");
                             }
                             false => {
-                                emit!("idiv{suffix}    {rhs}");
+                                emit!(self.out, "idiv{suffix}    {rhs}");
                             }
                         };
 
                         // move result to destination
-                        emit!("mov{suffix}    {rax}, {dest}");
+                        emit!(self.out, "mov{suffix}    {rax}, {dest}");
                     }
 
                     // comparison operators: set dest to 0 or 1
@@ -266,13 +266,13 @@ impl<'e> FunctionEmitter<'e> {
 
                     BinaryOperator::And => {
                         // logical and: both operands are bool (0 or 1)
-                        emit!("mov{suffix}    {lhs}, {dest}");
-                        emit!("and{suffix}    {rhs}, {dest}");
+                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        emit!(self.out, "and{suffix}    {rhs}, {dest}");
                     }
 
                     BinaryOperator::Or => {
-                        emit!("mov{suffix}    {lhs}, {dest}");
-                        emit!("or{suffix}     {rhs}, {dest}");
+                        emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                        emit!(self.out, "or{suffix}     {rhs}, {dest}");
                     }
                 }
             }
@@ -286,7 +286,7 @@ impl<'e> FunctionEmitter<'e> {
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
-                    emit!("push{suffix}   {src}");
+                    emit!(self.out, "push{suffix}   {src}");
                 }
 
                 // move the first 6 args to registers
@@ -301,7 +301,7 @@ impl<'e> FunctionEmitter<'e> {
                         _ => unimplemented!("unsupported argument type"),
                     };
 
-                    emit!("mov{suffix}    {src}, {dest_reg}");
+                    emit!(self.out, "mov{suffix}    {src}, {dest_reg}");
                 }
 
                 // emit function call
@@ -309,12 +309,12 @@ impl<'e> FunctionEmitter<'e> {
                     self.all_functions[callee.0 as usize].name_symbol,
                     self.symbols,
                 );
-                emit!("call     {callee_name}");
+                emit!(self.out, "call     {callee_name}");
 
                 // clean up stack arguments
                 let stack_bytes = args.len().saturating_sub(6) * 8;
                 if stack_bytes > 0 {
-                    emit!("add     ${stack_bytes}, %rsp");
+                    emit!(self.out, "add     ${stack_bytes}, %rsp");
                 }
 
                 // move return value from %rax/%eax to destination
@@ -327,7 +327,7 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                emit!("mov{suffix}    {src_reg}, {dest}");
+                emit!(self.out, "mov{suffix}    {src_reg}, {dest}");
             }
         }
     }
@@ -342,15 +342,15 @@ impl<'e> FunctionEmitter<'e> {
 
         let preserves_rax = !matches!(dest.as_str(), "%al" | "%ax" | "%eax" | "%rax");
         if preserves_rax {
-            writeln!(self.out, "    push    %rax").unwrap();
+            emit!(self.out, "push    %rax");
         }
 
-        writeln!(self.out, "    cmp{suffix}    {rhs}, {lhs}",).unwrap();
-        writeln!(self.out, "    {set_instr}     %al").unwrap();
-        writeln!(self.out, "    movzbl   %al, {dest}").unwrap();
+        emit!(self.out, "cmp{suffix}    {rhs}, {lhs}",);
+        emit!(self.out, "{set_instr}     %al");
+        emit!(self.out, "movzbl   %al, {dest}");
 
         if preserves_rax {
-            writeln!(self.out, "    pop     %rax").unwrap();
+            emit!(self.out, "pop     %rax");
         }
     }
 
@@ -358,7 +358,7 @@ impl<'e> FunctionEmitter<'e> {
     fn emit_terminator(&mut self, term: &Terminator, fn_name: &str, label: &str) {
         match term {
             Terminator::Return(None) => {
-                writeln!(self.out, "    jmp      {label}").unwrap();
+                emit!(self.out, "jmp      {label}");
             }
             Terminator::Return(Some(operand)) => {
                 // move return value to %rax/%eax
@@ -370,12 +370,12 @@ impl<'e> FunctionEmitter<'e> {
                     _ => unimplemented!(),
                 };
 
-                writeln!(self.out, "    mov{suffix}    {src}, {ret_reg}").unwrap();
-                writeln!(self.out, "    jmp      {label}").unwrap();
+                emit!(self.out, "mov{suffix}    {src}, {ret_reg}");
+                emit!(self.out, "jmp      {label}");
             }
 
             Terminator::Jump(target) => {
-                writeln!(self.out, "    jmp      .L_block_{fn_name}_{}", target.0).unwrap()
+                emit!(self.out, "jmp      .L_block_{fn_name}_{}", target.0);
             }
 
             Terminator::Branch {
@@ -386,9 +386,9 @@ impl<'e> FunctionEmitter<'e> {
                 let cond = operand_str(condition, self.allocation, &self.saved_regs);
 
                 // test if condition is non-zero (true)
-                writeln!(self.out, "    testl    {cond}, {cond}").unwrap();
-                writeln!(self.out, "    jne      .L_block_{fn_name}_{}", then_block.0).unwrap();
-                writeln!(self.out, "    jmp      .L_block_{fn_name}_{}", else_block.0).unwrap();
+                emit!(self.out, "testl    {cond}, {cond}");
+                emit!(self.out, "jne      .L_block_{fn_name}_{}", then_block.0);
+                emit!(self.out, "jmp      .L_block_{fn_name}_{}", else_block.0);
             }
         }
     }
@@ -418,7 +418,7 @@ impl<'e> FunctionEmitter<'e> {
 
             // only emit move if source and destination are different
             if src_reg != dest_str {
-                writeln!(self.out, "    mov{suffix}    {src_reg}, {dest_str}").unwrap();
+                emit!(self.out, "mov{suffix}    {src_reg}, {dest_str}");
             }
         }
     }
