@@ -91,6 +91,7 @@ pub enum Type {
     Iptr,
     Bool,
     Char,
+    Str,
     String,
 }
 
@@ -236,9 +237,9 @@ impl<'i> Parsable<'i> for If<'i> {
 
         let condition = Expression::parse(parser)?;
 
-        let is_single_expression = !matches!(parser.peek(), Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::OpenBrace));
+        let has_block = matches!(parser.peek(), Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::OpenBrace));
 
-        let (then_branch, then_end) = match is_single_expression {
+        let (then_branch, then_end) = match has_block {
             true => {
                 let expr = Expression::parse(parser)?;
                 let semi = parser.expect_punct(Punct::Semicolon)?;
