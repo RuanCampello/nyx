@@ -162,14 +162,39 @@ impl<T: Clone + Copy> Spanned<T> {
 
 impl Spanned<Type> {
     pub fn parse<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let (name, span) = parser.expect_identifier()?;
+        if parser.consume_punct(Punct::Ampersand)? {
+            let (name, span) = parser.expect_identifier()?;
 
+            return match name {
+                "str" => Ok(Self {
+                    span,
+                    value: Type::Str,
+                }),
+                _ => Err(ParserError::new(
+                    ParseErrorKind::ExpectedTypeIdentifier {
+                        found: name.to_string(),
+                    },
+                    span,
+                )),
+            };
+        };
+
+        let (name, span) = parser.expect_identifier()?;
         let value = match name {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
             "i32" => Type::I32,
             "i64" => Type::I64,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
             "f32" => Type::F32,
             "f64" => Type::F64,
+            "uptr" => Type::Uptr,
+            "iptr" => Type::Iptr,
             "bool" => Type::Bool,
+            "char" => Type::Char,
             "String" => Type::String,
             _ => {
                 return Err(ParserError::new(

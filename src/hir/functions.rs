@@ -234,10 +234,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             // literal coercion: use the hint to widen to the expected numeric type.
             Expr::Integer(value, span) => {
                 let typ = match hint {
-                    Some(t @ (Type::I32 | Type::I64)) => t,
-                    Some(t @ (Type::F32 | Type::F64)) => t,
+                    Some(t) if t.is_number() => t,
                     _ => Type::I32,
                 };
+
                 Ok(Expression {
                     kind: ExpressionKind::Integer(*value),
                     typ,
@@ -247,9 +247,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Expr::Float(value, span) => {
                 let typ = match hint {
-                    Some(t @ (Type::F32 | Type::F64)) => t,
+                    Some(t) if t.is_float() => t,
                     _ => Type::F64,
                 };
+
                 Ok(Expression {
                     kind: ExpressionKind::Float(*value),
                     typ,

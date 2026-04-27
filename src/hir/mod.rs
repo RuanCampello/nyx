@@ -179,7 +179,41 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
 
 impl Type {
     pub(in crate::hir) const fn is_number(&self) -> bool {
-        matches!(self, Self::I32 | Self::I64 | Self::F32 | Self::F64)
+        self.is_integer() || self.is_float()
+    }
+
+    pub(in crate::hir) const fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8
+                | Self::U8
+                | Self::I16
+                | Self::U16
+                | Self::I32
+                | Self::U32
+                | Self::I64
+                | Self::U64
+                | Self::Iptr
+                | Self::Uptr
+        )
+    }
+
+    pub(in crate::hir) const fn is_float(&self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+
+    pub(in crate::hir) const fn is_signed(&self) -> bool {
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Iptr
+        )
+    }
+
+    pub(in crate::hir) const fn is_unsigned(&self) -> bool {
+        matches!(
+            self,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr
+        )
     }
 }
 
@@ -559,5 +593,28 @@ mod tests {
 
         let y_stmt = &func.body.statements[1];
         assert!(matches!(y_stmt, Statement::Let { id: LocalId(1), .. }));
+    }
+
+    #[test]
+    fn new_integer_types_accepted() {
+        let src = r#"
+            fn bytes(a: i8, b: u8, c: i16, d: u16): i32 {
+                0
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn integer_literal_widens() {
+        let src = r#"
+            fn main() {
+                let x: i16 = 100;
+                let y: u8 = 42;
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
     }
 }
