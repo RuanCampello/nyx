@@ -84,15 +84,68 @@ impl Allocation {
 }
 
 impl Interference {
-    pub fn colour(self, local_types: HashMap<ValueId, Type>) -> Allocation {
-        let k = Self::K;
+    pub fn colour(self, types: HashMap<ValueId, Type>) -> Allocation {
         let all = self.nodes().collect::<Vec<_>>();
 
         if all.is_empty() {
             return Allocation::default();
         }
 
-        let mut degree: HashMap<_, _> = all.iter().map(|&id| (id, self.degree(id))).collect();
+        #[inline(always)]
+        fn is_float_type(types: &HashMap<ValueId, Type>, id: ValueId) -> bool {
+            matches!(types.get(&id), Some(Type::F32 | Type::F64))
+        }
+
+        let (floats, ints): (Vec<_>, Vec<_>) =
+            all.iter().partition(|&&id| is_float_type(&types, id));
+
+        let mut locations = HashMap::new();
+        let mut spill_offset = 0;
+
+        self.colour_group(
+            Self::K,
+            &ints,
+            Reg::ALL,
+            Reg::CALLER_SAVED,
+            &types,
+            &mut locations,
+            &mut spill_offset,
+        );
+
+        self.colour_group(
+            Self::K_XMM,
+            &floats,
+            Reg::XMM_ALL,
+            Reg::XMM_ALL,
+            &types,
+            &mut locations,
+            &mut spill_offset,
+        );
+
+        let raw = spill_offset.unsigned_abs();
+        let frame_size = (raw + 15) & !15;
+
+        Allocation {
+            locations,
+            frame_size,
+        }
+    }
+
+    fn colour_group(
+        &self,
+        k: usize,
+        nodes: &[&ValueId],
+        available: &[Reg],
+        calleer_saved: &[Reg],
+        local_types: &HashMap<ValueId, Type>,
+        locations: &mut HashMap<ValueId, Location>,
+        spill_offset: &mut i32,
+    ) {
+        if nodes.is_empty() {
+            return;
+        }
+
+        let mut degree: HashMap<_, _> = nodes.iter().map(|&&id| (id, self.degree(id))).collect();
 
         let mut removed = HashSet::new();
         let mut stack = Vec::new();
@@ -127,28 +180,23 @@ impl Interference {
         }
 
         let mut colour_map: HashMap<ValueId, Option<Reg>> = HashMap::new();
-        let mut spill_offset = 0;
-        let mut locations = HashMap::new();
 
         while let Some(id) = stack.pop() {
             let mut forbidden: HashSet<_> = self
                 .neighbours(id)
                 .iter()
-                .filter_map(|nb| match colour_map.get(nb) {
-                    Some(Some(reg)) => Some(*reg),
-                    _ => None,
-                })
+                .filter_map(|nb| colour_map.get(nb).and_then(|&r| r))
                 .collect();
 
             // values whose live range crosses a call site must not land in caller-saved
             // registers, as those are clobbered by the call
             if self.call_crossed.contains(&id) {
-                for &reg in Reg::CALLER_SAVED {
+                for &reg in calleer_saved {
                     forbidden.insert(reg);
                 }
             }
 
-            let assigned = Reg::ALL
+            let assigned = available
                 .iter()
                 .find(|reg| !forbidden.contains(reg))
                 .copied();
@@ -159,22 +207,12 @@ impl Interference {
                 Some(reg) => Location::Register(reg),
                 None => {
                     let slot_size = slot_bytes(id, &local_types) as i32;
-                    spill_offset -= slot_size;
-                    Location::Stack(spill_offset)
+                    *spill_offset -= slot_size;
+                    Location::Stack(*spill_offset)
                 }
             };
 
             locations.insert(id, location);
-        }
-
-        let raw = spill_offset.unsigned_abs();
-        // after call+push, rsp is 16-aligned again, so frame_size only needs to be a
-        // multiple of 16 to keep the stack aligned before any nested call instruction
-        let frame_size = (raw + 15) & !15;
-
-        Allocation {
-            locations,
-            frame_size,
         }
     }
 }
@@ -216,6 +254,26 @@ impl Reg {
 
     /// Registers that must be preserved across calls (callee saves them).
     pub const CALLEE_SAVED: &'static [Reg] = &[Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
+
+    /// All 16 XMM registers; all caller-saved under SysV AMD64.
+    pub const XMM_ALL: &'static [Reg] = &[
+        Reg::Xmm0,
+        Reg::Xmm1,
+        Reg::Xmm2,
+        Reg::Xmm3,
+        Reg::Xmm4,
+        Reg::Xmm5,
+        Reg::Xmm6,
+        Reg::Xmm7,
+        Reg::Xmm8,
+        Reg::Xmm9,
+        Reg::Xmm10,
+        Reg::Xmm11,
+        Reg::Xmm12,
+        Reg::Xmm13,
+        Reg::Xmm14,
+        Reg::Xmm15,
+    ];
 
     #[inline(always)]
     pub const fn as_str<'s, const S: usize>(&self) -> &'s str {

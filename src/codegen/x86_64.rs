@@ -19,6 +19,8 @@
 // we shall introduce LIR that abstracts the registers into virtual one's to permit both
 // corretly assignment and flexiblity to also implemnent the codegen in other targets (mainly arm64)
 // as it's right now, we HIGHLY couple both codegen and registers to the MIR
+// this way the LIR can servees as partially-ish target agnostic so we can correctly allocate the phyisical registers
+// without those insane verifications
 
 use crate::{
     hir::Type,
