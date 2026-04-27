@@ -42,6 +42,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     ) -> Self {
         let return_type = function
             .return_type
+            .map(|s| s.value())
             .as_ref()
             .map(From::from)
             .unwrap_or(Type::Unit);
@@ -136,7 +137,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         match statement {
             Stmt::Let(statement) => {
                 let typ = match (statement.typ, statement.value.as_ref()) {
-                    (Some(typ), _) => Type::from(typ),
+                    (Some(typ), _) => Type::from(typ.value()),
                     (_, Some(expr)) => self.infer(expr)?,
                     (None, None) => {
                         return Err(HirError {
@@ -645,8 +646,16 @@ pub fn collect_function_signatures<'h>(
         let function_id = FunctionId(signatures.len() as u32);
         functions.insert(symbol, function_id);
 
-        let params = function.params.iter().map(|p| Type::from(p.typ)).collect();
-        let return_type = function.return_type.map(From::from).unwrap_or(Type::Unit);
+        let params = function
+            .params
+            .iter()
+            .map(|p| Type::from(p.typ.value()))
+            .collect();
+        let return_type = function
+            .return_type
+            .map(|s| s.value())
+            .map(From::from)
+            .unwrap_or(Type::Unit);
         signatures.push(FunctionSignature {
             return_type,
             params,

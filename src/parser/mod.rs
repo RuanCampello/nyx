@@ -314,9 +314,9 @@ mod tests {
         assert_eq!(function.name, "add");
         assert_eq!(function.params.len(), 2);
         assert_eq!(function.params[0].name, "a");
-        assert!(matches!(function.params[0].typ, Type::I32 { .. }));
+        assert!(matches!(function.params[0].typ.value(), Type::I32));
         assert_eq!(function.params[1].name, "b");
-        assert!(matches!(function.params[1].typ, Type::I32 { .. }));
+        assert!(matches!(function.params[1].typ.value(), Type::I32));
     }
 
     #[test]

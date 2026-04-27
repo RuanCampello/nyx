@@ -176,12 +176,13 @@ impl From<&statement::Type> for Type {
     fn from(value: &statement::Type) -> Self {
         use statement::Type as AstType;
         match value {
-            AstType::I32 { .. } => Type::I32,
-            AstType::I64 { .. } => Type::I64,
-            AstType::F32 { .. } => Type::F32,
-            AstType::F64 { .. } => Type::F64,
-            AstType::Bool { .. } => Type::Bool,
-            AstType::String { .. } => Type::String,
+            AstType::I32 => Type::I32,
+            AstType::I64 => Type::I64,
+            AstType::F32 => Type::F32,
+            AstType::F64 => Type::F64,
+            AstType::Bool => Type::Bool,
+            AstType::String => Type::String,
+            AstType::I8 | AstType::U8 => todo!(),
         }
     }
 }

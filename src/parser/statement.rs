@@ -18,7 +18,7 @@ pub enum Statement<'i> {
 pub struct Let<'i> {
     pub mutable: bool,
     pub name: &'i str,
-    pub typ: Option<Type>,
+    pub typ: Option<Spanned<Type>>,
     pub value: Option<Expression<'i>>,
     pub span: Span,
 }
@@ -48,7 +48,7 @@ pub struct While<'i> {
 pub struct Function<'i> {
     pub name: &'i str,
     pub params: Vec<Parameter<'i>>,
-    pub return_type: Option<Type>,
+    pub return_type: Option<Spanned<Type>>,
     pub body: Block<'i>,
     pub span: Span,
 }
@@ -56,7 +56,7 @@ pub struct Function<'i> {
 #[derive(Debug, PartialEq)]
 pub struct Parameter<'i> {
     pub name: &'i str,
-    pub typ: Type,
+    pub typ: Spanned<Type>,
     pub span: Span,
 }
 
@@ -74,12 +74,20 @@ pub enum Else<'i> {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Type {
-    I32 { span: Span },
-    I64 { span: Span },
-    F32 { span: Span },
-    F64 { span: Span },
-    Bool { span: Span },
-    String { span: Span },
+    I8,
+    U8,
+    I32,
+    I64,
+    F32,
+    F64,
+    Bool,
+    String,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Spanned<T> {
+    span: Span,
+    value: T,
 }
 
 impl<'i> Parsable<'i> for Statement<'i> {
@@ -131,35 +139,38 @@ impl<'i> Parsable<'i> for Statement<'i> {
     }
 }
 
-impl Type {
-    #[inline(always)]
-    pub const fn span(&self) -> Span {
-        match self {
-            Self::I32 { span }
-            | Self::I64 { span }
-            | Self::F32 { span }
-            | Self::F64 { span }
-            | Self::Bool { span }
-            | Self::String { span } => *span,
-        }
+impl<T: Clone + Copy> Spanned<T> {
+    pub const fn value(&self) -> T {
+        self.value
     }
 
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl Spanned<Type> {
     pub fn parse<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let (name, span) = parser.expect_identifier()?;
-        match name {
-            "i32" => Ok(Type::I32 { span }),
-            "i64" => Ok(Type::I64 { span }),
-            "f32" => Ok(Type::F32 { span }),
-            "f64" => Ok(Type::F64 { span }),
-            "bool" => Ok(Type::Bool { span }),
-            "String" => Ok(Type::String { span }),
-            _ => Err(ParserError::new(
-                ParseErrorKind::ExpectedTypeIdentifier {
-                    found: name.to_string(),
-                },
-                span,
-            )),
-        }
+
+        let value = match name {
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "bool" => Type::Bool,
+            "String" => Type::String,
+            _ => {
+                return Err(ParserError::new(
+                    ParseErrorKind::ExpectedTypeIdentifier {
+                        found: name.to_string(),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        Ok(Self { value, span })
     }
 }
 
@@ -170,7 +181,7 @@ impl<'i> Parsable<'i> for Let<'i> {
         let (name, _) = parser.expect_identifier()?;
 
         let typ = match parser.consume_punct(Punct::Colon)? {
-            true => Some(parser.parse_node::<Type>()?),
+            true => Some(parser.parse_node::<Spanned<Type>>()?),
             false => None,
         };
 
@@ -311,7 +322,7 @@ impl<'i> Parsable<'i> for Function<'i> {
 
                     let (param_name, param_span) = parser.expect_identifier()?;
                     parser.expect_punct(Punct::Colon)?;
-                    let typ = parser.parse_node::<Type>()?;
+                    let typ = parser.parse_node::<Spanned<Type>>()?;
                     let span = Span::new(param_span.start, typ.span().end);
 
                     params.push(Parameter {
@@ -326,7 +337,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         }
 
         let return_type = match parser.consume_punct(Punct::Colon)? {
-            true => Some(parser.parse_node::<Type>()?),
+            true => Some(parser.parse_node::<Spanned<Type>>()?),
             false => None,
         };
         let body = Block::parse(parser)?;
@@ -370,8 +381,8 @@ impl<'i> Parsable<'i> for Block<'i> {
     }
 }
 
-impl<'i> Parsable<'i> for Type {
+impl<'i> Parsable<'i> for Spanned<Type> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        Type::parse(parser)
+        Spanned::<Type>::parse(parser)
     }
 }
