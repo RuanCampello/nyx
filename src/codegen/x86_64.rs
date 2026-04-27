@@ -202,7 +202,10 @@ impl<'e> FunctionEmitter<'e> {
         use crate::parser::expression::{BinaryOperator, UnaryOperator};
 
         let dest = self.place_str(&instruction.dest);
-        let suffix = instruction.dest.typ.size_suffix();
+        let typ = instruction.dest.typ;
+        let suffix = typ.size_suffix();
+        let is_float = typ.is_float();
+        let is_f32 = typ == Type::F32;
 
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
@@ -219,6 +222,17 @@ impl<'e> FunctionEmitter<'e> {
                 let moved = src != dest;
 
                 match operation {
+                    UnaryOperator::Neg if is_float => {
+                        let neg_zero = -0.0_f64;
+                        let mask_ref = self.float_label(neg_zero, is_f32, fn_name);
+                        let xor_op = if is_f32 { "xorps" } else { "xorpd" };
+
+                        if moved {
+                            emit!(self.out, "mov{suffix}    {src}, {dest}");
+                        }
+
+                        emit!(self.out, "{xor_op}    {mask_ref}, {dest}");
+                    }
                     UnaryOperator::Neg => {
                         // dest = -rhs
                         // strategy: mov rhs to dest, then neg dest
@@ -245,7 +259,11 @@ impl<'e> FunctionEmitter<'e> {
                 rhs,
                 lhs,
             } => {
+                use crate::parser::expression::BinaryOperator as B;
+
                 let is_rhs_const = matches!(rhs, Operand::Const(_));
+                let is_float = lhs.typ().is_float();
+                let is_f32 = lhs.typ() == Type::F32;
 
                 let lhs = self.operand_str(lhs, fn_name);
                 let rhs = self.operand_str(rhs, fn_name);
@@ -253,7 +271,7 @@ impl<'e> FunctionEmitter<'e> {
                 let moved = lhs != dest;
 
                 match operation {
-                    BinaryOperator::Add => {
+                    B::Add => {
                         // dest = lhs + rhs
                         if moved {
                             emit!(self.out, "mov{suffix}    {lhs}, {dest}");
@@ -261,7 +279,7 @@ impl<'e> FunctionEmitter<'e> {
                         emit!(self.out, "add{suffix}    {rhs}, {dest}");
                     }
 
-                    BinaryOperator::Sub => {
+                    B::Sub => {
                         // dest = lhs - rhs
                         if moved {
                             emit!(self.out, "mov{suffix}    {lhs}, {dest}");
@@ -269,7 +287,7 @@ impl<'e> FunctionEmitter<'e> {
                         emit!(self.out, "sub{suffix}    {rhs}, {dest}");
                     }
 
-                    BinaryOperator::Mul => {
+                    B::Mul => {
                         // dest = lhs * rhs
                         // imul can do 2-operand form: imul src, dest (dest *= src)
                         if moved {
@@ -278,13 +296,16 @@ impl<'e> FunctionEmitter<'e> {
                         emit!(self.out, "imul{suffix}   {rhs}, {dest}");
                     }
 
-                    BinaryOperator::Div => {
+                    B::Div => {
                         // FIXME: when we implement some kind of LIR we will remove those bullshit
                         // verifications like "is moved" or "is register preserved"
                         // 'cause right now we have the register allocator too tighted to the MIR
                         // so we make a very mismatch between 3-address and 2-address representation
                         // of x86_64
 
+                        if is_float {
+                            unimplemented!("no div float in this madness");
+                        }
                         // integer division is complex: requires %rax/%rdx setup
                         //
                         // requires: dividend in %eax (32-bit) or %rax (64-bit)
@@ -342,14 +363,14 @@ impl<'e> FunctionEmitter<'e> {
                     }
 
                     // comparison operators: set dest to 0 or 1
-                    BinaryOperator::Eq => self.emit_comp("sete", lhs, rhs, dest, suffix),
-                    BinaryOperator::Ne => self.emit_comp("setne", lhs, rhs, dest, suffix),
-                    BinaryOperator::Lt => self.emit_comp("setl", lhs, rhs, dest, suffix),
-                    BinaryOperator::LtEq => self.emit_comp("setle", lhs, rhs, dest, suffix),
-                    BinaryOperator::Gt => self.emit_comp("setg", lhs, rhs, dest, suffix),
-                    BinaryOperator::GtEq => self.emit_comp("setge", lhs, rhs, dest, suffix),
+                    B::Eq => self.emit_comp("sete", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::Ne => self.emit_comp("setne", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::Lt => self.emit_comp("setl", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::LtEq => self.emit_comp("setle", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::Gt => self.emit_comp("setg", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::GtEq => self.emit_comp("setge", lhs, rhs, dest, suffix, is_float, is_f32),
 
-                    BinaryOperator::And => {
+                    B::And => {
                         // logical and: both operands are bool (0 or 1)
                         if moved {
                             emit!(self.out, "mov{suffix}    {lhs}, {dest}");
@@ -357,7 +378,7 @@ impl<'e> FunctionEmitter<'e> {
                         emit!(self.out, "and{suffix}    {rhs}, {dest}");
                     }
 
-                    BinaryOperator::Or => {
+                    B::Or => {
                         if moved {
                             emit!(self.out, "mov{suffix}    {lhs}, {dest}");
                         }
@@ -495,9 +516,33 @@ impl<'e> FunctionEmitter<'e> {
         }
     }
 
+    #[inline(always)]
+    fn emit_comp(
+        &mut self,
+        set_instr: &str,
+        lhs: String,
+        rhs: String,
+        dest: String,
+        suffix: &str,
+        is_float: bool,
+        is_32: bool,
+    ) {
+        match is_float {
+            true => self.emit_float_comp(set_instr, lhs, rhs, dest, is_32),
+            false => self.emit_int_comp(set_instr, lhs, rhs, dest, suffix),
+        }
+    }
+
     /// Emit a comparison operation that sets dest to 0 or 1
     #[inline(always)]
-    fn emit_comp(&mut self, set_instr: &str, lhs: String, rhs: String, dest: String, suffix: &str) {
+    fn emit_int_comp(
+        &mut self,
+        set_instr: &str,
+        lhs: String,
+        rhs: String,
+        dest: String,
+        suffix: &str,
+    ) {
         // strategy:
         // 1. cmp rhs, lhs  (sets flags based on lhs - rhs)
         // 2. set<cc> %al   (sets low byte of %rax to 0 or 1)
@@ -509,6 +554,31 @@ impl<'e> FunctionEmitter<'e> {
         }
 
         emit!(self.out, "cmp{suffix}    {rhs}, {lhs}",);
+        emit!(self.out, "{set_instr}     %al");
+        emit!(self.out, "movzbl   %al, {dest}");
+
+        if preserves_rax {
+            emit!(self.out, "pop     %rax");
+        }
+    }
+
+    #[inline(always)]
+    fn emit_float_comp(
+        &mut self,
+        set_instr: &str,
+        lhs: String,
+        rhs: String,
+        dest: String,
+        is_f32: bool,
+    ) {
+        let ucomi = if is_f32 { "ucomiss" } else { "ucomisd" };
+        let preserves_rax = !matches!(dest.as_str(), "%al" | "%ax" | "%eax" | "%rax");
+
+        if preserves_rax {
+            emit!(self.out, "push    %rax");
+        }
+
+        emit!(self.out, "{ucomi}  {rhs}, {lhs}");
         emit!(self.out, "{set_instr}     %al");
         emit!(self.out, "movzbl   %al, {dest}");
 

@@ -198,7 +198,7 @@ impl Type {
         )
     }
 
-    pub(in crate::hir) const fn is_float(&self) -> bool {
+    pub const fn is_float(&self) -> bool {
         matches!(self, Self::F32 | Self::F64)
     }
 

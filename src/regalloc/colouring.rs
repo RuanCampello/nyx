@@ -397,8 +397,11 @@ impl Reg {
 /// stack slot size in bytes for the given value
 #[inline(always)]
 fn slot_bytes(id: ValueId, local_types: &HashMap<ValueId, Type>) -> u32 {
+    use crate::hir::Type as T;
+
     match local_types.get(&id) {
-        Some(Type::I64 | Type::String) => 8,
+        Some(T::I64 | T::U64 | T::Iptr | T::Uptr | T::String | T::Str | T::F64) => 8,
+        Some(T::F32) => 4,
         _ => 4,
     }
 }
