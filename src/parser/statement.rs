@@ -70,6 +70,7 @@ pub struct Block<'i> {
 pub enum Else<'i> {
     If(If<'i>),
     Block(Block<'i>),
+    Expr(Expression<'i>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -231,19 +232,34 @@ impl<'i> Parsable<'i> for Return<'i> {
 
 impl<'i> Parsable<'i> for If<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        // TODO: support single expression if-else's like:
-        // `
-        // if is_even(x): x;
-        // else: y;
-        // `
-        //
         let if_token = parser.expect_keyword(Keyword::If)?;
 
         let condition = Expression::parse(parser)?;
-        let then_branch = Block::parse(parser)?;
+
+        let is_single_expression = !matches!(parser.peek(), Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::OpenBrace));
+
+        let (then_branch, then_end) = match is_single_expression {
+            true => {
+                let expr = Expression::parse(parser)?;
+                let semi = parser.expect_punct(Punct::Semicolon)?;
+                let span = Span::new(expr.span().start, semi.span.end);
+                let block = Block {
+                    span,
+                    statements: vec![Statement::Expr(expr, span)],
+                };
+
+                (block, span.end)
+            }
+            false => {
+                let block = Block::parse(parser)?;
+                let end = block.span.end;
+
+                (block, end)
+            }
+        };
 
         let mut else_branch = None;
-        let mut end_pos = then_branch.span.end;
+        let mut end_pos = then_end;
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
             let Some(Ok(next_token)) = parser.peek() else {
@@ -267,15 +283,11 @@ impl<'i> Parsable<'i> for If<'i> {
                 }
 
                 _ => {
-                    let find_kind = next_token.kind.clone();
-                    let find_span = next_token.span;
-                    return Err(ParserError::new(
-                        ParseErrorKind::Expected {
-                            expected: TokenKind::Punct(Punct::OpenBrace),
-                            found: find_kind,
-                        },
-                        find_span,
-                    ));
+                    let expr = Expression::parse(parser)?;
+                    let semi = parser.expect_punct(Punct::Semicolon)?;
+
+                    end_pos = semi.span.end;
+                    else_branch = Some(Box::new(Else::Expr(expr)));
                 }
             }
         }

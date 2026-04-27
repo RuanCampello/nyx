@@ -471,8 +471,33 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                         Ok((Some(block), returns))
                     }
+
                     Else::Block(block) => {
                         let (block, returns) = self.lower_block(block, is_tail)?;
+                        Ok((Some(block), returns))
+                    }
+
+                    Else::Expr(expr) => {
+                        let hint = match is_tail && self.return_type != Type::Unit {
+                            true => Some(self.return_type),
+                            _ => None,
+                        };
+                        let lowered = self.lower_expr(expr, hint)?;
+                        let span = lowered.span;
+
+                        let stmt = match is_tail && self.return_type != Type::Unit {
+                            true => {
+                                self.assert_type(self.return_type, lowered.typ)?;
+                                Statement::Return(Some(lowered))
+                            }
+                            _ => Statement::Expr(lowered),
+                        };
+
+                        let returns = is_tail && self.return_type != Type::Unit;
+                        let block = Block {
+                            statements: vec![stmt],
+                            span,
+                        };
                         Ok((Some(block), returns))
                     }
                 }
