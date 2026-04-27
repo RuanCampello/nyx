@@ -293,7 +293,9 @@ impl<'e> FunctionEmitter<'e> {
                         if moved {
                             emit!(self.out, "mov{suffix}    {lhs}, {dest}");
                         }
-                        emit!(self.out, "imul{suffix}   {rhs}, {dest}");
+
+                        let mul = if is_float { "mul" } else { "imul" };
+                        emit!(self.out, "{mul}{suffix}   {rhs}, {dest}");
                     }
 
                     B::Div => {
@@ -405,12 +407,7 @@ impl<'e> FunctionEmitter<'e> {
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
-                    let dest_reg = match typ {
-                        Type::I32 | Type::Bool => Self::ARG_REGS_32[idx],
-                        Type::I64 | Type::String => Self::ARG_REGS_64[idx],
-                        _ => unimplemented!("unsupported argument type"),
-                    };
-
+                    let dest_reg = arg_reg(typ, idx);
                     if src != dest_reg {
                         emit!(self.out, "mov{suffix}    {src}, {dest_reg}");
                     }
@@ -432,15 +429,12 @@ impl<'e> FunctionEmitter<'e> {
                 // move return value from %rax/%eax to destination
                 let ret_type = instruction.dest.typ;
                 let suffix = ret_type.size_suffix();
-                let src_reg = match ret_type {
-                    Type::I32 | Type::Bool => "%eax",
-                    Type::I64 | Type::String => "%rax",
-                    Type::Unit => return,
-                    _ => unimplemented!(),
-                };
+                let src_reg = return_reg(ret_type);
 
-                if dest != src_reg {
-                    emit!(self.out, "mov{suffix}    {src_reg}, {dest}");
+                if let Some(src_reg) = src_reg {
+                    if dest != src_reg {
+                        emit!(self.out, "mov{suffix}    {src_reg}, {dest}");
+                    }
                 }
             }
         }
@@ -597,15 +591,14 @@ impl<'e> FunctionEmitter<'e> {
                 // move return value to %rax/%eax
                 let src = self.operand_str(operand, fn_name);
                 let suffix = operand.typ().size_suffix();
-                let ret_reg = match operand.typ() {
-                    Type::I32 | Type::Bool => "%eax",
-                    Type::I64 | Type::String => "%rax",
-                    _ => unimplemented!(),
-                };
+                let ret_reg = return_reg(operand.typ());
 
-                if src != ret_reg {
-                    emit!(self.out, "mov{suffix}    {src}, {ret_reg}");
+                if let Some(reg) = ret_reg {
+                    if src != reg {
+                        emit!(self.out, "mov{suffix}    {src}, {reg}");
+                    }
                 }
+
                 if !is_last {
                     emit!(self.out, "jmp      {label}");
                 }
