@@ -11,6 +11,15 @@
 
 #![allow(unused)]
 
+// FIXME: currently, we are generating gas assembly from MIR which turns out to be a very bad idea
+// we don't are in the correct level of abstraction to deal with assembly code yet
+// there are a lot of hardcoded verifications to see if a value was moved before assignment or if
+// rax or rdx is preserved, which is completly BS
+// because the register allocator doesn't have the context and abstraction over the assembly
+// we shall introduce LIR that abstracts the registers into virtual one's to permit both
+// corretly assignment and flexiblity to also implemnent the codegen in other targets (mainly arm64)
+// as it's right now, we HIGHLY couple both codegen and registers to the MIR
+
 use crate::{
     hir::Type,
     mir::{Const, Function, Instruction, Mir, Operand, Place, Terminator},

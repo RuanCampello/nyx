@@ -3,8 +3,6 @@
 //! HIR is a tree-structured, fully resolved and typed.
 //! Identifiers are lowered to stable numeric IDs.
 
-use std::hint::unreachable_unchecked;
-
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},
@@ -204,6 +202,7 @@ impl Type {
         matches!(self, Self::F32 | Self::F64)
     }
 
+    #[allow(unused)]
     pub(in crate::hir) const fn is_signed(&self) -> bool {
         matches!(
             self,
@@ -211,6 +210,7 @@ impl Type {
         )
     }
 
+    #[allow(unused)]
     pub(in crate::hir) const fn is_unsigned(&self) -> bool {
         matches!(
             self,
