@@ -66,8 +66,9 @@ pub enum Punct {
     GtEq,   // >=
 
     // logical
-    And, // &&
-    Or,  // ||
+    And,       // &&
+    Or,        // ||
+    Ampersand, // &
 
     OpenParen,    // (
     CloseParen,   // )
@@ -174,6 +175,7 @@ impl Punct {
             Self::GtEq => ">=",
             Self::And => "&&",
             Self::Or => "||",
+            Self::Ampersand => "&",
             Self::OpenParen => "(",
             Self::CloseParen => ")",
             Self::OpenBrace => "{",

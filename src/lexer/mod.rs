@@ -131,10 +131,7 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('&') {
                     true => self.token(Punct::And, start),
-                    _ => {
-                        return Err(LexError::unexpected_char('&', start)
-                            .with_help("did you mean `&&` (logical and)?"));
-                    }
+                    false => self.token(Punct::Ampersand, start),
                 }
             }
 
@@ -244,34 +241,50 @@ mod tests {
 
     #[test]
     fn punctuation() {
-        let ks = kinds("( ) { } [ ] : ; , . + - * / = == != < > <= >= -> && ||");
-        let expected = vec![
-            TokenKind::Punct(Punct::OpenParen),
-            TokenKind::Punct(Punct::CloseParen),
-            TokenKind::Punct(Punct::OpenBrace),
-            TokenKind::Punct(Punct::CloseBrace),
-            TokenKind::Punct(Punct::OpenBracket),
-            TokenKind::Punct(Punct::CloseBracket),
-            TokenKind::Punct(Punct::Colon),
-            TokenKind::Punct(Punct::Semicolon),
-            TokenKind::Punct(Punct::Comma),
-            TokenKind::Punct(Punct::Dot),
-            TokenKind::Punct(Punct::Plus),
-            TokenKind::Punct(Punct::Minus),
-            TokenKind::Punct(Punct::Star),
-            TokenKind::Punct(Punct::Slash),
-            TokenKind::Punct(Punct::Eq),
-            TokenKind::Punct(Punct::EqEq),
-            TokenKind::Punct(Punct::BangEq),
-            TokenKind::Punct(Punct::Lt),
-            TokenKind::Punct(Punct::Gt),
-            TokenKind::Punct(Punct::LtEq),
-            TokenKind::Punct(Punct::GtEq),
-            TokenKind::Punct(Punct::Arrow),
-            TokenKind::Punct(Punct::And),
-            TokenKind::Punct(Punct::Or),
-        ];
+        let ks = kinds("( ) { } [ ] : ; , . + - * / = == != < > <= >= -> & && ||");
+        let expected = [
+            Punct::OpenParen,
+            Punct::CloseParen,
+            Punct::OpenBrace,
+            Punct::CloseBrace,
+            Punct::OpenBracket,
+            Punct::CloseBracket,
+            Punct::Colon,
+            Punct::Semicolon,
+            Punct::Comma,
+            Punct::Dot,
+            Punct::Plus,
+            Punct::Minus,
+            Punct::Star,
+            Punct::Slash,
+            Punct::Eq,
+            Punct::EqEq,
+            Punct::BangEq,
+            Punct::Lt,
+            Punct::Gt,
+            Punct::LtEq,
+            Punct::GtEq,
+            Punct::Arrow,
+            Punct::Ampersand,
+            Punct::And,
+            Punct::Or,
+        ]
+        .map(|p| TokenKind::Punct(p))
+        .to_vec();
+
         assert_eq!(ks, expected);
+    }
+
+    #[test]
+    fn and_vs_ampersand() {
+        let ks = kinds("& && && &");
+
+        assert_eq!(
+            [Punct::Ampersand, Punct::And, Punct::And, Punct::Ampersand]
+                .map(|p| TokenKind::Punct(p))
+                .to_vec(),
+            ks
+        )
     }
 
     #[test]
