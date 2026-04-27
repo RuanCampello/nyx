@@ -266,6 +266,12 @@ impl<'i> Parsable<'i> for If<'i> {
 
         let (then_branch, then_end) = match has_block {
             true => {
+                let block = Block::parse(parser)?;
+                let end = block.span.end;
+
+                (block, end)
+            }
+            false => {
                 let expr = Expression::parse(parser)?;
                 let semi = parser.expect_punct(Punct::Semicolon)?;
                 let span = Span::new(expr.span().start, semi.span.end);
@@ -275,12 +281,6 @@ impl<'i> Parsable<'i> for If<'i> {
                 };
 
                 (block, span.end)
-            }
-            false => {
-                let block = Block::parse(parser)?;
-                let end = block.span.end;
-
-                (block, end)
             }
         };
 
