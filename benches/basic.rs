@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-const PROGRAMS: &[(&str, &str)] = &[("mandelbrot", include_str!("../tests/mandelbrot.nyx"))];
+const PROGRAMS: &[(&str, &str)] = &[
+    ("mandelbrot", include_str!("../tests/mandelbrot.nyx")),
+    ("nth_prime", include_str!("../tests/nth_prime.nyx")),
+];
 
 fn build(name: &str, asm: &str) -> PathBuf {
     let temp_dir = std::env::temp_dir();
@@ -57,7 +60,7 @@ fn execution(c: &mut Criterion) {
     use libloading::{Library, Symbol};
 
     let mut group = c.benchmark_group("execution");
-    group.warm_up_time(Duration::from_millis(500));
+    group.warm_up_time(Duration::from_secs(4));
 
     for (name, src) in PROGRAMS {
         let asm = nyx::compile(src).expect("program must be compilable");

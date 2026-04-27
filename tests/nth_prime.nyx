@@ -1,0 +1,46 @@
+// nth_prime.nyx — trial division and nested loops
+//
+// stresses register allocation, loop branching, and integer math
+//
+// exit code: nth_prime(50) = 229
+
+fn modulo(a: i32, b: i32): i32 {
+    a - (a / b) * b
+}
+
+fn is_prime(n: i32): bool {
+    if n <= 1 { return false; }
+    if n == 2 { return true; }
+
+    let mut i: i32 = 2;
+    let mut prime: bool = true;
+
+    while i * i <= n && prime {
+        if modulo(n, i) == 0 {
+            prime = false;
+        }
+        i = i + 1;
+    }
+
+    prime
+}
+
+fn nth_prime(target: i32): i32 {
+    let mut count: i32 = 0;
+    let mut current: i32 = 2;
+    let mut last_prime: i32 = 2;
+    
+    while count < target {
+        if is_prime(current) {
+            count = count + 1;
+            last_prime = current;
+        }
+        current = current + 1;
+    }
+    
+    last_prime
+}
+
+fn main(): i32 {
+    nth_prime(50)
+}

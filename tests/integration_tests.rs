@@ -41,6 +41,16 @@ const CASES: &[Case] = &[
         file: "tests/math.nyx",
         exit_code: Some(42),
     },
+    // Case {
+    //     name: "nth_prime",
+    //     file: "tests/nth_prime.nyx",
+    //     exit_code: Some(229),
+    // },
+    // Case {
+    //     name: "mandelbrot",
+    //     file: "tests/mandelbrot.nyx",
+    //     exit_code: Some(232),
+    // },
     Case {
         name: "binary_search",
         file: "tests/binary_search.nyx",
