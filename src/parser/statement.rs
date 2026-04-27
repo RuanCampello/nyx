@@ -211,6 +211,12 @@ impl<'i> Parsable<'i> for Return<'i> {
 
 impl<'i> Parsable<'i> for If<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        // TODO: support single expression if-else's like:
+        // `
+        // if is_even(x): x;
+        // else: y;
+        // `
+        //
         let if_token = parser.expect_keyword(Keyword::If)?;
 
         let condition = Expression::parse(parser)?;
@@ -220,16 +226,27 @@ impl<'i> Parsable<'i> for If<'i> {
         let mut end_pos = then_branch.span.end;
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
-            if let Some(Ok(next_token)) = parser.peek() {
-                if next_token.kind == TokenKind::Keyword(Keyword::If) {
+            let Some(Ok(next_token)) = parser.peek() else {
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
+            };
+
+            match next_token.kind {
+                TokenKind::Keyword(Keyword::If) => {
                     let else_if = If::parse(parser)?;
                     end_pos = else_if.span.end;
                     else_branch = Some(Box::new(Else::If(else_if)));
-                } else if next_token.kind == TokenKind::Punct(Punct::OpenBrace) {
+                }
+
+                TokenKind::Punct(Punct::OpenBrace) => {
                     let else_block = Block::parse(parser)?;
                     end_pos = else_block.span.end;
                     else_branch = Some(Box::new(Else::Block(else_block)));
-                } else {
+                }
+
+                _ => {
                     let find_kind = next_token.kind.clone();
                     let find_span = next_token.span;
                     return Err(ParserError::new(
@@ -240,11 +257,6 @@ impl<'i> Parsable<'i> for If<'i> {
                         find_span,
                     ));
                 }
-            } else {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
             }
         }
 

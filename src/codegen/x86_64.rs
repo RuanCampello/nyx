@@ -247,19 +247,36 @@ impl<'e> FunctionEmitter<'e> {
                     }
 
                     BinaryOperator::Div => {
+                        // FIXME: when we implement some kind of LIR we will remove those bullshit
+                        // verifications like "is moved" or "is register preserved"
+                        // 'cause right now we have the register allocator too tighted to the MIR
+                        // so we make a very mismatch between 3-address and 2-address representation
+                        // of x86_64
+
                         // integer division is complex: requires %rax/%rdx setup
                         //
                         // requires: dividend in %eax (32-bit) or %rax (64-bit)
                         //           %edx/%rdx must be sign-extended from %eax/%rax
                         // result: quotient in %eax/%rax, remainder in %edx/%rdx
 
-                        let (rax, extend_instr) = match instruction.dest.typ {
-                            Type::I32 => ("%eax", "cltd"), // sign-extend eax -> edx:eax
-                            Type::I64 => ("%rax", "cqto"), // sign-extend rax -> rdx:rax
+                        let (rax, rdx, extend_instr) = match instruction.dest.typ {
+                            Type::I32 => ("%eax", "%edx", "cltd"), // sign-extend eax -> edx:eax
+                            Type::I64 => ("%rax", "%rdx", "cqto"), // sign-extend rax -> rdx:rax
                             _ => unreachable!(),
                         };
 
-                        if moved {
+                        let preserves_rax = dest != rax;
+                        let preserves_rdx = dest != rdx;
+
+                        if preserves_rdx {
+                            emit!(self.out, "push   %rdx");
+                        }
+
+                        if preserves_rax {
+                            emit!(self.out, "push   %rax");
+                        }
+
+                        if lhs != rax {
                             // move dividend (lhs) to %rax/%eax
                             emit!(self.out, "mov{suffix}    {lhs}, {rax}");
                         }
@@ -280,8 +297,15 @@ impl<'e> FunctionEmitter<'e> {
                             }
                         };
 
-                        if moved {
+                        if dest != rax {
                             emit!(self.out, "mov{suffix}    {rax}, {dest}");
+                        }
+
+                        if preserves_rax {
+                            emit!(self.out, "pop     %rax");
+                        }
+                        if preserves_rdx {
+                            emit!(self.out, "pop     %rdx");
                         }
                     }
 

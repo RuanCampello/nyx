@@ -15,28 +15,28 @@ pub enum ParseErrorKind<'i> {
     #[error(transparent)]
     Lexical(#[from] LexError),
 
-    #[error("expected `{expected}`, but found {found}")]
+    #[error("expected '{expected}', but found '{found}'")]
     Expected {
         expected: TokenKind<'i>,
         found: TokenKind<'i>,
     },
 
-    #[error("expected identifier, found {found}")]
+    #[error("expected identifier, found '{found}'")]
     ExpectedIdentifier { found: TokenKind<'i> },
 
     #[error("unexpected identifier for assigment target")]
     UnexpectedIdentifier,
 
-    #[error("unexpected binary operator: {found}")]
+    #[error("unexpected binary operator: '{found}'")]
     InvalidBinaryOperator { found: TokenKind<'i> },
 
-    #[error("unexpected unary operator: {found}")]
+    #[error("unexpected unary operator: '{found}'")]
     InvalidUnaryOperator { found: TokenKind<'i> },
 
-    #[error("expected expression, found: {found}")]
+    #[error("expected expression, found: '{found}'")]
     ExpectedExpression { found: TokenKind<'i> },
 
-    #[error("expected type identifier, found `{found}`")]
+    #[error("expected type identifier, found '{found}'")]
     ExpectedTypeIdentifier { found: String },
 
     #[error("unexpected end of file")]
