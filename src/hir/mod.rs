@@ -86,12 +86,21 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[allow(unused)]
 pub enum Type {
+    I8,
+    U8,
+    I16,
+    U16,
     I32,
     I64,
     F32,
     F64,
     Bool,
+    Uptr,
+    Iptr,
+    Char,
     String,
     Unit,
 }
@@ -182,7 +191,7 @@ impl From<&statement::Type> for Type {
             AstType::F64 => Type::F64,
             AstType::Bool => Type::Bool,
             AstType::String => Type::String,
-            AstType::I8 | AstType::U8 => todo!(),
+            _ => unimplemented!("type: {value:?}"),
         }
     }
 }
@@ -190,11 +199,18 @@ impl From<&statement::Type> for Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            Type::I8 => "i8",
+            Type::U8 => "u8",
+            Type::I16 => "i16",
+            Type::U16 => "u16",
             Type::I32 => "i32",
             Type::I64 => "i64",
             Type::F32 => "f32",
             Type::F64 => "f64",
             Type::Bool => "bool",
+            Type::Char => "char",
+            Type::Uptr => "uptr",
+            Type::Iptr => "iptr",
             Type::String => "String",
             Type::Unit => "unit",
         };

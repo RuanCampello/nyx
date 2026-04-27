@@ -520,7 +520,7 @@ impl Type {
             Type::I32 | Type::Bool => "l",
             Type::I64 | Type::String => "q",
             Type::F32 | Type::F64 => panic!("float size suffix"),
-            Type::Unit => unreachable!(),
+            _ => unreachable!(),
         }
     }
 }
@@ -532,6 +532,7 @@ const fn reg_name<'r>(reg: Reg, typ: Type) -> &'r str {
         Type::I64 | Type::String => reg.as_str_64(),
         Type::F32 | Type::F64 => panic!("float registers not yet supported"),
         Type::Unit => panic!("unit type has no runtime representation"),
+        _ => unimplemented!(),
     }
 }
 

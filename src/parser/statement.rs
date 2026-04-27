@@ -72,15 +72,24 @@ pub enum Else<'i> {
     Block(Block<'i>),
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[non_exhaustive]
+#[allow(unused)]
 pub enum Type {
     I8,
     U8,
+    I16,
+    U16,
     I32,
+    U32,
     I64,
+    U64,
     F32,
     F64,
+    Uptr,
+    Iptr,
     Bool,
+    Char,
     String,
 }
 
