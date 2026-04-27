@@ -1,0 +1,22 @@
+fn sum_f32(a: f32): f32 {
+    a + 2.5
+}
+
+fn test_f64(a: f64): f64 {
+    let c = a * 10.0;
+    c / 2.0
+}
+
+fn main(): i32 {
+    let c = sum_f32(1.5);
+    let z = test_f64(5.0);
+    
+    if c == 4.0 {
+        if z == 25.0 {
+            return 42;
+        }
+        return 3;
+    }
+    
+    2
+}

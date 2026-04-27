@@ -3,6 +3,8 @@
 //! HIR is a tree-structured, fully resolved and typed.
 //! Identifiers are lowered to stable numeric IDs.
 
+use std::hint::unreachable_unchecked;
+
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},

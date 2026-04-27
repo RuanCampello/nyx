@@ -9,12 +9,14 @@
 //! - Return: `%rax` (32-bit result in `%eax`)
 //! - Spills: `-N(%rbp)` stack slots
 
+#![allow(unused)]
+
 use crate::{
     hir::Type,
     mir::{Const, Function, Instruction, Mir, Operand, Place, Terminator},
     regalloc::{Allocation, Location, Reg},
 };
-use std::fmt::{Display, Write};
+use std::{borrow::Cow, fmt::Write};
 
 struct FunctionEmitter<'e> {
     out: &'e mut String,
@@ -24,17 +26,27 @@ struct FunctionEmitter<'e> {
     all_functions: &'e [Function],
     saved_regs: Vec<Reg>,
     symbols: &'e [String],
+
+    float_pool: Vec<FloatConst<'e>>,
+    float_pool_counter: u32,
+}
+
+/// A literal float constant that needs a `.rodata` label
+struct FloatConst<'e> {
+    label: Cow<'e, str>,
+    bits: u64,
+    is_32: bool,
 }
 
 macro_rules! emit {
     ($dst:expr, $($arg:tt)*) => {
-        writeln!($dst, "    {}", format_args!($($arg)*)).unwrap();
+        writeln!($dst, "    {}", format_args!($($arg)*)).unwrap()
     };
 }
 
 macro_rules! label {
     ($dst:expr, $($arg:tt)*) => {
-        writeln!($dst, "{}", format_args!($($arg)*)).unwrap();
+        writeln!($dst, "{}", format_args!($($arg)*)).unwrap()
     }}
 
 /// Emit full assembly program.
@@ -70,8 +82,15 @@ pub fn emit(mir: &Mir) -> String {
 impl<'e> FunctionEmitter<'e> {
     // System V AMD64 calling convention for function calls
 
+    const ARG_REGS_8: &'e [&'e str] = &["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
+    const ARG_REGS_16: &'e [&'e str] = &["%di", "%si", "%dx", "%cx", "%r8w", "%r9w"];
     const ARG_REGS_32: &'e [&'e str] = &["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
     const ARG_REGS_64: &'e [&'e str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+    /// float arguments go from xmm0 to xmm7 in order
+    const XMM_ARG_REGS: &'e [&'e str] = &[
+        "%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7",
+    ];
 
     fn new(
         out: &'e mut String,
@@ -98,6 +117,8 @@ impl<'e> FunctionEmitter<'e> {
             symbols,
             all_functions,
             saved_regs,
+            float_pool: Vec::new(),
+            float_pool_counter: 0,
         }
     }
 
@@ -114,7 +135,7 @@ impl<'e> FunctionEmitter<'e> {
 
             // emit all instructions in the block
             for instr in &block.instructions {
-                self.emit_instruction(instr);
+                self.emit_instruction(instr, fn_name);
             }
 
             // emit the block terminator
@@ -136,7 +157,7 @@ impl<'e> FunctionEmitter<'e> {
         //
         // ABI requires them to be preserved across calls (callers depend on this)
         for reg in &self.saved_regs {
-            emit!(self.out, "push    %{}", reg.as_str_64());
+            emit!(self.out, "push    %{}", reg.as_str::<64>());
         }
 
         if frame_size > 0 {
@@ -158,24 +179,24 @@ impl<'e> FunctionEmitter<'e> {
 
         // restore callee-saved registers in reverse push order
         for reg in self.saved_regs.iter().copied().rev() {
-            emit!(self.out, "pop     %{}", reg.as_str_64());
+            emit!(self.out, "pop     %{}", reg.as_str::<64>());
         }
 
         emit!(self.out, "pop     %rbp");
         emit!(self.out, "ret");
     }
 
-    fn emit_instruction(&mut self, instruction: &Instruction) {
+    fn emit_instruction(&mut self, instruction: &Instruction, fn_name: &str) {
         use crate::mir::InstructionKind;
         use crate::parser::expression::{BinaryOperator, UnaryOperator};
 
-        let dest = place_str(&instruction.dest, self.allocation, &self.saved_regs);
+        let dest = self.place_str(&instruction.dest);
         let suffix = instruction.dest.typ.size_suffix();
 
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 // dest = operand
-                let src = operand_str(operand, self.allocation, &self.saved_regs);
+                let src = self.operand_str(operand, fn_name);
                 // this arise after register allocation when two values coalesced to the same location
                 if src != dest {
                     emit!(self.out, "mov{suffix}    {src}, {dest}");
@@ -183,7 +204,7 @@ impl<'e> FunctionEmitter<'e> {
             }
 
             InstructionKind::Unary { operation, rhs } => {
-                let src = operand_str(rhs, self.allocation, &self.saved_regs);
+                let src = self.operand_str(rhs, fn_name);
                 let moved = src != dest;
 
                 match operation {
@@ -215,8 +236,8 @@ impl<'e> FunctionEmitter<'e> {
             } => {
                 let is_rhs_const = matches!(rhs, Operand::Const(_));
 
-                let lhs = operand_str(lhs, self.allocation, &self.saved_regs);
-                let rhs = operand_str(rhs, self.allocation, &self.saved_regs);
+                let lhs = self.operand_str(lhs, fn_name);
+                let rhs = self.operand_str(rhs, fn_name);
 
                 let moved = lhs != dest;
 
@@ -339,7 +360,7 @@ impl<'e> FunctionEmitter<'e> {
                 let stack_args = args.iter().skip(6).rev().collect::<Vec<_>>();
 
                 for arg in stack_args {
-                    let src = operand_str(arg, self.allocation, &self.saved_regs);
+                    let src = self.operand_str(arg, fn_name);
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
@@ -348,7 +369,7 @@ impl<'e> FunctionEmitter<'e> {
 
                 // move the first 6 args to registers
                 for (idx, arg) in args.iter().take(6).enumerate() {
-                    let src = operand_str(arg, self.allocation, &self.saved_regs);
+                    let src = self.operand_str(arg, fn_name);
                     let typ = arg.typ();
                     let suffix = typ.size_suffix();
 
@@ -393,6 +414,76 @@ impl<'e> FunctionEmitter<'e> {
         }
     }
 
+    #[inline(always)]
+    fn flush_float_pool(&mut self) {
+        if self.float_pool.is_empty() {
+            return;
+        }
+
+        label!(self.out, ".section .rodata");
+
+        for float in &self.float_pool {
+            label!(self.out, ".align {}", if float.is_32 { 4 } else { 8 });
+            label!(self.out, "{}:", float.label);
+
+            match float.is_32 {
+                true => label!(self.out, "    .long {}", float.bits as u32),
+                false => label!(self.out, "    .quad {}", float.bits),
+            }
+        }
+
+        label!(self.out, ".text");
+    }
+
+    fn float_label<'f>(&'f mut self, value: f64, is_32: bool, fn_name: &str) -> String {
+        let bits = match is_32 {
+            true => (value as f32).to_bits() as u64,
+            _ => value.to_bits(),
+        };
+
+        for float in &self.float_pool {
+            if float.bits == bits && float.is_32 == is_32 {
+                return format!("{}(%rip)", float.label);
+            }
+        }
+
+        let idx = self.float_pool_counter;
+        self.float_pool_counter += 1;
+        let label = format!(".LC_{fn_name}_{idx}");
+
+        self.float_pool.push(FloatConst {
+            is_32,
+            bits,
+            label: Cow::Owned(label.clone()),
+        });
+
+        format!("{label}(%rip)")
+    }
+
+    fn operand_str(&mut self, op: &Operand, fn_name: &str) -> String {
+        match op {
+            Operand::Place(place) => self.place_str(place),
+            Operand::Const(Const::Float(value, typ)) => {
+                let is_32 = *typ == Type::F32;
+
+                self.float_label(*value, is_32, fn_name)
+            }
+            Operand::Const(c) => c.to_general_string(),
+        }
+    }
+
+    #[inline(always)]
+    fn place_str(&mut self, place: &Place) -> String {
+        let loc = self.allocation.location_of(place.id);
+        match loc {
+            Location::Register(reg) => format!("%{}", reg_name(reg, place.typ)),
+            Location::Stack(offset) => {
+                let offset = adjust_stack_offset(offset, &self.saved_regs);
+                format!("{offset}(%rbp)")
+            }
+        }
+    }
+
     /// Emit a comparison operation that sets dest to 0 or 1
     #[inline(always)]
     fn emit_comp(&mut self, set_instr: &str, lhs: String, rhs: String, dest: String, suffix: &str) {
@@ -423,7 +514,7 @@ impl<'e> FunctionEmitter<'e> {
             }
             Terminator::Return(Some(operand)) => {
                 // move return value to %rax/%eax
-                let src = operand_str(operand, self.allocation, &self.saved_regs);
+                let src = self.operand_str(operand, fn_name);
                 let suffix = operand.typ().size_suffix();
                 let ret_reg = match operand.typ() {
                     Type::I32 | Type::Bool => "%eax",
@@ -448,7 +539,7 @@ impl<'e> FunctionEmitter<'e> {
                 then_block,
                 else_block,
             } => {
-                let cond = operand_str(condition, self.allocation, &self.saved_regs);
+                let cond = self.operand_str(condition, fn_name);
 
                 // test if condition is non-zero (true)
                 emit!(self.out, "testl    {cond}, {cond}");
@@ -510,6 +601,7 @@ impl Function {
         emitter.emit_prologue(&name, frame_size);
         emitter.emit_body(&name, &label);
         emitter.emit_epilogue(&label, frame_size);
+        emitter.flush_float_pool();
     }
 }
 
@@ -517,10 +609,13 @@ impl Type {
     #[inline(always)]
     const fn size_suffix<'s>(&self) -> &'s str {
         match self {
-            Type::I32 | Type::Bool => "l",
-            Type::I64 | Type::String => "q",
-            Type::F32 | Type::F64 => panic!("float size suffix"),
-            _ => unreachable!(),
+            Type::I8 | Type::U8 => "b",
+            Type::I16 | Type::U16 => "w",
+            Type::I32 | Type::U32 | Type::Bool | Type::Char => "l",
+            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => "q",
+            Type::F32 => "ss",
+            Type::F64 => "sd",
+            Type::Unit => unreachable!(),
         }
     }
 }
@@ -528,11 +623,41 @@ impl Type {
 #[inline(always)]
 const fn reg_name<'r>(reg: Reg, typ: Type) -> &'r str {
     match typ {
-        Type::I32 | Type::Bool => reg.as_str_32(),
-        Type::I64 | Type::String => reg.as_str_64(),
-        Type::F32 | Type::F64 => panic!("float registers not yet supported"),
+        Type::I8 | Type::U8 => reg.as_str::<8>(),
+        Type::I16 | Type::U16 => reg.as_str::<16>(),
+        Type::I32 | Type::U32 | Type::Bool | Type::Char => reg.as_str::<32>(),
+        Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::String | Type::Str => {
+            reg.as_str::<64>()
+        }
+        Type::F32 | Type::F64 => reg.as_str_xmm(),
         Type::Unit => panic!("unit type has no runtime representation"),
-        _ => unimplemented!(),
+    }
+}
+
+#[inline(always)]
+const fn return_reg<'s>(typ: Type) -> Option<&'s str> {
+    // FIXME: decople from system-V
+    match typ {
+        Type::I8 | Type::U8 => Some("%al"),
+        Type::I16 | Type::U16 => Some("%ax"),
+        Type::I32 | Type::U32 | Type::Bool | Type::Char => Some("%eax"),
+        Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::String | Type::Str => Some("%rax"),
+        Type::F32 | Type::F64 => Some("%xmm0"),
+        Type::Unit => None,
+    }
+}
+
+#[inline(always)]
+const fn arg_reg<'s>(typ: Type, idx: usize) -> &'s str {
+    match typ {
+        Type::I8 | Type::U8 => FunctionEmitter::ARG_REGS_8[idx],
+        Type::I16 | Type::U16 => FunctionEmitter::ARG_REGS_16[idx],
+        Type::I32 | Type::U32 | Type::Bool | Type::Char => FunctionEmitter::ARG_REGS_32[idx],
+        Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::String | Type::Str => {
+            FunctionEmitter::ARG_REGS_64[idx]
+        }
+        Type::F32 | Type::F64 => FunctionEmitter::XMM_ARG_REGS[idx],
+        Type::Unit => unreachable!(),
     }
 }
 
@@ -542,38 +667,6 @@ fn function_label(symbol: usize, symbols: &[String]) -> String {
         .get(symbol)
         .map(|name| format!("nyx_{name}"))
         .unwrap_or_else(|| format!("nyx_func_{symbol}"))
-}
-
-/// Format an operand as AT&T assembly source
-#[inline(always)]
-fn operand_str(op: &Operand, alloc: &Allocation, saved_regs: &[Reg]) -> String {
-    match op {
-        Operand::Place(place) => place_str(place, alloc, saved_regs),
-        Operand::Const(c) => c.to_string(),
-    }
-}
-
-impl Display for Const {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Const::Int(n, _) => write!(f, "${n}"),
-            Const::Bool(b) => write!(f, "${}", if *b { 1 } else { 0 }),
-            Const::Float(_, _) => unimplemented!("float constants not yet supported"),
-            Const::Unit => unreachable!("Unit constant has no runtime representation"),
-        }
-    }
-}
-
-#[inline(always)]
-fn place_str(place: &Place, allocation: &Allocation, saved_regs: &[Reg]) -> String {
-    let loc = allocation.location_of(place.id);
-    match loc {
-        Location::Register(reg) => format!("%{}", reg_name(reg, place.typ)),
-        Location::Stack(offset) => {
-            let offset = adjust_stack_offset(offset, saved_regs);
-            format!("{offset}(%rbp)")
-        }
-    }
 }
 
 #[inline(always)]

@@ -22,7 +22,7 @@ pub struct Allocation {
     pub(crate) frame_size: u32,
 }
 
-/// x86-64 general-purpose registers available for allocation.
+/// x86-64 physical register
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reg {
     // caller-saved (clobbered across calls: safe only for values that don't cross call sites)
@@ -41,6 +41,24 @@ pub enum Reg {
     R13,
     R14,
     R15,
+
+    // XMM (all caller-saved under SysV AMD64)
+    Xmm0,
+    Xmm1,
+    Xmm2,
+    Xmm3,
+    Xmm4,
+    Xmm5,
+    Xmm6,
+    Xmm7,
+    Xmm8,
+    Xmm9,
+    Xmm10,
+    Xmm11,
+    Xmm12,
+    Xmm13,
+    Xmm14,
+    Xmm15,
 }
 
 /// Where a value lives in after allocation
@@ -199,7 +217,84 @@ impl Reg {
     /// Registers that must be preserved across calls (callee saves them).
     pub const CALLEE_SAVED: &'static [Reg] = &[Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
 
-    pub const fn as_str_32<'s>(self) -> &'s str {
+    #[inline(always)]
+    pub const fn as_str<'s, const S: usize>(&self) -> &'s str {
+        match S {
+            8 => self.as_str_8(),
+            16 => self.as_str_16(),
+            32 => self.as_str_32(),
+            64 => self.as_str_64(),
+            _ => panic!("invalid register size"),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str_xmm<'s>(self) -> &'s str {
+        match self {
+            Reg::Xmm0 => "xmm0",
+            Reg::Xmm1 => "xmm1",
+            Reg::Xmm2 => "xmm2",
+            Reg::Xmm3 => "xmm3",
+            Reg::Xmm4 => "xmm4",
+            Reg::Xmm5 => "xmm5",
+            Reg::Xmm6 => "xmm6",
+            Reg::Xmm7 => "xmm7",
+            Reg::Xmm8 => "xmm8",
+            Reg::Xmm9 => "xmm9",
+            Reg::Xmm10 => "xmm10",
+            Reg::Xmm11 => "xmm11",
+            Reg::Xmm12 => "xmm12",
+            Reg::Xmm13 => "xmm13",
+            Reg::Xmm14 => "xmm14",
+            Reg::Xmm15 => "xmm15",
+            _ => panic!("not an XMM register"),
+        }
+    }
+
+    #[inline(always)]
+    const fn as_str_8<'s>(self) -> &'s str {
+        match self {
+            Reg::Rax => "al",
+            Reg::Rcx => "cl",
+            Reg::Rdx => "dl",
+            Reg::Rsi => "sil",
+            Reg::Rdi => "dil",
+            Reg::R8 => "r8b",
+            Reg::R9 => "r9b",
+            Reg::R10 => "r10b",
+            Reg::R11 => "r11b",
+            Reg::Rbx => "bl",
+            Reg::R12 => "r12b",
+            Reg::R13 => "r13b",
+            Reg::R14 => "r14b",
+            Reg::R15 => "r15b",
+            _ => panic!("not a GP register"),
+        }
+    }
+
+    #[inline(always)]
+    const fn as_str_16<'s>(self) -> &'s str {
+        match self {
+            Reg::Rax => "ax",
+            Reg::Rcx => "cx",
+            Reg::Rdx => "dx",
+            Reg::Rsi => "si",
+            Reg::Rdi => "di",
+            Reg::R8 => "r8w",
+            Reg::R9 => "r9w",
+            Reg::R10 => "r10w",
+            Reg::R11 => "r11w",
+            Reg::Rbx => "bx",
+            Reg::R12 => "r12w",
+            Reg::R13 => "r13w",
+            Reg::R14 => "r14w",
+            Reg::R15 => "r15w",
+            _ => panic!("not a GP register"),
+        }
+    }
+
+    #[inline(always)]
+    const fn as_str_32<'s>(self) -> &'s str {
         match self {
             Reg::Rax => "eax",
             Reg::Rcx => "ecx",
@@ -215,10 +310,12 @@ impl Reg {
             Reg::R13 => "r13d",
             Reg::R14 => "r14d",
             Reg::R15 => "r15d",
+            _ => panic!("not a GP register"),
         }
     }
 
-    pub const fn as_str_64<'s>(self) -> &'s str {
+    #[inline(always)]
+    const fn as_str_64<'s>(self) -> &'s str {
         match self {
             Reg::Rax => "rax",
             Reg::Rcx => "rcx",
@@ -234,6 +331,7 @@ impl Reg {
             Reg::R13 => "r13",
             Reg::R14 => "r14",
             Reg::R15 => "r15",
+            _ => panic!("not a GP register"),
         }
     }
 }
