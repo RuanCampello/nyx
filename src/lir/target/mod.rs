@@ -1,7 +1,9 @@
 use crate::lir::VReg;
 
+mod x86_64;
+
 pub trait Target: Sized {
-    type Reg: PhysReg;
+    type Reg: PhysicalReg;
     type Instruction: Instruction<Self>;
 
     /// allocatable general-purpose registers
@@ -20,8 +22,8 @@ pub trait Target: Sized {
     fn ret(class: RegClass) -> Option<Self::Reg>;
 }
 
-pub trait PhysReg: Copy + Eq + Ord + std::fmt::Debug {
-    fn class();
+pub trait PhysicalReg: Copy + Eq + Ord + std::fmt::Debug {
+    fn class(self) -> RegClass;
     fn name<'s>(self, bytes: u8) -> &'s str;
 }
 
