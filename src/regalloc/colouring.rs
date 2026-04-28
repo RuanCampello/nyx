@@ -231,7 +231,7 @@ impl Reg {
         Reg::R8,
         Reg::R9,
         Reg::R10,
-        Reg::R11,
+        // Reg::R11,
         Reg::Rbx,
         Reg::R12,
         Reg::R13,
@@ -249,7 +249,7 @@ impl Reg {
         Reg::R8,
         Reg::R9,
         Reg::R10,
-        Reg::R11,
+        // Reg::R11,
     ];
 
     /// Registers that must be preserved across calls (callee saves them).
@@ -272,7 +272,7 @@ impl Reg {
         Reg::Xmm12,
         Reg::Xmm13,
         Reg::Xmm14,
-        Reg::Xmm15,
+        // Reg::Xmm15,
     ];
 
     #[inline(always)]

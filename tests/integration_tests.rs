@@ -56,6 +56,11 @@ const CASES: &[Case] = &[
         file: "tests/binary_search.nyx",
         exit_code: Some(11),
     },
+    Case {
+        name: "floats",
+        file: "tests/floats.nyx",
+        exit_code: Some(42),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

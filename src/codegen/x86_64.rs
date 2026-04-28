@@ -209,11 +209,27 @@ impl<'e> FunctionEmitter<'e> {
 
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
-                // dest = operand
                 let src = self.operand_str(operand, fn_name);
-                // this arise after register allocation when two values coalesced to the same location
+
                 if src != dest {
-                    emit!(self.out, "mov{suffix}    {src}, {dest}");
+                    match src.contains("(%rbp)") && dest.contains("(%rbp)") {
+                        true => match is_float {
+                            true => {
+                                emit!(self.out, "mov{suffix}    {src}, %xmm15");
+                                emit!(self.out, "mov{suffix}    %xmm15, {dest}");
+                            }
+                            false => {
+                                let scratch = match instruction.dest.typ == Type::I64 {
+                                    true => "%r11",
+                                    _ => "%r11d",
+                                };
+
+                                emit!(self.out, "mov{suffix}    {src}, {scratch}");
+                                emit!(self.out, "mov{suffix}    {scratch}, {dest}");
+                            }
+                        },
+                        _ => emit!(self.out, "mov{suffix}    {src}, {dest}"),
+                    }
                 }
             }
 
@@ -261,6 +277,7 @@ impl<'e> FunctionEmitter<'e> {
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
+                let suffix = lhs.typ().size_suffix();
                 let is_rhs_const = matches!(rhs, Operand::Const(_));
                 let is_float = lhs.typ().is_float();
                 let is_f32 = lhs.typ() == Type::F32;
@@ -306,8 +323,14 @@ impl<'e> FunctionEmitter<'e> {
                         // of x86_64
 
                         if is_float {
-                            unimplemented!("no div float in this madness");
+                            if moved {
+                                emit!(self.out, "mov{suffix}    {lhs}, {dest}");
+                            }
+                            emit!(self.out, "div{suffix}    {rhs}, {dest}");
+
+                            return;
                         }
+
                         // integer division is complex: requires %rax/%rdx setup
                         //
                         // requires: dividend in %eax (32-bit) or %rax (64-bit)
@@ -365,12 +388,12 @@ impl<'e> FunctionEmitter<'e> {
                     }
 
                     // comparison operators: set dest to 0 or 1
-                    B::Eq => self.emit_comp("sete", lhs, rhs, dest, suffix, is_float, is_f32),
-                    B::Ne => self.emit_comp("setne", lhs, rhs, dest, suffix, is_float, is_f32),
-                    B::Lt => self.emit_comp("setl", lhs, rhs, dest, suffix, is_float, is_f32),
-                    B::LtEq => self.emit_comp("setle", lhs, rhs, dest, suffix, is_float, is_f32),
-                    B::Gt => self.emit_comp("setg", lhs, rhs, dest, suffix, is_float, is_f32),
-                    B::GtEq => self.emit_comp("setge", lhs, rhs, dest, suffix, is_float, is_f32),
+                    B::Eq => self.emit_comp("sete", lhs, rhs, dest, suffix, is_float),
+                    B::Ne => self.emit_comp("setne", lhs, rhs, dest, suffix, is_float),
+                    B::Lt => self.emit_comp("setl", lhs, rhs, dest, suffix, is_float),
+                    B::LtEq => self.emit_comp("setle", lhs, rhs, dest, suffix, is_float),
+                    B::Gt => self.emit_comp("setg", lhs, rhs, dest, suffix, is_float),
+                    B::GtEq => self.emit_comp("setge", lhs, rhs, dest, suffix, is_float),
 
                     B::And => {
                         // logical and: both operands are bool (0 or 1)
@@ -519,60 +542,39 @@ impl<'e> FunctionEmitter<'e> {
         dest: String,
         suffix: &str,
         is_float: bool,
-        is_32: bool,
-    ) {
-        match is_float {
-            true => self.emit_float_comp(set_instr, lhs, rhs, dest, is_32),
-            false => self.emit_int_comp(set_instr, lhs, rhs, dest, suffix),
-        }
-    }
-
-    /// Emit a comparison operation that sets dest to 0 or 1
-    #[inline(always)]
-    fn emit_int_comp(
-        &mut self,
-        set_instr: &str,
-        lhs: String,
-        rhs: String,
-        dest: String,
-        suffix: &str,
     ) {
         // strategy:
-        // 1. cmp rhs, lhs  (sets flags based on lhs - rhs)
-        // 2. set<cc> %al   (sets low byte of %rax to 0 or 1)
-        // 3. movzbl %al, dest (zero-extend byte to 32-bit)
+        // 1. push %rax to not clobber it if dest isn't %rax
+        // 2. perform the comparison (ucomi for floats, cmp for ints)
+        // 3. set<cc> %al   (sets low byte of %rax to 0 or 1)
+        // 4. movzbl %al, dest (zero-extend byte to 32-bit/64-bit)
+        // 5. pop %rax (restore)
 
         let preserves_rax = !matches!(dest.as_str(), "%al" | "%ax" | "%eax" | "%rax");
         if preserves_rax {
             emit!(self.out, "push    %rax");
         }
 
-        emit!(self.out, "cmp{suffix}    {rhs}, {lhs}",);
-        emit!(self.out, "{set_instr}     %al");
-        emit!(self.out, "movzbl   %al, {dest}");
+        let set_instr = match is_float {
+            true => match set_instr {
+                "setl" => "setb",
+                "setle" => "setbe",
+                "setg" => "seta",
+                "setge" => "setae",
+                _ => set_instr,
+            },
 
-        if preserves_rax {
-            emit!(self.out, "pop     %rax");
-        }
-    }
+            _ => set_instr,
+        };
 
-    #[inline(always)]
-    fn emit_float_comp(
-        &mut self,
-        set_instr: &str,
-        lhs: String,
-        rhs: String,
-        dest: String,
-        is_f32: bool,
-    ) {
-        let ucomi = if is_f32 { "ucomiss" } else { "ucomisd" };
-        let preserves_rax = !matches!(dest.as_str(), "%al" | "%ax" | "%eax" | "%rax");
-
-        if preserves_rax {
-            emit!(self.out, "push    %rax");
+        match is_float {
+            true => {
+                emit!(self.out, "mov{suffix}    {lhs}, %xmm15");
+                emit!(self.out, "ucomi{suffix}  {rhs}, %xmm15");
+            }
+            false => emit!(self.out, "cmp{suffix}    {rhs}, {lhs}"),
         }
 
-        emit!(self.out, "{ucomi}  {rhs}, {lhs}");
         emit!(self.out, "{set_instr}     %al");
         emit!(self.out, "movzbl   %al, {dest}");
 
