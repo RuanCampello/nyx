@@ -202,6 +202,10 @@ impl Type {
         matches!(self, Self::F32 | Self::F64)
     }
 
+    pub const fn is_32_bit(&self) -> bool {
+        matches!(self, Self::F32 | Self::I32 | Self::U32)
+    }
+
     #[allow(unused)]
     pub(in crate::hir) const fn is_signed(&self) -> bool {
         matches!(

@@ -101,7 +101,7 @@ impl<T: Target> Function<T> {
     }
 
     #[inline(always)]
-    pub fn push_instruction(&mut self, block: &BlockId, instruction: T::Instruction) {
+    pub fn push_instr(&mut self, block: &BlockId, instruction: T::Instruction) {
         self.blocks[block.0 as usize].instructions.push(instruction);
     }
 

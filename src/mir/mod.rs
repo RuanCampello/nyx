@@ -143,7 +143,7 @@ pub enum Terminator {
 /// An assigned unique value id.
 /// This covers both source locals (LocalId) and fresh temporaries
 /// introduced during expresion lowering.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct ValueId(pub u32);
 
 /// Stable index into a function's `blocks` vec.
