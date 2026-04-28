@@ -200,7 +200,19 @@ impl Target for X86_64 {
 
 impl Instruction<X86_64> for X86Instr {
     fn defs(&self) -> &[VReg] {
-        &[]
+        match self {
+            Self::ParamMov { dest, .. }
+            | Self::Mov { dest, .. }
+            | Self::MovFloat { dest, .. }
+            | Self::Movzx { dest, .. }
+            | Self::Add { dest, .. }
+            | Self::Sub { dest, .. }
+            | Self::Imul { dest, .. }
+            | Self::Neg { dest, .. }
+            | Self::And { dest, .. }
+            | Self::Or { dest, .. }
+            | Self::Xor { dest, .. } => std::slice::from_ref(dest),
+        }
     }
 
     fn uses(&self) -> &[VReg] {
@@ -208,7 +220,20 @@ impl Instruction<X86_64> for X86Instr {
     }
 
     fn as_copy(&self) -> Option<(VReg, VReg)> {
-        None
+        match self {
+            Self::Mov {
+                dest,
+                src: X86Operand::VReg(src),
+                ..
+            }
+            | Self::MovFloat {
+                dest,
+                src: X86Operand::VReg(src),
+                ..
+            } => Some((*dest, *src)),
+
+            _ => None,
+        }
     }
 
     fn clobbers<'r>(&self) -> &'r [<X86_64 as Target>::Reg] {
