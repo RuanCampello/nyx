@@ -100,8 +100,17 @@ pub enum X86Instr {
         src: X86Operand,
         bytes: u8,
     },
-    /// float comparison same `uses_buf` / `uses_len` scheme as `Cmp`.
-    /// uses %xmm15 as a scratch, that register is never allocatable
+
+    // comparison
+    Cmp {
+        lhs: VReg,
+        rhs: X86Operand,
+        bytes: u8,
+        uses: [VReg; 2],
+        uses_len: u8,
+    },
+    /// float comparison
+    /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis {
         lhs: VReg,
         rhs: X86Operand,
@@ -109,6 +118,8 @@ pub enum X86Instr {
         uses: [VReg; 2],
         uses_len: u8,
     },
+
+    // TODO: add setcc
 
     // logical operations
     And {
@@ -281,7 +292,9 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
+            Self::Cmp { uses, uses_len, .. } | Self::Ucomis { uses, uses_len, .. } => {
+                &uses[..*uses_len as usize]
+            }
 
             Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
             Self::Call { ret: None, .. } => &[],
