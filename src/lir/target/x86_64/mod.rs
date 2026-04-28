@@ -1,6 +1,9 @@
-use crate::lir::{
-    VReg,
-    target::{Instruction, PhysicalReg, RegClass, Target},
+use crate::{
+    lir::{
+        VReg,
+        target::{Instruction, PhysicalReg, RegClass, Target},
+    },
+    parser::expression::BinaryOperator,
 };
 
 mod lower;
@@ -501,6 +504,27 @@ impl Condition {
             Self::Be => "be",
             Self::A => "a",
             Self::Ae => "ae",
+        }
+    }
+
+    pub fn new(operator: &BinaryOperator, is_float: bool) -> Self {
+        match (operator, is_float) {
+            (BinaryOperator::Eq, _) => Self::E,
+            (BinaryOperator::Ne, _) => Self::Ne,
+
+            (BinaryOperator::Lt, true) => Self::B,
+            (BinaryOperator::Lt, false) => Self::L,
+
+            (BinaryOperator::LtEq, true) => Self::Be,
+            (BinaryOperator::LtEq, false) => Self::Le,
+
+            (BinaryOperator::Gt, true) => Self::G,
+            (BinaryOperator::Gt, false) => Self::A,
+
+            (BinaryOperator::GtEq, true) => Self::Ge,
+            (BinaryOperator::GtEq, false) => Self::Ae,
+
+            _ => unreachable!("invalid combination of binary operator and float flag"),
         }
     }
 }

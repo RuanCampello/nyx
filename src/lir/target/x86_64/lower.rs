@@ -99,19 +99,22 @@ impl<'f> Lower<'f> {
                 let lhs = self.lower_operand(&lhs);
                 let rhs = self.lower_operand(&rhs);
 
-                let copy = match is_float {
-                    true => X86Instr::MovFloat { dest, src: lhs, bytes },
-                    false => X86Instr::Mov { dest, src: lhs, bytes },
-                };
-
                 match operation {
                     B::Div if is_float => {
-                        self.lir.push_instr(id, copy);
+                        self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
                         self.lir.push_instr(id, X86Instr::DivFloat { dest, src: rhs, bytes });
                     }
                     B::Div => unimplemented!(),
 
+                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
+                        self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, Condition::new(&comp, is_float))
+                    }
+
                     _ => {
+                        let copy = match is_float {
+                            true => X86Instr::MovFloat { dest, bytes, src: lhs },
+                            _ => X86Instr::Mov { dest, src: lhs, bytes },
+                        };
                         self.lir.push_instr(id, copy);
 
                         let arith = match operation {
