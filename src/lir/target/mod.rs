@@ -1,4 +1,4 @@
-use crate::lir::VReg;
+use crate::lir::{self, VReg};
 
 mod x86_64;
 
@@ -20,6 +20,10 @@ pub trait Target: Sized {
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg>;
     /// physical register for the return value of the given class
     fn ret(class: RegClass) -> Option<Self::Reg>;
+}
+
+pub trait Emittable<T: Target> {
+    fn emit(&self, alloc: (), out: &mut String) -> String;
 }
 
 pub trait PhysicalReg: Copy + Eq + Ord + std::fmt::Debug {

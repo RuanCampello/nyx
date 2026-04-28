@@ -6,6 +6,7 @@ use crate::{
     parser::expression::BinaryOperator,
 };
 
+mod codegen;
 mod lower;
 
 pub struct X86_64;

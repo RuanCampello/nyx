@@ -2,7 +2,10 @@
 
 #![allow(unused)]
 
-use crate::lir::target::{RegClass, Target};
+use crate::{
+    lir::target::{RegClass, Target},
+    mir,
+};
 use std::collections::BTreeMap;
 
 mod target;
@@ -62,6 +65,14 @@ pub struct BlockId(u32);
 pub enum MachineType {
     Int { bytes: u8 },
     Float { bytes: u8 },
+}
+
+pub(in crate::lir) fn lower<T: Target>(
+    function: &mir::Function,
+    symbols: &[String],
+    all_functions: &[mir::Function],
+) -> Function<T> {
+    todo!()
 }
 
 impl<T: Target> Function<T> {

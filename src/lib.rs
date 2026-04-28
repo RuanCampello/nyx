@@ -1,4 +1,3 @@
-pub(crate) mod codegen;
 pub(crate) mod hir;
 pub(crate) mod lexer;
 pub(crate) mod lir;
@@ -27,5 +26,6 @@ pub fn compile(src: &str) -> Result<String, NyxError> {
     let hir = hir::lower(statements).map_err(NyxError::new)?;
     let mir = mir::lower(hir).map_err(NyxError::new)?;
 
-    Ok(codegen::x86_64::emit(&mir))
+    // Ok(codegen::x86_64::emit(&mir))
+    todo!()
 }
