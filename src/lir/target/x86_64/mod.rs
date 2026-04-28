@@ -1,10 +1,84 @@
-use crate::lir::target::{PhysicalReg, RegClass};
+use crate::lir::{
+    VReg,
+    target::{Instruction, PhysicalReg, RegClass, Target},
+};
 
 pub struct X86_64;
 
+#[derive(Debug, Clone)]
+pub enum X86Operand {
+    VReg(VReg),
+    Imm(i64),
+    RipRel(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum X86Instr {
+    /// Copy from a physical ABI parameter register into a VReg at function entry
+    /// `src_reg` is a physical register live-in from the caller: it has no VReg
+    ParamMov {
+        dest: VReg,
+        src_reg: X86Reg,
+        bytes: u8,
+    },
+
+    Mov {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    MovFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    /// zero-extend 1-byte `setcc` result → 4 bytes.
+    Movzx {
+        dest: VReg,
+        src: VReg,
+    },
+
+    // integer arithmetic
+    Add {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    Sub {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    Imul {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    Neg {
+        dest: VReg,
+        bytes: u8,
+    },
+    // logical operations
+    And {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    Or {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    Xor {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+}
+
 /// Registers for x86_64 based on `SysV AMD64` ABI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Reg {
+pub enum X86Reg {
     // gp caller-saved
     Rax,
     Rcx,
@@ -39,9 +113,112 @@ pub enum Reg {
     Xmm14,
 }
 
-impl PhysicalReg for Reg {
+impl Target for X86_64 {
+    type Reg = X86Reg;
+    type Instruction = X86Instr;
+
+    fn gprs<'r>() -> &'r [Self::Reg] {
+        &[
+            X86Reg::Rax,
+            X86Reg::Rcx,
+            X86Reg::Rdx,
+            X86Reg::Rsi,
+            X86Reg::Rdi,
+            X86Reg::R8,
+            X86Reg::R9,
+            X86Reg::R10,
+            X86Reg::Rbx,
+            X86Reg::R12,
+            X86Reg::R13,
+            X86Reg::R14,
+            X86Reg::R15,
+        ]
+    }
+
+    fn fprs<'r>() -> &'r [Self::Reg] {
+        &[
+            X86Reg::Xmm0,
+            X86Reg::Xmm1,
+            X86Reg::Xmm2,
+            X86Reg::Xmm3,
+            X86Reg::Xmm4,
+            X86Reg::Xmm5,
+            X86Reg::Xmm6,
+            X86Reg::Xmm7,
+            X86Reg::Xmm8,
+            X86Reg::Xmm9,
+            X86Reg::Xmm10,
+            X86Reg::Xmm11,
+            X86Reg::Xmm12,
+            X86Reg::Xmm13,
+            X86Reg::Xmm14,
+        ]
+    }
+
+    fn callee_saved<'r>() -> &'r [Self::Reg] {
+        &[
+            X86Reg::Rax,
+            X86Reg::Rcx,
+            X86Reg::Rdx,
+            X86Reg::Rsi,
+            X86Reg::Rdi,
+            X86Reg::R8,
+            X86Reg::R9,
+            X86Reg::R10,
+        ]
+    }
+
+    fn caller_saved<'r>() -> &'r [Self::Reg] {
+        &[X86Reg::Rbx, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15]
+    }
+
+    fn param(idx: usize, class: RegClass) -> Option<Self::Reg> {
+        use self::X86Reg as R;
+
+        match class {
+            RegClass::Int => {
+                const REGS: [R; 6] = [R::Rdi, R::Rsi, R::Rdx, R::Rcx, R::R8, R::R9];
+
+                REGS.get(idx).copied()
+            }
+            RegClass::Float => {
+                const REGS: [R; 8] =
+                    [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
+
+                REGS.get(idx).copied()
+            }
+        }
+    }
+
+    fn ret(class: RegClass) -> Option<Self::Reg> {
+        match class {
+            RegClass::Int => Some(X86Reg::Rax),
+            RegClass::Float => Some(X86Reg::Xmm0),
+        }
+    }
+}
+
+impl Instruction<X86_64> for X86Instr {
+    fn defs(&self) -> &[VReg] {
+        &[]
+    }
+
+    fn uses(&self) -> &[VReg] {
+        &[]
+    }
+
+    fn as_copy(&self) -> Option<(VReg, VReg)> {
+        None
+    }
+
+    fn clobbers<'r>(&self) -> &'r [<X86_64 as Target>::Reg] {
+        &[]
+    }
+}
+
+impl PhysicalReg for X86Reg {
     fn class(self) -> RegClass {
-        match self >= Reg::Xmm0 {
+        match self >= X86Reg::Xmm0 {
             true => RegClass::Float,
             _ => RegClass::Int,
         }
