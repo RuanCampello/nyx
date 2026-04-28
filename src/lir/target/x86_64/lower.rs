@@ -13,7 +13,7 @@
 use crate::hir::Type;
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{RegClass, Target};
-use crate::lir::{self, BlockId, MachineType, VReg};
+use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
 
 struct Lower<'f> {
@@ -234,8 +234,26 @@ impl<'f> Lower<'f> {
         self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
     }
 
+    #[inline(always)]
     fn lower_terminator(&mut self, id: &BlockId, terminator: mir::Terminator) {
-        todo!()
+        use crate::mir::Terminator as T;
+
+        let terminator = match terminator {
+            T::Return(None) => Term::Return(None),
+            T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
+            T::Jump(block) => Term::Jump(block.into()),
+            T::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => Term::Branch {
+                cond: self.operand(&condition, id),
+                then_block: then_block.into(),
+                else_block: else_block.into(),
+            },
+        };
+
+        self.lir.set_term(id, terminator);
     }
 
     fn lower_block(&mut self, id: &BlockId, block: mir::Block) {

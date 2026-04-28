@@ -106,7 +106,7 @@ impl<T: Target> Function<T> {
     }
 
     #[inline(always)]
-    pub fn set_term(&mut self, block: BlockId, term: Term) {
+    pub fn set_term(&mut self, block: &BlockId, term: Term) {
         self.blocks[block.0 as usize].term = term;
     }
 
@@ -140,5 +140,11 @@ impl MachineType {
             Self::Int { .. } => RegClass::Int,
             Self::Float { .. } => RegClass::Float,
         }
+    }
+}
+
+impl From<crate::mir::BlockId> for BlockId {
+    fn from(value: crate::mir::BlockId) -> Self {
+        Self { 0: value.0 }
     }
 }
