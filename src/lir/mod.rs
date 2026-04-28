@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+mod regalloc;
 pub mod target;
 
 // PERFORMANCE: currently we're using owned values for everything making a lot of clones
@@ -39,7 +40,7 @@ pub struct Block<I> {
     term: Term,
 }
 
-/// All control-flow terminators, target-agnostic
+/// All control-flow terminators
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Term {
     Jump(BlockId),
@@ -58,7 +59,7 @@ pub enum Term {
 pub struct VReg(u32);
 
 /// A stable index into function's `blocks` vector
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct BlockId(u32);
 
 /// A machine-level type
@@ -183,6 +184,16 @@ impl MachineType {
         match self {
             Self::Int { .. } => RegClass::Int,
             Self::Float { .. } => RegClass::Float,
+        }
+    }
+}
+
+impl Term {
+    pub fn uses_of(&self) -> &[VReg] {
+        match self {
+            Self::Return(Some(v)) => std::slice::from_ref(v),
+            Self::Branch { cond, .. } => std::slice::from_ref(cond),
+            Self::Return(None) | Self::Jump(_) => &[],
         }
     }
 }
