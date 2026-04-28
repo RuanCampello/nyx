@@ -3,6 +3,8 @@ use crate::lir::{
     target::{Instruction, PhysicalReg, RegClass, Target},
 };
 
+mod lower;
+
 pub struct X86_64;
 
 #[derive(Debug, Clone)]
