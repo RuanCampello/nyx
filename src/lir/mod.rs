@@ -3,14 +3,13 @@
 #![allow(unused)]
 
 use crate::{
-    lir::target::{RegClass, Target},
+    lir::target::{Emittable, Lowerable, RegClass, Target},
     mir,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-mod target;
-pub use target::Emittable;
+pub mod target;
 
 // PERFORMANCE: currently we're using owned values for everything making a lot of clones
 // reavaliate this after integration of LIR
@@ -83,17 +82,16 @@ macro_rules! label {
     }
 }
 
-pub fn emit<T: Target>(mir: &mir::Mir, target: T) -> String
+pub fn emit<T: Lowerable>(mir: &mir::Mir) -> String
 where
     Function<T>: Emittable<T>,
 {
     let mut out = String::with_capacity(DEFAULT_SIZE);
-
     label!(out, ".text");
 
     for function in &mir.functions {
-        // let lir = crate::lir::lower::<T>(function, &mir.symbols, &mir.functions);
-        // lir.emit((), &mut out);
+        let lir = T::lower(function, &mir.symbols, &mir.functions);
+        lir.emit((), &mut out);
     }
 
     // emit a `_start` trampoline if the program defines `fn main`
@@ -102,13 +100,7 @@ where
     // `_start` calls `nyx_main`, passes its return value to the exit syscall
     let has_main = mir.symbols.iter().any(|name| name == "main");
     if has_main {
-        label!(out, ".globl _start");
-        label!(out, "_start:");
-
-        emit!(out, "call    nyx_main");
-        emit!(out, "movl    %eax, %edi"); // exit code = return value
-        emit!(out, "movl    $60, %eax"); // syscall: exit
-        emit!(out, "syscall");
+        Function::<T>::start(&mut out);
     }
 
     out

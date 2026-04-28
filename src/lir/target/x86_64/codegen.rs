@@ -14,7 +14,7 @@ impl Emittable<X86_64> for Function<X86_64> {
         todo!()
     }
 
-    fn start(&mut self, out: &mut String) {
+    fn start(out: &mut String) {
         todo!()
     }
 }

@@ -1,6 +1,10 @@
-use crate::lir::{self, VReg};
+use crate::{
+    lir::{self, VReg},
+    mir,
+};
 
 mod x86_64;
+pub use x86_64::X86_64;
 
 pub trait Target: Sized {
     type Reg: PhysicalReg;
@@ -22,10 +26,14 @@ pub trait Target: Sized {
     fn ret(class: RegClass) -> Option<Self::Reg>;
 }
 
+pub trait Lowerable: Target {
+    fn lower(function: &mir::Function, symbols: &[String], all_functions: &[mir::Function]) -> lir::Function<Self>;
+}
+
 pub trait Emittable<T: Target> {
     fn emit(&self, alloc: (), out: &mut String) -> String;
 
-    fn start(&mut self, out: &mut String);
+    fn start(out: &mut String);
 }
 
 pub trait PhysicalReg: Copy + Eq + Ord + std::fmt::Debug {

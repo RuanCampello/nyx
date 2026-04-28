@@ -12,7 +12,7 @@
 
 use crate::hir::Type;
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
-use crate::lir::target::{RegClass, Target};
+use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
 
@@ -24,8 +24,45 @@ struct Lower<'f> {
     all_functions: &'f [Function],
 }
 
+impl Lowerable for X86_64 {
+    fn lower(function: &Function, symbols: &[String], all_functions: &[Function]) -> lir::Function<Self> {
+        let name = symbols
+            .get(function.name_symbol)
+            .map(|n| format!("nyx_{n}"))
+            .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
+
+        let mut lir = lir::Function::<X86_64>::new(name);
+
+        let value: Vec<VReg> = function
+            .locals
+            .iter()
+            .map(|(_, typ)| lir.new_vreg(typ.machine_type()))
+            .collect();
+
+        for _ in &function.blocks {
+            lir.new_block();
+        }
+
+        let mut lower = Lower {
+            function,
+            lir,
+            value,
+            symbols,
+            all_functions,
+        };
+
+        // TODO: emit moves
+
+        for (idx, block) in function.blocks.iter().enumerate() {
+            lower.lower_block(&BlockId(idx as u32), block);
+        }
+
+        lower.lir
+    }
+}
+
 impl<'f> Lower<'f> {
-    fn lower_instruction(&mut self, id: &BlockId, instruction: mir::Instruction) {
+    fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
         use crate::mir::InstructionKind;
 
         let dest = self.vreg(instruction.dest.id);
@@ -33,7 +70,7 @@ impl<'f> Lower<'f> {
         let bytes = typ.machine_type().bytes();
         let is_float = typ.is_float();
 
-        match instruction.kind {
+        match &instruction.kind {
             InstructionKind::Assign(op) => {
                 let src = self.lower_operand(&op);
                 let instruction = match is_float {
@@ -256,8 +293,8 @@ impl<'f> Lower<'f> {
         self.lir.set_term(id, terminator);
     }
 
-    fn lower_block(&mut self, id: &BlockId, block: mir::Block) {
-        for instruction in block.instructions {
+    fn lower_block(&mut self, id: &BlockId, block: &mir::Block) {
+        for instruction in &block.instructions {
             self.lower_instruction(id, instruction);
         }
 
@@ -323,7 +360,7 @@ impl<'f> Lower<'f> {
 impl Type {
     // TODO: abstract this later in a `SizedType` trait or something
     // to have arch depedent sizes
-    fn machine_type(&self) -> MachineType {
+    pub(in crate::lir) fn machine_type(&self) -> MachineType {
         match self {
             Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
             Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
