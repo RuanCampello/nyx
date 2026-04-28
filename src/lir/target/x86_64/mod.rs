@@ -256,8 +256,7 @@ impl Target for X86_64 {
                 REGS.get(idx).copied()
             }
             RegClass::Float => {
-                const REGS: [R; 8] =
-                    [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
+                const REGS: [R; 8] = [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
 
                 REGS.get(idx).copied()
             }
@@ -294,9 +293,7 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Cmp { uses, uses_len, .. } | Self::Ucomis { uses, uses_len, .. } => {
-                &uses[..*uses_len as usize]
-            }
+            Self::Cmp { uses, uses_len, .. } | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
 
             Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
             Self::Call { ret: None, .. } => &[],
@@ -352,19 +349,30 @@ impl Instruction<X86_64> for X86Instr {
     fn precoloured_def(&self) -> Option<(VReg, X86Reg)> {
         match self {
             Self::IDiv { result, .. } => Some((*result, X86Reg::Rax)),
-            Self::Call {
-                precoloured_def, ..
-            } => *precoloured_def,
+            Self::Call { precoloured_def, .. } => *precoloured_def,
             _ => None,
         }
     }
 
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
-            Self::IDiv {
-                precoloured_uses, ..
-            } => precoloured_uses,
+            Self::IDiv { precoloured_uses, .. } => precoloured_uses,
             _ => &[],
+        }
+    }
+}
+
+impl X86Instr {
+    pub(in crate::lir::target::x86_64) fn call(target: String, moves: Vec<(VReg, X86Reg)>, ret: Option<VReg>) -> Self {
+        let uses = moves.iter().map(|(v, _)| *v).collect();
+        let precoloured_def = ret.map(|v| (v, X86Reg::Rax));
+
+        Self::Call {
+            target,
+            precoloured_def,
+            uses,
+            moves,
+            ret,
         }
     }
 }

@@ -12,6 +12,7 @@
 
 use crate::hir::Type;
 use crate::lir::target::x86_64::{X86_64, X86Instr, X86Operand};
+use crate::lir::target::{RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
 
@@ -146,6 +147,45 @@ impl<'f> Lower<'f> {
                         self.lir.push_instr(id, arith);
                     }
                 };
+            }
+
+            InstructionKind::Call { callee, args } => {
+                let callee = self
+                    .symbols
+                    .get(self.all_functions[callee.0 as usize].name_symbol)
+                    .map(|n| format!("nyx_{n}"))
+                    .unwrap_or_else(|| format!("nyx_func_{}", callee.0));
+
+                let mut moves = Vec::with_capacity(args.len());
+                let mut int = 0;
+                let mut float = 0;
+
+                for arg in args {
+                    let machine = arg.typ().machine_type();
+
+                    let abi_reg = match machine.class() {
+                        RegClass::Int => {
+                            let reg = X86_64::param(int, RegClass::Int);
+                            int += 1;
+
+                            reg
+                        }
+
+                        RegClass::Float => {
+                            let reg = X86_64::param(float, RegClass::Float);
+                            float += 1;
+
+                            reg
+                        }
+                    };
+
+                    let Some(abi_reg) = abi_reg else { continue };
+                    let vreg = self.operand(&arg, id);
+                    moves.push((vreg, abi_reg));
+                }
+
+                let ret = (typ != Type::Unit).then_some(dest);
+                self.lir.push_instr(id, X86Instr::call(callee, moves, ret));
             }
             _ => unimplemented!(),
         }
