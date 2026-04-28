@@ -1,6 +1,7 @@
 pub(crate) mod codegen;
 pub(crate) mod hir;
 pub(crate) mod lexer;
+pub(crate) mod lir;
 pub(crate) mod mir;
 pub(crate) mod parser;
 pub(crate) mod regalloc;
