@@ -24,6 +24,8 @@ pub trait Target: Sized {
 
 pub trait Emittable<T: Target> {
     fn emit(&self, alloc: (), out: &mut String) -> String;
+
+    fn start(&mut self, out: &mut String);
 }
 
 pub trait PhysicalReg: Copy + Eq + Ord + std::fmt::Debug {

@@ -48,14 +48,14 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 Nyx is currently in early development.
 
-| Stage | Module |
-|---|---|
-| ✅ Lexer | [`src/lexer`](src/lexer/) |
-| ✅ Parser | [`src/parser`](src/parser/) |
-| ✅ Semantic Analysis (HIR) | [`src/hir`](src/hir/) |
-| ✅ Mid-level IR (MIR) | [`src/mir`](src/mir/) |
-| ✅ Register Allocation | [`src/regalloc`](src/regalloc/) |
-| ✅ Code Generation (`x86_64`) | [`src/codegen`](src/codegen/) |
+| Stage                         | Module                          |
+| ----------------------------- | ------------------------------- |
+| ✅ Lexer                      | [`src/lexer`](src/lexer/)       |
+| ✅ Parser                     | [`src/parser`](src/parser/)     |
+| ✅ Semantic Analysis (HIR)    | [`src/hir`](src/hir/)           |
+| ✅ Mid-level IR (MIR)         | [`src/mir`](src/mir/)           |
+| ✅ Register Allocation        | [`src/regalloc`](src/regalloc/) |
+| ✅ Code Generation (`x86_64`) | [`src/codegen`](src/codegen/)   |
 
 ## Philosophy
 
@@ -63,6 +63,15 @@ Nyx is currently in early development.
 - **Modern Syntax**: Clean, readable and _subjectively_ aesthetic syntax.
 - **Compiled Performance**: Direct compilation for high-performance execution.
 - **Simplicity**: Build without unnecessary complexity focused on learning.
+
+## References
+
+### x64
+
+- <https://www.felixcloutier.com/x86/>
+- <https://exercism.org/tracks/x86-64-assembly/concepts/floating-point-numbers>
+- <https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf>
+- <https://filippo.io/linux-syscall-table/>
 
 ## License
 

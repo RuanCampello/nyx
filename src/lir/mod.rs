@@ -7,8 +7,10 @@ use crate::{
     mir,
 };
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 mod target;
+pub use target::Emittable;
 
 // PERFORMANCE: currently we're using owned values for everything making a lot of clones
 // reavaliate this after integration of LIR
@@ -67,12 +69,49 @@ pub enum MachineType {
     Float { bytes: u8 },
 }
 
-pub(in crate::lir) fn lower<T: Target>(
-    function: &mir::Function,
-    symbols: &[String],
-    all_functions: &[mir::Function],
-) -> Function<T> {
-    todo!()
+const DEFAULT_SIZE: usize = 1 << 10;
+
+macro_rules! emit {
+    ($dst:expr, $($arg:tt)*) => {
+        writeln!($dst, "    {}", format_args!($($arg)*)).unwrap()
+    }
+}
+
+macro_rules! label {
+    ($dst:expr, $($arg:tt)*) => {
+        writeln!($dst, "{}", format_args!($($arg)*)).unwrap()
+    }
+}
+
+pub fn emit<T: Target>(mir: &mir::Mir, target: T) -> String
+where
+    Function<T>: Emittable<T>,
+{
+    let mut out = String::with_capacity(DEFAULT_SIZE);
+
+    label!(out, ".text");
+
+    for function in &mir.functions {
+        // let lir = crate::lir::lower::<T>(function, &mir.symbols, &mir.functions);
+        // lir.emit((), &mut out);
+    }
+
+    // emit a `_start` trampoline if the program defines `fn main`
+    //
+    // this allows the binary to be linked with `ld` directly
+    // `_start` calls `nyx_main`, passes its return value to the exit syscall
+    let has_main = mir.symbols.iter().any(|name| name == "main");
+    if has_main {
+        label!(out, ".globl _start");
+        label!(out, "_start:");
+
+        emit!(out, "call    nyx_main");
+        emit!(out, "movl    %eax, %edi"); // exit code = return value
+        emit!(out, "movl    $60, %eax"); // syscall: exit
+        emit!(out, "syscall");
+    }
+
+    out
 }
 
 impl<T: Target> Function<T> {
