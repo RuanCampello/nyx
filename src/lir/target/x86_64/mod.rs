@@ -74,6 +74,42 @@ pub enum X86Instr {
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
+    // float arithmetic
+    AddFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    SubFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    MulFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    DivFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    XorFloat {
+        dest: VReg,
+        src: X86Operand,
+        bytes: u8,
+    },
+    /// float comparison same `uses_buf` / `uses_len` scheme as `Cmp`.
+    /// uses %xmm15 as a scratch, that register is never allocatable
+    Ucomis {
+        lhs: VReg,
+        rhs: X86Operand,
+        bytes: u8,
+        uses: [VReg; 2],
+        uses_len: u8,
+    },
+
     // logical operations
     And {
         dest: VReg,
@@ -236,9 +272,16 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Neg { dest, .. }
             | Self::And { dest, .. }
             | Self::Or { dest, .. }
-            | Self::Xor { dest, .. } => std::slice::from_ref(dest),
+            | Self::Xor { dest, .. }
+            | Self::AddFloat { dest, .. }
+            | Self::SubFloat { dest, .. }
+            | Self::MulFloat { dest, .. }
+            | Self::DivFloat { dest, .. }
+            | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
+
+            Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
 
             Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
             Self::Call { ret: None, .. } => &[],
