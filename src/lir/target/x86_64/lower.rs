@@ -43,36 +43,43 @@ impl<'f> Lower<'f> {
         }
     }
 
-    fn constant_mov(&mut self, dest: VReg, c: &Const) -> X86Instr {
-        let bytes = c.typ().machine_type().bytes();
-
-        match c {
-            Const::Int(num, _) => X86Instr::Mov {
-                dest,
-                src: X86Operand::Imm(*num),
-                bytes,
-            },
-            Const::Bool(b) => X86Instr::Mov {
-                dest,
-                src: X86Operand::Imm(if *b { 1 } else { 0 }),
-                bytes: 4,
-            },
-
-            Const::Float(f, typ) => {
+    // transforms a MIR operand into a x86_64 LIR operand
+    fn lower_operand(&mut self, op: &Operand) -> X86Operand {
+        match op {
+            Operand::Place(p) => X86Operand::VReg(self.vreg(p.id)),
+            Operand::Const(Const::Float(v, typ)) => {
                 let is_32 = *typ == Type::F32;
                 let bits = match is_32 {
-                    true => (*f as f32).to_bits() as u64,
-                    _ => f.to_bits() as u64,
+                    true => (*v as f32).to_bits() as u64,
+                    _ => v.to_bits(),
                 };
                 let label = self.lir.new_float(bits, is_32);
 
-                X86Instr::MovFloat {
-                    dest,
-                    src: X86Operand::RipRel(format!("{label}(%rip)")),
-                    bytes: bytes,
-                }
+                X86Operand::RipRel(format!("{label}(%rip)"))
             }
-            Const::Unit => unreachable!(),
+            Operand::Const(Const::Int(n, _)) => X86Operand::Imm(*n),
+            Operand::Const(Const::Bool(b)) => X86Operand::Imm(if *b { 1 } else { 0 }),
+            Operand::Const(Const::Unit) => unreachable!("unit operand"),
+        }
+    }
+
+    fn constant_mov(&mut self, dest: VReg, c: &Const) -> X86Instr {
+        let bytes = c.typ().machine_type().bytes();
+        let src = self.lower_operand(&Operand::Const(*c));
+
+        match c {
+            Const::Int(num, _) => X86Instr::Mov { dest, src, bytes },
+            Const::Bool(b) => X86Instr::Mov {
+                dest,
+                src,
+                bytes: 4,
+            },
+            Const::Float(f, typ) => X86Instr::MovFloat {
+                dest,
+                src,
+                bytes: bytes,
+            },
+            Const::Unit => unreachable!("unit operand"),
         }
     }
 }
