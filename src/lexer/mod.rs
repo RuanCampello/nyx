@@ -334,11 +334,7 @@ mod tests {
     fn string_literals() {
         assert_eq!(
             kinds(r#""hello" "" "a\nb""#),
-            vec![
-                TokenKind::String("hello"),
-                TokenKind::String(""),
-                TokenKind::String("a\\nb"),
-            ]
+            vec![TokenKind::String("hello"), TokenKind::String(""), TokenKind::String("a\\nb"),]
         );
     }
 
@@ -472,9 +468,7 @@ mod tests {
 
     #[test]
     fn spans_are_correct() {
-        let tokens: Vec<_> = Lexer::new("let x = 42;")
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let tokens: Vec<_> = Lexer::new("let x = 42;").collect::<Result<Vec<_>, _>>().unwrap();
 
         // "let" starts at col 1, ends at col 4
         assert_eq!(tokens[0].span.start.column, 1);

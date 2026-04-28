@@ -75,9 +75,7 @@ mod tests {
     #[test]
     fn unterminated_block_comment() {
         let mut cursor = Cursor::new(" hello");
-        let err = BlockComment { open_offset: 0 }
-            .skip(&mut cursor)
-            .unwrap_err();
+        let err = BlockComment { open_offset: 0 }.skip(&mut cursor).unwrap_err();
         assert_eq!(err.kind, LexErrorKind::UnterminatedComment);
     }
 }

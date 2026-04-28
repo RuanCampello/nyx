@@ -63,10 +63,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     pub fn lower(mut self) -> Result<Function, HirError<'f>> {
         let function = self.function.take().expect("function to be present");
         let symbol = self.symbols.insert(function.name);
-        let id = *self
-            .functions
-            .get(&symbol)
-            .expect("function id present for this name");
+        let id = *self.functions.get(&symbol).expect("function id present for this name");
         let signatures = &self.signatures[id.0 as usize];
 
         let params = function
@@ -592,10 +589,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         typ: Type,
         mutable: bool,
     ) -> Result<LocalId, HirError<'f>> {
-        let scope = self
-            .scopes
-            .last_mut()
-            .expect("at least one scope is always present");
+        let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
             return Err(HirError {
@@ -672,16 +666,9 @@ pub fn collect_function_signatures<'h>(
         let function_id = FunctionId(signatures.len() as u32);
         functions.insert(symbol, function_id);
 
-        let params = function
-            .params
-            .iter()
-            .map(|p| Type::from(p.typ.value()))
-            .collect();
-        let return_type = function
-            .return_type
-            .map(|s| s.value())
-            .map(From::from)
-            .unwrap_or(Type::Unit);
+        let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
+        let return_type =
+            function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
         signatures.push(FunctionSignature {
             return_type,
             params,

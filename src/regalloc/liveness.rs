@@ -53,11 +53,8 @@ impl Liveness {
                 }
 
                 let (uses, defs) = block.use_def();
-                let mut new_in = new_out
-                    .iter()
-                    .filter(|v| !defs.contains(v))
-                    .copied()
-                    .collect::<HashSet<_>>();
+                let mut new_in =
+                    new_out.iter().filter(|v| !defs.contains(v)).copied().collect::<HashSet<_>>();
 
                 for value in uses {
                     new_in.insert(value);

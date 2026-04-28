@@ -24,9 +24,6 @@ impl SymbolTable {
 
     #[inline(always)]
     pub fn into_symbols(self) -> Vec<String> {
-        self.interner
-            .into_iter()
-            .map(|(_, s)| s.to_string())
-            .collect()
+        self.interner.into_iter().map(|(_, s)| s.to_string()).collect()
     }
 }

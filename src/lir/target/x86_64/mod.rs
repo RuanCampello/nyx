@@ -58,6 +58,22 @@ pub enum X86Instr {
         dest: VReg,
         bytes: u8,
     },
+    /// Allocator constraints:
+    ///   `dividend`  → rax  (fixed_use, stored in `fixed_uses_buf`)
+    ///   `result`    → rax  (fixed_def)
+    ///   rdx         clobbered
+    ///
+    /// `uses_buf[0]` = dividend always
+    /// `uses_buf[1]` = divisor VReg when divisor is `X86Operand::VReg` otherwise duplicate of dividend.
+    IDiv {
+        result: VReg,
+        dividend: VReg,
+        divisor: X86Operand,
+        bytes: u8,
+        uses: [VReg; 2],
+        precoloured_uses: [(VReg, X86Reg); 1],
+    },
+
     // logical operations
     And {
         dest: VReg,
@@ -73,6 +89,15 @@ pub enum X86Instr {
         dest: VReg,
         src: X86Operand,
         bytes: u8,
+    },
+
+    /// Direct Call
+    Call {
+        target: String,
+        moves: Vec<(VReg, X86Reg)>,
+        uses: Vec<VReg>,
+        ret: Option<VReg>,
+        precoloured_def: Option<(VReg, X86Reg)>,
     },
 }
 
@@ -212,11 +237,33 @@ impl Instruction<X86_64> for X86Instr {
             | Self::And { dest, .. }
             | Self::Or { dest, .. }
             | Self::Xor { dest, .. } => std::slice::from_ref(dest),
+
+            Self::IDiv { result, .. } => std::slice::from_ref(result),
+
+            Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
+            Self::Call { ret: None, .. } => &[],
         }
     }
 
+    #[rustfmt::skip]
     fn uses(&self) -> &[VReg] {
-        &[]
+        match self {
+            Self::Mov { src: X86Operand::VReg(v), .. }
+            | Self::MovFloat { src: X86Operand::VReg(v), .. }
+            | Self::Add { src: X86Operand::VReg(v), .. }
+            | Self::Sub { src: X86Operand::VReg(v), .. }
+            | Self::Imul { src: X86Operand::VReg(v), .. }
+            | Self::And { src: X86Operand::VReg(v), .. }
+            | Self::Or { src: X86Operand::VReg(v), .. }
+            | Self::Xor { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+
+            Self::Neg { dest, .. } => std::slice::from_ref(dest),
+            Self::Movzx { src, ..  } => std::slice::from_ref(src),
+
+            Self::Call { uses, .. } => uses.as_slice(),
+
+            _ => &[],
+        }
     }
 
     fn as_copy(&self) -> Option<(VReg, VReg)> {
@@ -236,8 +283,31 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
-    fn clobbers<'r>(&self) -> &'r [<X86_64 as Target>::Reg] {
-        &[]
+    fn clobbers<'r>(&self) -> &'r [X86Reg] {
+        match self {
+            Self::IDiv { .. } => X86_64::caller_saved(),
+            Self::Call { .. } => &[X86Reg::Rdx],
+            _ => &[],
+        }
+    }
+
+    fn precoloured_def(&self) -> Option<(VReg, X86Reg)> {
+        match self {
+            Self::IDiv { result, .. } => Some((*result, X86Reg::Rax)),
+            Self::Call {
+                precoloured_def, ..
+            } => *precoloured_def,
+            _ => None,
+        }
+    }
+
+    fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
+        match self {
+            Self::IDiv {
+                precoloured_uses, ..
+            } => precoloured_uses,
+            _ => &[],
+        }
     }
 }
 

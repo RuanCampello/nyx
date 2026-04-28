@@ -167,11 +167,8 @@ impl Interference {
             }
 
             // all remaining nodes have degree >= K — spill the highest-degree one
-            let remaining: Vec<_> = degree
-                .keys()
-                .filter(|id| !removed.contains(id))
-                .copied()
-                .collect();
+            let remaining: Vec<_> =
+                degree.keys().filter(|id| !removed.contains(id)).copied().collect();
 
             match remaining.iter().max_by_key(|&&id| degree[&id]) {
                 None => break, // graph is empty,
@@ -196,11 +193,7 @@ impl Interference {
                 }
             }
 
-            let assigned = available
-                .iter()
-                .find(|reg| !forbidden.contains(reg))
-                .copied();
-
+            let assigned = available.iter().find(|reg| !forbidden.contains(reg)).copied();
             colour_map.insert(id, assigned);
 
             let location = match assigned {
@@ -490,11 +483,7 @@ mod tests {
         "#;
         let (_, alloc) = allocate_for(src);
 
-        let spilled = alloc
-            .locations
-            .values()
-            .filter(|l| matches!(l, Location::Stack(_)))
-            .count();
+        let spilled = alloc.locations.values().filter(|l| matches!(l, Location::Stack(_))).count();
 
         assert!(
             spilled > 0,

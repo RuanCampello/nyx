@@ -81,11 +81,7 @@ impl FunctionLower {
             builder.terminate(Terminator::Return(None));
         }
 
-        let blocks = builder
-            .blocks
-            .into_iter()
-            .map(PartialBlock::finalise)
-            .collect();
+        let blocks = builder.blocks.into_iter().map(PartialBlock::finalise).collect();
 
         Ok(Function {
             id,
@@ -273,10 +269,8 @@ impl FunctionLower {
             }
 
             ExpressionKind::Call { function, args } => {
-                let lowered_args = args
-                    .iter()
-                    .map(|a| self.lower_expr(a))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let lowered_args =
+                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
 
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -331,9 +325,7 @@ impl FunctionLower {
 
     #[inline(always)]
     fn emit(&mut self, dest: Place, kind: InstructionKind) {
-        self.blocks[self.current]
-            .instructions
-            .push(Instruction { dest, kind });
+        self.blocks[self.current].instructions.push(Instruction { dest, kind });
     }
 }
 

@@ -167,9 +167,7 @@ impl Interference {
     pub fn neighbours(&self, id: ValueId) -> &HashSet<ValueId> {
         static EMPTY: std::sync::OnceLock<HashSet<ValueId>> = std::sync::OnceLock::new();
 
-        self.edges
-            .get(&id)
-            .unwrap_or_else(|| EMPTY.get_or_init(HashSet::new))
+        self.edges.get(&id).unwrap_or_else(|| EMPTY.get_or_init(HashSet::new))
     }
 
     #[inline(always)]

@@ -99,9 +99,8 @@ impl<'e> FunctionEmitter<'e> {
     const ARG_REGS_64: &'e [&'e str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
     /// float arguments go from xmm0 to xmm7 in order
-    const XMM_ARG_REGS: &'e [&'e str] = &[
-        "%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7",
-    ];
+    const XMM_ARG_REGS: &'e [&'e str] =
+        &["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"];
 
     fn new(
         out: &'e mut String,
@@ -113,12 +112,7 @@ impl<'e> FunctionEmitter<'e> {
         let saved_regs = Reg::CALLEE_SAVED
             .iter()
             .copied()
-            .filter(|reg| {
-                alloc
-                    .locations
-                    .values()
-                    .any(|loc| *loc == Location::Register(*reg))
-            })
+            .filter(|reg| alloc.locations.values().any(|loc| *loc == Location::Register(*reg)))
             .collect();
 
         Self {

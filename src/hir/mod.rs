@@ -530,9 +530,7 @@ mod tests {
 
     #[test]
     fn float_literal_widens_to_f32() {
-        let statements = Parser::new("fn main() { let x: f32 = 3.14; }")
-            .parse()
-            .unwrap();
+        let statements = Parser::new("fn main() { let x: f32 = 3.14; }").parse().unwrap();
         let hir = super::lower(statements).unwrap();
 
         let func = &hir.functions[0];

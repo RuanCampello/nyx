@@ -72,9 +72,7 @@ fn main() {
 fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> i32 {
     use std::collections::HashSet;
 
-    let exe = output
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_output(source));
+    let exe = output.map(PathBuf::from).unwrap_or_else(|| default_output(source));
 
     let kinds = match emit.is_empty() {
         true => HashSet::from([Emit::Link]),
@@ -202,13 +200,7 @@ fn default_output(source: &Path) -> PathBuf {
 
 #[inline(always)]
 fn temp_exe_path(source: &Path) -> PathBuf {
-    let stem = source
-        .file_stem()
-        .unwrap_or_else(|| source.as_os_str())
-        .to_string_lossy();
+    let stem = source.file_stem().unwrap_or_else(|| source.as_os_str()).to_string_lossy();
 
-    source
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(format!("{stem}.run.tmp"))
+    source.parent().unwrap_or(Path::new(".")).join(format!("{stem}.run.tmp"))
 }
