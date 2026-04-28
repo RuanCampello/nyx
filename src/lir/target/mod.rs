@@ -31,8 +31,7 @@ pub trait Lowerable: Target {
 }
 
 pub trait Emittable<T: Target> {
-    fn emit(&self, alloc: (), out: &mut String) -> String;
-
+    fn emit(&self, alloc: (), out: &mut String);
     fn start(out: &mut String);
 }
 

@@ -70,12 +70,14 @@ pub enum MachineType {
 
 const DEFAULT_SIZE: usize = 1 << 10;
 
+#[macro_export]
 macro_rules! emit {
     ($dst:expr, $($arg:tt)*) => {
         writeln!($dst, "    {}", format_args!($($arg)*)).unwrap()
     }
 }
 
+#[macro_export]
 macro_rules! label {
     ($dst:expr, $($arg:tt)*) => {
         writeln!($dst, "{}", format_args!($($arg)*)).unwrap()
