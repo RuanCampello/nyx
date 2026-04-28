@@ -111,6 +111,13 @@ pub enum X86Instr {
         uses: [VReg; 2],
         uses_len: u8,
     },
+    Test {
+        lhs: VReg,
+        rhs: X86Operand,
+        bytes: u8,
+        uses: [VReg; 2],
+        uses_len: u8,
+    },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis {
@@ -310,7 +317,9 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Cmp { uses, uses_len, .. } | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
+            Self::Test { uses, uses_len, .. }
+            | Self::Cmp { uses, uses_len, .. }
+            | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
 
             Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
             Self::Call { ret: None, .. } => &[],
@@ -390,6 +399,32 @@ impl X86Instr {
             uses,
             moves,
             ret,
+        }
+    }
+
+    /// Creates a comparation instruction depending on `O`
+    ///
+    /// - *0*: `cmp`
+    /// - *1*: `ucomis`
+    /// - *2*: `test`
+    #[inline(always)]
+    #[rustfmt::skip]
+    pub const fn cmp<const O: u8>(lhs: VReg, rhs: X86Operand, bytes: u8) -> Self {
+        let (uses, uses_len) = Self::uses(lhs, &rhs);
+
+        match O {
+            0 => Self::Cmp { lhs, rhs, bytes, uses, uses_len },
+            1 => Self::Test { lhs, rhs, bytes, uses, uses_len },
+            2 => Self::Ucomis { lhs, rhs, bytes, uses, uses_len },
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    #[inline(always)]
+    const fn uses(lhs: VReg, rhs: &X86Operand) -> ([VReg; 2], u8) {
+        match rhs {
+            X86Operand::VReg(reg) => ([lhs, *reg], 2),
+            _ => ([lhs, lhs], 1),
         }
     }
 }

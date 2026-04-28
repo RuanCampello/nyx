@@ -11,7 +11,7 @@
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
 use crate::hir::Type;
-use crate::lir::target::x86_64::{X86_64, X86Instr, X86Operand};
+use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
@@ -189,6 +189,46 @@ impl<'f> Lower<'f> {
             }
             _ => unimplemented!(),
         }
+    }
+
+    fn lower_cmp(
+        &mut self,
+        id: &BlockId,
+        dest: VReg,
+        lhs: X86Operand,
+        rhs: X86Operand,
+        bytes: u8,
+        is_float: bool,
+        condition: Condition,
+    ) {
+        // 1-byte result of setcc, then zero-extended into dest
+        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1 });
+
+        match is_float {
+            true => {
+                let X86Operand::VReg(lhs) = lhs else {
+                    panic!("float lhs must be a virtual register");
+                };
+                self.lir.push_instr(id, X86Instr::cmp::<1>(lhs, rhs, bytes));
+            }
+
+            _ => {
+                let lhs = match lhs {
+                    X86Operand::VReg(reg) => reg,
+                    _ => {
+                        let dest = self.lir.new_vreg(MachineType::Int { bytes });
+                        self.lir.push_instr(id, X86Instr::Mov { dest, src: lhs, bytes });
+
+                        dest
+                    }
+                };
+
+                self.lir.push_instr(id, X86Instr::cmp::<0>(lhs, rhs, bytes));
+            }
+        }
+
+        self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
+        self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
     }
 
     fn lower_terminator(&mut self, id: &BlockId, terminator: mir::Terminator) {
