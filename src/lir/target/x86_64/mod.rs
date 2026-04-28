@@ -120,8 +120,10 @@ pub enum X86Instr {
         uses: [VReg; 2],
         uses_len: u8,
     },
-
-    // TODO: add setcc
+    Setcc {
+        dest: VReg,
+        condition: Condition,
+    },
 
     // logical operations
     And {
@@ -185,6 +187,20 @@ pub enum X86Reg {
     Xmm12,
     Xmm13,
     Xmm14,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Condition {
+    E,
+    Ne,
+    L,
+    Le,
+    G,
+    Ge,
+    B,
+    Be,
+    A,
+    Ae,
 }
 
 impl Target for X86_64 {
@@ -285,6 +301,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::And { dest, .. }
             | Self::Or { dest, .. }
             | Self::Xor { dest, .. }
+            | Self::Setcc { dest, .. }
             | Self::AddFloat { dest, .. }
             | Self::SubFloat { dest, .. }
             | Self::MulFloat { dest, .. }
@@ -432,6 +449,23 @@ impl PhysicalReg for X86Reg {
             Self::R15 => ["r15", "r15d", "r15w", "r15b"][size_idx],
 
             _ => unreachable!("invalid register and operand size combination"),
+        }
+    }
+}
+
+impl Condition {
+    pub const fn as_str<'s>(&self) -> &'s str {
+        match self {
+            Self::E => "e",
+            Self::Ne => "ne",
+            Self::L => "l",
+            Self::Le => "le",
+            Self::G => "g",
+            Self::Ge => "ge",
+            Self::B => "b",
+            Self::Be => "be",
+            Self::A => "a",
+            Self::Ae => "ae",
         }
     }
 }
