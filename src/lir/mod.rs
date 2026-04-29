@@ -1,4 +1,10 @@
-//! LIR
+//! Low-level IR (LIR).
+//!
+//! The LIR sits between MIR and assembly emission. It is a low-level
+//! representation of the program that is closer to the target ISA. Every
+//! instruction matches the shape of the target ISA so the emitter is purely
+//! mechanical. The register allocator works on VRegs and assigns them to
+//! physical registers or stack slots.
 
 #![allow(unused)]
 
@@ -18,6 +24,7 @@ pub mod target;
 // PERFORMANCE: currently we're using owned values for everything making a lot of clones
 // reavaliate this after integration of LIR
 
+/// A function in LIR form, parameterised over the target.
 #[derive(Debug)]
 pub struct Function<T: Target> {
     name: String,
@@ -28,6 +35,9 @@ pub struct Function<T: Target> {
     vreg_types: Vec<MachineType>,
     next_vreg: u32,
 
+    /// VRegs that must be pinned to specific physical registers.
+    pub(in crate::lir) precolours: Vec<(VReg, T::Reg)>,
+
     /// float constants needed for `.rodata` labels
     ///
     /// - *key* = bit pattern
@@ -36,6 +46,8 @@ pub struct Function<T: Target> {
     float_counter: u32,
 }
 
+/// A linear sequence of instructions ending in exactly one
+/// [terminator](self::Term).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block<I> {
     id: BlockId,
@@ -55,9 +67,10 @@ pub enum Term {
     Return(Option<VReg>),
 }
 
-/// A virtual register
+/// A virtual register, which is a dense index identifying a single SSA value.
 ///
-/// This is a dense index with its machine type
+/// VRegs exist only within the LIR. The register allocator maps each one to
+/// either a physical register or a stack slot.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct VReg(u32);
 
@@ -65,7 +78,9 @@ pub struct VReg(u32);
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct BlockId(u32);
 
-/// A machine-level type
+/// Machine-level type
+///
+/// We don't need much info here, only byte widths matter at this layer.
 #[derive(Debug, Clone, Copy)]
 pub enum MachineType {
     Int { bytes: u8 },
@@ -120,6 +135,7 @@ impl<T: Target> Function<T> {
             blocks: Vec::new(),
             params: Vec::new(),
             vreg_types: Vec::new(),
+            precolours: Vec::new(),
             floats: BTreeMap::new(),
             next_vreg: 0,
             float_counter: 0,
@@ -134,6 +150,19 @@ impl<T: Target> Function<T> {
         self.vreg_types.push(typ);
 
         VReg(id)
+    }
+
+    /// Override a VReg's machine type.
+    /// Used after Movzx widens a 1-byte setcc result into 4 bytes.
+    #[inline(always)]
+    pub fn set_vreg_type(&mut self, vreg: VReg, typ: MachineType) {
+        self.vreg_types[vreg.0 as usize] = typ;
+    }
+
+    /// Pin a VReg to a specific physical register.
+    #[inline(always)]
+    pub fn add_precolour(&mut self, vreg: VReg, reg: T::Reg) {
+        self.precolours.push((vreg, reg));
     }
 
     #[inline(always)]
