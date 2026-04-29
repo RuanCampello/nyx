@@ -115,10 +115,12 @@ impl Function<X86_64> {
 
 impl Function<X86_64> {
     fn emit_instruction(&self, instruction: &X86Instr, alloc: &Allocation<X86_64>, out: &mut String) {
+        use lir::target::x86_64::X86Instr as Inst;
+
         let saved = alloc.used_callee_saved.len();
 
         match instruction {
-            X86Instr::ParamMov { dest, src_reg, bytes } => {
+            Inst::ParamMov { dest, src_reg, bytes } => {
                 let suffix = match self.is_float(dest) {
                     true => float_suffix(bytes),
                     _ => suffix(bytes),
@@ -128,13 +130,13 @@ impl Function<X86_64> {
                 let dest = alloc.location(&dest, bytes);
             }
 
-            X86Instr::Mov { dest, src, bytes } => {
+            Inst::Mov { dest, src, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes, saved);
             }
 
-            X86Instr::MovFloat { dest, src, bytes } => {
+            Inst::MovFloat { dest, src, bytes } => {
                 let suffix = float_suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes, saved);
@@ -142,12 +144,52 @@ impl Function<X86_64> {
                 mov_or_scratch(out, &src, &dest, suffix, true);
             }
 
-            X86Instr::Movzx { dest, src } => {
+            Inst::Movzx { dest, src } => {
                 let dest = alloc.location(dest, &4);
                 let src = alloc.location(src, &1);
 
                 emit!(out, "movzbl   {src}, {dest}");
             }
+
+            Inst::Add { dest, src, bytes }
+            | Inst::Sub { dest, src, bytes }
+            | Inst::Imul { dest, src, bytes }
+            | Inst::AddFloat { dest, src, bytes }
+            | Inst::SubFloat { dest, src, bytes }
+            | Inst::MulFloat { dest, src, bytes }
+            | Inst::DivFloat { dest, src, bytes }
+            | Inst::And { dest, src, bytes }
+            | Inst::Or { dest, src, bytes }
+            | Inst::Xor { dest, src, bytes } => {
+                let suffix = match self.is_float(dest) {
+                    true => float_suffix(bytes),
+                    _ => suffix(bytes),
+                };
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes, saved);
+
+                match instruction {
+                    Inst::Add { .. } | Inst::AddFloat { .. } => emit!(out, "add{suffix}    {src}, {dest}"),
+                    Inst::Sub { .. } | Inst::SubFloat { .. } => emit!(out, "sub{suffix}    {src}, {dest}"),
+                    Inst::Imul { .. } => emit!(out, "imul{suffix}    {src}, {dest}"),
+                    Inst::MulFloat { .. } => emit!(out, "mul{suffix}    {src}, {dest}"),
+                    Inst::DivFloat { .. } => emit!(out, "div{suffix}    {src}, {dest}"),
+                    Inst::And { .. } => emit!(out, "and{suffix}    {src}, {dest}"),
+                    Inst::Or { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
+                    Inst::Xor { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
+
+                    _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+            }
+
+            Inst::IDiv {
+                result,
+                dividend,
+                divisor,
+                bytes,
+                uses,
+                precoloured_uses,
+            } => todo!("idiv"),
 
             _ => todo!("emit instruction"),
         }
