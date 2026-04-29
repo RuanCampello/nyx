@@ -189,7 +189,39 @@ impl Function<X86_64> {
                 bytes,
                 uses,
                 precoloured_uses,
-            } => todo!("idiv"),
+            } => {
+                let suffix = suffix(bytes);
+                let (rax, extend) = match bytes {
+                    8 => ("%rax", "cqto"),
+                    _ => ("%eax", "cltd"),
+                };
+                let dividend = alloc.location(dividend, bytes);
+                let result = alloc.location(result, bytes);
+
+                if dividend != rax {
+                    emit!(out, "mov{suffix}    {dividend}, {rax}");
+                }
+                emit!(out, "{extend}");
+
+                match divisor {
+                    X86Operand::Imm(_) => {
+                        let div = self.operand(alloc, divisor, bytes, saved);
+                        emit!(out, "sub    $8, %rsp");
+                        emit!(out, "mov{suffix}    {div}, (%rsp)");
+                        emit!(out, "idiv{suffix}    %(rsp)");
+                        emit!(out, "add    $8, $rsp");
+                    }
+
+                    _ => {
+                        let div = self.operand(alloc, divisor, bytes, saved);
+                        emit!(out, "idiv{suffix}    {div}");
+                    }
+                }
+
+                if result != rax {
+                    emit!(out, "mov{suffix}    {rax}, {result}");
+                }
+            }
 
             Inst::XorFloat { dest, src, bytes } => {
                 let operand = if *bytes == 4 { "xorps" } else { "xorpd" };
