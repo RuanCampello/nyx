@@ -15,7 +15,11 @@ pub enum Location<T: Target> {
 }
 
 impl Interference {
-    pub fn colour<T: Target>(&self, vreg_types: &BTreeMap<VReg, MachineType>) -> Allocation<T> {
+    pub fn colour<T: Target>(
+        &self,
+        vreg_types: &BTreeMap<VReg, MachineType>,
+        precolours: &[(VReg, T::Reg)],
+    ) -> Allocation<T> {
         let all = self.nodes().collect::<Vec<_>>();
 
         if all.is_empty() {
@@ -28,6 +32,11 @@ impl Interference {
 
         let mut locations = BTreeMap::new();
         let mut spill_offset = 0;
+
+        // preassign pinned VRegs before colouring
+        for &(vreg, reg) in precolours {
+            locations.insert(vreg, Location::Reg(reg));
+        }
 
         self.colour_group(
             T::gprs().len(),
@@ -79,7 +88,10 @@ impl Interference {
             return;
         }
 
-        let mut degree: BTreeMap<VReg, usize> = nodes.iter().map(|&v| (*v, self.degree(&v))).collect();
+        // skip vregs that are already precoloured
+        let unpinned: Vec<_> = nodes.iter().filter(|&&v| !locations.contains_key(v)).collect();
+
+        let mut degree: BTreeMap<VReg, usize> = unpinned.iter().map(|&&v| (*v, self.degree(&v))).collect();
         let mut removed = BTreeSet::new();
         let mut stack = Vec::new();
 
@@ -107,6 +119,13 @@ impl Interference {
         }
 
         let mut colour_map = BTreeMap::new();
+
+        // seed colour_map with precoloured vregs so neighbours see them
+        for (&vreg, loc) in locations.iter() {
+            if let Location::Reg(reg) = loc {
+                colour_map.insert(vreg, Some(*reg));
+            }
+        }
 
         while let Some(v) = stack.pop() {
             let mut forbidden: BTreeSet<T::Reg> = self
