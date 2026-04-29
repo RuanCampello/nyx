@@ -121,11 +121,7 @@ impl Function<X86_64> {
 
         match instruction {
             Inst::ParamMov { dest, src_reg, bytes } => {
-                let suffix = match self.is_float(dest) {
-                    true => float_suffix(bytes),
-                    _ => suffix(bytes),
-                };
-
+                let suffix = typed_suffix(bytes, self.is_float(dest));
                 let src = format!("%{}", src_reg.name(*bytes));
                 let dest = alloc.location(&dest, bytes);
             }
@@ -161,10 +157,7 @@ impl Function<X86_64> {
             | Inst::And { dest, src, bytes }
             | Inst::Or { dest, src, bytes }
             | Inst::Xor { dest, src, bytes } => {
-                let suffix = match self.is_float(dest) {
-                    true => float_suffix(bytes),
-                    _ => suffix(bytes),
-                };
+                let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes, saved);
 
@@ -233,13 +226,37 @@ impl Function<X86_64> {
                 }
             }
 
-            Inst::Call {
-                target,
-                moves,
-                uses,
-                ret,
-                precoloured_def,
-            } => todo!("call"),
+            Inst::Call { target, moves, ret, .. } => {
+                for (vreg, reg) in moves {
+                    let bytes = self.reg_bytes(vreg);
+                    let is_float = self.is_float(vreg);
+
+                    let suffix = typed_suffix(&bytes, is_float);
+                    let src = alloc.location(vreg, &bytes);
+                    let dest = format!("%{}", reg.name(bytes));
+
+                    mov_or_scratch(out, &src, &dest, suffix, is_float);
+                }
+
+                emit!(out, "call    {target}");
+
+                if let Some(ret) = ret {
+                    let bytes = self.reg_bytes(ret);
+                    let is_float = self.is_float(ret);
+                    let class = match is_float {
+                        true => RegClass::Float,
+                        _ => RegClass::Int,
+                    };
+
+                    if let Some(abi_ret) = X86_64::ret(class) {
+                        let suffix = typed_suffix(&bytes, is_float);
+                        let src = format!("%{}", abi_ret.name(bytes));
+                        let dest = alloc.location(ret, &bytes);
+
+                        mov_or_scratch(out, &src, &dest, suffix, is_float);
+                    }
+                }
+            }
         }
     }
 
@@ -278,11 +295,7 @@ impl Function<X86_64> {
                 };
 
                 if let Some(ret_reg) = X86_64::ret(class) {
-                    let suffix = match is_float {
-                        true => float_suffix(&bytes),
-                        false => suffix(&bytes),
-                    };
-
+                    let suffix = typed_suffix(&bytes, is_float);
                     let src = alloc.location(vreg, &bytes);
                     let dest = format!("%{}", ret_reg.name(bytes));
 
@@ -329,6 +342,14 @@ impl Allocation<X86_64> {
             Location::Reg(reg) => format!("%{}", reg.name(*bytes)),
             Location::Stack(offset) => format!("{}(%rbp)", offset - (self.used_callee_saved.len() as i32 * 8)),
         }
+    }
+}
+
+#[inline(always)]
+const fn typed_suffix<'s>(bytes: &u8, is_float: bool) -> &'s str {
+    match is_float {
+        true => float_suffix(bytes),
+        false => suffix(bytes),
     }
 }
 
