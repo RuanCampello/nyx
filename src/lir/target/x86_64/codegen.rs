@@ -23,7 +23,7 @@ impl Emittable<X86_64> for Function<X86_64> {
     fn emit(&self, alloc: Allocation<X86_64>, out: &mut String) {
         let name = &self.name;
         let frame_size = alloc.frame_size;
-        let epilogue = format!("L.{name}_epilogue");
+        let epilogue = format!(".L_{name}_epilogue");
 
         Self::emit_prologue(&alloc, name, frame_size, out);
         self.emit_body(&alloc, name, &epilogue, out);
