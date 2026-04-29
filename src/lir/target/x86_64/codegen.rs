@@ -8,7 +8,7 @@
 use crate::{
     emit, label,
     lir::{
-        self, Function, MachineType, VReg,
+        self, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, PhysicalReg, Target,
@@ -86,7 +86,7 @@ impl Function<X86_64> {
                 self.emit_instruction(instruction, alloc, out);
             }
 
-            todo!("emit terminator");
+            self.emit_terminator(alloc, &block.term, name, epilogue, idx == n - 1, out);
         }
     }
 
@@ -243,6 +243,33 @@ impl Function<X86_64> {
         }
     }
 
+    fn emit_terminator(
+        &self,
+        alloc: &Allocation<X86_64>,
+        term: &Term,
+        name: &str,
+        epilogue: &str,
+        is_last: bool,
+        out: &mut String,
+    ) {
+        match term {
+            Term::Return(None) if !is_last => emit!(out, "jmp       {epilogue}"),
+            Term::Jump(block) => emit!(out, "jmp      .L_block_{name}_{}", block.0),
+            Term::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                let condition = alloc.location(cond, &4);
+
+                emit!(out, "testl       {condition}, {condition}");
+                emit!(out, "jne         .L_block_{name}_{}", then_block.0);
+                emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
+            }
+            _ => todo!("emit return with some"),
+        }
+    }
+
     #[inline(always)]
     fn reg_bytes(&self, vreg: &VReg) -> u8 {
         self.vreg_types.get(vreg.0 as usize).map(|typ| typ.bytes()).unwrap_or(4)
@@ -262,7 +289,7 @@ impl Function<X86_64> {
         saved: usize,
     ) -> Cow<'s, str> {
         match operand {
-            X86Operand::VReg(vreg) => todo!(),
+            X86Operand::VReg(vreg) => Cow::Owned(alloc.location(vreg, bytes)),
             X86Operand::Imm(n) => Cow::Owned(n.to_string()),
             X86Operand::RipRel(s) => Cow::Borrowed(s.as_str()),
         }
