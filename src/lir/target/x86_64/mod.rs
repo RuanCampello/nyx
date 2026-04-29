@@ -9,15 +9,19 @@ use crate::{
 mod codegen;
 mod lower;
 
+/// x86_64 target for the SysV AMD64 ABI.
 pub struct X86_64;
 
+/// An operand for an x86_64 LIR instruction.
 #[derive(Debug, Clone)]
 pub enum X86Operand {
     VReg(VReg),
     Imm(i64),
+    /// RIP relative float constant in .rodata
     RipRel(String),
 }
 
+/// An x86_64 LIR instruction in 2-address form.
 #[derive(Debug, Clone)]
 pub enum X86Instr {
     /// Copy from a physical ABI parameter register into a VReg at function entry
@@ -163,7 +167,7 @@ pub enum X86Instr {
     },
 }
 
-/// Registers for x86_64 based on `SysV AMD64` ABI
+/// Physical registers for x86_64 under the SysV AMD64 ABI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum X86Reg {
     // gp caller-saved
@@ -200,6 +204,7 @@ pub enum X86Reg {
     Xmm14,
 }
 
+/// x86 condition codes for `setcc` / `jcc`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Condition {
     E,
@@ -257,6 +262,10 @@ impl Target for X86_64 {
     }
 
     fn callee_saved<'r>() -> &'r [Self::Reg] {
+        &[X86Reg::Rbx, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15]
+    }
+
+    fn caller_saved<'r>() -> &'r [Self::Reg] {
         &[
             X86Reg::Rax,
             X86Reg::Rcx,
@@ -267,10 +276,6 @@ impl Target for X86_64 {
             X86Reg::R9,
             X86Reg::R10,
         ]
-    }
-
-    fn caller_saved<'r>() -> &'r [Self::Reg] {
-        &[X86Reg::Rbx, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15]
     }
 
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg> {
@@ -321,9 +326,7 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Test { uses, uses_len, .. }
-            | Self::Cmp { uses, uses_len, .. }
-            | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
+            Self::Cmp { .. } | Self::Test { .. } | Self::Ucomis { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
             Self::Call { ret: None, .. } => &[],
@@ -334,17 +337,42 @@ impl Instruction<X86_64> for X86Instr {
     fn uses(&self) -> &[VReg] {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
-            | Self::MovFloat { src: X86Operand::VReg(v), .. }
-            | Self::Add { src: X86Operand::VReg(v), .. }
+            | Self::MovFloat { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+
+            // 2-address: dest is read+write, src is read-only
+            Self::Add { src: X86Operand::VReg(v), .. }
             | Self::Sub { src: X86Operand::VReg(v), .. }
             | Self::Imul { src: X86Operand::VReg(v), .. }
             | Self::And { src: X86Operand::VReg(v), .. }
             | Self::Or { src: X86Operand::VReg(v), .. }
-            | Self::Xor { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+            | Self::Xor { src: X86Operand::VReg(v), .. }
+            | Self::AddFloat { src: X86Operand::VReg(v), .. }
+            | Self::SubFloat { src: X86Operand::VReg(v), .. }
+            | Self::MulFloat { src: X86Operand::VReg(v), .. }
+            | Self::DivFloat { src: X86Operand::VReg(v), .. }
+            | Self::XorFloat { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+
+            // immediate-source 2-address: only dest is used
+            Self::Add { dest, .. }
+            | Self::Sub { dest, .. }
+            | Self::Imul { dest, .. }
+            | Self::And { dest, .. }
+            | Self::Or { dest, .. }
+            | Self::Xor { dest, .. }
+            | Self::AddFloat { dest, .. }
+            | Self::SubFloat { dest, .. }
+            | Self::MulFloat { dest, .. }
+            | Self::DivFloat { dest, .. }
+            | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
 
             Self::Neg { dest, .. } => std::slice::from_ref(dest),
             Self::Movzx { src, ..  } => std::slice::from_ref(src),
 
+            Self::Cmp { uses, uses_len, .. }
+            | Self::Test { uses, uses_len, .. }
+            | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
+
+            Self::IDiv { uses, .. } => uses.as_slice(),
             Self::Call { uses, .. } => uses.as_slice(),
 
             _ => &[],
@@ -370,8 +398,8 @@ impl Instruction<X86_64> for X86Instr {
 
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
-            Self::IDiv { .. } => X86_64::caller_saved(),
-            Self::Call { .. } => &[X86Reg::Rdx],
+            Self::IDiv { .. } => &[X86Reg::Rdx],
+            Self::Call { .. } => X86_64::caller_saved(),
             _ => &[],
         }
     }
@@ -533,11 +561,11 @@ impl Condition {
             (BinaryOperator::LtEq, true) => Self::Be,
             (BinaryOperator::LtEq, false) => Self::Le,
 
-            (BinaryOperator::Gt, true) => Self::G,
-            (BinaryOperator::Gt, false) => Self::A,
+            (BinaryOperator::Gt, true) => Self::A,
+            (BinaryOperator::Gt, false) => Self::G,
 
-            (BinaryOperator::GtEq, true) => Self::Ge,
-            (BinaryOperator::GtEq, false) => Self::Ae,
+            (BinaryOperator::GtEq, true) => Self::Ae,
+            (BinaryOperator::GtEq, false) => Self::Ge,
 
             _ => unreachable!("invalid combination of binary operator and float flag"),
         }
