@@ -63,7 +63,7 @@ pub struct VReg(u32);
 pub struct BlockId(u32);
 
 /// A machine-level type
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MachineType {
     Int { bytes: u8 },
     Float { bytes: u8 },
