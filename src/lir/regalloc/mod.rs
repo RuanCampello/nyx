@@ -53,6 +53,7 @@ impl<T: Target> Function<T> {
 
         let liveness = Liveness::analyse(self);
         let mut graph = Interference::build(self, &liveness);
+        graph.coalesce(self);
 
         graph.colour::<T>(&vreg_types)
     }

@@ -7,7 +7,7 @@ use crate::lir::{
 };
 
 /// Where a [virtual register](crate::lir::VReg) lives after allocation
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Eq)]
 pub enum Location<T: Target> {
     Reg(T::Reg),
     /// Offset from %rbp
@@ -46,7 +46,7 @@ impl Interference {
             T::fprs(),
             vreg_types,
             &mut locations,
-            &mut &mut &mut &mut &mut &mut &mut spill_offset,
+            &mut spill_offset,
         );
 
         let raw = spill_offset.unsigned_abs();
@@ -79,16 +79,16 @@ impl Interference {
             return;
         }
 
-        let mut degree: BTreeMap<VReg, usize> = nodes.iter().map(|&&v| (v, self.degree(v))).collect();
+        let mut degree: BTreeMap<VReg, usize> = nodes.iter().map(|&v| (*v, self.degree(&v))).collect();
         let mut removed = BTreeSet::new();
         let mut stack = Vec::new();
 
         loop {
-            let simplifiable = degree
+            let simplifiable: Vec<_> = degree
                 .iter()
-                .filter(|(v, &d)| !removed.contains(&v) && d < k)
+                .filter(|&(v, d)| !removed.contains(v) && *d < k)
                 .map(|(&v, _)| v)
-                .collect::<Vec<_>>();
+                .collect();
 
             if !simplifiable.is_empty() {
                 for v in simplifiable {
@@ -98,7 +98,7 @@ impl Interference {
                 continue;
             }
 
-            let remaining = degree.keys().filter(|v| !removed.contains(v)).copied().collect::<Vec<_>>();
+            let remaining: Vec<_> = degree.keys().filter(|v| !removed.contains(v)).copied().collect();
 
             match remaining.iter().max_by_key(|&&v| degree[&v]) {
                 None => break,
@@ -148,6 +148,19 @@ where
 }
 
 impl<T: Target> Copy for Location<T> where T::Reg: Copy {}
+
+impl<T: Target> PartialEq for Location<T>
+where
+    T::Reg: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Reg(a), Self::Reg(b)) => a == b,
+            (Self::Stack(a), Self::Stack(b)) => a == b,
+            _ => false,
+        }
+    }
+}
 
 #[inline(always)]
 fn slot_bytes(v: VReg, types: &BTreeMap<VReg, MachineType>) -> u32 {

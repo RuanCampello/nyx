@@ -6,19 +6,19 @@ use crate::lir::{
 };
 
 pub struct Liveness {
-    blocks: Vec<BlockLiveness>,
+    pub(in crate::lir::regalloc) blocks: Vec<BlockLiveness>,
 }
 
 #[derive(Debug, Default, Clone)]
-struct BlockLiveness {
-    live_in: BTreeSet<VReg>,
-    live_out: BTreeSet<VReg>,
+pub(super) struct BlockLiveness {
+    pub(in crate::lir::regalloc) live_in: BTreeSet<VReg>,
+    pub(in crate::lir::regalloc) live_out: BTreeSet<VReg>,
 }
 
 pub struct InstructionLiveness {
     /// `points[i]` = live set *before* instruction `i` executes
     /// `points[n]` = live_out of the block
-    points: Vec<BTreeSet<VReg>>,
+    pub(in crate::lir::regalloc) points: Vec<BTreeSet<VReg>>,
 }
 
 impl Liveness {
