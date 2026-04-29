@@ -182,6 +182,13 @@ impl Function<X86_64> {
                 }
             }
 
+            Inst::Neg { dest, bytes } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+
+                emit!(out, "neg{suffix}    {dest}");
+            }
+
             Inst::IDiv {
                 result,
                 dividend,
@@ -215,7 +222,24 @@ impl Function<X86_64> {
                 emit!(out, "set{}  {dest}", condition.as_str())
             }
 
-            _ => todo!("emit instruction"),
+            Inst::Test { lhs, rhs, bytes, .. } | Inst::Cmp { lhs, rhs, bytes, .. } => {
+                let suffix = suffix(bytes);
+                let lhs = alloc.location(lhs, bytes);
+                let rhs = self.operand(alloc, rhs, bytes, saved);
+
+                match matches!(instruction, Inst::Cmp { .. }) {
+                    true => emit!(out, "cmp{suffix}    {lhs}, {rhs}"),
+                    _ => emit!(out, "test{suffix}    {lhs}, {rhs}"),
+                }
+            }
+
+            Inst::Call {
+                target,
+                moves,
+                uses,
+                ret,
+                precoloured_def,
+            } => todo!("call"),
         }
     }
 
