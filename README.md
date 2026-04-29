@@ -2,6 +2,8 @@
 
 A modern, strict, compiled programming language.
 
+[![wakatime](https://wakatime.com/badge/user/1d99c903-ceec-40e7-a0ad-7f1d96209ca7/project/21d4d27f-b9a1-4939-9d96-8e0500771415.svg)](https://wakatime.com/badge/user/1d99c903-ceec-40e7-a0ad-7f1d96209ca7/project/21d4d27f-b9a1-4939-9d96-8e0500771415?style=for-the-badge)
+
 ## Overview
 
 Nyx is designed for performance without sacrificing safety and clarity. It is a strictly typed language that focuses on catching errors early through a robust, uncompromising compiler.

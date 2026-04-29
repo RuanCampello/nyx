@@ -5,6 +5,12 @@ use crate::lir::{
 };
 use std::collections::BTreeMap;
 
+// PERFORMANCE: we probably should reavaliate the algortihms in this module
+// after doing a bunch of hacky things trying to solve the mad pipeline of before
+// this is very populed
+// there's a lot of iterations, linear or lookups, cloning, probing, wacky derefecings etc
+// we can surely simplify this by a lot with the same results and probably better performance
+
 mod colouring;
 mod interference;
 mod liveness;
