@@ -74,7 +74,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let symbol = self.symbols.insert(parameter.name);
                 let id = self.declare_local(symbol, typ, true)?;
 
-                Ok(Parameter { typ, id, name: symbol })
+                Ok(Parameter {
+                    typ,
+                    id,
+                    name: symbol,
+                    mutable: parameter.mutable,
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -86,6 +91,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             params,
             locals: self.locals,
             return_type: self.return_type,
+            is_const: function.is_const,
+            inline: function.inline,
             body,
         })
     }

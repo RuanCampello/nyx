@@ -118,14 +118,9 @@ fn cmd_run(source: &Path) -> i32 {
 }
 
 /// Emits whichever outputs [kinds](self::Emit) requests.
-fn build_emit(
-    source: &Path,
-    stem: &Path,
-    kinds: &std::collections::HashSet<Emit>,
-) -> Result<Vec<PathBuf>, String> {
+fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit>) -> Result<Vec<PathBuf>, String> {
     // read source
-    let src = fs::read_to_string(source)
-        .map_err(|e| format!("cannot read `{}`: {e}", source.display()))?;
+    let src = fs::read_to_string(source).map_err(|e| format!("cannot read `{}`: {e}", source.display()))?;
 
     // compile source → GAS assembly
     let asm = nyx::compile(&src).map_err(|e| e.message)?;
@@ -136,8 +131,7 @@ fn build_emit(
     let asm_path = stem.with_extension("s");
     let keep_asm = kinds.contains(&Emit::Asm);
 
-    fs::write(&asm_path, &asm)
-        .map_err(|e| format!("cannot write `{}`: {e}", asm_path.display()))?;
+    fs::write(&asm_path, &asm).map_err(|e| format!("cannot write `{}`: {e}", asm_path.display()))?;
 
     if keep_asm {
         emitted.push(asm_path.clone());
@@ -158,10 +152,7 @@ fn build_emit(
 
     if !as_status.success() {
         fs::remove_file(&obj_path).ok();
-        return Err(format!(
-            "`as` exited with code {}",
-            as_status.code().unwrap_or(-1)
-        ));
+        return Err(format!("`as` exited with code {}", as_status.code().unwrap_or(-1)));
     }
 
     if keep_obj {
@@ -183,10 +174,7 @@ fn build_emit(
     fs::remove_file(&obj_path).ok();
 
     if !ld_status.success() {
-        return Err(format!(
-            "`ld` exited with code {}",
-            ld_status.code().unwrap_or(-1)
-        ));
+        return Err(format!("`ld` exited with code {}", ld_status.code().unwrap_or(-1)));
     }
 
     emitted.push(exe_path);

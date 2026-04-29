@@ -42,6 +42,15 @@ pub enum HirErrorKind<'h> {
 
     #[error("re-assignment of immutable bind: `{name}`")]
     ImmutableBind { name: String },
+
+    #[error(transparent)]
+    ConstFnViolation(ConstFnViolationKind),
+}
+
+#[derive(Debug, PartialEq, Clone, thiserror::Error)]
+pub enum ConstFnViolationKind {
+    #[error("cannot call non-const function `{name}` in constant functions")]
+    NonConstCall { name: String },
 }
 
 impl<'h> From<ParserError<'h>> for HirError<'h> {
