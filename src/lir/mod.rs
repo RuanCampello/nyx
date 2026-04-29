@@ -3,7 +3,10 @@
 #![allow(unused)]
 
 use crate::{
-    lir::target::{Emittable, Lowerable, RegClass, Target},
+    lir::{
+        regalloc::Allocation,
+        target::{Emittable, Lowerable, RegClass, Target},
+    },
     mir,
 };
 use std::collections::BTreeMap;
@@ -94,7 +97,8 @@ where
 
     for function in &mir.functions {
         let lir = T::lower(function, &mir.symbols, &mir.functions);
-        lir.emit((), &mut out);
+        let alloc = lir.allocate();
+        lir.emit(alloc, &mut out);
     }
 
     // emit a `_start` trampoline if the program defines `fn main`

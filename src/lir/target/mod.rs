@@ -1,5 +1,5 @@
 use crate::{
-    lir::{self, VReg},
+    lir::{self, VReg, regalloc},
     mir,
 };
 
@@ -31,7 +31,7 @@ pub trait Lowerable: Target {
 }
 
 pub trait Emittable<T: Target> {
-    fn emit(&self, alloc: (), out: &mut String);
+    fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
     fn start(out: &mut String);
 }
 

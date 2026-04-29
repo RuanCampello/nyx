@@ -19,7 +19,7 @@ mod liveness;
 pub struct Allocation<T: Target> {
     locations: BTreeMap<VReg, Location<T>>,
     frame_size: u32,
-    used_callee_saved: Vec<T::Reg>,
+    pub(in crate::lir) used_callee_saved: Vec<T::Reg>,
 }
 
 impl<T: Target> Allocation<T> {
@@ -53,8 +53,8 @@ impl<T: Target> Function<T> {
 
         let liveness = Liveness::analyse(self);
         let mut graph = Interference::build(self, &liveness);
-        graph.coalesce(self);
 
+        graph.coalesce(self);
         graph.colour::<T>(&vreg_types)
     }
 }
