@@ -125,8 +125,30 @@ impl Function<X86_64> {
                 };
 
                 let src = format!("%{}", src_reg.name(*bytes));
-                let dest = Self::location(alloc, &dest, bytes);
+                let dest = alloc.location(&dest, bytes);
             }
+
+            X86Instr::Mov { dest, src, bytes } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes, saved);
+            }
+
+            X86Instr::MovFloat { dest, src, bytes } => {
+                let suffix = float_suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes, saved);
+
+                mov_or_scratch(out, &src, &dest, suffix, true);
+            }
+
+            X86Instr::Movzx { dest, src } => {
+                let dest = alloc.location(dest, &4);
+                let src = alloc.location(src, &1);
+
+                emit!(out, "movzbl   {src}, {dest}");
+            }
+
             _ => todo!("emit instruction"),
         }
     }
@@ -146,7 +168,7 @@ impl Function<X86_64> {
         &self,
         alloc: &Allocation<X86_64>,
         operand: &'s X86Operand,
-        bytes: u8,
+        bytes: &u8,
         saved: usize,
     ) -> Cow<'s, str> {
         match operand {
@@ -155,12 +177,14 @@ impl Function<X86_64> {
             X86Operand::RipRel(s) => Cow::Borrowed(s.as_str()),
         }
     }
+}
 
+impl Allocation<X86_64> {
     #[inline(always)]
-    fn location(alloc: &Allocation<X86_64>, vreg: &VReg, bytes: &u8) -> String {
-        match alloc.location_of(vreg) {
+    fn location(&self, vreg: &VReg, bytes: &u8) -> String {
+        match self.location_of(vreg) {
             Location::Reg(reg) => format!("%{}", reg.name(*bytes)),
-            Location::Stack(offset) => format!("{}(%rbp)", offset - (alloc.used_callee_saved.len() as i32 * 8)),
+            Location::Stack(offset) => format!("{}(%rbp)", offset - (self.used_callee_saved.len() as i32 * 8)),
         }
     }
 }
@@ -184,6 +208,7 @@ const fn float_suffix<'s>(bytes: &u8) -> &'s str {
 }
 
 #[inline(always)]
+// TODO: should we really do this here? reavaliate the process in the pipeline
 fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_float: bool) {
     if src == dest {
         return;
