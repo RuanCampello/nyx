@@ -22,7 +22,7 @@ use std::{borrow::Cow, fmt::Write};
 impl Emittable<X86_64> for Function<X86_64> {
     fn emit(&self, alloc: Allocation<X86_64>, out: &mut String) {
         let name = &self.name;
-        let frame_size = 0;
+        let frame_size = alloc.frame_size;
         let epilogue = format!("L.{name}_epilogue");
 
         Self::emit_prologue(&alloc, name, frame_size, out);
@@ -121,15 +121,20 @@ impl Function<X86_64> {
 
         match instruction {
             Inst::ParamMov { dest, src_reg, bytes } => {
-                let suffix = typed_suffix(bytes, self.is_float(dest));
+                let is_float = self.is_float(dest);
+                let suffix = typed_suffix(bytes, is_float);
                 let src = format!("%{}", src_reg.name(*bytes));
                 let dest = alloc.location(&dest, bytes);
+
+                mov_or_scratch(out, &src, &dest, suffix, is_float);
             }
 
             Inst::Mov { dest, src, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes, saved);
+
+                mov_or_scratch(out, &src, &dest, suffix, false);
             }
 
             Inst::MovFloat { dest, src, bytes } => {
@@ -169,7 +174,7 @@ impl Function<X86_64> {
                     Inst::DivFloat { .. } => emit!(out, "div{suffix}    {src}, {dest}"),
                     Inst::And { .. } => emit!(out, "and{suffix}    {src}, {dest}"),
                     Inst::Or { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
-                    Inst::Xor { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
+                    Inst::Xor { .. } => emit!(out, "xor{suffix}    {src}, {dest}"),
 
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
@@ -206,10 +211,10 @@ impl Function<X86_64> {
                 match divisor {
                     X86Operand::Imm(_) => {
                         let div = self.operand(alloc, divisor, bytes, saved);
-                        emit!(out, "sub    $8, %rsp");
+                        emit!(out, "subq    $8, %rsp");
                         emit!(out, "mov{suffix}    {div}, (%rsp)");
-                        emit!(out, "idiv{suffix}    %(rsp)");
-                        emit!(out, "add    $8, $rsp");
+                        emit!(out, "idiv{suffix}    (%rsp)");
+                        emit!(out, "addq    $8, %rsp");
                     }
 
                     _ => {
@@ -253,8 +258,8 @@ impl Function<X86_64> {
                 let rhs = self.operand(alloc, rhs, bytes, saved);
 
                 match matches!(instruction, Inst::Cmp { .. }) {
-                    true => emit!(out, "cmp{suffix}    {lhs}, {rhs}"),
-                    _ => emit!(out, "test{suffix}    {lhs}, {rhs}"),
+                    true => emit!(out, "cmp{suffix}    {rhs}, {lhs}"),
+                    _ => emit!(out, "test{suffix}    {rhs}, {lhs}"),
                 }
             }
 
@@ -361,7 +366,7 @@ impl Function<X86_64> {
     ) -> Cow<'s, str> {
         match operand {
             X86Operand::VReg(vreg) => Cow::Owned(alloc.location(vreg, bytes)),
-            X86Operand::Imm(n) => Cow::Owned(n.to_string()),
+            X86Operand::Imm(n) => Cow::Owned(format!("${n}")),
             X86Operand::RipRel(s) => Cow::Borrowed(s.as_str()),
         }
     }
