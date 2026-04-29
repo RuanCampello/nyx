@@ -46,16 +46,9 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 ## Current Status
 
-Nyx is currently in early development.
+Nyx is currently in early development. The core compiler pipeline, from the lexer and parser to semantic analysis, register allocation, and `x86_64` code generation, is functional.
 
-| Stage                         | Module                          |
-| ----------------------------- | ------------------------------- |
-| ✅ Lexer                      | [`src/lexer`](src/lexer/)       |
-| ✅ Parser                     | [`src/parser`](src/parser/)     |
-| ✅ Semantic Analysis (HIR)    | [`src/hir`](src/hir/)           |
-| ✅ Mid-level IR (MIR)         | [`src/mir`](src/mir/)           |
-| ✅ Register Allocation        | [`src/regalloc`](src/regalloc/) |
-| ✅ Code Generation (`x86_64`) | [`src/codegen`](src/codegen/)   |
+For a detailed breakdown of completed features and active development goals, please see the [ROADMAP](ROADMAP.md).
 
 ## Philosophy
 
