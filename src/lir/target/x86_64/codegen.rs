@@ -11,7 +11,7 @@ use crate::{
         self, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, PhysicalReg, Target,
+            Emittable, PhysicalReg, RegClass, Target,
             x86_64::{X86_64, X86Instr, X86Operand},
         },
     },
@@ -254,7 +254,9 @@ impl Function<X86_64> {
     ) {
         match term {
             Term::Return(None) if !is_last => emit!(out, "jmp       {epilogue}"),
+            Term::Return(None) => {}
             Term::Jump(block) => emit!(out, "jmp      .L_block_{name}_{}", block.0),
+
             Term::Branch {
                 cond,
                 then_block,
@@ -266,7 +268,31 @@ impl Function<X86_64> {
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
             }
-            _ => todo!("emit return with some"),
+
+            Term::Return(Some(vreg)) => {
+                let bytes = self.reg_bytes(vreg);
+                let is_float = self.is_float(vreg);
+                let class = match is_float {
+                    true => RegClass::Float,
+                    _ => RegClass::Int,
+                };
+
+                if let Some(ret_reg) = X86_64::ret(class) {
+                    let suffix = match is_float {
+                        true => float_suffix(&bytes),
+                        false => suffix(&bytes),
+                    };
+
+                    let src = alloc.location(vreg, &bytes);
+                    let dest = format!("%{}", ret_reg.name(bytes));
+
+                    mov_or_scratch(out, &src, &dest, suffix, is_float);
+                }
+
+                if !is_last {
+                    emit!(out, "jmp        {epilogue}");
+                }
+            }
         }
     }
 
