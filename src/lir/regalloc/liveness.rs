@@ -62,6 +62,43 @@ impl Liveness {
 
         Self { blocks }
     }
+
+    pub fn instruction_liveness<T: Target>(&self, function: &Function<T>, idx: usize) -> InstructionLiveness {
+        let block = &function.blocks[idx];
+        let n = block.instructions.len();
+        let mut points = vec![BTreeSet::new(); n + 1];
+        points[n] = self.blocks[idx].live_out.clone();
+
+        let mut live = points[n].clone();
+
+        for idx in (0..n).rev() {
+            let instruction = &block.instructions[idx];
+
+            for def in instruction.defs() {
+                live.remove(def);
+            }
+
+            for &used in instruction.uses() {
+                live.insert(used);
+            }
+
+            for &clob in instruction.clobbers() {
+                let _ = clob;
+            }
+
+            for (vreg, _) in instruction.precoloured_uses() {
+                live.insert(*vreg);
+            }
+
+            points[idx] = live.clone();
+        }
+
+        for &vreg in block.term.uses_of() {
+            live.insert(vreg);
+        }
+
+        InstructionLiveness { points }
+    }
 }
 
 impl<I> Block<I> {
