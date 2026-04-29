@@ -50,12 +50,15 @@ pub struct Function<'i> {
     pub params: Vec<Parameter<'i>>,
     pub return_type: Option<Spanned<Type>>,
     pub body: Block<'i>,
+    pub is_const: bool,
+    pub inline: bool,
     pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Parameter<'i> {
     pub name: &'i str,
+    pub mutable: bool,
     pub typ: Spanned<Type>,
     pub span: Span,
 }
@@ -106,10 +109,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
         let kind = match parser.peek() {
             Some(Ok(token)) => &token.kind,
             _ => {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             }
         };
 
@@ -120,19 +120,11 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Fn) => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
-            TokenKind::Eof => Err(ParserError::new(
-                ParseErrorKind::UnexpectedEof,
-                Span::default(),
-            )),
+            TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
-                    Some(Ok(token))
-                        if matches!(
-                            token.kind,
-                            TokenKind::Punct(Punct::CloseBrace) | TokenKind::Eof
-                        ) =>
-                    {
+                    Some(Ok(token)) if matches!(token.kind, TokenKind::Punct(Punct::CloseBrace) | TokenKind::Eof) => {
                         expr.span().end
                     }
                     Some(Err(err)) => return Err(err.into()),
@@ -166,10 +158,7 @@ impl Spanned<Type> {
             let (name, span) = parser.expect_identifier()?;
 
             return match name {
-                "str" => Ok(Self {
-                    span,
-                    value: Type::Str,
-                }),
+                "str" => Ok(Self { span, value: Type::Str }),
                 _ => Err(ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
                         found: name.to_string(),
@@ -289,10 +278,7 @@ impl<'i> Parsable<'i> for If<'i> {
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
             let Some(Ok(next_token)) = parser.peek() else {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             };
 
             match next_token.kind {
@@ -335,16 +321,15 @@ impl<'i> Parsable<'i> for While<'i> {
         let body = Block::parse(parser)?;
         let span = Span::new(while_token.span.start, body.span.end);
 
-        Ok(While {
-            condition,
-            body,
-            span,
-        })
+        Ok(While { condition, body, span })
     }
 }
 
 impl<'i> Parsable<'i> for Function<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let inline = parser.consume_keyword(Keyword::Inline)?;
+        let is_const = parser.consume_keyword(Keyword::Const)?;
+
         let fn_token = parser.expect_keyword(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
         parser.expect_punct(Punct::OpenParen)?;
@@ -367,6 +352,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                         parser.expect_punct(Punct::Comma)?;
                     }
 
+                    let mutable = parser.consume_keyword(Keyword::Mut)?;
                     let (param_name, param_span) = parser.expect_identifier()?;
                     parser.expect_punct(Punct::Colon)?;
                     let typ = parser.parse_node::<Spanned<Type>>()?;
@@ -376,6 +362,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                         name: param_name,
                         typ,
                         span,
+                        mutable,
                     })
                 }
 
@@ -396,6 +383,8 @@ impl<'i> Parsable<'i> for Function<'i> {
             return_type,
             body,
             span,
+            is_const,
+            inline,
         })
     }
 }
