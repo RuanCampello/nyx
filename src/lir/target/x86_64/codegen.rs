@@ -191,6 +191,30 @@ impl Function<X86_64> {
                 precoloured_uses,
             } => todo!("idiv"),
 
+            Inst::XorFloat { dest, src, bytes } => {
+                let operand = if *bytes == 4 { "xorps" } else { "xorpd" };
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes, saved);
+
+                emit!(out, "{operand}   {src}, {dest}");
+            }
+
+            Inst::Ucomis { lhs, rhs, bytes, .. } => {
+                let suffix = float_suffix(bytes);
+                let lhs = alloc.location(lhs, bytes);
+                let rhs = self.operand(alloc, rhs, bytes, saved);
+
+                // xmm15 is reserved scratch; safe to clobber here
+                emit!(out, "mov{suffix}    {lhs}, %xmm15");
+                emit!(out, "ucomi{suffix}  {rhs}, %xmm15");
+            }
+
+            Inst::Setcc { dest, condition } => {
+                let dest = alloc.location(dest, &1);
+
+                emit!(out, "set{}  {dest}", condition.as_str())
+            }
+
             _ => todo!("emit instruction"),
         }
     }
