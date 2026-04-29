@@ -1,6 +1,6 @@
 use crate::lir::{
     Function, VReg,
-    regalloc::{colouring::Location, interference::Interference, liveness::Liveness},
+    regalloc::{interference::Interference, liveness::Liveness},
     target::Target,
 };
 use std::collections::BTreeMap;
@@ -15,6 +15,8 @@ mod colouring;
 mod interference;
 mod liveness;
 
+pub(in crate::lir) use colouring::Location;
+
 #[derive(Debug)]
 pub struct Allocation<T: Target> {
     locations: BTreeMap<VReg, Location<T>>,
@@ -23,8 +25,8 @@ pub struct Allocation<T: Target> {
 }
 
 impl<T: Target> Allocation<T> {
-    pub fn location_of(&self, vreg: VReg) -> Location<T> {
-        self.locations[&vreg]
+    pub fn location_of(&self, vreg: &VReg) -> Location<T> {
+        self.locations[vreg]
     }
 }
 
