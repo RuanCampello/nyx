@@ -141,6 +141,7 @@ pub enum ExpressionKind {
     Call {
         function: FunctionId,
         args: Vec<Expression>,
+        inline: bool,
     },
 }
 

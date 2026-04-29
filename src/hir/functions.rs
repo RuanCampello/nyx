@@ -18,6 +18,7 @@ pub(in crate::hir) struct FunctionSignature {
     params: Vec<Type>,
     return_type: Type,
     is_const: bool,
+    inline: bool,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
@@ -72,7 +73,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             .zip(signatures.params.iter())
             .map(|(parameter, &typ)| -> Result<_, HirError> {
                 let symbol = self.symbols.insert(parameter.name);
-                let id = self.declare_local(symbol, typ, true)?;
+                let id = self.declare_local(symbol, typ, parameter.mutable)?;
 
                 Ok(Parameter {
                     typ,
@@ -422,6 +423,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     typ: return_type,
                     span: *span,
                     kind: ExpressionKind::Call {
+                        inline: signature.is_const,
                         function,
                         args: lowered_args,
                     },
@@ -632,6 +634,7 @@ pub fn collect_function_signatures<'h>(
             params,
             name: symbol,
             is_const: function.is_const,
+            inline: function.inline,
         })
     }
 

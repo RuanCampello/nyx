@@ -3,8 +3,8 @@
 use crate::{
     hir::{self, Expression, ExpressionKind, Hir, LocalId, Type},
     mir::{
-        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
-        Terminator, ValueId, error::MirError,
+        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place, Terminator, ValueId,
+        error::MirError,
     },
 };
 use lasso::Key;
@@ -216,14 +216,9 @@ impl FunctionLower {
             ExpressionKind::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
             ExpressionKind::String(_) => Ok(Operand::Const(Const::Unit)),
 
-            ExpressionKind::Local(local_id) => {
-                Ok(Operand::Place(self.place_for_local(*local_id, expr.typ)))
-            }
+            ExpressionKind::Local(local_id) => Ok(Operand::Place(self.place_for_local(*local_id, expr.typ))),
 
-            ExpressionKind::Unary {
-                operator,
-                expr: inner,
-            } => {
+            ExpressionKind::Unary { operator, expr: inner } => {
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -238,11 +233,7 @@ impl FunctionLower {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Binary {
-                operator,
-                left,
-                right,
-            } => {
+            ExpressionKind::Binary { operator, left, right } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ);
@@ -268,9 +259,8 @@ impl FunctionLower {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Call { function, args } => {
-                let lowered_args =
-                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+            ExpressionKind::Call { function, args, inline } => {
+                let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
 
                 let dest = self.fresh_temporary(expr.typ);
 
