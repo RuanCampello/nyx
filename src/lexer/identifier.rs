@@ -1,5 +1,7 @@
 //! Identifier and keyword tokenizer.
 
+use std::str::FromStr;
+
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::LexError;
 use crate::lexer::token::{Keyword, Position, Span, Token, TokenKind, Tokenize};
@@ -22,8 +24,8 @@ impl<'src> Tokenize<'src> for Identifier {
             "true" => TokenKind::Bool(true),
             "false" => TokenKind::Bool(false),
             other => match Keyword::from_str(other) {
-                Some(keyword) => TokenKind::Keyword(keyword),
-                None => TokenKind::Identifier(other),
+                Ok(keyword) => TokenKind::Keyword(keyword),
+                _ => TokenKind::Identifier(other),
             },
         };
 

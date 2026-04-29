@@ -150,44 +150,11 @@ pub struct ValueId(pub u32);
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
 
-impl InstructionKind {
-    #[inline(always)]
-    pub fn uses_of(&self) -> Vec<ValueId> {
-        match self {
-            Self::Assign(op) => op.value().into_iter().collect(),
-            Self::Unary { rhs, .. } => rhs.value().into_iter().collect(),
-            Self::Binary { lhs, rhs, .. } => {
-                [lhs.value(), rhs.value()].into_iter().flatten().collect()
-            }
-            Self::Call { args, .. } => args.iter().filter_map(|op| op.value()).collect(),
-        }
-    }
-}
-
-impl Terminator {
-    #[inline(always)]
-    pub fn uses_of(&self) -> Vec<ValueId> {
-        match self {
-            Terminator::Return(Some(op)) => op.value().into_iter().collect(),
-            Terminator::Branch { condition, .. } => condition.value().into_iter().collect(),
-            Terminator::Return(None) | Terminator::Jump(_) => vec![],
-        }
-    }
-}
-
 impl Operand {
     pub const fn typ(&self) -> Type {
         match self {
             Self::Place(p) => p.typ,
             Self::Const(c) => c.typ(),
-        }
-    }
-
-    #[inline(always)]
-    pub const fn value(&self) -> Option<ValueId> {
-        match self {
-            Self::Place(p) => Some(p.id),
-            _ => None,
         }
     }
 }
@@ -260,10 +227,7 @@ mod tests {
             .iter()
             .filter(|i| matches!(i.kind, InstructionKind::Assign(_)))
             .collect();
-        assert!(
-            !assigns.is_empty(),
-            "expected at least one Assign instruction"
-        );
+        assert!(!assigns.is_empty(), "expected at least one Assign instruction");
 
         assert!(f.locals.iter().any(|(_, t)| *t == Type::I32));
     }
@@ -305,9 +269,6 @@ mod tests {
         });
         assert!(has_add, "expected Binary(Add) instruction");
 
-        assert!(matches!(
-            f.blocks[0].terminator,
-            Terminator::Return(Some(_))
-        ));
+        assert!(matches!(f.blocks[0].terminator, Terminator::Return(Some(_))));
     }
 }

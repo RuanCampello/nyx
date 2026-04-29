@@ -1,4 +1,3 @@
-#![allow(unused)]
 pub(crate) mod hir;
 pub(crate) mod lexer;
 pub(crate) mod lir;

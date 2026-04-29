@@ -46,6 +46,8 @@ pub enum Keyword {
     While,
     For,
     Struct,
+    Inline,
+    Const,
 }
 
 /// Punctuators and operators.
@@ -101,11 +103,7 @@ pub struct Span {
 impl Position {
     #[inline]
     pub const fn new(offset: u32, line: u16, column: u16) -> Self {
-        Self {
-            offset,
-            line,
-            column,
-        }
+        Self { offset, line, column }
     }
 
     pub const fn offset(&self) -> usize {
@@ -128,22 +126,7 @@ impl<'src> Token<'src> {
 }
 
 impl Keyword {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "fn" => Some(Self::Fn),
-            "let" => Some(Self::Let),
-            "mut" => Some(Self::Mut),
-            "if" => Some(Self::If),
-            "else" => Some(Self::Else),
-            "return" => Some(Self::Return),
-            "while" => Some(Self::While),
-            "for" => Some(Self::For),
-            "struct" => Some(Self::Struct),
-            _ => None,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str<'s>(self) -> &'s str {
         match self {
             Self::Fn => "fn",
             Self::Let => "let",
@@ -154,12 +137,35 @@ impl Keyword {
             Self::While => "while",
             Self::For => "for",
             Self::Struct => "struct",
+            Self::Inline => "inline",
+            Self::Const => "const",
         }
     }
 }
 
+impl std::str::FromStr for Keyword {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "fn" => Self::Fn,
+            "let" => Self::Let,
+            "mut" => Self::Mut,
+            "if" => Self::If,
+            "else" => Self::Else,
+            "return" => Self::Return,
+            "while" => Self::While,
+            "for" => Self::For,
+            "struct" => Self::Struct,
+            "inline" => Self::Inline,
+            "const" => Self::Const,
+            _ => return Err(()),
+        })
+    }
+}
+
 impl Punct {
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str<'s>(self) -> &'s str {
         match self {
             Self::Plus => "+",
             Self::Minus => "-",
