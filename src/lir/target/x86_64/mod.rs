@@ -425,6 +425,20 @@ impl X86Instr {
     }
 
     #[inline(always)]
+    pub const fn idiv(result: VReg, dividend: VReg, divisor: X86Operand, bytes: u8) -> Self {
+        let (uses, _) = Self::uses(dividend, &divisor);
+
+        Self::IDiv {
+            bytes,
+            result,
+            dividend,
+            divisor,
+            uses,
+            precoloured_uses: [(dividend, X86Reg::Rax)],
+        }
+    }
+
+    #[inline(always)]
     const fn uses(lhs: VReg, rhs: &X86Operand) -> ([VReg; 2], u8) {
         match rhs {
             X86Operand::VReg(reg) => ([lhs, *reg], 2),

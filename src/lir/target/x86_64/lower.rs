@@ -132,7 +132,8 @@ impl<'f> Lower<'f> {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type().bytes();
-                let is_float = lhs.typ().is_float();
+                let lhs_type = lhs.typ();
+                let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(&lhs);
                 let rhs = self.lower_operand(&rhs);
 
@@ -141,7 +142,18 @@ impl<'f> Lower<'f> {
                         self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
                         self.lir.push_instr(id, X86Instr::DivFloat { dest, src: rhs, bytes });
                     }
-                    B::Div => unimplemented!(),
+                    B::Div => {
+                        let dividend = self.lir.new_vreg(lhs_type.machine_type());
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::Mov {
+                                dest: dividend,
+                                src: lhs,
+                                bytes,
+                            },
+                        );
+                        self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes));
+                    }
 
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
                         self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, Condition::new(&comp, is_float))
