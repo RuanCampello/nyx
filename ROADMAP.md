@@ -89,4 +89,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [ ] Array
     - [ ] Hash table
     - [ ] Set
+  - [ ] Networking
+    - [ ] TCP
+    - [ ] UDP
 
