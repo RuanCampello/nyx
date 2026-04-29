@@ -51,7 +51,7 @@ impl Lowerable for X86_64 {
             all_functions,
         };
 
-        // TODO: emit moves
+        lower.lower_param_moves();
 
         for (idx, block) in function.blocks.iter().enumerate() {
             lower.lower_block(&BlockId(idx as u32), block);
@@ -261,7 +261,7 @@ impl<'f> Lower<'f> {
                 let X86Operand::VReg(lhs) = lhs else {
                     panic!("float lhs must be a virtual register");
                 };
-                self.lir.push_instr(id, X86Instr::cmp::<1>(lhs, rhs, bytes));
+                self.lir.push_instr(id, X86Instr::cmp::<2>(lhs, rhs, bytes));
             }
 
             _ => {
@@ -281,6 +281,9 @@ impl<'f> Lower<'f> {
 
         self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
         self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
+
+        // movzx widens 1-byte setcc result to i32, so we need to update dest's type
+        self.lir.set_vreg_type(dest, MachineType::Int { bytes: 4 });
     }
 
     #[inline(always)]
@@ -311,6 +314,60 @@ impl<'f> Lower<'f> {
         }
 
         self.lower_terminator(id, block.terminator);
+    }
+
+    /// Copy physical ABI registers into VRegs
+    ///
+    /// each parameter arrives in a physical ABI register
+    /// we create a fresh VReg precoloured to that ABI register, then emit a regular `Mov` from
+    /// it into the parameter's VReg. this makes the data flow explicit and
+    /// prevents the allocator from assigning the ABI register to another
+    /// VReg before the parameter has been read
+    fn lower_param_moves(&mut self) {
+        let entry = BlockId(0);
+        let mut int_idx = 0;
+        let mut float_idx = 0;
+
+        for (vid, typ) in &self.function.params {
+            let mt = typ.machine_type();
+            let class = mt.class();
+
+            let abi_reg = match class {
+                RegClass::Int => {
+                    let r = X86_64::param(int_idx, RegClass::Int);
+                    int_idx += 1;
+                    r
+                }
+                RegClass::Float => {
+                    let r = X86_64::param(float_idx, RegClass::Float);
+                    float_idx += 1;
+                    r
+                }
+            };
+
+            if let Some(reg) = abi_reg {
+                let dest = self.vreg(*vid);
+                let abi_vreg = self.lir.new_vreg(mt);
+
+                // precolour abi_vreg to physical ABI register
+                self.lir.add_precolour(abi_vreg, reg);
+
+                let instr = match class {
+                    RegClass::Float => X86Instr::MovFloat {
+                        dest,
+                        src: X86Operand::VReg(abi_vreg),
+                        bytes: mt.bytes(),
+                    },
+                    RegClass::Int => X86Instr::Mov {
+                        dest,
+                        src: X86Operand::VReg(abi_vreg),
+                        bytes: mt.bytes(),
+                    },
+                };
+
+                self.lir.push_instr(&entry, instr);
+            }
+        }
     }
 
     fn vreg(&self, id: ValueId) -> VReg {

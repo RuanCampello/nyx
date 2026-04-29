@@ -20,7 +20,7 @@ pub(in crate::lir) use colouring::Location;
 #[derive(Debug)]
 pub struct Allocation<T: Target> {
     locations: BTreeMap<VReg, Location<T>>,
-    frame_size: u32,
+    pub(in crate::lir) frame_size: u32,
     pub(in crate::lir) used_callee_saved: Vec<T::Reg>,
 }
 
@@ -57,6 +57,6 @@ impl<T: Target> Function<T> {
         let mut graph = Interference::build(self, &liveness);
 
         graph.coalesce(self);
-        graph.colour::<T>(&vreg_types)
+        graph.colour::<T>(&vreg_types, &self.precolours)
     }
 }
