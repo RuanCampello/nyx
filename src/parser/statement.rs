@@ -1,3 +1,4 @@
+use crate::lexer::Spanned;
 use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
@@ -103,12 +104,6 @@ pub enum Type {
     Unit,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub struct Spanned<T> {
-    span: Span,
-    value: T,
-}
-
 impl<'i> Parsable<'i> for Statement<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let kind = match parser.peek() {
@@ -147,23 +142,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
     }
 }
 
-impl<T: Clone + Copy> Spanned<T> {
-    pub const fn value(&self) -> T {
-        self.value
-    }
-
-    pub const fn span(&self) -> Span {
-        self.span
-    }
-}
-
 impl Spanned<Type> {
     pub fn parse<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         if parser.consume_punct(Punct::Ampersand)? {
             let (name, span) = parser.expect_identifier()?;
 
             return match name {
-                "str" => Ok(Self { span, value: Type::Str }),
+                "str" => Ok(Self::new(Type::Str, span)),
                 _ => Err(ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
                         found: name.to_string(),
@@ -200,7 +185,7 @@ impl Spanned<Type> {
             }
         };
 
-        Ok(Self { value, span })
+        Ok(Self::new(value, span))
     }
 }
 

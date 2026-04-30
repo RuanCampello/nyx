@@ -1,4 +1,5 @@
 use crate::lexer::{
+    HasSpan,
     error::LexError,
     token::{Span, TokenKind},
 };
@@ -6,8 +7,8 @@ use crate::lexer::{
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{kind}")]
 pub struct ParserError<'i> {
-    pub(in crate::parser) kind: ParseErrorKind<'i>,
-    pub(in crate::parser) span: Span,
+    pub(crate) kind: ParseErrorKind<'i>,
+    pub(crate) span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 lasso = "0.7.3"
 thiserror = "2.0.18"
+ariadne = { version = "0.6.0" }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

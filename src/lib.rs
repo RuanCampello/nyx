@@ -1,3 +1,4 @@
+pub(crate) mod diagnostic;
 pub(crate) mod hir;
 pub(crate) mod lexer;
 pub(crate) mod lir;

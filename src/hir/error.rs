@@ -4,7 +4,7 @@ use crate::parser::error::ParserError;
 #[derive(Debug, PartialEq, Clone, thiserror::Error)]
 #[error("{kind}")]
 pub struct HirError<'h> {
-    pub(in crate::hir) kind: HirErrorKind<'h>,
+    pub(crate) kind: HirErrorKind<'h>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

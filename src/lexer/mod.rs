@@ -11,10 +11,10 @@
 //! ```
 
 pub mod cursor;
-pub mod error;
 pub mod token;
 
 mod comment;
+pub mod error;
 mod identifier;
 mod number;
 mod string;
@@ -35,6 +35,16 @@ pub struct Lexer<'src> {
     cursor: Cursor<'src>,
     /// set to `true` once we've emitted [`TokenKind::Eof`].
     finished: bool,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Spanned<T> {
+    span: Span,
+    value: T,
+}
+
+pub trait HasSpan {
+    fn span(&self) -> Span;
 }
 
 impl<'src> Lexer<'src> {
@@ -140,8 +150,7 @@ impl<'src> Lexer<'src> {
                 match self.cursor.consume_optional('|') {
                     true => self.token(Punct::Or, start),
                     _ => {
-                        return Err(LexError::unexpected_char('|', start)
-                            .with_help("did you mean `||` (logical or)?"));
+                        return Err(LexError::unexpected_char('|', start).with_help("did you mean `||` (logical or)?"));
                     }
                 }
             }
@@ -190,10 +199,7 @@ impl<'src> Lexer<'src> {
     /// Builds a punctuation token from `start` to the current cursor position.
     #[inline]
     fn token(&self, punct: Punct, start: token::Position) -> Token<'src> {
-        Token::new(
-            TokenKind::Punct(punct),
-            Span::new(start, self.cursor.position()),
-        )
+        Token::new(TokenKind::Punct(punct), Span::new(start, self.cursor.position()))
     }
 }
 
@@ -209,6 +215,22 @@ impl<'src> Iterator for Lexer<'src> {
                 Some(Err(e))
             }
         }
+    }
+}
+
+impl<T: Clone + Copy> Spanned<T> {
+    pub const fn value(&self) -> T {
+        self.value
+    }
+
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl<T> Spanned<T> {
+    pub fn new(value: T, span: Span) -> Self {
+        Self { span, value }
     }
 }
 
@@ -311,10 +333,7 @@ mod tests {
 
     #[test]
     fn boolean_literals() {
-        assert_eq!(
-            kinds("true false"),
-            vec![TokenKind::Bool(true), TokenKind::Bool(false)]
-        );
+        assert_eq!(kinds("true false"), vec![TokenKind::Bool(true), TokenKind::Bool(false)]);
     }
 
     #[test]
@@ -445,10 +464,7 @@ mod tests {
     #[test]
     fn bang_without_eq() {
         let ks = kinds("!x");
-        assert_eq!(
-            ks,
-            vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]
-        );
+        assert_eq!(ks, vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]);
     }
 
     #[test]

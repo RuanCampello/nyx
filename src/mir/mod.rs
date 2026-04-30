@@ -26,8 +26,9 @@ use crate::{
     },
 };
 
-pub mod error;
 pub use lower::lower;
+
+mod error;
 mod lower;
 
 /// Complete MIR program.

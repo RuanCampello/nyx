@@ -6,14 +6,14 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
-    pub(in crate::lexer) kind: LexErrorKind,
-    pub(in crate::lexer) span: Span,
-    pub(in crate::lexer) help: Option<String>,
+    pub(crate) kind: LexErrorKind,
+    pub(crate) span: Span,
+    pub(crate) help: Option<String>,
 }
 
 /// The category of a lexer error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::lexer) enum LexErrorKind {
+pub(crate) enum LexErrorKind {
     /// An unexpected character was encountered.
     UnexpectedChar(char),
     /// A string literal was opened but never closed.
@@ -29,11 +29,7 @@ pub(in crate::lexer) enum LexErrorKind {
 impl LexError {
     #[inline]
     pub(in crate::lexer) fn new(kind: LexErrorKind, span: Span) -> Self {
-        Self {
-            kind,
-            span,
-            help: None,
-        }
+        Self { kind, span, help: None }
     }
 
     #[inline]
@@ -45,11 +41,6 @@ impl LexError {
     pub fn unexpected_char(ch: char, pos: Position) -> Self {
         let end = Position::new(pos.offset + ch.len_utf8() as u32, pos.line, pos.column + 1);
         Self::new(LexErrorKind::UnexpectedChar(ch), Span::new(pos, end))
-    }
-
-    #[inline]
-    pub const fn span(&self) -> Span {
-        self.span
     }
 }
 
