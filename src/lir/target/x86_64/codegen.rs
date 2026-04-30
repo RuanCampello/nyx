@@ -264,16 +264,20 @@ impl Function<X86_64> {
             }
 
             Inst::Call { target, moves, ret, .. } => {
-                for (vreg, reg) in moves {
-                    let bytes = self.reg_bytes(vreg);
-                    let is_float = self.is_float(vreg);
+                let arg_moves: Vec<_> = moves
+                    .iter()
+                    .map(|(vreg, reg)| {
+                        let bytes = self.reg_bytes(vreg);
+                        let is_float = self.is_float(vreg);
+                        let suffix = typed_suffix(&bytes, is_float);
+                        let src = alloc.location(vreg, &bytes);
+                        let dest = format!("%{}", reg.name(bytes));
 
-                    let suffix = typed_suffix(&bytes, is_float);
-                    let src = alloc.location(vreg, &bytes);
-                    let dest = format!("%{}", reg.name(bytes));
+                        (src, dest, suffix, is_float)
+                    })
+                    .collect();
 
-                    mov_or_scratch(out, &src, &dest, suffix, is_float);
-                }
+                resolve_parallel_moves(out, arg_moves);
 
                 emit!(out, "call    {target}");
 
@@ -430,5 +434,40 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
         },
 
         false => emit!(out, "mov{suffix}    {src}, {dest}"),
+    }
+}
+
+/// Serialise a set of parallel register moves without data corruption
+///
+/// - Chains (A->B then B->C) are resolved by topological ordering
+/// - Cycles (A->B, B->A) are broken using a scratch register (`%r11`/`%xmm15`)
+fn resolve_parallel_moves(out: &mut String, mut moves: Vec<(String, String, &str, bool)>) {
+    moves.retain(|(s, d, _, _)| s != d);
+
+    loop {
+        // find a move whose dest is not read by any other pending move
+        let safe = moves
+            .iter()
+            .position(|(_, dest, _, _)| !moves.iter().any(|(src, other_dest, _, _)| other_dest != dest && src == dest));
+
+        match safe {
+            Some(i) => {
+                let (ref src, ref dest, suffix, is_float) = moves.remove(i);
+                mov_or_scratch(out, src, dest, suffix, is_float);
+            }
+            None if moves.is_empty() => break,
+            None => {
+                // in cycle, save first source to scratch, breaking the dependency
+                let (_, _, suffix, is_float) = moves[0];
+                let scratch = match (is_float, suffix) {
+                    (true, _) => "%xmm15",
+                    (_, "q") => "%r11",
+                    _ => "%r11d",
+                };
+
+                emit!(out, "mov{suffix}    {}, {scratch}", moves[0].0);
+                moves[0].0 = scratch.to_string();
+            }
+        }
     }
 }

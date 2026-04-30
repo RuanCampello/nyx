@@ -421,9 +421,17 @@ impl Instruction<X86_64> for X86Instr {
 }
 
 impl X86Instr {
-    pub(in crate::lir::target::x86_64) fn call(target: String, moves: Vec<(VReg, X86Reg)>, ret: Option<VReg>) -> Self {
+    pub(self) fn call(
+        target: String,
+        moves: Vec<(VReg, X86Reg)>,
+        ret: Option<VReg>,
+        ret_class: Option<RegClass>,
+    ) -> Self {
         let uses = moves.iter().map(|(v, _)| *v).collect();
-        let precoloured_def = ret.map(|v| (v, X86Reg::Rax));
+        let precoloured_def = ret.and_then(|v| {
+            let reg = X86_64::ret(ret_class?)?;
+            Some((v, reg))
+        });
 
         Self::Call {
             target,

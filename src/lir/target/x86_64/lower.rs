@@ -237,9 +237,9 @@ impl<'f> Lower<'f> {
                 }
 
                 let ret = (typ != Type::Unit).then_some(dest);
-                self.lir.push_instr(id, X86Instr::call(callee, moves, ret));
+                let ret_class = (typ != Type::Unit).then(|| typ.machine_type().class());
+                self.lir.push_instr(id, X86Instr::call(callee, moves, ret, ret_class));
             }
-            _ => unimplemented!(),
         }
     }
 
