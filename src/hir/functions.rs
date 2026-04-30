@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Local, LocalId, Parameter, Statement, SymbolId, Type,
@@ -11,6 +9,7 @@ use crate::{
         statement::{self, Else},
     },
 };
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(in crate::hir) struct FunctionSignature {
@@ -18,6 +17,7 @@ pub(in crate::hir) struct FunctionSignature {
     params: Vec<Type>,
     return_type: Type,
     is_const: bool,
+    #[allow(dead_code)]
     inline: bool,
 }
 
@@ -41,12 +41,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         symbols: &'s mut SymbolTable,
         function: statement::Function<'f>,
     ) -> Self {
-        let return_type = function
-            .return_type
-            .map(|s| s.value())
-            .as_ref()
-            .map(From::from)
-            .unwrap_or(Type::Unit);
+        let return_type = function.return_type.map(|s| s.value()).unwrap_or(Type::Unit);
 
         Self {
             return_type,

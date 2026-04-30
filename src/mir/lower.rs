@@ -1,11 +1,12 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId, Type},
+    hir::{self, Expression, ExpressionKind, Hir, LocalId},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place, Terminator, ValueId,
         error::MirError,
     },
+    parser::statement::Type,
 };
 use lasso::Key;
 
@@ -259,7 +260,7 @@ impl FunctionLower {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Call { function, args, inline } => {
+            ExpressionKind::Call { function, args, .. } => {
                 let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
 
                 let dest = self.fresh_temporary(expr.typ);

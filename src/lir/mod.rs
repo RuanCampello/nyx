@@ -6,13 +6,8 @@
 //! mechanical. The register allocator works on VRegs and assigns them to
 //! physical registers or stack slots.
 
-#![allow(unused)]
-
 use crate::{
-    lir::{
-        regalloc::Allocation,
-        target::{Emittable, Lowerable, RegClass, Target},
-    },
+    lir::target::{Emittable, Lowerable, RegClass, Target},
     mir,
 };
 use std::collections::BTreeMap;

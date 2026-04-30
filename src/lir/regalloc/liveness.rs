@@ -1,9 +1,8 @@
-use std::collections::BTreeSet;
-
 use crate::lir::{
     Block, BlockId, Function, Term, VReg,
     target::{Instruction, Target},
 };
+use std::collections::BTreeSet;
 
 pub struct Liveness {
     pub(in crate::lir::regalloc) blocks: Vec<BlockLiveness>,

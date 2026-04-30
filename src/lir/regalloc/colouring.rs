@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::lir::{
     MachineType, VReg,
     regalloc::{Allocation, interference::Interference},
     target::{RegClass, Target},
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where a [virtual register](crate::lir::VReg) lives after allocation
 #[derive(Debug, Eq)]

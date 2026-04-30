@@ -15,7 +15,6 @@ use crate::{
             x86_64::{X86_64, X86Instr, X86Operand},
         },
     },
-    mir::{self, Mir},
 };
 use std::{borrow::Cow, fmt::Write};
 
@@ -117,8 +116,6 @@ impl Function<X86_64> {
     fn emit_instruction(&self, instruction: &X86Instr, alloc: &Allocation<X86_64>, out: &mut String) {
         use lir::target::x86_64::X86Instr as Inst;
 
-        let saved = alloc.used_callee_saved.len();
-
         match instruction {
             Inst::ParamMov { dest, src_reg, bytes } => {
                 let is_float = self.is_float(dest);
@@ -132,7 +129,7 @@ impl Function<X86_64> {
             Inst::Mov { dest, src, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes, saved);
+                let src = self.operand(alloc, src, bytes);
 
                 mov_or_scratch(out, &src, &dest, suffix, false);
             }
@@ -140,7 +137,7 @@ impl Function<X86_64> {
             Inst::MovFloat { dest, src, bytes } => {
                 let suffix = float_suffix(bytes);
                 let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes, saved);
+                let src = self.operand(alloc, src, bytes);
 
                 mov_or_scratch(out, &src, &dest, suffix, true);
             }
@@ -164,7 +161,7 @@ impl Function<X86_64> {
             | Inst::Xor { dest, src, bytes } => {
                 let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes, saved);
+                let src = self.operand(alloc, src, bytes);
 
                 match instruction {
                     Inst::Add { .. } | Inst::AddFloat { .. } => emit!(out, "add{suffix}    {src}, {dest}"),
@@ -192,8 +189,7 @@ impl Function<X86_64> {
                 dividend,
                 divisor,
                 bytes,
-                uses,
-                precoloured_uses,
+                ..
             } => {
                 let suffix = suffix(bytes);
                 let (rax, extend) = match bytes {
@@ -210,7 +206,7 @@ impl Function<X86_64> {
 
                 match divisor {
                     X86Operand::Imm(_) => {
-                        let div = self.operand(alloc, divisor, bytes, saved);
+                        let div = self.operand(alloc, divisor, bytes);
                         emit!(out, "subq    $8, %rsp");
                         emit!(out, "mov{suffix}    {div}, (%rsp)");
                         emit!(out, "idiv{suffix}    (%rsp)");
@@ -218,7 +214,7 @@ impl Function<X86_64> {
                     }
 
                     _ => {
-                        let div = self.operand(alloc, divisor, bytes, saved);
+                        let div = self.operand(alloc, divisor, bytes);
                         emit!(out, "idiv{suffix}    {div}");
                     }
                 }
@@ -231,7 +227,7 @@ impl Function<X86_64> {
             Inst::XorFloat { dest, src, bytes } => {
                 let operand = if *bytes == 4 { "xorps" } else { "xorpd" };
                 let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes, saved);
+                let src = self.operand(alloc, src, bytes);
 
                 emit!(out, "{operand}   {src}, {dest}");
             }
@@ -239,7 +235,7 @@ impl Function<X86_64> {
             Inst::Ucomis { lhs, rhs, bytes, .. } => {
                 let suffix = float_suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
-                let rhs = self.operand(alloc, rhs, bytes, saved);
+                let rhs = self.operand(alloc, rhs, bytes);
 
                 // xmm15 is reserved scratch; safe to clobber here
                 emit!(out, "mov{suffix}    {lhs}, %xmm15");
@@ -255,7 +251,7 @@ impl Function<X86_64> {
             Inst::Test { lhs, rhs, bytes, .. } | Inst::Cmp { lhs, rhs, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
-                let rhs = self.operand(alloc, rhs, bytes, saved);
+                let rhs = self.operand(alloc, rhs, bytes);
 
                 match matches!(instruction, Inst::Cmp { .. }) {
                     true => emit!(out, "cmp{suffix}    {rhs}, {lhs}"),
@@ -361,13 +357,7 @@ impl Function<X86_64> {
     }
 
     #[inline(always)]
-    fn operand<'s>(
-        &self,
-        alloc: &Allocation<X86_64>,
-        operand: &'s X86Operand,
-        bytes: &u8,
-        saved: usize,
-    ) -> Cow<'s, str> {
+    fn operand<'s>(&self, alloc: &Allocation<X86_64>, operand: &'s X86Operand, bytes: &u8) -> Cow<'s, str> {
         match operand {
             X86Operand::VReg(vreg) => Cow::Owned(alloc.location(vreg, bytes)),
             X86Operand::Imm(n) => Cow::Owned(format!("${n}")),

@@ -19,8 +19,11 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Type},
-    parser::expression::{BinaryOperator, UnaryOperator},
+    hir::FunctionId,
+    parser::{
+        expression::{BinaryOperator, UnaryOperator},
+        statement::Type,
+    },
 };
 
 pub mod error;

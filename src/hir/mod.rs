@@ -12,7 +12,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         expression::{BinaryOperator, UnaryOperator},
-        statement,
+        statement::{self, Type},
     },
 };
 use lasso::{Key, Spur};
@@ -88,37 +88,9 @@ pub struct Block {
     span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-#[allow(unused)]
-pub enum Type {
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
-    Bool,
-    /// pointer-sized signed integer
-    Uptr,
-    /// pointer-sized unsigned integer
-    Iptr,
-    /// 32-bit unicode codepoint
-    Char,
-    /// borrowed string slice
-    Str,
-    /// owned heap string
-    String,
-    Unit,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-#[allow(unused)]
 pub enum ExpressionKind {
+    #[allow(dead_code)]
     Unit,
     Integer(i64),
     Float(f64),
@@ -217,36 +189,6 @@ impl Type {
     #[allow(unused)]
     pub(in crate::hir) const fn is_unsigned(&self) -> bool {
         matches!(self, Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr)
-    }
-}
-
-impl From<statement::Type> for Type {
-    fn from(value: statement::Type) -> Self {
-        Self::from(&value)
-    }
-}
-
-impl From<&statement::Type> for Type {
-    fn from(value: &statement::Type) -> Self {
-        use statement::Type as AstType;
-        match value {
-            AstType::I8 => Type::I8,
-            AstType::U8 => Type::U8,
-            AstType::I16 => Type::I16,
-            AstType::U16 => Type::U16,
-            AstType::I32 => Type::I32,
-            AstType::U32 => Type::U32,
-            AstType::I64 => Type::I64,
-            AstType::U64 => Type::U64,
-            AstType::F32 => Type::F32,
-            AstType::F64 => Type::F64,
-            AstType::Bool => Type::Bool,
-            AstType::Uptr => Type::Uptr,
-            AstType::Iptr => Type::Iptr,
-            AstType::Str => Type::Str,
-            AstType::Char => Type::Char,
-            AstType::String => Type::String,
-        }
     }
 }
 

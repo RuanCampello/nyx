@@ -10,11 +10,11 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::Type;
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
+use crate::parser::statement::Type;
 
 struct Lower<'f> {
     function: &'f Function,
@@ -123,8 +123,6 @@ impl<'f> Lower<'f> {
                             bytes: 4,
                         },
                     ),
-
-                    _ => todo!(),
                 }
             }
 
@@ -414,9 +412,9 @@ impl<'f> Lower<'f> {
         let src = self.lower_operand(&Operand::Const(*c));
 
         match c {
-            Const::Int(num, _) => X86Instr::Mov { dest, src, bytes },
-            Const::Bool(b) => X86Instr::Mov { dest, src, bytes: 4 },
-            Const::Float(f, typ) => X86Instr::MovFloat {
+            Const::Int(_, _) => X86Instr::Mov { dest, src, bytes },
+            Const::Bool(_) => X86Instr::Mov { dest, src, bytes: 4 },
+            Const::Float(_, _) => X86Instr::MovFloat {
                 dest,
                 src,
                 bytes: bytes,

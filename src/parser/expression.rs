@@ -76,15 +76,6 @@ impl<'i> Expression<'i> {
         }
     }
 
-    #[inline(always)]
-    #[allow(unused)]
-    pub const fn is_type(&self) -> bool {
-        matches!(
-            self,
-            Self::Integer { .. } | Self::Float { .. } | Self::String { .. } | Self::Bool { .. }
-        )
-    }
-
     fn parse_expr(parser: &mut Parser<'i>, precedence: u8) -> Result<Self, ParserError<'i>> {
         let mut left = Self::parse_prefix(parser)?;
 
@@ -163,11 +154,7 @@ impl<'i> Expression<'i> {
         }
     }
 
-    fn parse_infix(
-        parser: &mut Parser<'i>,
-        left: Expression<'i>,
-        precedence: u8,
-    ) -> Result<Self, ParserError<'i>> {
+    fn parse_infix(parser: &mut Parser<'i>, left: Expression<'i>, precedence: u8) -> Result<Self, ParserError<'i>> {
         let token = parser.expect_next()?;
 
         match token.kind {
@@ -180,10 +167,7 @@ impl<'i> Expression<'i> {
                     let token = match parser.peek() {
                         Some(Ok(token)) => token,
                         _ => {
-                            return Err(ParserError::new(
-                                ParseErrorKind::UnexpectedEof,
-                                token.span,
-                            ));
+                            return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
                         }
                     };
 
@@ -221,10 +205,7 @@ impl<'i> Expression<'i> {
                         span,
                     }),
 
-                    _ => Err(ParserError::new(
-                        ParseErrorKind::UnexpectedIdentifier,
-                        left.span(),
-                    )),
+                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
                 }
             }
 

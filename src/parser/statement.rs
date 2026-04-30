@@ -78,7 +78,6 @@ pub enum Else<'i> {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[non_exhaustive]
-#[allow(unused)]
 pub enum Type {
     I8,
     U8,
@@ -90,12 +89,18 @@ pub enum Type {
     U64,
     F32,
     F64,
-    Uptr,
-    Iptr,
     Bool,
+    /// pointer-sized signed integer
+    Uptr,
+    /// pointer-sized unsigned integer
+    Iptr,
+    /// 32-bit unicode codepoint
     Char,
+    /// borrowed string slice
     Str,
+    /// owned heap string
     String,
+    Unit,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
