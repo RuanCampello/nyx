@@ -18,6 +18,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Function Inlining
 - [ ] Common Subexpression Elimination (CSE)
 - [ ] Loop Unrolling
+- [ ] Scalar evolution
 - [ ] Peephole Optimizations
 
 ## Language Features
@@ -81,6 +82,8 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Constants (`const`)
 - [ ] Function definition
   - [x] Definition (`fn`)
+  - [ ] Mutable parameters
+  - [ ] Default parameter values (**requires** definition of _default_ interface)
   - [ ] Modifiers
     - [ ] Constant constraint (`const`)
     - [ ] Inlining (`inline`)
