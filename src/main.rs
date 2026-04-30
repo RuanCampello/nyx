@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use nyx::NyxError;
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::{self, Command},
@@ -58,72 +60,52 @@ enum Emit {
     Link,
 }
 
-fn main() {
+fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
     let exit_code = match cli.command {
-        Commands::Build { file, output, emit } => cmd_build(&file, output.as_deref(), &emit),
-        Commands::Run { file } => cmd_run(&file),
+        Commands::Build { file, output, emit } => cmd_build(&file, output.as_deref(), &emit)?,
+        Commands::Run { file } => cmd_run(&file)?,
     };
 
     process::exit(exit_code);
 }
 
-fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> i32 {
-    use std::collections::HashSet;
-
-    let exe = output.map(PathBuf::from).unwrap_or_else(|| default_output(source));
-
+fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> Result<i32, NyxError> {
+    let exe = output.map(PathBuf::from).unwrap_or_else(|| source.with_extension(""));
     let kinds = match emit.is_empty() {
         true => HashSet::from([Emit::Link]),
         _ => emit.iter().copied().collect(),
     };
 
-    match build_emit(source, &exe, &kinds) {
-        Ok(emitted) => {
-            for path in emitted {
-                println!("Emitted: {}", path.display());
-            }
-            0
-        }
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            1
-        }
+    let emitted = build_emit(source, &exe, &kinds)?;
+    for path in emitted {
+        println!("Emmitted: {}", path.display());
     }
+
+    Ok(0)
 }
 
-fn cmd_run(source: &Path) -> i32 {
+fn cmd_run(source: &Path) -> Result<i32, NyxError> {
     let exe = temp_exe_path(source);
 
-    let result = (|| -> Result<i32, String> {
-        build_emit(source, &exe, &std::collections::HashSet::from([Emit::Link]))?;
+    let result = (|| -> Result<i32, NyxError> {
+        build_emit(source, &exe, &HashSet::from([Emit::Link]))?;
 
-        let status = Command::new(&exe)
-            .status()
-            .map_err(|e| format!("failed to run `{}`: {e}", exe.display()))?;
+        let status = Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
 
         Ok(status.code().unwrap_or(1))
     })();
 
     let _ = fs::remove_file(&exe);
-
-    match result {
-        Ok(code) => code,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            1
-        }
-    }
+    result
 }
 
 /// Emits whichever outputs [kinds](self::Emit) requests.
-fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit>) -> Result<Vec<PathBuf>, String> {
-    // read source
-    let src = fs::read_to_string(source).map_err(|e| format!("cannot read `{}`: {e}", source.display()))?;
-
-    // compile source → GAS assembly
-    let asm = nyx::compile(&src).map_err(|e| e.message)?;
+fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>) -> Result<Vec<PathBuf>, NyxError> {
+    // read and compile source
+    let src = fs::read_to_string(source)?;
+    let asm = nyx::compile(&src)?;
 
     let mut emitted = Vec::new();
 
@@ -131,7 +113,7 @@ fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit
     let asm_path = stem.with_extension("s");
     let keep_asm = kinds.contains(&Emit::Asm);
 
-    fs::write(&asm_path, &asm).map_err(|e| format!("cannot write `{}`: {e}", asm_path.display()))?;
+    fs::write(&asm_path, &asm)?;
 
     if keep_asm {
         emitted.push(asm_path.clone());
@@ -144,7 +126,7 @@ fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit
     let as_status = Command::new("as")
         .args(["-o", obj_path.to_str().unwrap(), asm_path.to_str().unwrap()])
         .status()
-        .map_err(|e| format!("`as` not found — is binutils installed? ({e})"))?;
+        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
 
     if !keep_asm {
         fs::remove_file(&asm_path).ok();
@@ -152,7 +134,7 @@ fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit
 
     if !as_status.success() {
         fs::remove_file(&obj_path).ok();
-        return Err(format!("`as` exited with code {}", as_status.code().unwrap_or(-1)));
+        return Err(NyxError::Assembler(as_status.code().unwrap_or(-1)));
     }
 
     if keep_obj {
@@ -169,21 +151,16 @@ fn build_emit(source: &Path, stem: &Path, kinds: &std::collections::HashSet<Emit
     let ld_status = Command::new("ld")
         .args(["-o", stem.to_str().unwrap(), obj_path.to_str().unwrap()])
         .status()
-        .map_err(|e| format!("`ld` not found — is binutils installed? ({e})"))?;
+        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
 
     fs::remove_file(&obj_path).ok();
 
     if !ld_status.success() {
-        return Err(format!("`ld` exited with code {}", ld_status.code().unwrap_or(-1)));
+        return Err(NyxError::Linker(ld_status.code().unwrap_or(-1)));
     }
 
     emitted.push(exe_path);
     Ok(emitted)
-}
-
-#[inline(always)]
-fn default_output(source: &Path) -> PathBuf {
-    source.with_extension("")
 }
 
 #[inline(always)]
