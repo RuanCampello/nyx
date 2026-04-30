@@ -66,6 +66,10 @@ For a detailed breakdown of completed features and active development goals, ple
 - <https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf>
 - <https://filippo.io/linux-syscall-table/>
 
+### other compilers
+
+- <https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html>
+
 ## License
 
 Nyx is released under the **GNU AGPL v3**. See `LICENSE.md` for details.

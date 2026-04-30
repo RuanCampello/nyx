@@ -10,8 +10,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] ARM64 (`aarch64`)
 - [ ] RISC-V (`riscv64`)
 
-## Compiler Optimizations
+## Compiler Optimisations
 
+- [ ] Optimisations flags (**requires** definition of each optimisation level scope)
 - [ ] Constant Folding & Propagation
 - [ ] Dead Code Elimination (DCE)
 - [ ] Function Inlining
@@ -92,4 +93,5 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Networking
     - [ ] TCP
     - [ ] UDP
-
+- [ ] Memory allocator (**requires** definition of memory layout)
+- [ ] Error handling (**requires** definition of error handling model)
