@@ -33,8 +33,6 @@ mod lower;
 
 /// Complete MIR program.
 /// That's a flat list of functions.
-///
-/// `symbols` are carried through from HIR for diagostic/debug use.
 #[derive(Debug, PartialEq)]
 pub struct Mir {
     pub(crate) symbols: Vec<String>,

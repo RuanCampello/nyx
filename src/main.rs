@@ -63,12 +63,18 @@ enum Emit {
 fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
-    let exit_code = match cli.command {
-        Commands::Build { file, output, emit } => cmd_build(&file, output.as_deref(), &emit)?,
-        Commands::Run { file } => cmd_run(&file)?,
+    let result = match cli.command {
+        Commands::Build { file, output, emit } => cmd_build(&file, output.as_deref(), &emit),
+        Commands::Run { file } => cmd_run(&file),
     };
 
-    process::exit(exit_code);
+    match result {
+        Ok(exit_code) => process::exit(exit_code),
+        Err(NyxError::Compile(diagnostic)) => eprintln!("{}", diagnostic.display()),
+        Err(err) => eprintln!("error: {err}"),
+    };
+
+    process::exit(1)
 }
 
 fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> Result<i32, NyxError> {

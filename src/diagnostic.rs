@@ -4,7 +4,7 @@ use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
 use crate::lexer::token::Span;
 use crate::mir::error::MirError;
-use crate::parser::error::ParserError;
+use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::{NyxError, hir::error::HirError};
 use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
 
@@ -23,6 +23,12 @@ const RED: Colour = Colour::Fixed(203);
 const YELLOW: Colour = Colour::Fixed(221);
 const CYAN: Colour = Colour::Fixed(117);
 const MAGENTA: Colour = Colour::Fixed(183);
+
+impl Diagnostic {
+    pub fn display(self) -> String {
+        self.rendered
+    }
+}
 
 impl From<Error<'_, LexError>> for Diagnostic {
     fn from(value: Error<'_, LexError>) -> Self {
@@ -70,24 +76,46 @@ impl From<Error<'_, LexError>> for Diagnostic {
 
 impl<'p> From<ParserError<'p>> for Diagnostic {
     fn from(value: ParserError<'p>) -> Self {
-        todo!()
+        let message = value.kind.to_string();
+        let span = value.span;
+
+        // TODO: better diagnostic for parser errors
+
+        let builder = Report::build(ReportKind::Error, span.into())
+            .with_message(&message)
+            .with_label(Label::new(span.into()).with_color(RED));
+
+        let rendered = render("", builder.finish());
+        Self { message, rendered }
     }
 }
 
 impl<'h> From<HirError<'h>> for Diagnostic {
     fn from(value: HirError<'h>) -> Self {
-        todo!()
+        let error = value.kind;
+        let message = error.to_string();
+
+        // TODO: add annotations to HIR
+
+        let rendered = format!("error: {message}\n");
+        Self { message, rendered }
     }
 }
 
 impl From<MirError> for Diagnostic {
     fn from(value: MirError) -> Self {
-        todo!()
+        let message = value.to_string();
+        let rendered = format!("error: {message}");
+
+        // TODO: should this even carry spans after all? :X
+
+        Self { message, rendered }
     }
 }
 
 #[inline(always)]
 fn render<'s>(src: &'s str, report: Report<'_, std::ops::Range<usize>>) -> String {
+    println!("source: {}", src);
     let mut buf = Vec::with_capacity(src.len());
 
     report.write(Source::from(src), &mut buf).ok();
