@@ -1,21 +1,62 @@
-fn sum_f32(a: f32): f32 {
-    a + 2.5
+fn test_f32_arithmetic(a: f32, b: f32): f32 {
+    let sum = a + b;
+    let diff = a - b;
+    let prod = a * b;
+    let quot = a / b;
+
+    sum + diff + prod + quot
 }
 
-fn test_f64(a: f64): f64 {
-    a * 10.0
+fn test_f64_arithmetic(a: f64, b: f64): f64 {
+    let sum = a + b;
+    let diff = a - b;
+    let prod = a * b;
+    let quot = a / b;
+
+    sum + diff + prod + quot
+}
+
+fn test_f64_loop(limit: f64): f64 {
+    let mut sum = 0.0;
+    let mut i = 1.0;
+
+    while i <= limit {
+        sum = sum + i;
+        i = i + 1.0;
+    }
+
+    sum
 }
 
 fn main(): i32 {
-    let c = sum_f32(1.5);
-    let z = test_f64(5.5);
-    
-    if c == 4.0 {
-        if z == 55.0 {
-            return 42;
-        }
-        return 3;
-    }
-    
-    2
+    // 4.0 + 2.0 = 6.0
+    // 4.0 - 2.0 = 2.0
+    // 4.0 * 2.0 = 8.0
+    // 4.0 / 2.0 = 2.0
+    // 6.0 + 2.0 + 8.0 + 2.0 = 18.0
+    let res32 = test_f32_arithmetic(4.0, 2.0);
+    if res32 != 18.0 return 1;
+
+    // 10.0 + 5.0 = 15.0
+    // 10.0 - 5.0 = 5.0
+    // 10.0 * 5.0 = 50.0
+    // 10.0 / 5.0 = 2.0
+    // 15.0 + 5.0 + 50.0 + 2.0 = 72.0
+    let res64 = test_f64_arithmetic(10.0, 5.0);
+    if res64 != 72.0 return 2;
+
+    let a = 1.5;
+    let b = 3.0;
+
+    if a == b return 3;
+    if a >= b return 4;
+    if a > b return 5;
+    if !(a < b) return 6;
+    if !(a <= b) return 7;
+    if !(a != b) return 8;
+
+    let loop_res = test_f64_loop(10.0);
+    if loop_res != 55.0 return 9;
+
+    42
 }
