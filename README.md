@@ -70,6 +70,10 @@ For a detailed breakdown of completed features and active development goals, ple
 
 - <https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html>
 
+### algorithms
+
+- <https://dl.acm.org/doi/epdf/10.1145/872726.806984>
+
 ## License
 
 Nyx is released under the **GNU AGPL v3**. See `LICENSE.md` for details.
