@@ -34,6 +34,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] `char`
   - [ ] `&str`
   - [ ] `String` (**requires** memory allocator implementation)
+- [ ] Fixed-size arrays (`[T; N]`)
 - [ ] Pointers (**requires** _unsafe_ blocks implementation)
   - [ ] Raw pointer
   - [ ] Raw pointer dereference
@@ -42,7 +43,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Mutable References (`&mut`)
 - [ ] Type definition
   - [ ] Polymorphism (`Interface`)
+    - [ ] Static dispatch
   - [ ] Composite data declaration (`struct`)
+    - [ ] Field access and instantiation
     - [ ] Compatibility with `C` memory layout representation
     - [ ] Methods
   - [ ] Enumerables / Tag Union (`enum`)
@@ -54,7 +57,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
   - [ ] XOR, NOR, NAND (**requires** syntax definition)
-- [ ] Binary Operators
+- [ ] Bitwise Operators
+  - [ ] Logic (`&`, `|`, `^`, `!`)
+  - [ ] Shifts (`>>`, `<<`)
 - [x] Variable Assignment (`=`)
 - [x] Function Calls
 - [ ] Reference Operators
