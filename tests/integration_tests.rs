@@ -41,16 +41,21 @@ const CASES: &[Case] = &[
         file: "tests/math.nyx",
         exit_code: Some(42),
     },
-    // Case {
-    //     name: "nth_prime",
-    //     file: "tests/nth_prime.nyx",
-    //     exit_code: Some(229),
-    // },
-    // Case {
-    //     name: "mandelbrot",
-    //     file: "tests/mandelbrot.nyx",
-    //     exit_code: Some(232),
-    // },
+    Case {
+        name: "nth_prime",
+        file: "tests/nth_prime.nyx",
+        exit_code: Some(229),
+    },
+    Case {
+        name: "add_with_main",
+        file: "tests/add_with_main.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "mandelbrot",
+        file: "tests/mandelbrot.nyx",
+        exit_code: Some(232),
+    },
     Case {
         name: "binary_search",
         file: "tests/binary_search.nyx",
@@ -65,7 +70,7 @@ const CASES: &[Case] = &[
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
     let src = fs::read_to_string(path).map_err(|e| format!("failed to read source: {e}"))?;
-    let asm = nyx::compile(&src, path.to_str().unwrap_or("source")).map_err(|e| e.to_string())?;
+    let asm = nyx::compile(&src).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();
     let test_name = path.file_stem().unwrap().to_string_lossy().to_string();
