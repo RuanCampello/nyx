@@ -36,6 +36,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] `&str`
   - [ ] `String` (**requires** memory allocator implementation)
 - [ ] Fixed-size arrays (`[T; N]`)
+  - [ ] Compiler-time bound checking
 - [ ] Pointers (**requires** _unsafe_ blocks implementation)
   - [ ] Raw pointer
   - [ ] Raw pointer dereference
