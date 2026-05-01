@@ -1,10 +1,13 @@
 #![allow(unused)]
 
+use std::cell::RefCell;
+
+use crate::hir::error::ConstFnViolationKind;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
 use crate::lexer::token::Span;
 use crate::mir::error::MirError;
-use crate::parser::error::{ParseErrorKind, ParserError};
+use crate::parser::error::ParserError;
 use crate::{NyxError, hir::error::HirError};
 use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
 
@@ -14,9 +17,23 @@ pub struct Diagnostic {
     rendered: String,
 }
 
-struct Error<'s, E: std::error::Error + HasSpan> {
-    src: &'s str,
-    error: E,
+#[derive(Debug)]
+pub struct Info {
+    message: String,
+    label: String,
+
+    note: Option<String>,
+    help: Option<String>,
+
+    span: Span,
+}
+
+trait Diagnosticable {
+    fn info(&self) -> Info;
+}
+
+thread_local! {
+    static SOURCE: RefCell<String> = RefCell::new(String::new());
 }
 
 const RED: Colour = Colour::Fixed(203);
@@ -28,16 +45,35 @@ impl Diagnostic {
     pub fn display(self) -> String {
         self.rendered
     }
+
+    fn from_info(info: Info) -> Self {
+        let message = info.message.clone();
+
+        let rendered = SOURCE.with_borrow(|src| {
+            let mut builder = Report::build(ReportKind::Error, info.span.into())
+                .with_message(&info.message)
+                .with_label(Label::new(info.span.into()).with_message(&info.label).with_color(RED));
+
+            if let Some(note) = &info.note {
+                builder = builder.with_note(note);
+            }
+
+            if let Some(help) = &info.help {
+                builder = builder.with_help(help);
+            }
+
+            render(src, builder.finish())
+        });
+
+        Self { message, rendered }
+    }
 }
 
-impl From<Error<'_, LexError>> for Diagnostic {
-    fn from(value: Error<'_, LexError>) -> Self {
+impl Diagnosticable for LexError {
+    fn info(&self) -> Info {
         use crate::lexer::error::LexErrorKind as Kind;
 
-        let error = value.error;
-        let span = error.span();
-
-        let (message, label_msg) = match &error.kind {
+        let (message, label) = match &self.kind {
             Kind::UnexpectedChar(c) => (
                 format!("unexpected character `{c}`"),
                 format!("this character is not valid here"),
@@ -60,56 +96,183 @@ impl From<Error<'_, LexError>> for Diagnostic {
             ),
         };
 
-        let mut builder = Report::build(ReportKind::Error, span.into())
-            .with_message(&message)
-            .with_label(Label::new(span.into()).with_message(&label_msg).with_color(RED));
-
-        if let Some(help) = error.help {
-            builder = builder.with_help(help);
+        Info {
+            message,
+            label,
+            span: self.span,
+            help: self.help.clone(),
+            note: None,
         }
-
-        let rendered = render(value.src, builder.finish());
-
-        Self { message, rendered }
     }
 }
 
-impl<'p> From<ParserError<'p>> for Diagnostic {
-    fn from(value: ParserError<'p>) -> Self {
-        let message = value.kind.to_string();
-        let span = value.span;
+impl Diagnosticable for ParserError<'_> {
+    fn info(&self) -> Info {
+        use crate::parser::error::ParseErrorKind as Kind;
 
-        // TODO: better diagnostic for parser errors
+        let (message, label, note, help) = match &self.kind {
+            Kind::Lexical(lex) => return lex.info(),
 
-        let builder = Report::build(ReportKind::Error, span.into())
-            .with_message(&message)
-            .with_label(Label::new(span.into()).with_color(RED));
+            Kind::Expected { expected, found } => (
+                format!("expected `{expected}`, found `{found}`"),
+                format!("expected `{expected}` here"),
+                None,
+                Some(format!("add a `{expected}` token here")),
+            ),
 
-        let rendered = render("", builder.finish());
-        Self { message, rendered }
+            Kind::ExpectedIdentifier { found } => (
+                format!("expected identifier, found `{found}`"),
+                "an identifier was expected here".to_string(),
+                None,
+                None,
+            ),
+
+            Kind::UnexpectedIdentifier => (
+                "invalid assignment target".to_string(),
+                "only identifiers can be assigned to".to_string(),
+                Some("assignment targets must be simple identifiers, not expressions".to_string()),
+                None,
+            ),
+
+            Kind::InvalidBinaryOperator { found } => (
+                format!("unexpected token `{found}` in expression"),
+                format!("`{found}` cannot be used as a binary operator here"),
+                None,
+                None,
+            ),
+
+            Kind::InvalidUnaryOperator { found } => (
+                format!("unexpected token `{found}` in unary expression"),
+                format!("`{found}` cannot be used as a unary operator"),
+                Some("valid unary operators are `-` (negation) and `!` (logical not)".to_string()),
+                None,
+            ),
+
+            Kind::ExpectedExpression { found } => (
+                format!("expected expression, found `{found}`"),
+                "an expression was expected here".to_string(),
+                None,
+                None,
+            ),
+
+            Kind::ExpectedTypeIdentifier { found } => (
+                format!("unknown type `{found}`"),
+                format!("`{found}` is not a known type"),
+                Some(
+                    "valid types: i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char, &str, String, iptr, uptr"
+                        .to_string(),
+                ),
+                None,
+            ),
+
+            Kind::UnexpectedEof => (
+                "unexpected end of file".to_string(),
+                "the file ended here unexpectedly".to_string(),
+                None,
+                None,
+            ),
+        };
+
+        Info {
+            span: self.span,
+            message,
+            help,
+            label,
+            note,
+        }
     }
 }
 
-impl<'h> From<HirError<'h>> for Diagnostic {
-    fn from(value: HirError<'h>) -> Self {
-        let error = value.kind;
-        let message = error.to_string();
+impl Diagnosticable for HirError<'_> {
+    fn info(&self) -> Info {
+        use crate::hir::error::HirErrorKind as Kind;
 
-        // TODO: add annotations to HIR
+        let (message, label, note, help) = match &self.kind {
+            Kind::Parser(_) => unreachable!(),
 
-        let rendered = format!("error: {message}\n");
-        Self { message, rendered }
-    }
-}
+            Kind::TopLevelNonFunction => (
+                "only function declarations are allowed at the top level".to_string(),
+                "this is not a function declaration".to_string(),
+                Some("move this into a function body, or wrap it in `fn main()`".to_string()),
+                None,
+            ),
 
-impl From<MirError> for Diagnostic {
-    fn from(value: MirError) -> Self {
-        let message = value.to_string();
-        let rendered = format!("error: {message}");
+            Kind::DuplicateFunction { name } => (
+                format!("duplicate function `{name}`"),
+                format!("`{name}` is defined here again"),
+                None,
+                Some(format!("rename one of the `{name}` functions")),
+            ),
 
-        // TODO: should this even carry spans after all? :X
+            Kind::UndeclaredIdentifier { name } => (
+                format!("use of undeclared identifier `{name}`"),
+                format!("`{name}` is not declared in this scope"),
+                None,
+                Some(format!("declare `{name}` with `let {name} = ...` before using it")),
+            ),
 
-        Self { message, rendered }
+            Kind::UnknownFunction { name } => (
+                format!("call to unknown function `{name}`"),
+                format!("`{name}` is not a known function"),
+                None,
+                Some(format!("declare `fn {name}(...)` before calling it")),
+            ),
+
+            Kind::ArityMismatch { name, expected, found } => (
+                format!("wrong number of arguments to `{name}`"),
+                format!(
+                    "{found} argument{} provided, but `{name}` expects {expected}",
+                    if *found == 1 { "" } else { "s" }
+                ),
+                None,
+                None,
+            ),
+
+            Kind::DuplicateBind { name } => (
+                format!("duplicate binding `{name}`"),
+                format!("`{name}` is already bound in this scope"),
+                Some("re-declaring the same name in the same scope is not allowed".to_string()),
+                Some("use a different name, or shadow it in a nested block".to_string()),
+            ),
+
+            Kind::MissingInitialiser { name } => (
+                format!("missing initialiser for `{name}`"),
+                format!("`{name}` has no initialiser and no type annotation"),
+                Some("Nyx cannot infer the type without a value to check against".to_string()),
+                Some(format!(
+                    "add a type annotation: `let {name}: <type>;` or provide an initial value"
+                )),
+            ),
+
+            Kind::TypeMismatch { expected, found } => (
+                format!("type mismatch: expected `{expected}`, found `{found}`"),
+                format!("this has type `{found}`"),
+                None,
+                Some(format!("expected `{expected}` here")),
+            ),
+
+            Kind::ImmutableBind { name } => (
+                format!("cannot assign to immutable binding `{name}`"),
+                format!("`{name}` is immutable and cannot be reassigned"),
+                Some("bindings are immutable by default".to_string()),
+                Some(format!("declare it as mutable: `let mut {name} = ...`")),
+            ),
+
+            Kind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => (
+                format!("cannot call non-const function `{name}` in a const context"),
+                format!("`{name}` is not declared `const`"),
+                Some("const functions may only call other const functions".to_string()),
+                Some(format!("mark `fn {name}` as `const fn {name}` if it qualifies")),
+            ),
+        };
+
+        Info {
+            span: self.span(),
+            message,
+            label,
+            help,
+            note,
+        }
     }
 }
 
@@ -163,21 +326,25 @@ impl std::fmt::Display for NyxError {
     }
 }
 
-impl From<ParserError<'_>> for NyxError {
-    fn from(value: ParserError<'_>) -> Self {
+impl<T: Diagnosticable> From<T> for Diagnostic {
+    fn from(value: T) -> Self {
+        Self::from_info(value.info())
+    }
+}
+
+impl<T: Into<Diagnostic>> From<T> for NyxError {
+    fn from(value: T) -> Self {
         Self::Compile(value.into())
     }
 }
 
-impl From<HirError<'_>> for NyxError {
-    fn from(value: HirError<'_>) -> Self {
-        Self::Compile(value.into())
-    }
-}
-
-impl From<MirError> for NyxError {
+impl From<MirError> for Diagnostic {
     fn from(value: MirError) -> Self {
-        Self::Compile(value.into())
+        let message = value.to_string();
+        let rendered = format!("error: {message}\n");
+        // TODO: better errors for MIR :X
+
+        Self { message, rendered }
     }
 }
 

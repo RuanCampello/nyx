@@ -442,7 +442,7 @@ fn resolve_parallel_moves(out: &mut String, mut moves: Vec<(String, String, &str
 
         match safe {
             Some(i) => {
-                let (ref src, ref dest, suffix, is_float) = moves.remove(i);
+                let (ref src, ref dest, suffix, is_float) = moves.swap_remove(i);
                 mov_or_scratch(out, src, dest, suffix, is_float);
             }
             None if moves.is_empty() => break,
