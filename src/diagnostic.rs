@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use std::cell::RefCell;
 
 use crate::hir::error::ConstFnViolationKind;
@@ -13,12 +11,13 @@ use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
 
 #[derive(Debug)]
 pub struct Diagnostic {
+    #[allow(dead_code)]
     message: String,
     rendered: String,
 }
 
 #[derive(Debug)]
-pub struct Info {
+struct Info {
     message: String,
     label: String,
 
@@ -41,7 +40,7 @@ const YELLOW: Colour = Colour::Fixed(221);
 const CYAN: Colour = Colour::Fixed(117);
 const MAGENTA: Colour = Colour::Fixed(183);
 
-pub(crate) fn initialise(src: &str, filename: &str) {
+pub fn initialise(src: &str, filename: &str) {
     SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
 }
 

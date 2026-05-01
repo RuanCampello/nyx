@@ -110,7 +110,13 @@ fn cmd_run(source: &Path) -> Result<i32, NyxError> {
 fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>) -> Result<Vec<PathBuf>, NyxError> {
     // read and compile source
     let src = fs::read_to_string(source)?;
-    let asm = nyx::compile(&src, source.to_str().unwrap_or("source"))?;
+    let filename = source.to_str().unwrap_or("source");
+
+    // FIXME: that's a almost fair api, but I would rather the compile function to do this
+    // but would also be strange to force the caller to pass the filename and the source code
+    // rethinking on this later
+    nyx::diagnostic::initialise(&src, filename);
+    let asm = nyx::compile(&src)?;
 
     let mut emitted = Vec::new();
 

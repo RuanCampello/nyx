@@ -1,6 +1,6 @@
 use crate::diagnostic::Diagnostic;
 
-pub(crate) mod diagnostic;
+pub mod diagnostic;
 pub(crate) mod hir;
 pub(crate) mod lexer;
 pub(crate) mod lir;
@@ -19,9 +19,7 @@ pub enum NyxError {
 }
 
 /// run the full nyx compilation pipeline on `src` and return gas assembly
-pub fn compile(src: &str, filename: &str) -> Result<String, NyxError> {
-    diagnostic::initialise(src, filename);
-
+pub fn compile(src: &str) -> Result<String, NyxError> {
     let statements = parser::Parser::new(src).parse()?;
     let hir = hir::lower(statements)?;
     let mir = mir::lower(hir)?;
