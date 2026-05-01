@@ -33,7 +33,7 @@ trait Diagnosticable {
 }
 
 thread_local! {
-    static SOURCE: RefCell<String> = RefCell::new(String::new());
+    static SOURCE: RefCell<(String, String)> = RefCell::new((String::new(), String::new()));
 }
 
 const RED: Colour = Colour::Fixed(203);
@@ -41,8 +41,8 @@ const YELLOW: Colour = Colour::Fixed(221);
 const CYAN: Colour = Colour::Fixed(117);
 const MAGENTA: Colour = Colour::Fixed(183);
 
-pub(crate) fn source(src: &str) {
-    SOURCE.with_borrow_mut(|s| *s == src.to_string());
+pub(crate) fn initialise(src: &str, filename: &str) {
+    SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
 }
 
 impl Diagnostic {
@@ -52,11 +52,14 @@ impl Diagnostic {
 
     fn from_info(info: Info) -> Self {
         let message = info.message.clone();
+        let span: std::ops::Range<usize> = info.span.into();
 
-        let rendered = SOURCE.with_borrow(|src| {
-            let mut builder = Report::build(ReportKind::Error, info.span.into())
+        let rendered = SOURCE.with_borrow(|(src, filename)| {
+            let id = filename.as_str();
+
+            let mut builder = Report::build(ReportKind::Error, (id, span.start..span.start))
                 .with_message(&info.message)
-                .with_label(Label::new(info.span.into()).with_message(&info.label).with_color(RED));
+                .with_label(Label::new((id, span)).with_message(&info.label).with_color(RED));
 
             if let Some(note) = &info.note {
                 builder = builder.with_note(note);
@@ -66,11 +69,20 @@ impl Diagnostic {
                 builder = builder.with_help(help);
             }
 
-            render(src, builder.finish())
+            render(src, filename, builder.finish())
         });
 
         Self { message, rendered }
     }
+}
+
+#[inline(always)]
+fn render<'s>(src: &'s str, filename: &str, report: Report<'_, (&str, std::ops::Range<usize>)>) -> String {
+    let mut buf = Vec::with_capacity(src.len());
+    report.write((filename, Source::from(src)), &mut buf).ok();
+
+    // SAFETY: we know that the string is a valid utf8 cause it's from another valid str buffer
+    unsafe { String::from_utf8_unchecked(buf) }
 }
 
 impl Diagnosticable for LexError {
@@ -278,17 +290,6 @@ impl Diagnosticable for HirError<'_> {
             note,
         }
     }
-}
-
-#[inline(always)]
-fn render<'s>(src: &'s str, report: Report<'_, std::ops::Range<usize>>) -> String {
-    println!("source: {}", src);
-    let mut buf = Vec::with_capacity(src.len());
-
-    report.write(Source::from(src), &mut buf).ok();
-
-    // SAFETY: we know that the string is a valid utf8 cause it's from another valid str buffer
-    unsafe { String::from_utf8_unchecked(buf) }
 }
 
 impl HasSpan for LexError {

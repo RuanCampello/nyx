@@ -19,8 +19,8 @@ pub enum NyxError {
 }
 
 /// run the full nyx compilation pipeline on `src` and return gas assembly
-pub fn compile(src: &str) -> Result<String, NyxError> {
-    diagnostic::source(src);
+pub fn compile(src: &str, filename: &str) -> Result<String, NyxError> {
+    diagnostic::initialise(src, filename);
 
     let statements = parser::Parser::new(src).parse()?;
     let hir = hir::lower(statements)?;

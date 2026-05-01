@@ -65,7 +65,7 @@ const CASES: &[Case] = &[
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
     let src = fs::read_to_string(path).map_err(|e| format!("failed to read source: {e}"))?;
-    let asm = nyx::compile(&src).map_err(|e| e.to_string())?;
+    let asm = nyx::compile(&src, path.to_str().unwrap_or("source")).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();
     let test_name = path.file_stem().unwrap().to_string_lossy().to_string();

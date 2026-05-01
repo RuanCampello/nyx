@@ -110,7 +110,7 @@ fn cmd_run(source: &Path) -> Result<i32, NyxError> {
 fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>) -> Result<Vec<PathBuf>, NyxError> {
     // read and compile source
     let src = fs::read_to_string(source)?;
-    let asm = nyx::compile(&src)?;
+    let asm = nyx::compile(&src, source.to_str().unwrap_or("source"))?;
 
     let mut emitted = Vec::new();
 
