@@ -41,6 +41,10 @@ const YELLOW: Colour = Colour::Fixed(221);
 const CYAN: Colour = Colour::Fixed(117);
 const MAGENTA: Colour = Colour::Fixed(183);
 
+pub(crate) fn source(src: &str) {
+    SOURCE.with_borrow_mut(|s| *s == src.to_string());
+}
+
 impl Diagnostic {
     pub fn display(self) -> String {
         self.rendered

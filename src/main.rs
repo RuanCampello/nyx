@@ -70,8 +70,7 @@ fn main() -> Result<(), NyxError> {
 
     match result {
         Ok(exit_code) => process::exit(exit_code),
-        Err(NyxError::Compile(diagnostic)) => eprintln!("{}", diagnostic.display()),
-        Err(err) => eprintln!("error: {err}"),
+        Err(err) => eprintln!("{err}"),
     };
 
     process::exit(1)
