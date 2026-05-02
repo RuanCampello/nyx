@@ -5,7 +5,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword nyxKeyword fn let mut if else return while for struct inline const
+syn keyword nyxKeyword fn let mut if else return while for struct inline const pub use
 hi def link nyxKeyword Keyword
 
 " Types
