@@ -94,6 +94,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 - [ ] Module system
   - [x] Imports resolver
+  - [ ] Project (_dir_) compilation
 - [ ] Standard Library
   - [ ] I/O
     - [ ] Printing to standard out (`println`, `printf`)
