@@ -21,10 +21,13 @@
 
 use crate::{
     hir::{self, SymbolTable, error::ResolverError},
-    parser::statement::{UseDecl, UseItems},
+    parser::{
+        self, Parser,
+        statement::{Statement, UseDecl, UseItems},
+    },
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -38,6 +41,9 @@ pub(in crate::hir) struct Resolver {
     root: PathBuf,
     /// canonical path -> cached module populated lazily on access populated lazily on access
     cache: HashMap<PathBuf, Arc<CacheModule>>,
+    /// paths currently being loaded
+    /// this is used to detect cycles
+    in_flight: HashSet<PathBuf>,
 
     symbols: SymbolTable,
 }
@@ -70,6 +76,7 @@ impl Resolver {
             name,
             root,
             cache: HashMap::new(),
+            in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
         }
     }
@@ -135,8 +142,46 @@ impl Resolver {
             return Ok(Arc::clone(cached));
         }
 
-        // TODO: implement IO + recursive analysis
+        if self.in_flight.contains(&canonical) {
+            return Err(ResolverError::CircularImport { path: canonical });
+        }
 
-        Err(ResolverError::FileNotFound { path: canonical })
+        self.in_flight.insert(canonical.clone());
+        let result = self.load_module_io(canonical.clone());
+        self.in_flight.remove(&canonical);
+
+        result
+    }
+
+    fn load_module_io(&mut self, canonical: PathBuf) -> Result<Arc<CacheModule>, ResolverError> {
+        let src = std::fs::read_to_string(&canonical).unwrap();
+
+        let statements = Parser::new(&src).parse().unwrap();
+        // load all transitive deps first so their signatures are in the shared symbol table
+        // before we lower this file's HIR
+        let from = canonical.parent().unwrap_or(Path::new(""));
+        let mut transitives = Vec::new();
+
+        for statement in statements {
+            if let Statement::Use(ref declaration) = statement {
+                let import = self.resolve(declaration, from)?;
+                transitives.push(import);
+            }
+        }
+
+        let mut all_functions = Vec::new();
+        let transitive_bindings = todo!();
+
+        let module_functions = todo!();
+        let exports = HashMap::new();
+
+        let module = Arc::new(CacheModule {
+            path: canonical.clone(),
+            exports,
+            functions: all_functions,
+        });
+        self.cache.insert(canonical, Arc::clone(&module));
+
+        Ok(module)
     }
 }

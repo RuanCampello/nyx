@@ -13,6 +13,7 @@ pub enum Statement<'i> {
     Fn(Function<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
+    Use(UseDecl<'i>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,21 +78,25 @@ pub enum Else<'i> {
     Expr(Expression<'i>),
 }
 
+#[derive(Debug, PartialEq)]
 pub struct UseDecl<'i> {
     pub path: UsePath<'i>,
     pub items: UseItems<'i>,
     pub span: Span,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct UsePath<'i> {
     pub segments: Vec<&'i str>,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct UseItem<'i> {
     pub name: &'i str,
     pub span: Span,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum UseItems<'i> {
     Namespace,
     Named(Vec<UseItem<'i>>),
