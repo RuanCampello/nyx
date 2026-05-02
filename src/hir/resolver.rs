@@ -20,7 +20,7 @@
 #![allow(unused)]
 
 use crate::{
-    hir::{self, SymbolTable, error::ResolverError},
+    hir::{self, Function, FunctionId, SymbolTable, error::ResolverError},
     parser::{
         self, Parser,
         statement::{Statement, UseDecl, UseItems},
@@ -68,6 +68,17 @@ pub(in crate::hir) enum Import {
     Namespace { bound: String },
     /// `use foo::bar::{a, b};`: specific names brought directly into the scope
     Named(Vec<String>),
+}
+
+pub(in crate::hir) enum ImportBinding {
+    Item {
+        name: String,
+        function_if: FunctionId,
+    },
+    Namespace {
+        bound: String,
+        function_range: std::ops::Range<usize>,
+    },
 }
 
 impl Resolver {
@@ -170,7 +181,7 @@ impl Resolver {
         }
 
         let mut all_functions = Vec::new();
-        let transitive_bindings = todo!();
+        let transitive_bindings = Self::merge(&mut all_functions, transitives);
 
         let module_functions = todo!();
         let exports = HashMap::new();
@@ -183,5 +194,39 @@ impl Resolver {
         self.cache.insert(canonical, Arc::clone(&module));
 
         Ok(module)
+    }
+
+    fn merge(base: &mut Vec<Function>, imports: Vec<ResolvedImport>) -> Vec<ImportBinding> {
+        let mut bindings = Vec::new();
+
+        for import in imports {
+            let offset = base.len() as u32;
+            let start = base.len();
+
+            base.extend(import.module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
+
+            let binding = match import.bindings {
+                Import::Namespace { bound } => ImportBinding::Namespace {
+                    bound,
+                    function_range: start..base.len(),
+                },
+                Import::Named(names) => {
+                    for name in names {
+                        if let Some(&local) = import.module.exports.get(&name) {
+                            bindings.push(ImportBinding::Item {
+                                name,
+                                function_if: FunctionId((start + local) as u32),
+                            })
+                        }
+                    }
+
+                    continue;
+                }
+            };
+
+            bindings.push(binding);
+        }
+
+        bindings
     }
 }

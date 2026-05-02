@@ -205,6 +205,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
+            Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
         }
     }
 

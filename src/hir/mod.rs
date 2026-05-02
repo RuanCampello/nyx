@@ -153,6 +153,12 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     })
 }
 
+impl Function {
+    fn with_id_offset(mut self, offset: u32) -> Self {
+        unimplemented!()
+    }
+}
+
 impl Type {
     pub(in crate::hir) const fn is_number(&self) -> bool {
         self.is_integer() || self.is_float()
