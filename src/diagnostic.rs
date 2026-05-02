@@ -11,9 +11,8 @@ use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
 
 #[derive(Debug)]
 pub struct Diagnostic {
-    #[allow(dead_code)]
-    message: String,
-    rendered: String,
+    pub(crate) message: String,
+    pub(crate) rendered: String,
 }
 
 #[derive(Debug)]

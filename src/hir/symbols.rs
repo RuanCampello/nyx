@@ -1,15 +1,14 @@
 use crate::hir::SymbolId;
 use lasso::Rodeo;
 
+#[derive(Clone)]
 pub(in crate::hir) struct SymbolTable {
     interner: Rodeo,
 }
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self {
-            interner: Rodeo::new(),
-        }
+        Self { interner: Rodeo::new() }
     }
 
     #[inline(always)]
