@@ -156,7 +156,71 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
 
 impl Function {
     fn with_id_offset(mut self, offset: u32) -> Self {
-        unimplemented!()
+        self.id = FunctionId(self.id.0 + offset);
+        self.body.offset(offset);
+        self
+    }
+}
+
+impl Block {
+    fn offset(&mut self, offset: u32) {
+        for statement in &mut self.statements {
+            statement.offset(offset);
+        }
+    }
+}
+
+impl Statement {
+    fn offset(&mut self, offset: u32) {
+        match self {
+            Statement::Let { init: Some(e), .. } => e.offset(offset),
+            Statement::Let { init: None, .. } => {}
+            Statement::Expr(e) => e.offset(offset),
+            Statement::Return(Some(e)) => e.offset(offset),
+            Statement::Return(None) => {}
+            Statement::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                condition.offset(offset);
+                then_block.offset(offset);
+                if let Some(b) = else_block {
+                    b.offset(offset);
+                }
+            }
+            Statement::While { condition, body } => {
+                condition.offset(offset);
+                body.offset(offset);
+            }
+            Statement::Block(b) => b.offset(offset),
+        }
+    }
+}
+
+impl Expression {
+    fn offset(&mut self, offset: u32) {
+        match &mut self.kind {
+            ExpressionKind::Call { function, args, .. } => {
+                function.0 += offset;
+
+                for arg in args {
+                    arg.offset(offset);
+                }
+            }
+            ExpressionKind::Binary { left, right, .. } => {
+                left.offset(offset);
+                right.offset(offset);
+            }
+            ExpressionKind::Unary { expr: inner, .. } => inner.offset(offset),
+            ExpressionKind::Assign { value, .. } => value.offset(offset),
+            ExpressionKind::Local(_)
+            | ExpressionKind::Integer(_)
+            | ExpressionKind::Float(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::String(_)
+            | ExpressionKind::Unit => {}
+        }
     }
 }
 
