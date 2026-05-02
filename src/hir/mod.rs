@@ -56,15 +56,16 @@ pub struct Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Function {
-    pub(crate) id: FunctionId,
-    pub(crate) name: SymbolId,
-    pub(crate) params: Vec<Parameter>,
-    pub(crate) locals: Vec<Local>,
-    pub(crate) return_type: Type,
-    pub(crate) is_const: bool,
-    pub(crate) inline: bool,
-    pub(crate) body: Block,
+pub(crate) struct Function {
+    pub id: FunctionId,
+    pub name: SymbolId,
+    pub params: Vec<Parameter>,
+    pub locals: Vec<Local>,
+    pub return_type: Type,
+    pub is_const: bool,
+    pub is_pub: bool,
+    pub inline: bool,
+    pub body: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

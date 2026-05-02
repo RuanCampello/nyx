@@ -53,6 +53,7 @@ pub struct Function<'i> {
     pub return_type: Option<Spanned<Type>>,
     pub body: Block<'i>,
     pub is_const: bool,
+    pub is_pub: bool,
     pub inline: bool,
     pub span: Span,
 }
@@ -342,6 +343,7 @@ impl<'i> Parsable<'i> for While<'i> {
 
 impl<'i> Parsable<'i> for Function<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let is_pub = parser.consume_keyword(Keyword::Pub)?;
         let inline = parser.consume_keyword(Keyword::Inline)?;
         let is_const = parser.consume_keyword(Keyword::Const)?;
 
@@ -399,6 +401,7 @@ impl<'i> Parsable<'i> for Function<'i> {
             body,
             span,
             is_const,
+            is_pub,
             inline,
         })
     }

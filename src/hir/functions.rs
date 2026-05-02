@@ -19,6 +19,7 @@ pub(in crate::hir) struct FunctionSignature {
     is_const: bool,
     #[allow(dead_code)]
     inline: bool,
+    pub(in crate::hir) is_pub: bool,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
@@ -33,6 +34,21 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
 }
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
+
+impl Default for FunctionSignature {
+    fn default() -> Self {
+        use lasso::{Key, Spur};
+
+        Self {
+            name: SymbolId(Spur::try_from_usize(0).expect("spur shouldn't fail")),
+            params: Vec::new(),
+            return_type: Type::Unit,
+            is_const: false,
+            inline: false,
+            is_pub: false,
+        }
+    }
+}
 
 impl<'s, 'f> FunctionBuilder<'s, 'f> {
     pub fn new(
@@ -89,6 +105,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             return_type: self.return_type,
             is_const: function.is_const,
             inline: function.inline,
+            is_pub: function.is_pub,
             body,
         })
     }
@@ -631,6 +648,7 @@ pub fn collect_function_signatures<'h>(
             name: symbol,
             is_const: function.is_const,
             inline: function.inline,
+            is_pub: function.is_pub,
         })
     }
 
