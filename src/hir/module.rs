@@ -1,4 +1,4 @@
-//! Multi-file project compilation
+//! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -23,7 +23,10 @@ pub(crate) struct ModuleLoader {
     name: String,
     root: PathBuf,
     cache: HashMap<PathBuf, Arc<Module>>,
+    /// modules currently being loaded
+    /// used for cycle detection
     in_flight: HashSet<PathBuf>,
+    /// shared symbols interner for all modules
     symbols: SymbolTable,
 }
 
@@ -31,7 +34,9 @@ pub(crate) struct ModuleLoader {
 #[derive(Debug, Clone)]
 struct Module {
     path: PathBuf,
+    /// public function names -> index in `functions`
     exports: HashMap<String, usize>,
+    /// all functions in declaration order
     functions: Vec<Function>,
     statements: Vec<hir::Statement>,
 }
@@ -44,14 +49,21 @@ struct ResolvedImport {
 
 /// Specifies which symbol from a module enter the importing scope
 enum ImportBinding {
+    /// `use foo::bar;`
+    /// all symbols are available via `bar::name`
     Namespace {
         name: String,
+        /// range of functions in merged list
         function: std::ops::Range<usize>,
     },
-
+    /// `use foo::bar::{a, b};`
+    /// symbols bound directly in scope
     Named(Vec<NamedImport>),
 }
 
+/// A single named import
+///
+/// `name` -> function at `function_id`
 struct NamedImport {
     name: String,
     id: FunctionId,
@@ -61,25 +73,16 @@ struct NamedImport {
 pub enum ModuleError {
     #[error("module file not found: {}", path.display())]
     FileNotFound { path: PathBuf },
-
     #[error("circular import detected: {}", path.display())]
     CircularImport { path: PathBuf },
-
     #[error("empty import path")]
     EmptyPath,
-
     #[error("unknown module root `{name}` (expected project name or `std`)")]
     UnknownRoot { name: String },
-
-    #[error("standard library not implemented yet")]
-    StdNotImplemented,
-
     #[error("module `{}` exports no symbol `{name}`", path.display())]
     UnknownExport { path: PathBuf, name: String },
-
     #[error("only function declarations allowed at top level in {}", path.display())]
     TopLevelNonFunction { path: PathBuf },
-
     #[error("parse error in {}: {error}", path.display())]
     Parse { path: PathBuf, error: String },
 }
@@ -95,8 +98,37 @@ impl ModuleLoader {
         }
     }
 
+    /// Load all modules reacheable from the entry point and produce a merged `HIR`
+    ///
+    /// # Process
+    /// - discover all imports
+    ///  parse and validate each module
+    ///  merge function lists with ID rebasing
+    ///  return unified `HIR`
+    pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
+        let canonical = entry
+            .canonicalize()
+            .map_err(|_| ModuleError::FileNotFound { path: entry.into() })?;
+
+        self.discover(&canonical)?;
+
+        let mut functions = Vec::new();
+        let sources: Vec<_> = self.cache.values().cloned().collect();
+
+        for module in sources {
+            let offset = functions.len() as u32;
+
+            functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
+        }
+
+        Ok(Hir {
+            functions,
+            symbols: self.symbols.clone().into_symbols(),
+        })
+    }
+
     /// Recursevly load a module and all its dependencies
-    pub fn discover(&mut self, canonical: &Path) -> Result<(), ModuleError> {
+    fn discover(&mut self, canonical: &Path) -> Result<(), ModuleError> {
         if self.cache.contains_key(canonical) {
             return Ok(());
         }
@@ -129,28 +161,6 @@ impl ModuleLoader {
         self.cache.insert(canonical.to_path_buf(), Arc::new(module));
 
         Ok(())
-    }
-
-    pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
-        let canonical = entry
-            .canonicalize()
-            .map_err(|_| ModuleError::FileNotFound { path: entry.into() })?;
-
-        self.discover(&canonical)?;
-
-        let mut functions = Vec::new();
-        let sources: Vec<_> = self.cache.values().cloned().collect();
-
-        for module in sources {
-            let offset = functions.len() as u32;
-
-            functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
-        }
-
-        Ok(Hir {
-            functions,
-            symbols: self.symbols.clone().into_symbols(),
-        })
     }
 
     fn analyse(&mut self, path: &Path, statements: &[Statement]) -> Result<Module, ModuleError> {
