@@ -1,0 +1,7 @@
+use std::io::{println};
+use std::io;
+
+pub fn main() {
+    println("Initialising...");
+    println("Done.");
+}

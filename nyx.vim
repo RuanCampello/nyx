@@ -38,4 +38,18 @@ hi def link nyxFunctionDecl Function
 syn match nyxFunctionCall "\w\+\ze\s*("
 hi def link nyxFunctionCall Function
 
+" Namespace separator ::
+syn match nyxNamespaceSep "::"
+hi def link nyxNamespaceSep Operator
+
+" Modules
+syn match nyxNamespace "\w\+\ze::"
+syn match nyxNamespace "\(::\)\@<=\w\+"
+hi def link nyxNamespace Type
+
+" Import items
+syn region nyxImportBraces start="::\s*{" end="}" transparent contains=nyxImportItem
+syn match nyxImportItem "\w\+" contained
+hi def link nyxImportItem Identifier
+
 let b:current_syntax = "nyx"
