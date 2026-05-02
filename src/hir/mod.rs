@@ -6,7 +6,7 @@
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},
-        functions::FunctionBuilder,
+        functions::{FunctionBuilder, FunctionSignature},
         symbols::SymbolTable,
     },
     lexer::token::Span,
@@ -19,7 +19,7 @@ use lasso::{Key, Spur};
 
 pub mod error;
 mod functions;
-mod module;
+pub(crate) mod module;
 mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +159,19 @@ impl Function {
         self.id = FunctionId(self.id.0 + offset);
         self.body.offset(offset);
         self
+    }
+}
+
+impl From<&Function> for FunctionSignature {
+    fn from(value: &Function) -> Self {
+        Self {
+            params: value.params.iter().map(|param| param.typ).collect(),
+            return_type: value.return_type,
+            name: value.name,
+            is_const: value.is_const,
+            inline: value.inline,
+            is_pub: value.is_pub,
+        }
     }
 }
 

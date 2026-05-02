@@ -1,18 +1,17 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
+use crate::{
+    NyxError, diagnostic,
+    hir::{
+        Function, FunctionBuilder, FunctionId, Hir, SymbolTable,
+        functions::{collect_function_signatures, signatures_from_hir},
+    },
+    parser::{Parser, statement::Statement},
+};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
-};
-
-use crate::{
-    NyxError, diagnostic,
-    hir::{self, Function, FunctionId, Hir, SymbolTable},
-    parser::{
-        Parser,
-        statement::{self, Statement},
-    },
 };
 
 /// Orchestrates module loading, path resolution, and HIR construction.
@@ -33,40 +32,9 @@ pub(crate) struct ModuleLoader {
 /// A fully-parsed and validated module
 #[derive(Debug, Clone)]
 struct Module {
-    path: PathBuf,
-    /// public function names -> index in `functions`
     exports: HashMap<String, usize>,
     /// all functions in declaration order
     functions: Vec<Function>,
-    statements: Vec<hir::Statement>,
-}
-
-// Result of a single `use` declaration
-struct ResolvedImport {
-    module: Arc<Module>,
-    import: ImportBinding,
-}
-
-/// Specifies which symbol from a module enter the importing scope
-enum ImportBinding {
-    /// `use foo::bar;`
-    /// all symbols are available via `bar::name`
-    Namespace {
-        name: String,
-        /// range of functions in merged list
-        function: std::ops::Range<usize>,
-    },
-    /// `use foo::bar::{a, b};`
-    /// symbols bound directly in scope
-    Named(Vec<NamedImport>),
-}
-
-/// A single named import
-///
-/// `name` -> function at `function_id`
-struct NamedImport {
-    name: String,
-    id: FunctionId,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +53,8 @@ pub enum ModuleError {
     TopLevelNonFunction { path: PathBuf },
     #[error("parse error in {}: {error}", path.display())]
     Parse { path: PathBuf, error: String },
+    #[error("semantic error in {}: {error}", path.display())]
+    Semantic { path: PathBuf, error: String },
 }
 
 impl ModuleLoader {
@@ -98,13 +68,10 @@ impl ModuleLoader {
         }
     }
 
-    /// Load all modules reacheable from the entry point and produce a merged `HIR`
+    /// Load all modules reacheable from the `entry` point and produce a merged `HIR`
     ///
-    /// # Process
-    /// - discover all imports
-    /// - parse and validate each module
-    /// - merge function lists with ID rebasing
-    /// - return unified `HIR`
+    /// Modules are merged in dependency-first order. The entry module is always last,
+    /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
         let canonical = entry
             .canonicalize()
@@ -112,10 +79,18 @@ impl ModuleLoader {
 
         self.discover(&canonical)?;
 
-        let mut functions = Vec::new();
-        let sources: Vec<_> = self.cache.values().cloned().collect();
+        let mut dependencies: Vec<_> = self.cache.keys().cloned().collect();
+        dependencies.sort_unstable();
 
-        for module in sources {
+        if let Some(position) = dependencies.iter().position(|pos| pos == &canonical) {
+            let entry = dependencies.remove(position);
+
+            dependencies.push(entry);
+        }
+
+        let mut functions = Vec::with_capacity(1 << 8);
+        for path in &dependencies {
+            let module = Arc::clone(&self.cache[path]);
             let offset = functions.len() as u32;
 
             functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
@@ -157,41 +132,73 @@ impl ModuleLoader {
 
         self.in_flight.remove(canonical);
 
-        let module = self.analyse(canonical, &statements)?;
+        let module = self.analyse(canonical, statements)?;
         self.cache.insert(canonical.to_path_buf(), Arc::new(module));
 
         Ok(())
     }
 
-    fn analyse(&mut self, path: &Path, statements: &[Statement]) -> Result<Module, ModuleError> {
-        let mut functions = Vec::new();
-        let mut exports = HashMap::new();
-
-        for statement in statements {
+    fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
+        for statement in &statements {
             match statement {
-                Statement::Fn(function) => {
-                    let idx = functions.len();
-
-                    let hir = self.lower(function)?;
-                    functions.push(hir);
-
-                    if function.is_pub {
-                        exports.insert(function.name.to_string(), idx);
-                    }
-                }
-
-                Statement::Use(_) => {}
-
+                Statement::Fn(_) | Statement::Use(_) => {}
                 _ => return Err(ModuleError::TopLevelNonFunction { path: path.into() }),
             }
         }
 
-        Ok(Module {
-            path: path.into(),
-            functions,
-            exports,
-            statements: Vec::new(),
-        })
+        // build a combined signature + id table that includes all already-lowered dependencies
+        let mut dependencies: Vec<_> = self.cache.keys().collect();
+        dependencies.sort_unstable();
+
+        let mut functions = Vec::new();
+        for dependency in dependencies {
+            let module = &self.cache[dependency];
+            let offset = functions.len() as u32;
+
+            functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
+        }
+
+        let (mut signatures, mut map) = signatures_from_hir(&functions);
+
+        let local_offset = signatures.len() as u32;
+        let (local_signatures, local_map) =
+            collect_function_signatures(&statements, &mut self.symbols).map_err(|e| ModuleError::Semantic {
+                path: path.into(),
+                error: e.to_string(),
+            })?;
+
+        // merge local signatures into combined table
+        for (&symbol, &local_id) in &local_map {
+            map.insert(symbol, FunctionId(local_id.0 + local_offset));
+        }
+        signatures.extend(local_signatures);
+
+        let mut functions = Vec::new();
+        let mut exports = HashMap::new();
+
+        for statement in statements {
+            let function = match statement {
+                Statement::Fn(f) => f,
+                _ => continue,
+            };
+
+            let builder = FunctionBuilder::new(&signatures, &map, &mut self.symbols, function);
+            let mut hir = builder.lower().map_err(|e| ModuleError::Semantic {
+                path: path.into(),
+                error: e.to_string(),
+            })?;
+
+            // rebase the function's own id to be relative to its position in this module's list
+            hir.id = FunctionId(functions.len() as u32);
+
+            if hir.is_pub {
+                exports.insert(self.symbols.get(hir.name).to_string(), functions.len());
+            }
+
+            functions.push(hir);
+        }
+
+        Ok(Module { functions, exports })
     }
 
     fn resolve_path(&self, segments: &[&str]) -> Result<PathBuf, ModuleError> {
@@ -217,13 +224,6 @@ impl ModuleLoader {
         path.push(format!("{}.nyx", file_segment[0]));
 
         Ok(path)
-    }
-
-    /// Lower a parsed function to HIR.
-    ///
-    /// full implementation would use the complete HIR lowering pipeline with type checking
-    fn lower(&mut self, function: &statement::Function) -> Result<Function, ModuleError> {
-        todo!()
     }
 }
 

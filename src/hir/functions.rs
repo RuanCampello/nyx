@@ -13,13 +13,13 @@ use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(in crate::hir) struct FunctionSignature {
-    name: SymbolId,
-    params: Vec<Type>,
-    return_type: Type,
-    is_const: bool,
+    pub name: SymbolId,
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    pub is_const: bool,
     #[allow(dead_code)]
-    inline: bool,
-    pub(in crate::hir) is_pub: bool,
+    pub inline: bool,
+    pub is_pub: bool,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
@@ -642,6 +642,7 @@ pub fn collect_function_signatures<'h>(
 
         let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
         let return_type = function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
+
         signatures.push(FunctionSignature {
             return_type,
             params,
@@ -653,4 +654,18 @@ pub fn collect_function_signatures<'h>(
     }
 
     Ok((signatures, functions))
+}
+
+pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions) {
+    let mut signatures = Vec::with_capacity(functions.len());
+    let mut map = Functions::new();
+
+    for (idx, function) in functions.iter().enumerate() {
+        let id = FunctionId(idx as u32);
+        map.insert(function.name, id);
+
+        signatures.push(function.into());
+    }
+
+    (signatures, map)
 }
