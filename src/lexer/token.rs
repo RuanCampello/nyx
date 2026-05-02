@@ -48,6 +48,8 @@ pub enum Keyword {
     Struct,
     Inline,
     Const,
+    Pub,
+    Use,
 }
 
 /// Punctuators and operators.
@@ -140,6 +142,8 @@ impl Keyword {
             Self::Struct => "struct",
             Self::Inline => "inline",
             Self::Const => "const",
+            Self::Use => "use",
+            Self::Pub => "pub",
         }
     }
 }
@@ -160,6 +164,8 @@ impl std::str::FromStr for Keyword {
             "struct" => Self::Struct,
             "inline" => Self::Inline,
             "const" => Self::Const,
+            "pub" => Self::Pub,
+            "use" => Self::Use,
             _ => return Err(()),
         })
     }

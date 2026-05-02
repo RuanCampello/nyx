@@ -85,7 +85,6 @@ pub struct UseDecl<'i> {
 
 pub struct UsePath<'i> {
     pub segments: Vec<&'i str>,
-    pub span: Span,
 }
 
 pub struct UseItem<'i> {
@@ -425,6 +424,81 @@ impl<'i> Parsable<'i> for Block<'i> {
 
         let span = Span::new(open_brace.span.start, close_brace.span.end);
         Ok(Self { span, statements })
+    }
+}
+
+impl<'i> Parsable<'i> for UseDecl<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let use_token = parser.expect_keyword(Keyword::Use)?;
+        let (first, _) = parser.expect_identifier()?;
+        let mut segments = vec![first];
+
+        // consume '::segment' pairs until we hit '{' or ';'
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::ColonColon) => {
+                    parser.expect_punct(Punct::ColonColon)?;
+                }
+                _ => break,
+            }
+
+            match parser.peek() {
+                Some(Ok(t)) if matches!(t.kind, TokenKind::Punct(Punct::OpenBrace)) => break,
+                _ => {}
+            }
+
+            let (segment, _) = parser.expect_identifier()?;
+            segments.push(segment)
+        }
+
+        let items = match parser.peek() {
+            Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::OpenBrace) => {
+                parser.expect_punct(Punct::OpenBrace)?;
+                let mut names = Vec::new();
+                let mut first = true;
+
+                loop {
+                    match parser.peek() {
+                        Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                            parser.expect_punct(Punct::CloseBrace)?;
+                            break;
+                        }
+
+                        _ => {}
+                    }
+
+                    if !first {
+                        parser.expect_punct(Punct::Comma)?;
+                    }
+                    first = false;
+
+                    // trailing comma: '{a, b,}'
+                    match parser.peek() {
+                        Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                            parser.expect_punct(Punct::CloseBrace)?;
+                            break;
+                        }
+                        _ => {}
+                    }
+
+                    let (name, span) = parser.expect_identifier()?;
+                    names.push(UseItem { name, span })
+                }
+
+                UseItems::Named(names)
+            }
+
+            _ => UseItems::Namespace,
+        };
+
+        let semi = parser.expect_punct(Punct::Semicolon)?;
+        let span = Span::new(use_token.span.start, semi.span.end);
+
+        Ok(UseDecl {
+            path: UsePath { segments },
+            items,
+            span,
+        })
     }
 }
 
