@@ -77,6 +77,21 @@ pub enum Else<'i> {
     Expr(Expression<'i>),
 }
 
+pub struct UseDecl<'i> {
+    pub path: UsePath<'i>,
+    pub items: UseItems,
+    pub span: Span,
+}
+
+pub struct UsePath<'i> {
+    pub segments: Vec<&'i str>,
+    pub span: Span,
+}
+
+pub enum UseItems {
+    Namespace,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[non_exhaustive]
 pub enum Type {

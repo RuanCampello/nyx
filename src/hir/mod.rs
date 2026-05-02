@@ -19,6 +19,7 @@ use lasso::{Key, Spur};
 
 pub mod error;
 mod functions;
+mod resolver;
 mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]

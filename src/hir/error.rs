@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::hir::Type;
 use crate::parser::error::ParserError;
 
@@ -51,6 +53,24 @@ pub enum HirErrorKind<'h> {
 pub enum ConstFnViolationKind {
     #[error("cannot call non-const function `{name}` in constant functions")]
     NonConstCall { name: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolverError {
+    #[error("module path has not segments")]
+    EmptyPath,
+
+    #[error("module file not found: {}", path.display())]
+    FileNotFound { path: PathBuf },
+
+    #[error("module `{module_path}` has no exported symbol `{name}`")]
+    UnknownExport { module_path: String, name: String },
+
+    #[error("unknown module root `{name}` — expected project name or `std`")]
+    UnknownRoot { name: String },
+
+    #[error("circular import involving: {}", path.display())]
+    CircularImport { path: PathBuf },
 }
 
 impl<'h> From<ParserError<'h>> for HirError<'h> {

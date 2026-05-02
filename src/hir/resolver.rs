@@ -1,0 +1,131 @@
+//! Module path resolution, cross-file import management and per-compilation cache
+//!
+//! ### Semantic Model
+//!
+//! Every `.nyx` file is a module. Module are identifiers by their canonical filesystem path.
+//! The `use` keyword binds symbols from other modules into the local scope without merging
+//! namespaces.
+//!
+//! ```rust,ignore
+//! use std::io::{println};     // item import: println enters the scope direcly
+//! use std::io;                // namespace import: io::println() syntax
+//! use my_app::math::{add};    // project-level item import
+//! ```
+//! ### Root disambiguation
+//!
+//! The first path segment identifies the root:
+//! - [project_name] -> project root
+//! - anything else  -> error (external packages, std)
+
+#![allow(unused)]
+
+use crate::{
+    hir::{self, SymbolTable, error::ResolverError},
+    parser::statement::{UseDecl, UseItems},
+};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// Drives path resolution and module loading for a single compilation.
+///
+/// Owns the shared `SymbolTable` so that `SymbolId`s from different modules remain
+/// comparable after merging
+pub(in crate::hir) struct Resolver {
+    name: String,
+    root: PathBuf,
+    /// canonical path -> cached module populated lazily on access populated lazily on access
+    cache: HashMap<PathBuf, Arc<CacheModule>>,
+
+    symbols: SymbolTable,
+}
+
+pub(in crate::hir) struct ResolvedImport {
+    module: Arc<CacheModule>,
+    bindings: Import,
+}
+
+/// A fully-analysed module, cached for the lifetime of the compilation.
+#[derive(Debug)]
+pub(in crate::hir) struct CacheModule {
+    path: PathBuf,
+    /// `name` -> `ìndex` in `self.functions` for the **pub** items
+    exports: HashMap<String, usize>,
+    /// All functions in declaration order with the module-local ids
+    functions: Vec<hir::Function>,
+}
+
+pub(in crate::hir) enum Import {
+    /// `use foo::bar;`: the last segment becomes the local namespaces name
+    Namespace { bound: String },
+    /// `use foo::bar::{a, b};`: specific names brought directly into the scope
+    Named(Vec<String>),
+}
+
+impl Resolver {
+    pub fn new(name: String, root: PathBuf) -> Self {
+        Self {
+            name,
+            root,
+            cache: HashMap::new(),
+            symbols: SymbolTable::new(),
+        }
+    }
+
+    pub fn resolve<'d>(&mut self, declaration: &UseDecl<'d>, _from: &Path) -> Result<ResolvedImport, ResolverError> {
+        let path = self.resolve_path(&declaration.path.segments)?;
+        let module = self.load_module(path)?;
+
+        let bindings = match &declaration.items {
+            UseItems::Namespace => Import::Namespace {
+                bound: declaration.path.segments.last().copied().unwrap_or_default().to_string(),
+            },
+            // TODO: named items
+        };
+
+        Ok(ResolvedImport { module, bindings })
+    }
+
+    fn resolve_path<'s>(&self, segments: &[&'s str]) -> Result<PathBuf, ResolverError> {
+        let (&root, rest) = segments.split_first().ok_or(ResolverError::EmptyPath)?;
+
+        if rest.is_empty() {
+            return Err(ResolverError::EmptyPath);
+        }
+
+        let base = match root {
+            root if root == self.name => self.root.clone(),
+            other => {
+                return Err(ResolverError::UnknownRoot {
+                    name: other.to_string(),
+                });
+            }
+        };
+
+        let (dirs, file_segment) = rest.split_at(rest.len() - 1);
+
+        let mut path = base;
+        for segment in dirs {
+            path.push(segment);
+        }
+        path.push(format!("{}.nyx", file_segment[0]));
+
+        Ok(path)
+    }
+
+    fn load_module(&mut self, path: PathBuf) -> Result<Arc<CacheModule>, ResolverError> {
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| ResolverError::FileNotFound { path: path.clone() })?;
+
+        if let Some(cached) = self.cache.get(&canonical) {
+            return Ok(Arc::clone(cached));
+        }
+
+        // TODO: implement IO + recursive analysis
+
+        Err(ResolverError::FileNotFound { path: canonical })
+    }
+}
