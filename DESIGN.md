@@ -62,5 +62,5 @@ use std::io::{println};
 // usage: println(...)
 
 project-relative import
-use my_project::math::{add, subtract};
+// use my_project::math::{add, subtract};
 ```

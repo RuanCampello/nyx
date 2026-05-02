@@ -102,9 +102,9 @@ impl ModuleLoader {
     ///
     /// # Process
     /// - discover all imports
-    ///  parse and validate each module
-    ///  merge function lists with ID rebasing
-    ///  return unified `HIR`
+    /// - parse and validate each module
+    /// - merge function lists with ID rebasing
+    /// - return unified `HIR`
     pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
         let canonical = entry
             .canonicalize()
