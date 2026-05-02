@@ -230,3 +230,104 @@ impl Resolver {
         bindings
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const APP: &str = "/app";
+    const PROJECT: &str = "/project";
+
+    fn resolver() -> Resolver {
+        Resolver::new(APP.to_string(), PathBuf::from(PROJECT))
+    }
+
+    impl Function {
+        fn stub(id: u32, is_pub: bool) -> Self {
+            use crate::hir::{Block, SymbolId};
+            use crate::parser::statement::Type;
+            use lasso::{Key, Spur};
+
+            Self {
+                id: FunctionId(id),
+                name: SymbolId(Spur::try_from_usize(0).unwrap()),
+                params: vec![],
+                locals: vec![],
+                return_type: Type::Unit,
+                is_const: false,
+                inline: false,
+                is_pub,
+                body: Block {
+                    statements: vec![],
+                    span: Default::default(),
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn project_root_mapping() {
+        let res = resolver();
+
+        let path = res.resolve_path(&[APP, "math"]).unwrap();
+        assert_eq!(path, PathBuf::from("/project/math.nyx"));
+    }
+
+    #[test]
+    fn deep_path_preserves_directories() {
+        let res = resolver();
+        let path = res.resolve_path(&[APP, "utils", "formatter"]).unwrap();
+
+        assert_eq!(path, PathBuf::from("/project/utils/formatter.nyx"));
+    }
+
+    #[test]
+    fn unknown_root() {
+        let res = resolver();
+        let err = res.resolve_path(&["external_crate", "foo"]).unwrap_err();
+
+        assert_eq!(
+            err,
+            ResolverError::UnknownRoot {
+                name: "external_crate".into()
+            }
+        );
+    }
+
+    #[test]
+    fn emtpy_path() {
+        let res = resolver();
+        let err = res.resolve_path(&[]).unwrap_err();
+
+        assert_eq!(err, ResolverError::EmptyPath)
+    }
+
+    #[test]
+    fn merge_namespaces() {
+        let module = CacheModule {
+            path: PathBuf::from("stdlib/io.nyx"),
+            exports: [("println".into(), 0usize)].into(),
+            functions: vec![Function::stub(0, true), Function::stub(1, false)],
+        };
+
+        let import = ResolvedImport {
+            module: Arc::new(module),
+            bindings: Import::Namespace { bound: "io".into() },
+        };
+
+        let mut base = Vec::new();
+        let bindings = Resolver::merge(&mut base, vec![import]);
+
+        assert_eq!(base.len(), 2);
+
+        match &bindings[0] {
+            ImportBinding::Namespace { bound, function_range } => {
+                assert_eq!(bound, "io");
+                assert_eq!(*function_range, 0..2);
+            }
+
+            _ => panic!("expected namespace"),
+        }
+    }
+}

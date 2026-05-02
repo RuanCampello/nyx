@@ -55,7 +55,7 @@ pub enum ConstFnViolationKind {
     NonConstCall { name: String },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum ResolverError {
     #[error("module path has not segments")]
     EmptyPath,
