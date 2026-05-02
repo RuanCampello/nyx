@@ -80,11 +80,12 @@ pub enum Punct {
     CloseBracket, // ]
 
     // separators
-    Colon,     // :
-    Semicolon, // ;
-    Comma,     // ,
-    Dot,       // .
-    Arrow,     // ->
+    Colon,      // :
+    ColonColon, // ::
+    Semicolon,  // ;
+    Comma,      // ,
+    Dot,        // .
+    Arrow,      // ->
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,6 +190,7 @@ impl Punct {
             Self::OpenBracket => "[",
             Self::CloseBracket => "]",
             Self::Colon => ":",
+            Self::ColonColon => "::",
             Self::Semicolon => ";",
             Self::Comma => ",",
             Self::Dot => ".",

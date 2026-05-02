@@ -82,7 +82,18 @@ impl Resolver {
             UseItems::Namespace => Import::Namespace {
                 bound: declaration.path.segments.last().copied().unwrap_or_default().to_string(),
             },
-            // TODO: named items
+            UseItems::Named(items) => {
+                for item in items {
+                    if !module.exports.contains_key(item.name) {
+                        return Err(ResolverError::UnknownExport {
+                            module_path: module.path.to_string_lossy().into(),
+                            name: item.name.to_string(),
+                        });
+                    }
+                }
+
+                Import::Named(items.iter().map(|item| item.name.to_string()).collect())
+            }
         };
 
         Ok(ResolvedImport { module, bindings })

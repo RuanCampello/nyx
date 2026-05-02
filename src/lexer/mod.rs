@@ -11,10 +11,10 @@
 //! ```
 
 pub mod cursor;
+pub mod error;
 pub mod token;
 
 mod comment;
-pub mod error;
 mod identifier;
 mod number;
 mod string;
@@ -83,12 +83,19 @@ impl<'src> Lexer<'src> {
             '}' => self.single_punct(Punct::CloseBrace),
             '[' => self.single_punct(Punct::OpenBracket),
             ']' => self.single_punct(Punct::CloseBracket),
-            ':' => self.single_punct(Punct::Colon),
             ';' => self.single_punct(Punct::Semicolon),
             ',' => self.single_punct(Punct::Comma),
             '.' => self.single_punct(Punct::Dot),
             '+' => self.single_punct(Punct::Plus),
             '*' => self.single_punct(Punct::Star),
+
+            ':' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional(':') {
+                    true => self.token(Punct::ColonColon, start),
+                    _ => self.token(Punct::Colon, start),
+                }
+            }
 
             '-' => {
                 self.cursor.advance();

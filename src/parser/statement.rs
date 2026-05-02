@@ -79,7 +79,7 @@ pub enum Else<'i> {
 
 pub struct UseDecl<'i> {
     pub path: UsePath<'i>,
-    pub items: UseItems,
+    pub items: UseItems<'i>,
     pub span: Span,
 }
 
@@ -88,8 +88,14 @@ pub struct UsePath<'i> {
     pub span: Span,
 }
 
-pub enum UseItems {
+pub struct UseItem<'i> {
+    pub name: &'i str,
+    pub span: Span,
+}
+
+pub enum UseItems<'i> {
     Namespace,
+    Named(Vec<UseItem<'i>>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
