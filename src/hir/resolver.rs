@@ -40,7 +40,7 @@ pub(in crate::hir) struct Resolver {
     name: String,
     root: PathBuf,
     /// canonical path -> cached module populated lazily on access populated lazily on access
-    cache: HashMap<PathBuf, Arc<CacheModule>>,
+    cache: HashMap<PathBuf, Arc<Module>>,
     /// paths currently being loaded
     /// this is used to detect cycles
     in_flight: HashSet<PathBuf>,
@@ -49,13 +49,13 @@ pub(in crate::hir) struct Resolver {
 }
 
 pub(in crate::hir) struct ResolvedImport {
-    module: Arc<CacheModule>,
+    module: Arc<Module>,
     bindings: Import,
 }
 
 /// A fully-analysed module, cached for the lifetime of the compilation.
 #[derive(Debug)]
-pub(in crate::hir) struct CacheModule {
+pub(in crate::hir) struct Module {
     path: PathBuf,
     /// `name` -> `ìndex` in `self.functions` for the **pub** items
     exports: HashMap<String, usize>,
@@ -144,7 +144,7 @@ impl Resolver {
         Ok(path)
     }
 
-    fn load_module(&mut self, path: PathBuf) -> Result<Arc<CacheModule>, ResolverError> {
+    fn load_module(&mut self, path: PathBuf) -> Result<Arc<Module>, ResolverError> {
         let canonical = path
             .canonicalize()
             .map_err(|_| ResolverError::FileNotFound { path: path.clone() })?;
@@ -164,7 +164,7 @@ impl Resolver {
         result
     }
 
-    fn load_module_io(&mut self, canonical: PathBuf) -> Result<Arc<CacheModule>, ResolverError> {
+    fn load_module_io(&mut self, canonical: PathBuf) -> Result<Arc<Module>, ResolverError> {
         let src = std::fs::read_to_string(&canonical).unwrap();
 
         let statements = Parser::new(&src).parse().unwrap();
@@ -186,7 +186,7 @@ impl Resolver {
         let module_functions = todo!();
         let exports = HashMap::new();
 
-        let module = Arc::new(CacheModule {
+        let module = Arc::new(Module {
             path: canonical.clone(),
             exports,
             functions: all_functions,
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn merge_namespaces() {
-        let module = CacheModule {
+        let module = Module {
             path: PathBuf::from("stdlib/io.nyx"),
             exports: [("println".into(), 0usize)].into(),
             functions: vec![Function::stub(0, true), Function::stub(1, false)],

@@ -6,6 +6,7 @@ pub(crate) mod lexer;
 pub(crate) mod lir;
 pub(crate) mod mir;
 pub(crate) mod parser;
+mod project;
 
 #[derive(Debug)]
 pub enum NyxError {
