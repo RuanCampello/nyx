@@ -9,6 +9,10 @@ pub struct HirError<'h> {
     pub(crate) kind: HirErrorKind<'h>,
 }
 
+// FIXME: duplication of thiserror and string error creation in diagnostic
+// we do this currently to use .to_string in mir and some other errros
+// this should be centralised, comrade
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum HirErrorKind<'h> {
     #[error(transparent)]
