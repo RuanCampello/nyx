@@ -22,12 +22,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Compile a nyx source file to a native executable
+    /// Compile a nyx source file or project to a native executable
+    ///
+    /// When no file is given, looks for `main.nyx` in the current directory
+    /// and compiles the whole project
     Build {
-        /// path to the `.nyx` source file
-        file: PathBuf,
+        /// Path to the `.nyx` source file or the module entry point
+        /// Defaults to `main.nyx` in the current directory
+        file: Option<PathBuf>,
 
-        /// output executable path (defaults to the source file stem)
+        /// Output executable path (defaults to the source file stem)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -41,12 +45,24 @@ enum Commands {
         ///   --emit asm,obj,link — write all three
         #[arg(long, value_delimiter = ',', value_name = "TYPES")]
         emit: Vec<Emit>,
+
+        /// Override the project name used in `use` path resolution
+        /// Defaults to the entry file's parent directory name.
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
 
-    /// Compile a nyx source file and immediately run it
+    /// Compile a nyx source file or project and immediately run it
+    ///
+    /// When no file is given, looks for `main.nyx` in the current directory.
     Run {
-        /// path to the `.nyx` source file.
-        file: PathBuf,
+        /// Path to the `.nyx` source file.
+        file: Option<PathBuf>,
+
+        /// Override the project name used in `use` path resolution.
+        /// Defaults to the entry file's parent directory name.
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
 }
 
@@ -64,8 +80,24 @@ fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Build { file, output, emit } => cmd_build(&file, output.as_deref(), &emit),
-        Commands::Run { file } => cmd_run(&file),
+        Commands::Build {
+            file,
+            output,
+            emit,
+            project,
+        } => {
+            let entry = resolve_entry(file)?;
+            let name = resolve_project_name(&entry, project);
+
+            cmd_build(&entry, output.as_deref(), &emit, &name)
+        }
+
+        Commands::Run { file, project } => {
+            let entry = resolve_entry(file)?;
+            let name = resolve_project_name(&entry, project);
+
+            cmd_run(&entry, &name)
+        }
     };
 
     match result {
@@ -76,14 +108,14 @@ fn main() -> Result<(), NyxError> {
     process::exit(1)
 }
 
-fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> Result<i32, NyxError> {
-    let exe = output.map(PathBuf::from).unwrap_or_else(|| source.with_extension(""));
+fn cmd_build(entry: &Path, output: Option<&Path>, emit: &[Emit], project: &str) -> Result<i32, NyxError> {
+    let exe = output.map(PathBuf::from).unwrap_or_else(|| entry.with_extension(""));
     let kinds = match emit.is_empty() {
         true => HashSet::from([Emit::Link]),
         _ => emit.iter().copied().collect(),
     };
 
-    let emitted = build_emit(source, &exe, &kinds)?;
+    let emitted = build_emit(entry, &exe, &kinds, project)?;
     for path in emitted {
         println!("Emmitted: {}", path.display());
     }
@@ -91,11 +123,11 @@ fn cmd_build(source: &Path, output: Option<&Path>, emit: &[Emit]) -> Result<i32,
     Ok(0)
 }
 
-fn cmd_run(source: &Path) -> Result<i32, NyxError> {
-    let exe = temp_exe_path(source);
+fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
+    let exe = temp_exe_path(entry);
 
     let result = (|| -> Result<i32, NyxError> {
-        build_emit(source, &exe, &HashSet::from([Emit::Link]))?;
+        build_emit(entry, &exe, &HashSet::from([Emit::Link]), project)?;
 
         let status = Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
 
@@ -107,17 +139,8 @@ fn cmd_run(source: &Path) -> Result<i32, NyxError> {
 }
 
 /// Emits whichever outputs [kinds](self::Emit) requests.
-fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>) -> Result<Vec<PathBuf>, NyxError> {
-    // read and compile source
-    let src = fs::read_to_string(source)?;
-    let filename = source.to_str().unwrap_or("source");
-
-    // FIXME: that's a almost fair api, but I would rather the compile function to do this
-    // but would also be strange to force the caller to pass the filename and the source code
-    // rethinking on this later
-    nyx::diagnostic::initialise(&src, filename);
-    let asm = nyx::compile(&src)?;
-
+fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>, project: &str) -> Result<Vec<PathBuf>, NyxError> {
+    let asm = nyx::compile_project(&source, &project)?;
     let mut emitted = Vec::new();
 
     // write assembly to a temp `.s` file
@@ -172,6 +195,32 @@ fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>) -> Result<Vec<P
 
     emitted.push(exe_path);
     Ok(emitted)
+}
+
+#[inline(always)]
+fn resolve_entry(file: Option<PathBuf>) -> Result<PathBuf, NyxError> {
+    match file {
+        Some(file) => Ok(file),
+        None => {
+            let default = PathBuf::from("main.nyx");
+            match default.exists() {
+                true => Ok(default),
+                _ => todo!("take care of this error"),
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn resolve_project_name(entry: &Path, override_name: Option<String>) -> String {
+    override_name.unwrap_or_else(|| {
+        entry
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string()
+    })
 }
 
 #[inline(always)]
