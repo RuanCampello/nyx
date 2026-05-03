@@ -153,23 +153,14 @@ fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>, project: &str) 
         emitted.push(asm_path.clone());
     }
 
-    // assemble: as -o <obj> <asm>
     let obj_path = stem.with_extension("o");
     let keep_obj = kinds.contains(&Emit::Obj);
 
-    let as_status = Command::new("as")
-        .args(["-o", obj_path.to_str().unwrap(), asm_path.to_str().unwrap()])
-        .status()
-        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
-
+    let assemble_result = nyx::assemble(&asm_path, &obj_path);
     if !keep_asm {
         fs::remove_file(&asm_path).ok();
     }
-
-    if !as_status.success() {
-        fs::remove_file(&obj_path).ok();
-        return Err(NyxError::Assembler(as_status.code().unwrap_or(-1)));
-    }
+    assemble_result?;
 
     if keep_obj {
         emitted.push(obj_path.clone());
@@ -180,18 +171,9 @@ fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>, project: &str) 
     }
 
     let exe_path = stem.with_extension("");
-
-    // link: ld -o <exe> <obj>
-    let ld_status = Command::new("ld")
-        .args(["-o", stem.to_str().unwrap(), obj_path.to_str().unwrap()])
-        .status()
-        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
-
+    let link_result = nyx::link(&obj_path, stem, &[]);
     fs::remove_file(&obj_path).ok();
-
-    if !ld_status.success() {
-        return Err(NyxError::Linker(ld_status.code().unwrap_or(-1)));
-    }
+    link_result?;
 
     emitted.push(exe_path);
     Ok(emitted)

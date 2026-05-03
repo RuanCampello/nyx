@@ -1,7 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 const PROGRAMS: &[(&str, &str)] = &[
@@ -17,22 +16,8 @@ fn build(name: &str, asm: &str) -> PathBuf {
 
     fs::write(&asm_path, asm).unwrap_or_else(|e| panic!("Failed to write asm for {name}: {e}"));
 
-    Command::new("as")
-        .args(["-o", obj_path.to_str().unwrap(), asm_path.to_str().unwrap()])
-        .status()
-        .expect("`as` failed to execute");
-
-    Command::new("ld")
-        .args([
-            "-shared",
-            "-z",
-            "noexecstack",
-            "-o",
-            lib_path.to_str().unwrap(),
-            obj_path.to_str().unwrap(),
-        ])
-        .status()
-        .expect("linking failed");
+    nyx::assemble(&asm_path, &obj_path).expect("`as` failed to execute");
+    nyx::link(&obj_path, &lib_path, &["-shared", "-z", "noexecstack"]).expect("linking failed");
 
     fs::remove_file(&asm_path).ok();
     fs::remove_file(&obj_path).ok();

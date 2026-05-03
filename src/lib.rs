@@ -43,3 +43,40 @@ pub fn compile_project(entry: &Path, name: &str) -> Result<String, NyxError> {
 
     Ok(asm)
 }
+
+/// Assemble a `.s` file into an `.o` object
+pub fn assemble(assembly: &Path, output: &Path) -> Result<(), NyxError> {
+    use std::process::Command;
+
+    let as_status = Command::new("as")
+        .args(["-o", output.to_str().unwrap(), assembly.to_str().unwrap()])
+        .status()
+        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+
+    if !as_status.success() {
+        std::fs::remove_file(output).ok();
+
+        return Err(NyxError::Assembler(as_status.code().unwrap_or(-1)));
+    }
+
+    Ok(())
+}
+
+/// Links an object file with an optional extra `ld` arguments
+pub fn link(object: &Path, output: &Path, args: &[&str]) -> Result<(), NyxError> {
+    use std::process::Command;
+
+    let ld_status = Command::new("ld")
+        .args(args)
+        .args(["-o", output.to_str().unwrap(), object.to_str().unwrap()])
+        .status()
+        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+
+    if !ld_status.success() {
+        std::fs::remove_file(output).ok();
+
+        return Err(NyxError::Assembler(ld_status.code().unwrap_or(-1)));
+    }
+
+    Ok(())
+}
