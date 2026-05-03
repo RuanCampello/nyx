@@ -515,3 +515,18 @@ impl<'i> Parsable<'i> for Spanned<Type> {
         Spanned::<Type>::parse(parser)
     }
 }
+
+impl<'s> Statement<'s> {
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::Let(s) => s.span,
+            Self::Return(s) => s.span,
+            Self::If(s) => s.span,
+            Self::While(s) => s.span,
+            Self::Fn(s) => s.span,
+            Self::Use(s) => s.span,
+            Self::Expr(_, span) => *span,
+            Self::Block(b) => b.span,
+        }
+    }
+}

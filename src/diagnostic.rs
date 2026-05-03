@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 
 use crate::hir::error::ConstFnViolationKind;
+use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
 use crate::lexer::token::Span;
@@ -16,7 +17,7 @@ pub struct Diagnostic {
 }
 
 #[derive(Debug)]
-struct Info {
+pub struct Info {
     message: String,
     label: String,
 
@@ -26,7 +27,7 @@ struct Info {
     span: Span,
 }
 
-trait Diagnosticable {
+pub trait Diagnosticable {
     fn info(&self) -> Info;
 }
 
@@ -290,6 +291,67 @@ impl Diagnosticable for HirError<'_> {
     }
 }
 
+impl Diagnosticable for ModuleError {
+    fn info(&self) -> Info {
+        match self {
+            Self::FileNotFound { path, span } => Info {
+                message: format!("module file not found: `{}`", path.display()),
+                label: "imported here".to_string(),
+                span: span.unwrap_or_default(),
+                help: Some(format!("make sure the file `{}` exists", path.display())),
+                note: None,
+            },
+
+            Self::CircularImport { path, span } => Info {
+                message: format!("circular import: `{}` is already being loaded", path.display()),
+                label: "this import creates a cycle".to_string(),
+                span: *span,
+                help: Some("remove the circular dependency between modules".to_string()),
+                note: None,
+            },
+
+            Self::EmptyPath => Info {
+                message: "empty import path".to_string(),
+                label: "this path has no segments".to_string(),
+                span: Span::default(),
+                help: Some("use paths like `use project::module;`".to_string()),
+                note: None,
+            },
+
+            Self::UnknownRoot { name, span } => Info {
+                message: format!("unknown module root `{name}`"),
+                label: format!("`{name}` is not a known module root"),
+                span: *span,
+                help: Some("the root must match the project name or `std`".to_string()),
+                note: None,
+            },
+
+            Self::UnknownExport { path, name, span } => Info {
+                message: format!("module `{}` has no exported symbol `{name}`", path.display()),
+                label: format!("`{name}` is not exported from this module"),
+                span: *span,
+                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
+                note: None,
+            },
+
+            Self::TopLevelNonFunction { path, span } => Info {
+                message: format!(
+                    "only function declarations are allowed at top level in `{}`",
+                    path.display()
+                ),
+                label: "this is not a function declaration".to_string(),
+                span: *span,
+                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
+                note: None,
+            },
+
+            Self::Diagnostic(_) => {
+                unreachable!("this variant must be handled before diagnosticable dispatch")
+            }
+        }
+    }
+}
+
 impl HasSpan for LexError {
     fn span(&self) -> Span {
         self.span
@@ -304,7 +366,7 @@ impl<'p> HasSpan for ParserError<'p> {
 
 impl<'h> HasSpan for HirError<'h> {
     fn span(&self) -> Span {
-        todo!("add spans to hir errors")
+        Span::default()
     }
 }
 
@@ -320,12 +382,18 @@ impl From<Span> for std::ops::Range<usize> {
 impl std::fmt::Display for NyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Compile(d) => f.write_str(&d.rendered),
+            Self::Compile(d) => writeln!(f, "{d}"),
             Self::Io(io) => writeln!(f, "i/o error: {io}"),
             Self::Assembler(code) => writeln!(f, "assembler failed with exit code: {code}"),
             Self::Linker(code) => writeln!(f, "linker failed with exit code: {code}"),
             Self::ToolNotFound(msg) => writeln!(f, "tool not found — is binutils installed? ({msg})"),
         }
+    }
+}
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rendered)
     }
 }
 

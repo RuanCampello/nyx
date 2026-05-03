@@ -1,11 +1,12 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
 use crate::{
-    NyxError, diagnostic,
+    diagnostic::{self, Diagnostic},
     hir::{
         Function, FunctionBuilder, FunctionId, Hir, SymbolTable,
         functions::{collect_function_signatures, signatures_from_hir},
     },
+    lexer::token::Span,
     parser::{Parser, statement::Statement},
 };
 use std::{
@@ -37,24 +38,15 @@ struct Module {
     functions: Vec<Function>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ModuleError {
-    #[error("module file not found: {}", path.display())]
-    FileNotFound { path: PathBuf },
-    #[error("circular import detected: {}", path.display())]
-    CircularImport { path: PathBuf },
-    #[error("empty import path")]
+    FileNotFound { path: PathBuf, span: Option<Span> },
+    CircularImport { path: PathBuf, span: Span },
     EmptyPath,
-    #[error("unknown module root `{name}` (expected project name or `std`)")]
-    UnknownRoot { name: String },
-    #[error("module `{}` exports no symbol `{name}`", path.display())]
-    UnknownExport { path: PathBuf, name: String },
-    #[error("only function declarations allowed at top level in {}", path.display())]
-    TopLevelNonFunction { path: PathBuf },
-    #[error("parse error in {}: {error}", path.display())]
-    Parse { path: PathBuf, error: String },
-    #[error("semantic error in {}: {error}", path.display())]
-    Semantic { path: PathBuf, error: String },
+    UnknownRoot { name: String, span: Span },
+    UnknownExport { path: PathBuf, name: String, span: Span },
+    TopLevelNonFunction { path: PathBuf, span: Span },
+    Diagnostic(Diagnostic),
 }
 
 impl ModuleLoader {
@@ -73,11 +65,12 @@ impl ModuleLoader {
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
-        let canonical = entry
-            .canonicalize()
-            .map_err(|_| ModuleError::FileNotFound { path: entry.into() })?;
+        let canonical = entry.canonicalize().map_err(|_| ModuleError::FileNotFound {
+            path: entry.into(),
+            span: None,
+        })?;
 
-        self.discover(&canonical)?;
+        self.discover(&canonical, None)?;
 
         let mut dependencies: Vec<_> = self.cache.keys().cloned().collect();
         dependencies.sort_unstable();
@@ -103,30 +96,32 @@ impl ModuleLoader {
     }
 
     /// Recursevly load a module and all its dependencies
-    fn discover(&mut self, canonical: &Path) -> Result<(), ModuleError> {
+    fn discover(&mut self, canonical: &Path, triggered_by: Option<Span>) -> Result<(), ModuleError> {
         if self.cache.contains_key(canonical) {
             return Ok(());
         }
 
         if self.in_flight.contains(canonical) {
-            return Err(ModuleError::CircularImport { path: canonical.into() });
+            return Err(ModuleError::CircularImport {
+                path: canonical.into(),
+                span: triggered_by.unwrap_or_default(),
+            });
         }
 
         self.in_flight.insert(canonical.to_path_buf());
-        let source =
-            std::fs::read_to_string(canonical).map_err(|_| ModuleError::FileNotFound { path: canonical.into() })?;
+        let source = std::fs::read_to_string(canonical).map_err(|_| ModuleError::FileNotFound {
+            path: canonical.into(),
+            span: triggered_by,
+        })?;
 
         diagnostic::initialise(&source, canonical.to_str().unwrap_or("<unknown>"));
 
-        let statements = Parser::new(&source).parse().map_err(|e| ModuleError::Parse {
-            path: canonical.into(),
-            error: e.to_string(),
-        })?;
+        let statements = Parser::new(&source).parse().map_err(|e| Diagnostic::from(e))?;
 
         for statement in &statements {
             if let Statement::Use(declaration) = statement {
-                let import = self.resolve_path(&declaration.path.segments)?;
-                self.discover(&import)?;
+                let import = self.resolve_path(&declaration.path.segments, declaration.span)?;
+                self.discover(&import, Some(declaration.span))?;
             }
         }
 
@@ -142,7 +137,12 @@ impl ModuleLoader {
         for statement in &statements {
             match statement {
                 Statement::Fn(_) | Statement::Use(_) => {}
-                _ => return Err(ModuleError::TopLevelNonFunction { path: path.into() }),
+                _ => {
+                    return Err(ModuleError::TopLevelNonFunction {
+                        path: path.into(),
+                        span: statement.span(),
+                    });
+                }
             }
         }
 
@@ -162,10 +162,7 @@ impl ModuleLoader {
 
         let local_offset = signatures.len() as u32;
         let (local_signatures, local_map) =
-            collect_function_signatures(&statements, &mut self.symbols).map_err(|e| ModuleError::Semantic {
-                path: path.into(),
-                error: e.to_string(),
-            })?;
+            collect_function_signatures(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
 
         // merge local signatures into combined table
         for (&symbol, &local_id) in &local_map {
@@ -183,10 +180,7 @@ impl ModuleLoader {
             };
 
             let builder = FunctionBuilder::new(&signatures, &map, &mut self.symbols, function);
-            let mut hir = builder.lower().map_err(|e| ModuleError::Semantic {
-                path: path.into(),
-                error: e.to_string(),
-            })?;
+            let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
 
             // rebase the function's own id to be relative to its position in this module's list
             hir.id = FunctionId(functions.len() as u32);
@@ -201,7 +195,7 @@ impl ModuleLoader {
         Ok(Module { functions, exports })
     }
 
-    fn resolve_path(&self, segments: &[&str]) -> Result<PathBuf, ModuleError> {
+    fn resolve_path(&self, segments: &[&str], span: Span) -> Result<PathBuf, ModuleError> {
         let (&root, rest) = segments.split_first().ok_or(ModuleError::EmptyPath)?;
 
         if rest.is_empty() {
@@ -213,6 +207,7 @@ impl ModuleLoader {
             other => {
                 return Err(ModuleError::UnknownRoot {
                     name: other.to_string(),
+                    span,
                 });
             }
         };
@@ -227,12 +222,9 @@ impl ModuleLoader {
     }
 }
 
-impl From<ModuleError> for NyxError {
-    fn from(e: ModuleError) -> Self {
-        NyxError::Compile(crate::diagnostic::Diagnostic {
-            message: e.to_string(),
-            rendered: format!("error: {e}\n"),
-        })
+impl From<Diagnostic> for ModuleError {
+    fn from(value: Diagnostic) -> Self {
+        Self::Diagnostic(value)
     }
 }
 
@@ -246,7 +238,7 @@ mod tests {
     #[test]
     fn resolve_simple_path() {
         let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
-        let path = loader.resolve_path(&[APP, "math"]).unwrap();
+        let path = loader.resolve_path(&[APP, "math"], Span::default()).unwrap();
 
         assert_eq!(path, PathBuf::from("/project/math.nyx"));
     }
@@ -254,7 +246,7 @@ mod tests {
     #[test]
     fn resolve_nested_path() {
         let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
-        let path = loader.resolve_path(&[APP, "utils", "io", "file"]).unwrap();
+        let path = loader.resolve_path(&[APP, "utils", "io", "file"], Span::default()).unwrap();
 
         assert_eq!(path, PathBuf::from("/project/utils/io/file.nyx"));
     }
@@ -262,10 +254,10 @@ mod tests {
     #[test]
     fn reject_unknown_root() {
         let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
-        let err = loader.resolve_path(&["other", "foo"]).unwrap_err();
+        let err = loader.resolve_path(&["other", "foo"], Span::default()).unwrap_err();
 
         match err {
-            ModuleError::UnknownRoot { name } => assert_eq!(name, "other"),
+            ModuleError::UnknownRoot { name, .. } => assert_eq!(name, "other"),
             _ => panic!("expected unknownroot error"),
         }
     }
@@ -273,7 +265,7 @@ mod tests {
     #[test]
     fn reject_empty_path() {
         let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
-        let err = loader.resolve_path(&[]).unwrap_err();
+        let err = loader.resolve_path(&[], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
     }
@@ -281,7 +273,7 @@ mod tests {
     #[test]
     fn reject_root_only() {
         let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
-        let err = loader.resolve_path(&[APP]).unwrap_err();
+        let err = loader.resolve_path(&[APP], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
     }
