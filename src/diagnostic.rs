@@ -384,7 +384,7 @@ impl From<ModuleError> for Diagnostic {
                 message: format!("unknown module root `{name}`"),
                 label: format!("`{name}` is not a known module root"),
                 span,
-                help: Some("the root must match the project name or `std`".to_string()),
+                help: Some("the root must match the project name".to_string()),
                 note: None,
             }),
             ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {

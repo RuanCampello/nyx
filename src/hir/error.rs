@@ -72,7 +72,7 @@ pub enum ResolverError {
     #[error("module `{module_path}` has no exported symbol `{name}`")]
     UnknownExport { module_path: String, name: String },
 
-    #[error("unknown module root `{name}` — expected project name or `std`")]
+    #[error("unknown module root `{name}` — expected project name")]
     UnknownRoot { name: String },
 
     #[error("circular import involving: {}", path.display())]
