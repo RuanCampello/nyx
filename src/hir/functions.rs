@@ -13,12 +13,12 @@ use crate::{
 use std::collections::HashMap;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
     pub is_const: bool,
-    #[allow(dead_code)]
     pub inline: bool,
     pub is_pub: bool,
 }

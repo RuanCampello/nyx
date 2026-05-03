@@ -6,6 +6,8 @@
 //! mechanical. The register allocator works on VRegs and assigns them to
 //! physical registers or stack slots.
 
+#![allow(dead_code)]
+
 use crate::{
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir,
