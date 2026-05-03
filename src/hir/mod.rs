@@ -137,6 +137,9 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(function) => function,
+            // 'use' declarations are valid at the top level but have no HIR representation
+            // symbol resolution happens at the module loader level, not here
+            statement::Statement::Use(_) => continue,
             other => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,

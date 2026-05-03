@@ -639,6 +639,9 @@ pub fn collect_function_signatures<'h>(
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(func) => func,
+            // 'use' declarations are valid at the top level but carry no signature information
+            // they are resolved by the module loader before this function is called
+            statement::Statement::Use(_) => continue,
             _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
