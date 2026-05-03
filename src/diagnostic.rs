@@ -12,6 +12,7 @@ use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
 
 #[derive(Debug)]
 pub struct Diagnostic {
+    #[allow(dead_code)]
     pub(crate) message: String,
     pub(crate) rendered: String,
 }
@@ -36,9 +37,6 @@ thread_local! {
 }
 
 const RED: Colour = Colour::Fixed(203);
-const YELLOW: Colour = Colour::Fixed(221);
-const CYAN: Colour = Colour::Fixed(117);
-const MAGENTA: Colour = Colour::Fixed(183);
 
 pub fn initialise(src: &str, filename: &str) {
     SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
@@ -291,67 +289,6 @@ impl Diagnosticable for HirError<'_> {
     }
 }
 
-impl Diagnosticable for ModuleError {
-    fn info(&self) -> Info {
-        match self {
-            Self::FileNotFound { path, span } => Info {
-                message: format!("module file not found: `{}`", path.display()),
-                label: "imported here".to_string(),
-                span: span.unwrap_or_default(),
-                help: Some(format!("make sure the file `{}` exists", path.display())),
-                note: None,
-            },
-
-            Self::CircularImport { path, span } => Info {
-                message: format!("circular import: `{}` is already being loaded", path.display()),
-                label: "this import creates a cycle".to_string(),
-                span: *span,
-                help: Some("remove the circular dependency between modules".to_string()),
-                note: None,
-            },
-
-            Self::EmptyPath => Info {
-                message: "empty import path".to_string(),
-                label: "this path has no segments".to_string(),
-                span: Span::default(),
-                help: Some("use paths like `use project::module;`".to_string()),
-                note: None,
-            },
-
-            Self::UnknownRoot { name, span } => Info {
-                message: format!("unknown module root `{name}`"),
-                label: format!("`{name}` is not a known module root"),
-                span: *span,
-                help: Some("the root must match the project name or `std`".to_string()),
-                note: None,
-            },
-
-            Self::UnknownExport { path, name, span } => Info {
-                message: format!("module `{}` has no exported symbol `{name}`", path.display()),
-                label: format!("`{name}` is not exported from this module"),
-                span: *span,
-                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
-                note: None,
-            },
-
-            Self::TopLevelNonFunction { path, span } => Info {
-                message: format!(
-                    "only function declarations are allowed at top level in `{}`",
-                    path.display()
-                ),
-                label: "this is not a function declaration".to_string(),
-                span: *span,
-                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
-                note: None,
-            },
-
-            Self::Diagnostic(_) => {
-                unreachable!("this variant must be handled before diagnosticable dispatch")
-            }
-        }
-    }
-}
-
 impl HasSpan for LexError {
     fn span(&self) -> Span {
         self.span
@@ -366,7 +303,7 @@ impl<'p> HasSpan for ParserError<'p> {
 
 impl<'h> HasSpan for HirError<'h> {
     fn span(&self) -> Span {
-        Span::default()
+        self.span
     }
 }
 
@@ -416,6 +353,59 @@ impl From<MirError> for Diagnostic {
         // TODO: better errors for MIR :X
 
         Self { message, rendered }
+    }
+}
+
+impl From<ModuleError> for Diagnostic {
+    fn from(value: ModuleError) -> Self {
+        match value {
+            ModuleError::Diagnostic(diagnostic) => diagnostic,
+            ModuleError::FileNotFound { path, span } => Self::from_info(Info {
+                message: format!("module file not found: `{}`", path.display()),
+                label: "imported here".to_string(),
+                span: span.unwrap_or_default(),
+                help: Some(format!("make sure the file `{}` exists", path.display())),
+                note: None,
+            }),
+            ModuleError::CircularImport { path, span } => Self::from_info(Info {
+                message: format!("circular import: `{}` is already being loaded", path.display()),
+                label: "this import creates a cycle".to_string(),
+                span,
+                help: Some("remove the circular dependency between modules".to_string()),
+                note: None,
+            }),
+            ModuleError::EmptyPath => Self::from_info(Info {
+                message: "empty import path".to_string(),
+                label: "this path has no segments".to_string(),
+                span: Span::default(),
+                help: Some("use paths like `use project::module;`".to_string()),
+                note: None,
+            }),
+            ModuleError::UnknownRoot { name, span } => Self::from_info(Info {
+                message: format!("unknown module root `{name}`"),
+                label: format!("`{name}` is not a known module root"),
+                span,
+                help: Some("the root must match the project name or `std`".to_string()),
+                note: None,
+            }),
+            ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {
+                message: format!("module `{}` has no exported symbol `{name}`", path.display()),
+                label: format!("`{name}` is not exported from this module"),
+                span,
+                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
+                note: None,
+            }),
+            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(Info {
+                message: format!(
+                    "only function declarations are allowed at top level in `{}`",
+                    path.display()
+                ),
+                label: "this is not a function declaration".to_string(),
+                span,
+                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
+                note: None,
+            }),
+        }
     }
 }
 

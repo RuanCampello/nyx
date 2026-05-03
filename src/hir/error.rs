@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
 use crate::hir::Type;
+use crate::lexer::token::Span;
 use crate::parser::error::ParserError;
 
 #[derive(Debug, PartialEq, Clone, thiserror::Error)]
 #[error("{kind}")]
 pub struct HirError<'h> {
     pub(crate) kind: HirErrorKind<'h>,
+    pub(crate) span: Span,
 }
 
 // FIXME: duplication of thiserror and string error creation in diagnostic
@@ -79,8 +81,11 @@ pub enum ResolverError {
 
 impl<'h> From<ParserError<'h>> for HirError<'h> {
     fn from(value: ParserError<'h>) -> Self {
+        let span = value.span;
+
         Self {
             kind: HirErrorKind::Parser(value),
+            span,
         }
     }
 }

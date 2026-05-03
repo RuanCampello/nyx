@@ -4,6 +4,7 @@ use crate::{
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
+    lexer::token::Span,
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
         statement::{self, Else},
@@ -152,6 +153,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             kind: HirErrorKind::MissingInitialiser {
                                 name: statement.name.to_string(),
                             },
+                            span: statement.span,
                         });
                     }
                 };
@@ -162,7 +164,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let init = match statement.value {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(typ))?;
-                        self.assert_type(typ, expr.typ)?;
+                        self.assert_type(typ, expr.typ, expr.span)?;
 
                         Some(expr)
                     }
@@ -176,7 +178,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let value = match statement.value {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
-                        self.assert_type(self.return_type, expr.typ)?;
+                        self.assert_type(self.return_type, expr.typ, expr.span)?;
                         Some(expr)
                     }
                     _ => None,
@@ -189,7 +191,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Stmt::While(statement) => {
                 let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(Type::Bool, condition.typ)?;
+                self.assert_type(Type::Bool, condition.typ, statement.span)?;
 
                 // PERFORMANCE: remove loops with constant false conditions
                 let (body, _) = self.lower_block(&statement.body, false)?;
@@ -208,7 +210,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     true => match self.return_type == Type::Unit {
                         true => Ok((Statement::Expr(expr), false)),
                         _ => {
-                            self.assert_type(self.return_type, expr.typ)?;
+                            self.assert_type(self.return_type, expr.typ, expr.span)?;
                             Ok((Statement::Return(Some(expr)), true))
                         }
                     },
@@ -277,7 +279,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Expr::Identifier(name, span) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.resolve_local(symbol)?;
+                let id = self.resolve_local(symbol, *span)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Local(id),
@@ -304,13 +306,14 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                                     expected: Type::I32,
                                     found: expr.typ,
                                 },
+                                span: expr.span,
                             });
                         }
                     },
                     UnaryOperator::Not => Type::Bool,
                 };
 
-                self.assert_type(expected, expr.typ)?;
+                self.assert_type(expected, expr.typ, expr.span)?;
 
                 Ok(Expression {
                     typ: expr.typ,
@@ -350,7 +353,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let right = self.lower_expr(right, right_hint)?;
 
                 // PERFORMANCE: constant fold binary operator on literals
-                let result = self.type_for_binary(operator, left.typ, right.typ)?;
+                let result = self.type_for_binary(operator, left.typ, right.typ, *span)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Binary {
@@ -365,13 +368,14 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Expr::Assignment { target, value, span } => {
                 let symbol = self.symbols.insert(target);
-                let id = self.resolve_local(symbol)?;
+                let id = self.resolve_local(symbol, *span)?;
 
                 if !self.locals[id.0 as usize].mutable {
                     return Err(HirError {
                         kind: HirErrorKind::ImmutableBind {
                             name: target.to_string(),
                         },
+                        span: *span,
                     });
                 }
 
@@ -379,7 +383,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 // we need to pass the targets type as a hint :D
                 let value = self.lower_expr(value, Some(target_typ))?;
 
-                self.assert_type(target_typ, value.typ)?;
+                self.assert_type(target_typ, value.typ, value.span)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::Assign {
@@ -397,6 +401,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                         let symbol = self.symbols.insert(name);
                         let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
                             kind: HirErrorKind::UnknownFunction { name: name.to_string() },
+                            span: *span,
                         })?;
 
                         (id, &self.signatures[id.0 as usize])
@@ -407,6 +412,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             kind: HirErrorKind::UnknownFunction {
                                 name: format!("{other:?}"),
                             },
+                            span: *span,
                         });
                     }
                 };
@@ -418,6 +424,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             expected: signature.params.len(),
                             found: args.len(),
                         },
+                        span: *span,
                     });
                 }
 
@@ -427,7 +434,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     // each parameters declared type as the hint
                     // that allows `foo(1)` to work when `foo` expects an `i64`.
                     let expr = self.lower_expr(expr, Some(param_typ))?;
-                    self.assert_type(param_typ, expr.typ)?;
+                    self.assert_type(param_typ, expr.typ, expr.span)?;
                     lowered_args.push(expr);
                 }
 
@@ -447,7 +454,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_if(&mut self, if_stmt: &statement::If<'f>, is_tail: bool) -> Result<(Statement, bool), HirError<'f>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
-        self.assert_type(Type::Bool, condition.typ)?;
+        self.assert_type(Type::Bool, condition.typ, condition.span)?;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
         let (else_block, else_returns) = if_stmt
@@ -480,7 +487,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                         let stmt = match is_tail && self.return_type != Type::Unit {
                             true => {
-                                self.assert_type(self.return_type, lowered.typ)?;
+                                self.assert_type(self.return_type, lowered.typ, lowered.span)?;
                                 Statement::Return(Some(lowered))
                             }
                             _ => Statement::Expr(lowered),
@@ -508,10 +515,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         ))
     }
 
-    fn type_for_binary(&self, operator: &BinaryOperator, left: Type, right: Type) -> Result<Type, HirError<'f>> {
+    fn type_for_binary(
+        &self,
+        operator: &BinaryOperator,
+        left: Type,
+        right: Type,
+        span: Span,
+    ) -> Result<Type, HirError<'f>> {
         match operator {
             BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div => {
-                self.assert_type(left, right)?;
+                self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(left),
                     _ => Err(HirError {
@@ -519,17 +532,18 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             expected: Type::I32,
                             found: left,
                         },
+                        span,
                     }),
                 }
             }
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
-                self.assert_type(left, right)?;
+                self.assert_type(left, right, span)?;
                 Ok(Type::Bool)
             }
 
             BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq => {
-                self.assert_type(left, right)?;
+                self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(Type::Bool),
                     _ => Err(HirError {
@@ -537,13 +551,14 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             expected: Type::I32,
                             found: left,
                         },
+                        span,
                     }),
                 }
             }
 
             BinaryOperator::And | BinaryOperator::Or => {
-                self.assert_type(Type::Bool, left)?;
-                self.assert_type(Type::Bool, right)?;
+                self.assert_type(Type::Bool, left, span)?;
+                self.assert_type(Type::Bool, right, span)?;
 
                 Ok(Type::Bool)
             }
@@ -558,11 +573,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     #[inline(always)]
     #[must_use]
-    fn assert_type(&self, expected: Type, found: Type) -> Result<(), HirError<'f>> {
+    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'f>> {
         match expected == found {
             true => Ok(()),
             false => Err(HirError {
                 kind: HirErrorKind::TypeMismatch { expected, found },
+                span,
             }),
         }
     }
@@ -575,6 +591,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 kind: HirErrorKind::DuplicateBind {
                     name: self.symbols.get(name).to_string(),
                 },
+                span: Span::default(),
             });
         }
 
@@ -588,7 +605,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId) -> Result<LocalId, HirError<'f>> {
+    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'f>> {
         self.scopes
             .iter()
             .rev()
@@ -597,6 +614,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 kind: HirErrorKind::UndeclaredIdentifier {
                     name: self.symbols.get(name).to_string(),
                 },
+                span,
             })
     }
 
@@ -624,6 +642,7 @@ pub fn collect_function_signatures<'h>(
             _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
+                    span: statement.span(),
                 });
             }
         };
@@ -634,6 +653,7 @@ pub fn collect_function_signatures<'h>(
                 kind: HirErrorKind::DuplicateFunction {
                     name: function.name.to_string(),
                 },
+                span: statement.span(),
             });
         }
 

@@ -137,9 +137,10 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(function) => function,
-            _ => {
+            other => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
+                    span: other.span(),
                 });
             }
         };
