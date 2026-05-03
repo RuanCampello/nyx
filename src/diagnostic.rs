@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use crate::hir::error::ConstFnViolationKind;
 use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
@@ -9,6 +7,7 @@ use crate::mir::error::MirError;
 use crate::parser::error::ParserError;
 use crate::{NyxError, hir::error::HirError};
 use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
+use std::cell::RefCell;
 
 #[derive(Debug)]
 pub struct Diagnostic {

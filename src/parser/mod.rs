@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn parse_add_function_file() {
-        let source = include_str!("../../tests/add.nyx");
+        let source = include_str!("../../tests/single/add.nyx");
         let statements = Parser::new(source).parse().unwrap();
 
         assert_eq!(statements.len(), 1);
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn parse_inference_file() {
-        let source = include_str!("../../tests/inference.nyx");
+        let source = include_str!("../../tests/single/inference.nyx");
         let statements = Parser::new(source).parse().unwrap();
 
         assert_eq!(statements.len(), 1);

@@ -145,6 +145,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Fn) => Ok(Statement::Fn(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Use) => Ok(Statement::Use(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {

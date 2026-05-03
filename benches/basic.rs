@@ -5,8 +5,8 @@ use std::process::Command;
 use std::time::Duration;
 
 const PROGRAMS: &[(&str, &str)] = &[
-    ("mandelbrot", include_str!("../tests/mandelbrot.nyx")),
-    ("nth_prime", include_str!("../tests/nth_prime.nyx")),
+    ("mandelbrot", include_str!("../tests/single/mandelbrot.nyx")),
+    ("nth_prime", include_str!("../tests/single/nth_prime.nyx")),
 ];
 
 fn build(name: &str, asm: &str) -> PathBuf {
