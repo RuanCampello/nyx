@@ -1,0 +1,6 @@
+use simple::math::{add, double};
+
+fn main(): i32 {
+    let value = double(20);
+    add(value, 2)
+}

@@ -1,9 +1,20 @@
-use nyx::compile_project;
-use std::{fs, path::PathBuf, process::Command};
+use nyx;
+use std::{fs, path::Path, process::Command};
 
-fn compile_and_run(entry: &str, project_name: &str) -> Result<i32, String> {
-    let entry_path = PathBuf::from(entry);
-    let asm = compile_project(&entry_path, project_name).map_err(|e| e.to_string())?;
+struct Case<'c> {
+    name: &'c str,
+    entry: &'c str,
+    exit_code: i32,
+}
+
+const CASES: &[Case] = &[Case {
+    name: "simple",
+    entry: "tests/module/simple/main.nyx",
+    exit_code: 42,
+}];
+
+fn compile_and_run(entry: &Path, project_name: &str) -> Result<i32, String> {
+    let asm = nyx::compile_project(entry, project_name).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();
     let test_name = project_name.replace("-", "_");
@@ -29,4 +40,59 @@ fn compile_and_run(entry: &str, project_name: &str) -> Result<i32, String> {
     fs::remove_file(&exe_path).ok();
 
     Ok(run_status.code().unwrap_or(-1))
+}
+
+fn project_name(entry: &Path) -> Result<String, String> {
+    entry
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+        .ok_or_else(|| format!("failed to infer project name for {}", entry.display()))
+}
+
+#[test]
+fn run_module_tests() {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut errors = Vec::new();
+
+    for test in CASES {
+        let entry = Path::new(test.entry);
+
+        let project = match project_name(&entry) {
+            Ok(name) => name,
+            Err(err) => {
+                failed += 1;
+                errors.push(format!("{}: {}", test.name, err));
+
+                continue;
+            }
+        };
+
+        match compile_and_run(&entry, &project) {
+            Ok(code) if code == test.exit_code => {
+                passed += 1;
+                println!("{}: exit code {}", test.name, code);
+            }
+
+            Ok(code) => {
+                failed += 1;
+                let msg = format!("{}: expected exit code {} but got {}", test.name, test.exit_code, code);
+                errors.push(msg);
+            }
+
+            Err(err) => {
+                failed += 1;
+                let msg = format!("{}: {}", test.name, err);
+                eprintln!("{msg}");
+                errors.push(msg);
+            }
+        }
+    }
+
+    println!("\n{passed} passed, {failed} failed");
+    if !errors.is_empty() {
+        panic!("Module test failures:\n{}", errors.join("\n"))
+    }
 }
