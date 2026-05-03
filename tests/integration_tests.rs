@@ -13,57 +13,57 @@ struct Case<'c> {
 const CASES: &[Case] = &[
     Case {
         name: "add",
-        file: "tests/add.nyx",
+        file: "tests/single/add.nyx",
         exit_code: None,
     },
     Case {
         name: "inference",
-        file: "tests/inference.nyx",
+        file: "tests/single/inference.nyx",
         exit_code: None,
     },
     Case {
         name: "fibonacci",
-        file: "tests/fibonacci.nyx",
+        file: "tests/single/fibonacci.nyx",
         exit_code: Some(55),
     },
     Case {
         name: "collatz",
-        file: "tests/collatz.nyx",
+        file: "tests/single/collatz.nyx",
         exit_code: Some(111),
     },
     Case {
         name: "factorial",
-        file: "tests/factorial.nyx",
+        file: "tests/single/factorial.nyx",
         exit_code: Some(120),
     },
     Case {
         name: "math",
-        file: "tests/math.nyx",
+        file: "tests/single/math.nyx",
         exit_code: Some(42),
     },
     Case {
         name: "nth_prime",
-        file: "tests/nth_prime.nyx",
+        file: "tests/single/nth_prime.nyx",
         exit_code: Some(229),
     },
     Case {
         name: "add_with_main",
-        file: "tests/add_with_main.nyx",
+        file: "tests/single/add_with_main.nyx",
         exit_code: Some(0),
     },
     Case {
         name: "mandelbrot",
-        file: "tests/mandelbrot.nyx",
+        file: "tests/single/mandelbrot.nyx",
         exit_code: Some(232),
     },
     Case {
         name: "binary_search",
-        file: "tests/binary_search.nyx",
+        file: "tests/single/binary_search.nyx",
         exit_code: Some(11),
     },
     Case {
         name: "floats",
-        file: "tests/floats.nyx",
+        file: "tests/single/floats.nyx",
         exit_code: Some(42),
     },
 ];
