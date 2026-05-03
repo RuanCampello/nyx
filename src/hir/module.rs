@@ -33,6 +33,7 @@ pub(crate) struct ModuleLoader {
 /// A fully-parsed and validated module
 #[derive(Debug, Clone)]
 struct Module {
+    #[allow(dead_code)]
     exports: HashMap<String, usize>,
     /// all functions in declaration order
     functions: Vec<Function>,
@@ -84,9 +85,7 @@ impl ModuleLoader {
         let mut functions = Vec::with_capacity(1 << 8);
         for path in &dependencies {
             let module = Arc::clone(&self.cache[path]);
-            let offset = functions.len() as u32;
-
-            functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
+            functions.extend(module.functions.iter().cloned());
         }
 
         Ok(Hir {
@@ -153,9 +152,7 @@ impl ModuleLoader {
         let mut functions = Vec::new();
         for dependency in dependencies {
             let module = &self.cache[dependency];
-            let offset = functions.len() as u32;
-
-            functions.extend(module.functions.iter().map(|func| func.clone().with_id_offset(offset)));
+            functions.extend(module.functions.iter().cloned());
         }
 
         let (mut signatures, mut map) = signatures_from_hir(&functions);
@@ -166,7 +163,7 @@ impl ModuleLoader {
 
         // merge local signatures into combined table
         for (&symbol, &local_id) in &local_map {
-            map.insert(symbol, FunctionId(local_id.0 + local_offset));
+            map.insert(symbol, local_id);
         }
         signatures.extend(local_signatures);
 
@@ -182,8 +179,7 @@ impl ModuleLoader {
             let builder = FunctionBuilder::new(&signatures, &map, &mut self.symbols, function);
             let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
 
-            // rebase the function's own id to be relative to its position in this module's list
-            hir.id = FunctionId(functions.len() as u32);
+            hir.id = FunctionId(local_offset + functions.len() as u32);
 
             if hir.is_pub {
                 exports.insert(self.symbols.get(hir.name).to_string(), functions.len());

@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use crate::{diagnostic::Diagnostic, hir::module};
 use std::path::Path;
 
