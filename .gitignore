@@ -2,12 +2,12 @@
 
 /.*
 
-# output files for testing
-# *.o
-# *.s
+# ignore everything inside tests/ recursively
+/tests/**
 
-/tests/*
-# allow only source files
-!/tests/**/*.nyx
+# re‑include directories so git can descend into them
+!/tests/**/
+
+# re‑include only .rs and .nyx files
 !/tests/**/*.rs
-
+!/tests/**/*.nyx
