@@ -28,8 +28,17 @@ enum Commands {
     /// and compiles the whole project
     Build {
         /// Path to the `.nyx` source file or the module entry point
-        /// Defaults to `main.nyx` in the current directory
-        file: Option<PathBuf>,
+        ///
+        /// - Single file:  `nyx build file.nyx`
+        /// - Project dir:  `nyx build ./my_project/`  (looks for `main.nyx` inside)
+        /// - Omitted:      builds the current directory (looks for `main.nyx` here)
+        path: Option<PathBuf>,
+
+        /// Override the default entry filename inside a project directory.
+        ///
+        /// Defaults to `main.nyx`. Ignored when `path` is a `.nyx` file.
+        #[arg(long, value_name = "FILE", default_value = "main.nyx")]
+        entry: String,
 
         /// Output executable path (defaults to the source file stem)
         #[arg(short, long)]
@@ -47,6 +56,7 @@ enum Commands {
         emit: Vec<Emit>,
 
         /// Override the project name used in `use` path resolution
+        ///
         /// Defaults to the entry file's parent directory name.
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
@@ -56,8 +66,18 @@ enum Commands {
     ///
     /// When no file is given, looks for `main.nyx` in the current directory.
     Run {
-        /// Path to the `.nyx` source file.
-        file: Option<PathBuf>,
+        /// Path to a `.nyx` source file or a project directory.
+        ///
+        /// - Single file:  `nyx run file.nyx`
+        /// - Project dir:  `nyx run ./my_project/`
+        /// - Omitted:      runs the current directory        
+        path: Option<PathBuf>,
+
+        /// Override the default entry filename inside a project directory.
+        ///
+        /// Defaults to `main.nyx`. Ignored when `path` is a `.nyx` file.
+        #[arg(long, value_name = "FILE", default_value = "main.nyx")]
+        entry: String,
 
         /// Override the project name used in `use` path resolution.
         /// Defaults to the entry file's parent directory name.
@@ -81,19 +101,20 @@ fn main() -> Result<(), NyxError> {
 
     let result = match cli.command {
         Commands::Build {
-            file,
+            path,
+            entry,
             output,
             emit,
             project,
         } => {
-            let entry = resolve_entry(file)?;
+            let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
             cmd_build(&entry, output.as_deref(), &emit, &name)
         }
 
-        Commands::Run { file, project } => {
-            let entry = resolve_entry(file)?;
+        Commands::Run { path, entry, project } => {
+            let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
             cmd_run(&entry, &name)
@@ -180,17 +201,32 @@ fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>, project: &str) 
 }
 
 #[inline(always)]
-fn resolve_entry(file: Option<PathBuf>) -> Result<PathBuf, NyxError> {
-    match file {
-        Some(file) => Ok(file),
-        None => {
-            let default = PathBuf::from("main.nyx");
-            match default.exists() {
-                true => Ok(default),
-                _ => todo!("take care of this error"),
-            }
+fn resolve_entry(path: Option<PathBuf>, entry_filename: &str) -> Result<PathBuf, NyxError> {
+    use std::io::{Error, ErrorKind};
+
+    let root = path.unwrap_or_else(|| PathBuf::from("."));
+
+    // single file
+    if root.extension().and_then(|e| e.to_str()) == Some("nyx") {
+        if root.exists() {
+            return Ok(root);
         }
+
+        return Err(NyxError::Io(Error::new(
+            ErrorKind::NotFound,
+            format!("source file not found: {}", root.display()),
+        )));
     }
+
+    let entry = root.join(entry_filename);
+    if entry.exists() {
+        return Ok(entry);
+    }
+
+    Err(NyxError::Io(Error::new(
+        ErrorKind::NotFound,
+        format!("entry file `{}` not found in `{}`", entry_filename, root.display()),
+    )))
 }
 
 #[inline(always)]
