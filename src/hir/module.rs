@@ -19,7 +19,7 @@ use std::{
 ///
 /// Maintains a cache of loaded modules and the shared symbol table
 /// to ensure symbol IDs remain unique across the entire compilation.
-pub(crate) struct ModuleLoader {
+pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     name: String,
     root: PathBuf,
     cache: HashMap<PathBuf, Arc<Module>>,
@@ -28,6 +28,7 @@ pub(crate) struct ModuleLoader {
     in_flight: HashSet<PathBuf>,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
+    fs: F,
 }
 
 /// A fully-parsed and validated module
@@ -50,11 +51,25 @@ pub enum ModuleError {
     Diagnostic(Diagnostic),
 }
 
-impl ModuleLoader {
+pub(crate) trait FileSystem {
+    fn read(&self, path: &Path) -> Result<String, std::io::Error>;
+    fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
+}
+
+pub(crate) struct FS;
+
+impl ModuleLoader<FS> {
     pub fn new(name: String, root: PathBuf) -> Self {
+        Self::with_file_system(name, root, FS)
+    }
+}
+
+impl<F: FileSystem> ModuleLoader<F> {
+    pub fn with_file_system(name: String, root: PathBuf, fs: F) -> Self {
         Self {
             name,
             root,
+            fs,
             cache: HashMap::new(),
             in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
@@ -66,7 +81,7 @@ impl ModuleLoader {
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
-        let canonical = entry.canonicalize().map_err(|_| ModuleError::FileNotFound {
+        let canonical = self.fs.canonicalise(entry).map_err(|_| ModuleError::FileNotFound {
             path: entry.into(),
             span: None,
         })?;
@@ -108,7 +123,7 @@ impl ModuleLoader {
         }
 
         self.in_flight.insert(canonical.to_path_buf());
-        let source = std::fs::read_to_string(canonical).map_err(|_| ModuleError::FileNotFound {
+        let source = self.fs.read(canonical).map_err(|_| ModuleError::FileNotFound {
             path: canonical.into(),
             span: triggered_by,
         })?;
@@ -215,6 +230,16 @@ impl ModuleLoader {
         path.push(format!("{}.nyx", file_segment[0]));
 
         Ok(path)
+    }
+}
+
+impl FileSystem for FS {
+    fn read(&self, path: &Path) -> Result<String, std::io::Error> {
+        std::fs::read_to_string(path)
+    }
+
+    fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
+        path.canonicalize()
     }
 }
 
