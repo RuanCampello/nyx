@@ -364,4 +364,56 @@ mod tests {
 
         assert!(matches!(err, ModuleError::FileNotFound { .. }));
     }
+
+    #[test]
+    fn circular_import() {
+        let fs = VirtualFS::default()
+            .add(
+                "/project/a.nyx",
+                r#"
+            use my_app::b::{foo};
+            pub fn bar(): i32 { foo() }
+            "#,
+            )
+            .add(
+                "/project/b.nyx",
+                r#"
+            use my_app::a::{bar};
+            pub fn foo(): i32 { bar() }
+            "#,
+            )
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::a::{bar};
+            fn main(): i32 { bar() }
+            "#,
+            );
+
+        let err = vloader(fs).load(Path::new("/project/main.nyx")).unwrap_err();
+
+        assert!(matches!(err, ModuleError::CircularImport { .. }));
+    }
+
+    #[test]
+    fn non_pub_return_unknown_function() {
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "fn secret(a: i32): i32 { a + 1 }")
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::math::{secret};
+            fn main(): i32 { secret(1) }
+            "#,
+            );
+
+        // 'secret' is not exported so shouldn't be included in the symbols
+        // maybe we should verificate if the function does exists but is not public
+        // so this way we can have better error help message report?
+        let result = vloader(fs).load(Path::new("/project/main.nyx"));
+
+        println!("{result:#?}");
+
+        assert!(matches!(result, Err(ModuleError::Diagnostic(_))));
+    }
 }
