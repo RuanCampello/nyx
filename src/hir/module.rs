@@ -196,8 +196,32 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         // merge local signatures into combined table
         for (&symbol, &local_id) in &local_map {
+            // check for duplicated function names between local and imported
+            if map.contains_key(&symbol) {
+                use crate::hir::error::{HirError, HirErrorKind};
+
+                let name = self.symbols.get(symbol).to_string();
+
+                let span = statements
+                    .iter()
+                    .find_map(|stmt| match stmt {
+                        Statement::Fn(func) if func.name == name.as_str() => Some(func.span),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                return Err(ModuleError::Diagnostic(
+                    HirError {
+                        kind: HirErrorKind::DuplicateFunction { name },
+                        span,
+                    }
+                    .into(),
+                ));
+            }
+
             map.insert(symbol, local_id);
         }
+
         signatures.extend(local_signatures);
 
         let mut functions = Vec::new();
