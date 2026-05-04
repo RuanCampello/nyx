@@ -222,8 +222,6 @@ mod tests {
         let f = &mir.functions[0];
         assert_eq!(f.return_type, Type::I32);
 
-        println!("mir: {mir:?}");
-
         let assigns: Vec<_> = f.blocks[0]
             .instructions
             .iter()

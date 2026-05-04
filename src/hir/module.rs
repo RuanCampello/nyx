@@ -269,9 +269,9 @@ impl From<Diagnostic> for ModuleError {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::statement::Type;
-
     use super::*;
+    use crate::parser::statement::Type;
+    use lasso::Key;
     use std::collections::HashMap;
     use std::io;
 
@@ -429,5 +429,115 @@ mod tests {
         let err = vloader(fs).load(Path::new("/project/main.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::UnknownExport { .. }));
+    }
+
+    #[test]
+    fn transitive_dependency() {
+        let fs = VirtualFS::default()
+            .add("/project/base.nyx", "pub fn one(): i32 { 1 }")
+            .add(
+                "/project/mid.nyx",
+                r#"
+            use my_app::base::{one};
+            pub fn two(): i32 { one() + one() }
+            "#,
+            )
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::mid::{two};
+            fn main(): i32 { two() }
+            "#,
+            );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.functions.len(), 3);
+    }
+
+    #[test]
+    fn same_dependency_imported_twice_was_not_duplicated() {
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/util.nyx",
+                r#"
+            use my_app::math::{add};
+            pub fn add_one(x: i32): i32 { add(x, 1) }
+            "#,
+            )
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::math::{add};
+            use my_app::util::{add_one};
+            fn main(): i32 { add(add_one(1), 1) }
+            "#,
+            );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let add_count = hir
+            .functions
+            .iter()
+            .filter(|f| hir.symbols.get(f.name.0.into_usize()).map(|s| s == "add").unwrap_or(false))
+            .count();
+        assert_eq!(add_count, 1, "add should appear exactly once in the merged HIR");
+    }
+
+    #[test]
+    fn arity_mismatch_across_modules() {
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::math::{add};
+            fn main(): i32 { add(1) }
+            "#,
+            );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn nested_path() {
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let path = loader
+            .resolve_path(&[APP, "std", "collections", "map"], Span::default())
+            .unwrap();
+
+        assert_eq!(path, PathBuf::from("/project/std/collections/map.nyx"));
+    }
+
+    #[test]
+    fn empty_module_is_valid() {
+        let fs = VirtualFS::default().add("/project/empty.nyx", "").add(
+            "/project/main.nyx",
+            r#"
+            use my_app::empty;
+            fn main(): i32 { 42 }
+            "#,
+        );
+
+        let hir = vloader(fs).load(Path::new("/project/main.nyx")).unwrap();
+        assert_eq!(hir.functions.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_function_across_modules_rejected() {
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::math::{add};
+            fn add(a: i32, b: i32): i32 { a - b }
+            fn main(): i32 { add(1, 2) }
+            "#,
+            );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        println!("{err:#?}");
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 }
