@@ -80,9 +80,9 @@ impl<F: FileSystem> ModuleLoader<F> {
     ///
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
-    pub fn load(&mut self, entry: &Path) -> Result<Hir, ModuleError> {
-        let canonical = self.fs.canonicalise(entry).map_err(|_| ModuleError::FileNotFound {
-            path: entry.into(),
+    pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
+        let canonical = self.fs.canonicalise(entry.as_ref()).map_err(|_| ModuleError::FileNotFound {
+            path: entry.as_ref().into(),
             span: None,
         })?;
 
@@ -251,7 +251,43 @@ impl From<Diagnostic> for ModuleError {
 
 #[cfg(test)]
 mod tests {
+    use crate::parser::statement::Type;
+
     use super::*;
+    use std::collections::HashMap;
+    use std::io;
+
+    #[derive(Default)]
+    struct VirtualFS {
+        files: HashMap<PathBuf, String>,
+    }
+
+    impl FileSystem for VirtualFS {
+        fn read(&self, path: &Path) -> Result<String, io::Error> {
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+        }
+
+        fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
+            match self.files.contains_key(path) {
+                true => Ok(path.to_path_buf()),
+                _ => Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string())),
+            }
+        }
+    }
+
+    impl VirtualFS {
+        fn add(mut self, path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
+            self.files.insert(path.into(), content.into());
+            self
+        }
+    }
+
+    fn vloader(fs: VirtualFS) -> ModuleLoader<VirtualFS> {
+        ModuleLoader::with_file_system(APP.into(), PROJECT.into(), fs)
+    }
 
     const APP: &str = "my_app";
     const PROJECT: &str = "/project";
@@ -297,5 +333,35 @@ mod tests {
         let err = loader.resolve_path(&[APP], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
+    }
+
+    #[test]
+    fn single_file_function() {
+        let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions[0].return_type, Type::I32);
+    }
+
+    #[test]
+    fn import_and_call() {
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/main.nyx",
+                r#"
+                use my_app::math;
+                fn main(): i32 { math::add(1, 2) }
+                "#,
+            );
+    }
+
+    #[test]
+    fn file_not_found() {
+        let fs = VirtualFS::default();
+        let err = vloader(fs).load(Path::new("/project/missing.nyx")).unwrap_err();
+
+        assert!(matches!(err, ModuleError::FileNotFound { .. }));
     }
 }
