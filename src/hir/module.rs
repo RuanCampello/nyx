@@ -7,7 +7,10 @@ use crate::{
         functions::{collect_function_signatures, signatures_from_hir},
     },
     lexer::token::Span,
-    parser::{Parser, statement::Statement},
+    parser::{
+        Parser,
+        statement::{Statement, UseItems},
+    },
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -136,6 +139,21 @@ impl<F: FileSystem> ModuleLoader<F> {
             if let Statement::Use(declaration) = statement {
                 let import = self.resolve_path(&declaration.path.segments, declaration.span)?;
                 self.discover(&import, Some(declaration.span))?;
+
+                // validate named imports against the module's exports
+                if let UseItems::Named(ref items) = declaration.items {
+                    let module = &self.cache[&import];
+
+                    for item in items {
+                        if !module.exports.contains_key(item.name) {
+                            return Err(ModuleError::UnknownExport {
+                                path: import.clone(),
+                                name: item.name.into(),
+                                span: item.span,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -408,12 +426,8 @@ mod tests {
             );
 
         // 'secret' is not exported so shouldn't be included in the symbols
-        // maybe we should verificate if the function does exists but is not public
-        // so this way we can have better error help message report?
-        let result = vloader(fs).load(Path::new("/project/main.nyx"));
+        let err = vloader(fs).load(Path::new("/project/main.nyx")).unwrap_err();
 
-        println!("{result:#?}");
-
-        assert!(matches!(result, Err(ModuleError::Diagnostic(_))));
+        assert!(matches!(err, ModuleError::UnknownExport { .. }));
     }
 }
