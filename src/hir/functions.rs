@@ -1,6 +1,7 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Local, LocalId, Parameter, Statement, SymbolId, Type,
+        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId, Parameter, Statement,
+        SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
@@ -21,6 +22,7 @@ pub(in crate::hir) struct FunctionSignature {
     pub is_const: bool,
     pub inline: bool,
     pub is_pub: bool,
+    pub intrinsic: Option<Intrinsic>,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
@@ -47,6 +49,7 @@ impl Default for FunctionSignature {
             is_const: false,
             inline: false,
             is_pub: false,
+            intrinsic: None,
         }
     }
 }
@@ -107,6 +110,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             is_const: function.is_const,
             inline: function.inline,
             is_pub: function.is_pub,
+            intrinsic: signatures.intrinsic,
             body,
         })
     }
@@ -417,7 +421,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     }
                 };
 
-                if signature.params.len() != args.len() {
+                if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                     return Err(HirError {
                         kind: HirErrorKind::ArityMismatch {
                             name: self.symbols.get(signature.name).to_string(),
@@ -430,23 +434,40 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 let mut lowered_args = Vec::with_capacity(args.len());
 
-                for (expr, &param_typ) in args.iter().zip(signature.params.iter()) {
-                    // each parameters declared type as the hint
-                    // that allows `foo(1)` to work when `foo` expects an `i64`.
-                    let expr = self.lower_expr(expr, Some(param_typ))?;
-                    self.assert_type(param_typ, expr.typ, expr.span)?;
-                    lowered_args.push(expr);
+                match signature.intrinsic {
+                    Some(_) => {
+                        for arg in args.iter() {
+                            let lowered = self.lower_expr(arg, None)?;
+                            lowered_args.push(lowered);
+                        }
+                    }
+
+                    _ => {
+                        for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                            let expr = self.lower_expr(expr, Some(param_type))?;
+                            self.assert_type(param_type, expr.typ, expr.span)?;
+                            lowered_args.push(expr);
+                        }
+                    }
                 }
 
                 let return_type = signature.return_type;
+                let kind = match signature.intrinsic {
+                    Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                        intrinsic,
+                        args: lowered_args,
+                    },
+                    _ => ExpressionKind::Call {
+                        function,
+                        args: lowered_args,
+                        inline: signature.is_const,
+                    },
+                };
+
                 Ok(Expression {
                     typ: return_type,
                     span: *span,
-                    kind: ExpressionKind::Call {
-                        inline: signature.is_const,
-                        function,
-                        args: lowered_args,
-                    },
+                    kind,
                 })
             }
         }
@@ -666,6 +687,16 @@ pub fn collect_function_signatures<'h>(
         let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
         let return_type = function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
 
+        let name_str = symbols.get(symbol);
+        let intrinsic = {
+            match name_str {
+                "println" => Some(Intrinsic::PrintLn),
+                "printf" => Some(Intrinsic::PrintF),
+                "exit" => Some(Intrinsic::Exit),
+                _ => None,
+            }
+        };
+
         signatures.push(FunctionSignature {
             return_type,
             params,
@@ -673,6 +704,7 @@ pub fn collect_function_signatures<'h>(
             is_const: function.is_const,
             inline: function.inline,
             is_pub: function.is_pub,
+            intrinsic,
         })
     }
 

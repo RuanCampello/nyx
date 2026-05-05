@@ -12,7 +12,7 @@ use crate::{
         regalloc::{Allocation, Location},
         target::{
             Emittable, PhysicalReg, RegClass, Target,
-            x86_64::{X86_64, X86Instr, X86Operand},
+            x86_64::{X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
 };
@@ -292,6 +292,41 @@ impl Function<X86_64> {
 
                         mov_or_scratch(out, &src, &dest, suffix, is_float);
                     }
+                }
+            }
+
+            Inst::Syscall {
+                id: syscall_id,
+                moves,
+                ret,
+                ..
+            } => {
+                let arg_moves: Vec<_> = moves
+                    .iter()
+                    .map(|(vreg, reg)| {
+                        let bytes = self.reg_bytes(vreg);
+                        let is_float = self.is_float(vreg);
+                        let suffix = typed_suffix(&bytes, is_float);
+                        let src = alloc.location(vreg, &bytes);
+                        let dest = format!("%{}", reg.name(bytes));
+
+                        (src, dest, suffix, is_float)
+                    })
+                    .collect();
+
+                resolve_parallel_moves(out, arg_moves);
+
+                emit!(out, "movl    ${syscall_id}, %eax");
+                emit!(out, "syscall");
+
+                if let Some(ret) = ret {
+                    let bytes = self.reg_bytes(ret);
+                    let is_float = self.is_float(ret);
+                    let suffix = typed_suffix(&bytes, is_float);
+                    let src = format!("%{}", X86Reg::Rax.name(bytes));
+                    let dest = alloc.location(ret, &bytes);
+
+                    mov_or_scratch(out, &src, &dest, suffix, is_float);
                 }
             }
         }

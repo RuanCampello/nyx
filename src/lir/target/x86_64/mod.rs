@@ -157,9 +157,16 @@ pub enum X86Instr {
         bytes: u8,
     },
 
-    /// Direct Call
     Call {
         target: String,
+        moves: Vec<(VReg, X86Reg)>,
+        uses: Vec<VReg>,
+        ret: Option<VReg>,
+        precoloured_def: Option<(VReg, X86Reg)>,
+    },
+
+    Syscall {
+        id: u32,
         moves: Vec<(VReg, X86Reg)>,
         uses: Vec<VReg>,
         ret: Option<VReg>,
@@ -279,7 +286,7 @@ impl Target for X86_64 {
     }
 
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg> {
-        use self::X86Reg as R;
+        use X86Reg as R;
 
         match class {
             RegClass::Int => {
@@ -295,6 +302,15 @@ impl Target for X86_64 {
         }
     }
 
+    #[inline(always)]
+    fn syscall_param(idx: usize) -> Option<Self::Reg> {
+        use X86Reg as R;
+
+        const REGS: [R; 6] = [R::Rdi, R::Rsi, R::Rdx, R::R10, R::R8, R::R9];
+        REGS.get(idx).copied()
+    }
+
+    #[inline(always)]
     fn ret(class: RegClass) -> Option<Self::Reg> {
         match class {
             RegClass::Int => Some(X86Reg::Rax),
@@ -328,8 +344,8 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::Cmp { .. } | Self::Test { .. } | Self::Ucomis { .. } => &[],
 
-            Self::Call { ret: Some(ret), .. } => std::slice::from_ref(ret),
-            Self::Call { ret: None, .. } => &[],
+            Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => std::slice::from_ref(ret),
+            Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
         }
     }
 
@@ -374,6 +390,7 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::IDiv { uses, .. } => uses.as_slice(),
             Self::Call { uses, .. } => uses.as_slice(),
+            Self::Syscall { uses, .. } => uses.as_slice(),
 
             _ => &[],
         }
@@ -399,7 +416,7 @@ impl Instruction<X86_64> for X86Instr {
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
             Self::IDiv { .. } => &[X86Reg::Rdx],
-            Self::Call { .. } => X86_64::caller_saved(),
+            Self::Call { .. } | Self::Syscall { .. } => X86_64::caller_saved(),
             _ => &[],
         }
     }
@@ -407,7 +424,7 @@ impl Instruction<X86_64> for X86Instr {
     fn precoloured_def(&self) -> Option<(VReg, X86Reg)> {
         match self {
             Self::IDiv { result, .. } => Some((*result, X86Reg::Rax)),
-            Self::Call { precoloured_def, .. } => *precoloured_def,
+            Self::Call { precoloured_def, .. } | Self::Syscall { precoloured_def, .. } => *precoloured_def,
             _ => None,
         }
     }

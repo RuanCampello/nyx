@@ -26,6 +26,8 @@ pub trait Target: Sized {
 
     /// physical register used for the `n-th` argument of the given class
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg>;
+    /// physical register used for the `n-th` argument in a syscall
+    fn syscall_param(idx: usize) -> Option<Self::Reg>;
     /// physical register for the return value of the given class
     fn ret(class: RegClass) -> Option<Self::Reg>;
 }

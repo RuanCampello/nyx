@@ -275,6 +275,43 @@ impl FunctionLower {
 
                 Ok(Operand::Place(dest))
             }
+
+            ExpressionKind::IntrinsicCall { intrinsic, args } => {
+                use crate::hir::Intrinsic;
+                use crate::mir::SyscallCode;
+
+                let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let dest = self.fresh_temporary(expr.typ);
+
+                match intrinsic {
+                    Intrinsic::PrintLn | Intrinsic::PrintF => {
+                        // FD 1 = stdout
+                        let fd = Operand::Const(Const::Int(1, Type::I32));
+                        let mut sys_args = vec![fd];
+                        sys_args.extend(lowered_args);
+
+                        self.emit(
+                            dest,
+                            InstructionKind::Syscall {
+                                code: SyscallCode::Write,
+                                args: sys_args,
+                            },
+                        );
+                    }
+
+                    Intrinsic::Exit => {
+                        self.emit(
+                            dest,
+                            InstructionKind::Syscall {
+                                code: SyscallCode::Exit,
+                                args: lowered_args,
+                            },
+                        );
+                    }
+                }
+
+                Ok(Operand::Place(dest))
+            }
         }
     }
 

@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
+use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg};
 use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
@@ -237,6 +237,31 @@ impl<'f> Lower<'f> {
                 let ret = (typ != Type::Unit).then_some(dest);
                 let ret_class = (typ != Type::Unit).then(|| typ.machine_type().class());
                 self.lir.push_instr(id, X86Instr::call(callee, moves, ret, ret_class));
+            }
+
+            InstructionKind::Syscall { code, args } => {
+                let mut moves = Vec::with_capacity(args.len());
+                let mut uses = Vec::with_capacity(args.len());
+
+                for (i, arg) in args.iter().enumerate() {
+                    let abi_reg = X86_64::syscall_param(i).expect("too many syscall arguments");
+                    let vreg = self.operand(arg, id);
+
+                    moves.push((vreg, abi_reg));
+                    uses.push(vreg);
+                }
+
+                let ret = (typ != Type::Unit).then_some(dest);
+                self.lir.push_instr(
+                    id,
+                    X86Instr::Syscall {
+                        id: *code as u32,
+                        moves,
+                        uses,
+                        ret,
+                        precoloured_def: ret.map(|v| (v, X86Reg::Rax)),
+                    },
+                );
             }
         }
     }

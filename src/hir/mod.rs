@@ -56,15 +56,16 @@ pub struct Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Function {
+pub struct Function {
     pub id: FunctionId,
     pub name: SymbolId,
     pub params: Vec<Parameter>,
     pub locals: Vec<Local>,
     pub return_type: Type,
     pub is_const: bool,
-    pub is_pub: bool,
     pub inline: bool,
+    pub is_pub: bool,
+    pub intrinsic: Option<Intrinsic>,
     pub body: Block,
 }
 
@@ -117,6 +118,17 @@ pub enum ExpressionKind {
         args: Vec<Expression>,
         inline: bool,
     },
+    IntrinsicCall {
+        intrinsic: Intrinsic,
+        args: Vec<Expression>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intrinsic {
+    PrintLn,
+    PrintF,
+    Exit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -167,6 +179,7 @@ impl From<&Function> for FunctionSignature {
             is_const: value.is_const,
             inline: value.inline,
             is_pub: value.is_pub,
+            intrinsic: value.intrinsic,
         }
     }
 }
@@ -234,6 +247,18 @@ impl std::fmt::Display for Type {
         };
 
         f.write_str(s)
+    }
+}
+
+impl From<&str> for Intrinsic {
+    fn from(value: &str) -> Self {
+        match value {
+            "println" => Self::PrintLn,
+            "printf" => Self::PrintF,
+            "exit" => Self::Exit,
+
+            _ => unreachable!("unknown intrinsic: {value}"),
+        }
     }
 }
 

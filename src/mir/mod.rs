@@ -97,6 +97,18 @@ pub enum InstructionKind {
         callee: FunctionId,
         args: Vec<Operand>,
     },
+
+    Syscall {
+        code: SyscallCode,
+        args: Vec<Operand>,
+    },
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SyscallCode {
+    // FIXME: make this value generic over the target arch
+    Write = 1,
+    Exit = 60,
 }
 
 /// This is a *input* of a instruction.
