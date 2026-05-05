@@ -1,0 +1,13 @@
+use std::io::{println};
+use std::process::{exit};
+
+fn main() {
+    println("hello, world!");
+
+    let name = "John Doe";
+    let age = 42;
+
+    printf("{name} is {age} years old!");
+
+    exit(0);
+}
