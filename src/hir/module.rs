@@ -25,6 +25,8 @@ use std::{
 pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     name: String,
     root: PathBuf,
+    /// standard library root
+    std: PathBuf,
     cache: HashMap<PathBuf, Arc<Module>>,
     /// modules currently being loaded
     /// used for cycle detection
@@ -63,16 +65,17 @@ pub(crate) struct FS;
 
 impl ModuleLoader<FS> {
     pub fn new(name: String, root: PathBuf) -> Self {
-        Self::with_file_system(name, root, FS)
+        Self::with_file_system(name, root, resolve_std_root(), FS)
     }
 }
 
 impl<F: FileSystem> ModuleLoader<F> {
-    pub fn with_file_system(name: String, root: PathBuf, fs: F) -> Self {
+    pub fn with_file_system(name: String, root: PathBuf, std: PathBuf, fs: F) -> Self {
         Self {
             name,
             root,
             fs,
+            std,
             cache: HashMap::new(),
             in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
@@ -136,22 +139,28 @@ impl<F: FileSystem> ModuleLoader<F> {
         let statements = Parser::new(&source).parse().map_err(|e| Diagnostic::from(e))?;
 
         for statement in &statements {
-            if let Statement::Use(declaration) = statement {
-                let import = self.resolve_path(&declaration.path.segments, declaration.span)?;
-                self.discover(&import, Some(declaration.span))?;
+            let Statement::Use(declaration) = statement else {
+                continue;
+            };
 
-                // validate named imports against the module's exports
-                if let UseItems::Named(ref items) = declaration.items {
-                    let module = &self.cache[&import];
+            let import = self.resolve_path(&declaration.path.segments, declaration.span)?;
+            if !self.fs.read(&import).is_ok() {
+                continue;
+            }
 
-                    for item in items {
-                        if !module.exports.contains_key(item.name) {
-                            return Err(ModuleError::UnknownExport {
-                                path: import.clone(),
-                                name: item.name.into(),
-                                span: item.span,
-                            });
-                        }
+            self.discover(&import, Some(declaration.span))?;
+
+            // validate named imports against the module's exports
+            if let UseItems::Named(ref items) = declaration.items {
+                let module = &self.cache[&import];
+
+                for item in items {
+                    if !module.exports.contains_key(item.name) {
+                        return Err(ModuleError::UnknownExport {
+                            path: import.into(),
+                            name: item.name.into(),
+                            span: item.span,
+                        });
                     }
                 }
             }
@@ -257,6 +266,7 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         let base = match root {
             root if root == self.name => &self.root,
+            "std" => &self.std,
             other => {
                 return Err(ModuleError::UnknownRoot {
                     name: other.to_string(),
@@ -289,6 +299,29 @@ impl From<Diagnostic> for ModuleError {
     fn from(value: Diagnostic) -> Self {
         Self::Diagnostic(value)
     }
+}
+
+/// Resolves the path to the compiler's built-in `std/` directory
+///
+/// order:
+/// 1. `NYX_STD_PATH` environment variable
+/// 2. `<binary_dir>/std/`
+/// 3. `std/` relative to CWD
+fn resolve_std_root() -> PathBuf {
+    if let Ok(env) = std::env::var("NYX_STD_PATH") {
+        return PathBuf::from(env);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("std");
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from("std")
 }
 
 #[cfg(test)]
@@ -328,11 +361,12 @@ mod tests {
     }
 
     fn vloader(fs: VirtualFS) -> ModuleLoader<VirtualFS> {
-        ModuleLoader::with_file_system(APP.into(), PROJECT.into(), fs)
+        ModuleLoader::with_file_system(APP.into(), PROJECT.into(), STD.into(), fs)
     }
 
     const APP: &str = "my_app";
     const PROJECT: &str = "/project";
+    const STD: &str = "/std";
 
     #[test]
     fn resolve_simple_path() {
