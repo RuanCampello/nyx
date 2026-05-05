@@ -23,7 +23,10 @@ hi def link nyxLineComment Comment
 hi def link nyxBlockComment Comment
 
 " Strings
-syn region nyxString start='"' end='"' skip='\\"'
+syn match nyxInterpolation "{[a-zA-Z_][a-zA-Z0-9_]*}" contained
+hi def link nyxInterpolation Identifier
+
+syn region nyxString start='"' end='"' skip='\\"' contains=nyxInterpolation
 hi def link nyxString String
 
 " Numbers
