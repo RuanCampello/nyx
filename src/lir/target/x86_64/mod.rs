@@ -42,6 +42,10 @@ pub enum X86Instr {
         src: X86Operand,
         bytes: u8,
     },
+    Lea {
+        dest: VReg,
+        src: X86Operand,
+    },
     /// zero-extend 1-byte `setcc` result → 4 bytes.
     Movzx {
         dest: VReg,
@@ -325,6 +329,7 @@ impl Instruction<X86_64> for X86Instr {
             Self::ParamMov { dest, .. }
             | Self::Mov { dest, .. }
             | Self::MovFloat { dest, .. }
+            | Self::Lea { dest, .. }
             | Self::Movzx { dest, .. }
             | Self::Add { dest, .. }
             | Self::Sub { dest, .. }
@@ -353,7 +358,8 @@ impl Instruction<X86_64> for X86Instr {
     fn uses(&self) -> &[VReg] {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
-            | Self::MovFloat { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+            | Self::MovFloat { src: X86Operand::VReg(v), .. }
+            | Self::Lea { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
 
             // 2-address: dest is read+write, src is read-only
             Self::Add { src: X86Operand::VReg(v), .. }

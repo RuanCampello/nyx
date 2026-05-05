@@ -122,6 +122,17 @@ where
         Function::<T>::start(&mut out);
     }
 
+    // FIXME: this probably should be abstracted away from here
+    // but be it as for now
+    if !mir.symbols.is_empty() {
+        label!(out, ".section .rodata");
+        for (idx, string) in mir.symbols.iter().enumerate() {
+            label!(out, ".align 1");
+            label!(out, ".L_str_{}:", idx);
+            label!(out, "    .ascii {:?}", string);
+        }
+    }
+
     out
 }
 

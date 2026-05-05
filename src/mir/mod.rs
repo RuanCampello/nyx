@@ -134,7 +134,7 @@ pub enum Const {
     Float(f64, Type),
     Bool(bool),
     // A string literal interned into the function's string pool
-    Str(usize),
+    Str { id: usize, len: usize },
     Unit,
 }
 
@@ -181,7 +181,7 @@ impl Const {
             Self::Int(_, typ) => *typ,
             Self::Float(_, typ) => *typ,
             Self::Bool(_) => Type::Bool,
-            Self::Str(_) => Type::Str,
+            Self::Str { .. } => Type::Str,
             Self::Unit => Type::Unit,
         }
     }
@@ -191,7 +191,7 @@ impl Const {
             Const::Int(n, _) => format!("${n}"),
             Const::Bool(b) => format!("${}", if *b { 1 } else { 0 }),
             Const::Unit => unreachable!("Unit constant has no runtime representation"),
-            Const::Str(_) => panic!("string constant must be resolved through the string pool"),
+            Const::Str { .. } => panic!("string constant must be resolved through the string pool"),
             Const::Float(_, _) => panic!("float constant must be interned into the pool"),
         }
     }
@@ -202,7 +202,7 @@ impl std::fmt::Display for Const {
         match self {
             Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", self.to_general_string()),
             Const::Float(v, _) => write!(f, "{v:?}"),
-            Const::Str(idx) => write!(f, "<str:{idx}>"),
+            Const::Str { id, .. } => write!(f, "<str:{id}>"),
             Const::Unit => unreachable!(),
         }
     }

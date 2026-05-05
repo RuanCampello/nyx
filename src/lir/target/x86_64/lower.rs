@@ -428,6 +428,7 @@ impl<'f> Lower<'f> {
             }
             Operand::Const(Const::Int(n, _)) => X86Operand::Imm(*n),
             Operand::Const(Const::Bool(b)) => X86Operand::Imm(if *b { 1 } else { 0 }),
+            Operand::Const(Const::Str { id, .. }) => X86Operand::RipRel(format!(".L_str_{id}(%rip)")),
             Operand::Const(Const::Unit) => unreachable!("unit operand"),
         }
     }
@@ -443,6 +444,10 @@ impl<'f> Lower<'f> {
                 dest,
                 src,
                 bytes: bytes,
+            },
+            Const::Str { id, .. } => X86Instr::Lea {
+                dest,
+                src: X86Operand::RipRel(format!(".L_str_{id}(%rip)")),
             },
             Const::Unit => unreachable!("unit operand"),
         }

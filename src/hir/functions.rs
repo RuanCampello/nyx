@@ -34,6 +34,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     function: Option<statement::Function<'f>>,
     next_local: u32,
     symbols: &'s mut SymbolTable,
+    constants: HashMap<LocalId, ExpressionKind>,
 }
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
@@ -72,6 +73,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
+            constants: HashMap::new(),
         }
     }
 
@@ -169,6 +171,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(typ))?;
                         self.assert_type(typ, expr.typ, expr.span)?;
+
+                        match &expr.kind {
+                            ExpressionKind::Integer(_)
+                            | ExpressionKind::Float(_)
+                            | ExpressionKind::String(_)
+                            | ExpressionKind::Bool(_) => {
+                                self.constants.insert(id, expr.kind.clone());
+                            }
+                            _ => {}
+                        }
 
                         Some(expr)
                     }
@@ -387,6 +399,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 // we need to pass the targets type as a hint :D
                 let value = self.lower_expr(value, Some(target_typ))?;
 
+                self.constants.remove(&id);
                 self.assert_type(target_typ, value.typ, value.span)?;
 
                 Ok(Expression {
@@ -402,21 +415,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             Expr::Call { callee, args, span } => {
                 if let Expr::Identifier(name, _) = callee.as_ref() {
                     if let Ok(intrinsic) = Intrinsic::from_str(name) {
-                        let mut lowered_args = Vec::with_capacity(args.len());
-
-                        for arg in args {
-                            let lowered = self.lower_expr(arg, None)?;
-                            lowered_args.push(lowered);
-                        }
-
-                        return Ok(Expression {
-                            typ: Type::Unit,
-                            span: *span,
-                            kind: ExpressionKind::IntrinsicCall {
-                                intrinsic,
-                                args: lowered_args,
-                            },
-                        });
+                        return self.lower_intrinsic(intrinsic, args, *span);
                     }
                 }
 
@@ -554,6 +553,88 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             },
             then_returns && else_returns,
         ))
+    }
+
+    fn lower_intrinsic(
+        &mut self,
+        intrinsic: Intrinsic,
+        args: &[expression::Expression],
+        span: Span,
+    ) -> Result<Expression, HirError<'f>> {
+        let mut lowered_args = Vec::with_capacity(args.len());
+
+        let is_print_string = matches!(intrinsic, Intrinsic::PrintLn | Intrinsic::Print)
+            && args.len() == 1
+            && matches!(args[0], expression::Expression::String(..));
+
+        if !is_print_string {
+            for arg in args {
+                let lowered = self.lower_expr(arg, None)?;
+                lowered_args.push(lowered);
+            }
+
+            return Ok(Expression {
+                typ: Type::Unit,
+                span,
+                kind: ExpressionKind::IntrinsicCall {
+                    intrinsic,
+                    args: lowered_args,
+                },
+            });
+        };
+
+        // TODO: address this in the future when adding better expressiveness to the language (interfaces, user defined types)
+        let expression::Expression::String(value, _) = &args[0] else {
+            unreachable!()
+        };
+        let mut current_str = String::new();
+        let mut chars = value.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            // FIXME: this is very nasty parsing to be at hir so we should find a better
+            // way of doing this
+            if c == '{' {
+                let mut ident = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '}' {
+                        chars.next();
+                        break;
+                    }
+                    ident.push(chars.next().unwrap());
+                }
+
+                let symbol = self.symbols.insert(&ident);
+                if let Ok(id) = self.resolve_local(symbol, span) {
+                    if let Some(constant) = self.constants.get(&id) {
+                        match constant {
+                            ExpressionKind::Integer(v) => current_str.push_str(&v.to_string()),
+                            ExpressionKind::Float(v) => current_str.push_str(&v.to_string()),
+                            ExpressionKind::String(v) => current_str.push_str(v),
+                            ExpressionKind::Bool(v) => current_str.push_str(&v.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+
+                continue;
+            }
+            current_str.push(c);
+        }
+
+        lowered_args.push(Expression {
+            typ: Type::String,
+            span,
+            kind: ExpressionKind::String(current_str),
+        });
+
+        Ok(Expression {
+            typ: Type::Unit,
+            span,
+            kind: ExpressionKind::IntrinsicCall {
+                intrinsic,
+                args: lowered_args,
+            },
+        })
     }
 
     fn type_for_binary(

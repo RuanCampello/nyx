@@ -17,30 +17,29 @@ struct PartialBlock {
 }
 
 #[allow(unused)]
-struct FunctionLower {
+struct FunctionLower<'a> {
     blocks: Vec<PartialBlock>,
     current: usize,
     next: u32,
     local_map: Vec<ValueId>,
     locals: Vec<(ValueId, Type)>,
     return_type: Type,
+    symbols: &'a mut Vec<String>,
 }
 
 pub fn lower(hir: Hir) -> Result<Mir, MirError> {
-    let functions = hir
-        .functions
-        .into_iter()
-        .map(FunctionLower::run)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut functions = Vec::with_capacity(hir.functions.len());
+    let mut symbols = hir.symbols;
 
-    Ok(Mir {
-        functions,
-        symbols: hir.symbols,
-    })
+    for function in hir.functions {
+        functions.push(FunctionLower::run(function, &mut symbols)?);
+    }
+
+    Ok(Mir { functions, symbols })
 }
 
-impl FunctionLower {
-    fn run(function: hir::Function) -> Result<mir::Function, MirError> {
+impl<'a> FunctionLower<'a> {
+    fn run(function: hir::Function, symbols: &'a mut Vec<String>) -> Result<mir::Function, MirError> {
         let id = function.id;
         let name_symbol = function.name.0.into_usize();
         let return_type = function.return_type;
@@ -73,6 +72,7 @@ impl FunctionLower {
             locals,
             return_type,
             next,
+            symbols,
         };
 
         builder.new_block();
@@ -215,7 +215,12 @@ impl FunctionLower {
             ExpressionKind::Integer(n) => Ok(Operand::Const(Const::Int(*n, expr.typ))),
             ExpressionKind::Float(f) => Ok(Operand::Const(Const::Float(*f, expr.typ))),
             ExpressionKind::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
-            ExpressionKind::String(_) => Ok(Operand::Const(Const::Unit)),
+            ExpressionKind::String(s) => {
+                let id = self.symbols.len();
+                let len = s.len();
+                self.symbols.push(s.clone());
+                Ok(Operand::Const(Const::Str { id, len }))
+            }
 
             ExpressionKind::Local(local_id) => Ok(Operand::Place(self.place_for_local(*local_id, expr.typ))),
 
@@ -285,19 +290,42 @@ impl FunctionLower {
                 let dest = self.fresh_temporary(Type::I32);
 
                 match intrinsic {
-                    Intrinsic::PrintLn | Intrinsic::PrintF => {
-                        // FD 1 = stdout
+                    Intrinsic::PrintLn | Intrinsic::Print => {
                         let fd = Operand::Const(Const::Int(1, Type::I32));
-                        let mut sys_args = vec![fd];
-                        sys_args.extend(lowered_args);
 
-                        self.emit(
-                            dest,
-                            InstructionKind::Syscall {
-                                code: SyscallCode::Write,
-                                args: sys_args,
-                            },
-                        );
+                        for arg in lowered_args {
+                            let len_op = match arg {
+                                Operand::Const(Const::Str { len, .. }) => {
+                                    Operand::Const(Const::Int(len as i64, Type::I32))
+                                }
+                                _ => continue, // ignore non-strings since we formatted at compile time
+                            };
+
+                            let dest = self.fresh_temporary(Type::I32);
+                            self.emit(
+                                dest,
+                                InstructionKind::Syscall {
+                                    code: SyscallCode::Write,
+                                    args: vec![fd, arg, len_op],
+                                },
+                            );
+                        }
+
+                        // add the newline to println :X
+                        if *intrinsic == Intrinsic::PrintLn {
+                            let id = self.symbols.len();
+                            self.symbols.push("\n".to_string());
+                            let newline = Operand::Const(Const::Str { id, len: 1 });
+
+                            let dest = self.fresh_temporary(Type::I32);
+                            self.emit(
+                                dest,
+                                InstructionKind::Syscall {
+                                    code: SyscallCode::Write,
+                                    args: vec![fd, newline, Operand::Const(Const::Int(1, Type::I32))],
+                                },
+                            );
+                        }
 
                         Ok(Operand::Const(Const::Unit))
                     }

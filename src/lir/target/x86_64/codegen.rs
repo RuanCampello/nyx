@@ -27,7 +27,7 @@ impl Emittable<X86_64> for Function<X86_64> {
         Self::emit_prologue(&alloc, name, frame_size, out);
         self.emit_body(&alloc, name, &epilogue, out);
         Self::emit_epilogue(&alloc, &epilogue, frame_size, out);
-        self.emit_float(out);
+        self.emit_rodata(out);
     }
 
     #[inline(always)]
@@ -89,7 +89,7 @@ impl Function<X86_64> {
         }
     }
 
-    fn emit_float(&self, out: &mut String) {
+    fn emit_rodata(&self, out: &mut String) {
         if self.floats.is_empty() {
             return;
         }
@@ -140,6 +140,13 @@ impl Function<X86_64> {
                 let src = self.operand(alloc, src, bytes);
 
                 mov_or_scratch(out, &src, &dest, suffix, true);
+            }
+
+            Inst::Lea { dest, src } => {
+                let dest = alloc.location(dest, &8);
+                let src = self.operand(alloc, src, &8);
+
+                emit!(out, "leaq   {src}, {dest}");
             }
 
             Inst::Movzx { dest, src } => {

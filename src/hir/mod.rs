@@ -3,8 +3,6 @@
 //! HIR is a tree-structured, fully resolved and typed.
 //! Identifiers are lowered to stable numeric IDs.
 
-use std::str::FromStr;
-
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},
@@ -18,6 +16,7 @@ use crate::{
     },
 };
 use lasso::{Key, Spur};
+use std::str::FromStr;
 
 pub mod error;
 mod functions;
@@ -129,7 +128,7 @@ pub enum ExpressionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
     PrintLn,
-    PrintF,
+    Print,
     Exit,
 }
 
@@ -258,7 +257,7 @@ impl FromStr for Intrinsic {
     fn from_str(str: &str) -> Result<Self, Self::Err> {
         Ok(match str {
             "println" => Self::PrintLn,
-            "printf" => Self::PrintF,
+            "print" => Self::Print,
             "exit" => Self::Exit,
 
             _ => return Err(()),
