@@ -1,0 +1,6 @@
+use std::process::{exit};
+
+fn main(): i32 {
+    exit(42);
+    0
+}

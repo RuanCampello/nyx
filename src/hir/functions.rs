@@ -11,7 +11,7 @@ use crate::{
         statement::{self, Else},
     },
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -688,14 +688,7 @@ pub fn collect_function_signatures<'h>(
         let return_type = function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
 
         let name_str = symbols.get(symbol);
-        let intrinsic = {
-            match name_str {
-                "println" => Some(Intrinsic::PrintLn),
-                "printf" => Some(Intrinsic::PrintF),
-                "exit" => Some(Intrinsic::Exit),
-                _ => None,
-            }
-        };
+        let intrinsic = Intrinsic::from_str(name_str).ok();
 
         signatures.push(FunctionSignature {
             return_type,

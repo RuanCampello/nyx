@@ -3,6 +3,8 @@
 //! HIR is a tree-structured, fully resolved and typed.
 //! Identifiers are lowered to stable numeric IDs.
 
+use std::str::FromStr;
+
 use crate::{
     hir::{
         error::{HirError, HirErrorKind},
@@ -250,15 +252,17 @@ impl std::fmt::Display for Type {
     }
 }
 
-impl From<&str> for Intrinsic {
-    fn from(value: &str) -> Self {
-        match value {
+impl FromStr for Intrinsic {
+    type Err = ();
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        Ok(match str {
             "println" => Self::PrintLn,
             "printf" => Self::PrintF,
             "exit" => Self::Exit,
 
-            _ => unreachable!("unknown intrinsic: {value}"),
-        }
+            _ => return Err(()),
+        })
     }
 }
 
