@@ -281,7 +281,8 @@ impl FunctionLower {
                 use crate::mir::SyscallCode;
 
                 let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
-                let dest = self.fresh_temporary(expr.typ);
+                // the return value is ignored for those functions
+                let dest = self.fresh_temporary(Type::I32);
 
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::PrintF => {
@@ -297,6 +298,8 @@ impl FunctionLower {
                                 args: sys_args,
                             },
                         );
+
+                        Ok(Operand::Const(Const::Unit))
                     }
 
                     Intrinsic::Exit => {
@@ -307,10 +310,10 @@ impl FunctionLower {
                                 args: lowered_args,
                             },
                         );
+
+                        Ok(Operand::Const(Const::Unit))
                     }
                 }
-
-                Ok(Operand::Place(dest))
             }
         }
     }

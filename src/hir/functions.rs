@@ -400,6 +400,26 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Expr::Call { callee, args, span } => {
+                if let Expr::Identifier(name, _) = callee.as_ref() {
+                    if let Ok(intrinsic) = Intrinsic::from_str(name) {
+                        let mut lowered_args = Vec::with_capacity(args.len());
+
+                        for arg in args {
+                            let lowered = self.lower_expr(arg, None)?;
+                            lowered_args.push(lowered);
+                        }
+
+                        return Ok(Expression {
+                            typ: Type::Unit,
+                            span: *span,
+                            kind: ExpressionKind::IntrinsicCall {
+                                intrinsic,
+                                args: lowered_args,
+                            },
+                        });
+                    }
+                }
+
                 let (function, signature) = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(name);
