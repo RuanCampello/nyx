@@ -223,7 +223,10 @@ impl<'f> Lower<'f> {
                                     moves.push((vreg, abi_reg));
                                 }
 
-                                None => stack_args.push((*arg, mt)),
+                                None => {
+                                    let operand = self.lower_operand(arg);
+                                    stack_args.push((operand, mt));
+                                }
                             }
 
                             int_idx += 1;
@@ -236,7 +239,10 @@ impl<'f> Lower<'f> {
                                     moves.push((vreg, abi_reg));
                                 }
 
-                                None => stack_args.push((*arg, mt)),
+                                None => {
+                                    let operand = self.lower_operand(arg);
+                                    stack_args.push((operand, mt));
+                                }
                             }
 
                             float_idx += 1;

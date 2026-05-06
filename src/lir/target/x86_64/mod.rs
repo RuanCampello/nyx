@@ -3,7 +3,6 @@ use crate::{
         MachineType, VReg,
         target::{Instruction, PhysicalReg, RegClass, Target},
     },
-    mir::Operand,
     parser::expression::BinaryOperator,
 };
 
@@ -457,12 +456,24 @@ impl X86Instr {
     pub(self) fn call(
         target: String,
         moves: Vec<(VReg, X86Reg)>,
-        stack_args: Vec<(Operand, MachineType)>,
+        stack_args: Vec<(X86Operand, MachineType)>,
         ret: Option<VReg>,
     ) -> Self {
         let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
 
-        todo!()
+        for (operand, _) in &stack_args {
+            if let X86Operand::VReg(vreg) = operand {
+                uses.push(*vreg);
+            }
+        }
+
+        Self::Call {
+            target,
+            moves,
+            uses,
+            ret,
+            stack_args,
+        }
     }
 
     /// Creates a comparation instruction depending on `O`
