@@ -207,35 +207,45 @@ impl<'f> Lower<'f> {
                     .unwrap_or_else(|| format!("nyx_func_{}", callee.0));
 
                 let mut moves = Vec::with_capacity(args.len());
-                let mut int = 0;
-                let mut float = 0;
+                let mut stack_args = Vec::new();
+                let mut int_idx = 0;
+                let mut float_idx = 0;
 
                 for arg in args {
-                    let machine = arg.typ().machine_type();
+                    let mt = arg.typ().machine_type();
+                    let class = mt.class();
 
-                    let abi_reg = match machine.class() {
+                    match class {
                         RegClass::Int => {
-                            let reg = X86_64::param(int, RegClass::Int);
-                            int += 1;
+                            match X86_64::param(int_idx, RegClass::Int) {
+                                Some(abi_reg) => {
+                                    let vreg = self.operand(&arg, id);
+                                    moves.push((vreg, abi_reg));
+                                }
 
-                            reg
+                                None => stack_args.push((*arg, mt)),
+                            }
+
+                            int_idx += 1;
                         }
 
                         RegClass::Float => {
-                            let reg = X86_64::param(float, RegClass::Float);
-                            float += 1;
+                            match X86_64::param(float_idx, RegClass::Float) {
+                                Some(abi_reg) => {
+                                    let vreg = self.operand(&arg, id);
+                                    moves.push((vreg, abi_reg));
+                                }
 
-                            reg
+                                None => stack_args.push((*arg, mt)),
+                            }
+
+                            float_idx += 1;
                         }
-                    };
-
-                    let Some(abi_reg) = abi_reg else { continue };
-                    let vreg = self.operand(&arg, id);
-                    moves.push((vreg, abi_reg));
+                    }
                 }
 
                 let ret = (typ != Type::Unit).then_some(dest);
-                self.lir.push_instr(id, X86Instr::call(callee, moves, ret));
+                self.lir.push_instr(id, X86Instr::call(callee, moves, stack_args, ret));
             }
 
             InstructionKind::Syscall { code, args, returns } => {
@@ -341,56 +351,93 @@ impl<'f> Lower<'f> {
         self.lower_terminator(id, block.terminator);
     }
 
-    /// Copy physical ABI registers into VRegs
-    ///
-    /// each parameter arrives in a physical ABI register
-    /// we create a fresh VReg precoloured to that ABI register, then emit a regular `Mov` from
-    /// it into the parameter's VReg. this makes the data flow explicit and
-    /// prevents the allocator from assigning the ABI register to another
-    /// VReg before the parameter has been read
+    /// Copy physical ABI (and stack slots) registers into VRegs
+    /// each parameter arrives in a physical ABI register or in the caller's stack frame
     fn lower_param_moves(&mut self) {
         let entry = BlockId(0);
         let mut int_idx = 0;
         let mut float_idx = 0;
+        let mut int_stack_idx = 0;
+        let mut float_stack_idx = 0;
 
         for (vid, typ) in &self.function.params {
             let mt = typ.machine_type();
             let class = mt.class();
 
-            let abi_reg = match class {
+            match class {
                 RegClass::Int => {
-                    let r = X86_64::param(int_idx, RegClass::Int);
+                    match X86_64::param(int_idx, RegClass::Int) {
+                        Some(reg) => {
+                            let dest = self.vreg(*vid);
+                            let abi_vreg = self.lir.new_vreg(mt);
+                            self.lir.add_precolour(abi_vreg, reg);
+
+                            self.lir.push_instr(
+                                &entry,
+                                X86Instr::Mov {
+                                    dest,
+                                    src: X86Operand::VReg(abi_vreg),
+                                    bytes: mt.bytes(),
+                                },
+                            );
+                        }
+
+                        None => {
+                            let offset = X86_64::param_stack_offset(int_stack_idx, RegClass::Int)
+                                .expect("param_stack_offset must be defined when param() returns None");
+
+                            let dest = self.vreg(*vid);
+                            self.lir.push_instr(
+                                &entry,
+                                X86Instr::MovFromStack {
+                                    dest,
+                                    rbp_offset: offset,
+                                    bytes: mt.bytes(),
+                                },
+                            );
+                            int_stack_idx += 1;
+                        }
+                    }
+
                     int_idx += 1;
-                    r
                 }
+
                 RegClass::Float => {
-                    let r = X86_64::param(float_idx, RegClass::Float);
+                    match X86_64::param(float_idx, RegClass::Float) {
+                        Some(reg) => {
+                            let dest = self.vreg(*vid);
+                            let abi_vreg = self.lir.new_vreg(mt);
+                            self.lir.add_precolour(abi_vreg, reg);
+
+                            self.lir.push_instr(
+                                &entry,
+                                X86Instr::MovFloat {
+                                    dest,
+                                    src: X86Operand::VReg(abi_vreg),
+                                    bytes: mt.bytes(),
+                                },
+                            );
+                        }
+
+                        None => {
+                            let offset = X86_64::param_stack_offset(float_stack_idx, RegClass::Float)
+                                .expect("param_stack_offset must be defined when param() returns None");
+
+                            let dest = self.vreg(*vid);
+                            self.lir.push_instr(
+                                &entry,
+                                X86Instr::MovFromStack {
+                                    dest,
+                                    rbp_offset: offset,
+                                    bytes: mt.bytes(),
+                                },
+                            );
+                            float_stack_idx += 1;
+                        }
+                    }
+
                     float_idx += 1;
-                    r
                 }
-            };
-
-            if let Some(reg) = abi_reg {
-                let dest = self.vreg(*vid);
-                let abi_vreg = self.lir.new_vreg(mt);
-
-                // precolour abi_vreg to physical ABI register
-                self.lir.add_precolour(abi_vreg, reg);
-
-                let instr = match class {
-                    RegClass::Float => X86Instr::MovFloat {
-                        dest,
-                        src: X86Operand::VReg(abi_vreg),
-                        bytes: mt.bytes(),
-                    },
-                    RegClass::Int => X86Instr::Mov {
-                        dest,
-                        src: X86Operand::VReg(abi_vreg),
-                        bytes: mt.bytes(),
-                    },
-                };
-
-                self.lir.push_instr(&entry, instr);
             }
         }
     }

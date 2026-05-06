@@ -1,8 +1,9 @@
 use crate::{
     lir::{
-        VReg,
+        MachineType, VReg,
         target::{Instruction, PhysicalReg, RegClass, Target},
     },
+    mir::Operand,
     parser::expression::BinaryOperator,
 };
 
@@ -34,11 +35,18 @@ pub enum X86Instr {
         src: X86Operand,
         bytes: u8,
     },
+    /// load a parameter that was passed on the caller's stack
+    MovFromStack {
+        dest: VReg,
+        /// positive offset from %rbp (always >= 16)
+        rbp_offset: i32,
+        bytes: u8,
+    },
     Lea {
         dest: VReg,
         src: X86Operand,
     },
-    /// zero-extend 1-byte `setcc` result → 4 bytes.
+    /// zero-extend 1-byte `setcc` result -> 4 bytes
     Movzx {
         dest: VReg,
         src: VReg,
@@ -155,9 +163,14 @@ pub enum X86Instr {
 
     Call {
         target: String,
+        /// register-passed arguments
         moves: Vec<(VReg, X86Reg)>,
+        /// all VRegs consumed by the call (union of `moves` and `stack_args`)
         uses: Vec<VReg>,
         ret: Option<VReg>,
+        /// stack based arguments in call order
+        /// the emitter will push then in **reverse** order to match SysV ABI layout
+        stack_args: Vec<(X86Operand, MachineType)>,
     },
 
     Syscall {
@@ -311,6 +324,21 @@ impl Target for X86_64 {
             RegClass::Float => Some(X86Reg::Xmm0),
         }
     }
+
+    #[inline(always)]
+    fn n_reg_params(class: RegClass) -> usize {
+        match class {
+            RegClass::Int => 6,   // rdi, rsi, rdx, rcx, r8, r9
+            RegClass::Float => 8, //xmm0-xmm7
+        }
+    }
+
+    #[inline(always)]
+    fn param_stack_offset(stack_idx: usize, _class: RegClass) -> Option<i32> {
+        // SysV: after prologue the first stack argument is at rbp+16
+        // the second at rbp+24 and so on
+        Some(16 + (stack_idx as i32) * 8)
+    }
 }
 
 impl Instruction<X86_64> for X86Instr {
@@ -318,6 +346,7 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::Mov { dest, .. }
             | Self::MovFloat { dest, .. }
+            | Self::MovFromStack { dest, .. }
             | Self::Lea { dest, .. }
             | Self::Movzx { dest, .. }
             | Self::Add { dest, .. }
@@ -425,15 +454,15 @@ impl Instruction<X86_64> for X86Instr {
 }
 
 impl X86Instr {
-    pub(self) fn call(target: String, moves: Vec<(VReg, X86Reg)>, ret: Option<VReg>) -> Self {
-        let uses = moves.iter().map(|(v, _)| *v).collect();
+    pub(self) fn call(
+        target: String,
+        moves: Vec<(VReg, X86Reg)>,
+        stack_args: Vec<(Operand, MachineType)>,
+        ret: Option<VReg>,
+    ) -> Self {
+        let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
 
-        Self::Call {
-            target,
-            uses,
-            moves,
-            ret,
-        }
+        todo!()
     }
 
     /// Creates a comparation instruction depending on `O`

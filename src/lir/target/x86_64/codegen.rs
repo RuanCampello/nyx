@@ -133,6 +133,18 @@ impl Function<X86_64> {
                 mov_or_scratch(out, &src, &dest, suffix, true);
             }
 
+            Inst::MovFromStack {
+                dest,
+                rbp_offset,
+                bytes,
+            } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+                let adjusted = rbp_offset + (alloc.used_callee_saved.len() as i32 * 8);
+
+                emit!(out, "mov{suffix}    {adjusted}(%rbp), {dest}");
+            }
+
             Inst::Lea { dest, src } => {
                 let dest = alloc.location(dest, &8);
                 let src = self.operand(alloc, src, &8);
@@ -257,7 +269,70 @@ impl Function<X86_64> {
                 }
             }
 
-            Inst::Call { target, moves, ret, .. } => {
+            Inst::Call {
+                target,
+                moves,
+                ret,
+                stack_args,
+                ..
+            } => {
+                let n_stack = stack_args.len();
+
+                if n_stack > 0 {
+                    // aligment
+                    let push_bytes = n_stack * 8;
+                    let needs_pad = (push_bytes % 16) == 0;
+                    if needs_pad {
+                        emit!(out, "subq    $8, %rsp");
+                    }
+
+                    for (operand, mt) in stack_args.iter().rev() {
+                        let bytes = mt.bytes();
+                        let is_float = matches!(mt, MachineType::Float { .. });
+
+                        match operand {
+                            X86Operand::Imm(n) => emit!(out, "pushq   ${n}"),
+                            // float or string constants we need to load into a scratch before push
+                            X86Operand::RipRel(label) => match is_float {
+                                true => {
+                                    let suffix = float_suffix(&bytes);
+
+                                    emit!(out, "subq    $8, %rsp");
+                                    emit!(out, "mov{suffix}    {label}, %xmm15");
+                                    emit!(out, "mov{suffix}    %xmm15, (%rsp)");
+                                }
+
+                                false => {
+                                    emit!(out, "leaq    {label}, %r11");
+                                    emit!(out, "pushq   %r11");
+                                }
+                            },
+                            X86Operand::VReg(vreg) => {
+                                let src = alloc.location(vreg, &bytes);
+
+                                match is_float {
+                                    true => {
+                                        let suffix = float_suffix(&bytes);
+
+                                        emit!(out, "subq    $8, %rsp");
+                                        emit!(out, "mov{suffix}    {src}, %xmm15");
+                                        emit!(out, "mov{suffix}    %xmm15, (%rsp)");
+                                    }
+                                    // widen to 8-byte slot only if necessary
+                                    false if bytes < 8 => {
+                                        let suffix = suffix(&bytes);
+
+                                        emit!(out, "movs{suffix}q   {src}, %r11");
+                                        emit!(out, "pushq   %r11");
+                                    }
+
+                                    false => emit!(out, "pushq    {src}"),
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let arg_moves: Vec<_> = moves
                     .iter()
                     .map(|(vreg, reg)| {
@@ -274,6 +349,15 @@ impl Function<X86_64> {
                 resolve_parallel_moves(out, arg_moves);
 
                 emit!(out, "call    {target}");
+
+                // restore rsp pass the pushed stack arguments
+                if n_stack > 0 {
+                    let total_push = n_stack * 8;
+                    let needs_pad = (total_push % 16) != 8;
+                    let adjust = total_push + if needs_pad { 8 } else { 0 };
+
+                    emit!(out, "addq    ${adjust}, %rsp");
+                }
 
                 if let Some(ret) = ret {
                     let bytes = self.reg_bytes(ret);
