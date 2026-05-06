@@ -117,15 +117,6 @@ impl Function<X86_64> {
         use lir::target::x86_64::X86Instr as Inst;
 
         match instruction {
-            Inst::ParamMov { dest, src_reg, bytes } => {
-                let is_float = self.is_float(dest);
-                let suffix = typed_suffix(bytes, is_float);
-                let src = format!("%{}", src_reg.name(*bytes));
-                let dest = alloc.location(&dest, bytes);
-
-                mov_or_scratch(out, &src, &dest, suffix, is_float);
-            }
-
             Inst::Mov { dest, src, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);

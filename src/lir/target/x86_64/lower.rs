@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg};
+use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
@@ -235,8 +235,7 @@ impl<'f> Lower<'f> {
                 }
 
                 let ret = (typ != Type::Unit).then_some(dest);
-                let ret_class = (typ != Type::Unit).then(|| typ.machine_type().class());
-                self.lir.push_instr(id, X86Instr::call(callee, moves, ret, ret_class));
+                self.lir.push_instr(id, X86Instr::call(callee, moves, ret));
             }
 
             InstructionKind::Syscall { code, args, returns } => {
@@ -263,7 +262,6 @@ impl<'f> Lower<'f> {
                         moves,
                         uses,
                         ret,
-                        precoloured_def: ret.map(|v| (v, X86Reg::Rax)),
                     },
                 );
             }

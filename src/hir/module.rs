@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn import_and_call() {
-        let fs = VirtualFS::default()
+        let _fs = VirtualFS::default()
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",

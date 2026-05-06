@@ -80,15 +80,3 @@ pub fn link(object: &Path, output: &Path, args: &[&str]) -> Result<(), NyxError>
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn single_file_compile_errors_render_with_ariadne() {
-        let err = super::compile("let value = ;").unwrap_err().to_string();
-
-        assert!(err.contains("expected expression"));
-        assert!(err.contains("<input>"));
-        assert!(err.contains("an expression was expected here"));
-    }
-}

@@ -11,8 +11,6 @@ use std::cell::RefCell;
 
 #[derive(Debug)]
 pub struct Diagnostic {
-    #[allow(dead_code)]
-    pub(crate) message: String,
     pub(crate) rendered: String,
 }
 
@@ -47,7 +45,6 @@ impl Diagnostic {
     }
 
     fn from_info(info: Info) -> Self {
-        let message = info.message.clone();
         let span: std::ops::Range<usize> = info.span.into();
 
         let rendered = SOURCE.with_borrow(|(src, filename)| {
@@ -68,7 +65,7 @@ impl Diagnostic {
             render(src, filename, builder.finish())
         });
 
-        Self { message, rendered }
+        Self { rendered }
     }
 }
 

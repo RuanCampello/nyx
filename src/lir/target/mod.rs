@@ -76,9 +76,6 @@ pub trait Instruction<T: Target> {
     /// inherently overwrites `rax` and `rdx`
     fn clobbers<'r>(&self) -> &'r [T::Reg];
 
-    fn precoloured_def(&self) -> Option<(VReg, T::Reg)> {
-        None
-    }
     fn precoloured_uses(&self) -> &[(VReg, T::Reg)] {
         &[]
     }

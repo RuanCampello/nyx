@@ -16,14 +16,12 @@ struct PartialBlock {
     terminator: Option<Terminator>,
 }
 
-#[allow(unused)]
 struct FunctionLower<'a> {
     blocks: Vec<PartialBlock>,
     current: usize,
     next: u32,
     local_map: Vec<ValueId>,
     locals: Vec<(ValueId, Type)>,
-    return_type: Type,
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
     local_symbols: Vec<usize>,
@@ -86,7 +84,6 @@ impl<'a> FunctionLower<'a> {
             current: 0,
             local_map,
             locals,
-            return_type,
             next,
             symbols,
             strings,

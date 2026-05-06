@@ -6,8 +6,6 @@
 //! mechanical. The register allocator works on VRegs and assigns them to
 //! physical registers or stack slots.
 
-#![allow(dead_code)]
-
 use crate::{
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir,
@@ -26,7 +24,6 @@ pub mod target;
 pub struct Function<T: Target> {
     name: String,
     blocks: Vec<Block<T::Instruction>>,
-    params: Vec<VReg>,
 
     /// maps a [virtual register](self::VReg) index to a [machine type](self::MachineType)
     vreg_types: Vec<MachineType>,
@@ -145,7 +142,6 @@ impl<T: Target> Function<T> {
         Self {
             name,
             blocks: Vec::new(),
-            params: Vec::new(),
             vreg_types: Vec::new(),
             precolours: Vec::new(),
             floats: BTreeMap::new(),

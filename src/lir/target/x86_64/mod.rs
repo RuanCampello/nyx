@@ -24,14 +24,6 @@ pub enum X86Operand {
 /// An x86_64 LIR instruction in 2-address form.
 #[derive(Debug, Clone)]
 pub enum X86Instr {
-    /// Copy from a physical ABI parameter register into a VReg at function entry
-    /// `src_reg` is a physical register live-in from the caller: it has no VReg
-    ParamMov {
-        dest: VReg,
-        src_reg: X86Reg,
-        bytes: u8,
-    },
-
     Mov {
         dest: VReg,
         src: X86Operand,
@@ -166,7 +158,6 @@ pub enum X86Instr {
         moves: Vec<(VReg, X86Reg)>,
         uses: Vec<VReg>,
         ret: Option<VReg>,
-        precoloured_def: Option<(VReg, X86Reg)>,
     },
 
     Syscall {
@@ -174,7 +165,6 @@ pub enum X86Instr {
         moves: Vec<(X86Operand, X86Reg, u8)>,
         uses: Vec<VReg>,
         ret: Option<VReg>,
-        precoloured_def: Option<(VReg, X86Reg)>,
     },
 }
 
@@ -326,8 +316,7 @@ impl Target for X86_64 {
 impl Instruction<X86_64> for X86Instr {
     fn defs(&self) -> &[VReg] {
         match self {
-            Self::ParamMov { dest, .. }
-            | Self::Mov { dest, .. }
+            Self::Mov { dest, .. }
             | Self::MovFloat { dest, .. }
             | Self::Lea { dest, .. }
             | Self::Movzx { dest, .. }
@@ -427,14 +416,6 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
-    fn precoloured_def(&self) -> Option<(VReg, X86Reg)> {
-        match self {
-            Self::IDiv { result, .. } => Some((*result, X86Reg::Rax)),
-            Self::Call { precoloured_def, .. } | Self::Syscall { precoloured_def, .. } => *precoloured_def,
-            _ => None,
-        }
-    }
-
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
             Self::IDiv { precoloured_uses, .. } => precoloured_uses,
@@ -444,21 +425,11 @@ impl Instruction<X86_64> for X86Instr {
 }
 
 impl X86Instr {
-    pub(self) fn call(
-        target: String,
-        moves: Vec<(VReg, X86Reg)>,
-        ret: Option<VReg>,
-        ret_class: Option<RegClass>,
-    ) -> Self {
+    pub(self) fn call(target: String, moves: Vec<(VReg, X86Reg)>, ret: Option<VReg>) -> Self {
         let uses = moves.iter().map(|(v, _)| *v).collect();
-        let precoloured_def = ret.and_then(|v| {
-            let reg = X86_64::ret(ret_class?)?;
-            Some((v, reg))
-        });
 
         Self::Call {
             target,
-            precoloured_def,
             uses,
             moves,
             ret,
