@@ -1,0 +1,40 @@
+use std::process::{exit};
+
+fn sum6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32): i32 {
+    a + b + c + d + e + f
+}
+
+fn sum7(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32): i32 {
+    a + b + c + d + e + f + g
+}
+
+fn sum8(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64): f64 {
+    a + b + c + d + e + f + g + h
+}
+
+fn sum9(
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+    g: f64,
+    h: f64,
+    i: f64
+): f64 {
+    a + b + c + d + e + f + g + h + i
+}
+
+fn main(): i32 {
+    let six_ints = sum6(1, 2, 3, 4, 5, 6); // 21
+    let seven_ints = sum7(1, 2, 3, 4, 5, 6, 7); // 28
+    let eight_floats = sum8(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0); // 36.0
+    let nine_floats = sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); // 45.0
+
+    if nine_floats + eight_floats != 81.0 {
+        exit(0);
+    }
+
+    return six_ints + seven_ints; // 49
+}
