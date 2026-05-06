@@ -140,9 +140,7 @@ impl Function<X86_64> {
             } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
-                let adjusted = rbp_offset + (alloc.used_callee_saved.len() as i32 * 8);
-
-                emit!(out, "mov{suffix}    {adjusted}(%rbp), {dest}");
+                emit!(out, "mov{suffix}    {rbp_offset}(%rbp), {dest}");
             }
 
             Inst::Lea { dest, src } => {
