@@ -239,19 +239,23 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, X86Instr::call(callee, moves, ret, ret_class));
             }
 
-            InstructionKind::Syscall { code, args } => {
+            InstructionKind::Syscall { code, args, returns } => {
                 let mut moves = Vec::with_capacity(args.len());
                 let mut uses = Vec::with_capacity(args.len());
 
                 for (i, arg) in args.iter().enumerate() {
                     let abi_reg = X86_64::syscall_param(i).expect("too many syscall arguments");
-                    let vreg = self.operand(arg, id);
+                    let operand = self.lower_operand(arg);
+                    let bytes = arg.typ().machine_type().bytes();
 
-                    moves.push((vreg, abi_reg));
-                    uses.push(vreg);
+                    if let X86Operand::VReg(vreg) = &operand {
+                        uses.push(*vreg);
+                    }
+
+                    moves.push((operand, abi_reg, bytes));
                 }
 
-                let ret = (typ != Type::Unit).then_some(dest);
+                let ret = (*returns && typ != Type::Unit).then_some(dest);
                 self.lir.push_instr(
                     id,
                     X86Instr::Syscall {

@@ -108,6 +108,10 @@ where
     label!(out, ".text");
 
     for function in &mir.functions {
+        if function.intrinsic.is_some() {
+            continue;
+        }
+
         let lir = T::lower(function, &mir.symbols, &mir.functions);
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
@@ -124,9 +128,9 @@ where
 
     // FIXME: this probably should be abstracted away from here
     // but be it as for now
-    if !mir.symbols.is_empty() {
+    if !mir.strings.is_empty() {
         label!(out, ".section .rodata");
-        for (idx, string) in mir.symbols.iter().enumerate() {
+        for (idx, string) in mir.strings.iter().enumerate() {
             label!(out, ".align 1");
             label!(out, ".L_str_{}:", idx);
             label!(out, "    .ascii {:?}", string);

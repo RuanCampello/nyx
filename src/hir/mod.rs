@@ -81,7 +81,7 @@ pub struct Parameter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Local {
     pub(crate) id: LocalId,
-    name: SymbolId,
+    pub(crate) name: SymbolId,
     pub(crate) typ: Type,
     mutable: bool,
 }

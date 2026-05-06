@@ -24,33 +24,49 @@ struct FunctionLower<'a> {
     local_map: Vec<ValueId>,
     locals: Vec<(ValueId, Type)>,
     return_type: Type,
-    symbols: &'a mut Vec<String>,
+    symbols: &'a [String],
+    strings: &'a mut Vec<String>,
+    local_symbols: Vec<usize>,
+    constant_locals: Vec<Option<String>>,
+    runtime_local_uses: Vec<bool>,
 }
 
 pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let mut functions = Vec::with_capacity(hir.functions.len());
-    let mut symbols = hir.symbols;
+    let mut strings = Vec::new();
+    let symbols = hir.symbols;
 
     for function in hir.functions {
-        functions.push(FunctionLower::run(function, &mut symbols)?);
+        functions.push(FunctionLower::run(function, &symbols, &mut strings)?);
     }
 
-    Ok(Mir { functions, symbols })
+    Ok(Mir {
+        functions,
+        symbols,
+        strings,
+    })
 }
 
 impl<'a> FunctionLower<'a> {
-    fn run(function: hir::Function, symbols: &'a mut Vec<String>) -> Result<mir::Function, MirError> {
+    fn run(
+        function: hir::Function,
+        symbols: &'a [String],
+        strings: &'a mut Vec<String>,
+    ) -> Result<mir::Function, MirError> {
         let id = function.id;
+        let intrinsic = function.intrinsic;
         let name_symbol = function.name.0.into_usize();
         let return_type = function.return_type;
         let n_hir_locals = function.locals.len();
 
         let mut local_map = vec![ValueId(0); n_hir_locals];
+        let mut local_symbols = vec![0; n_hir_locals];
         let mut locals = Vec::with_capacity(n_hir_locals);
 
         for local in &function.locals {
             let value_id = ValueId(locals.len() as u32);
             local_map[local.id.0 as usize] = value_id;
+            local_symbols[local.id.0 as usize] = local.name.0.into_usize();
             locals.push((value_id, local.typ));
         }
 
@@ -73,6 +89,10 @@ impl<'a> FunctionLower<'a> {
             return_type,
             next,
             symbols,
+            strings,
+            local_symbols,
+            constant_locals: vec![None; n_hir_locals],
+            runtime_local_uses: collect_runtime_local_uses(&function),
         };
 
         builder.new_block();
@@ -86,6 +106,7 @@ impl<'a> FunctionLower<'a> {
 
         Ok(Function {
             id,
+            intrinsic,
             blocks,
             return_type,
             params,
@@ -120,10 +141,18 @@ impl<'a> FunctionLower<'a> {
         match statement {
             Stmt::Let { id, init } => {
                 if let Some(expr) = init {
+                    self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
+
+                    if !self.runtime_local_uses(*id) && self.constant_locals[id.0 as usize].is_some() {
+                        return Ok(());
+                    }
+
                     let src = self.lower_expr(expr)?;
                     let dest = self.place_for_local(*id, expr.typ);
 
-                    self.emit(dest, InstructionKind::Assign(src));
+                    if self.runtime_local_uses(*id) {
+                        self.emit(dest, InstructionKind::Assign(src));
+                    }
                 }
             }
 
@@ -216,9 +245,8 @@ impl<'a> FunctionLower<'a> {
             ExpressionKind::Float(f) => Ok(Operand::Const(Const::Float(*f, expr.typ))),
             ExpressionKind::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
             ExpressionKind::String(s) => {
-                let id = self.symbols.len();
+                let id = self.intern_string(s);
                 let len = s.len();
-                self.symbols.push(s.clone());
                 Ok(Operand::Const(Const::Str { id, len }))
             }
 
@@ -257,12 +285,17 @@ impl<'a> FunctionLower<'a> {
             }
 
             ExpressionKind::Assign { target, value } => {
+                self.constant_locals[target.0 as usize] = self.capture_constant_expr(value);
+
                 let src = self.lower_expr(value)?;
                 let dest = self.place_for_local(*target, expr.typ);
 
-                self.emit(dest, InstructionKind::Assign(src));
+                if self.runtime_local_uses(*target) {
+                    self.emit(dest, InstructionKind::Assign(src));
+                    return Ok(Operand::Place(dest));
+                }
 
-                Ok(Operand::Place(dest))
+                Ok(src)
             }
 
             ExpressionKind::Call { function, args, .. } => {
@@ -285,57 +318,36 @@ impl<'a> FunctionLower<'a> {
                 use crate::hir::Intrinsic;
                 use crate::mir::SyscallCode;
 
-                let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
                 // the return value is ignored for those functions
                 let dest = self.fresh_temporary(Type::I32);
 
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::Print => {
-                        let fd = Operand::Const(Const::Int(1, Type::I32));
-
-                        for arg in lowered_args {
-                            let len_op = match arg {
-                                Operand::Const(Const::Str { len, .. }) => {
-                                    Operand::Const(Const::Int(len as i64, Type::I32))
-                                }
-                                _ => continue, // ignore non-strings since we formatted at compile time
-                            };
-
-                            let dest = self.fresh_temporary(Type::I32);
-                            self.emit(
-                                dest,
-                                InstructionKind::Syscall {
-                                    code: SyscallCode::Write,
-                                    args: vec![fd, arg, len_op],
-                                },
-                            );
+                        let mut output = String::new();
+                        for arg in args {
+                            self.push_print_arg(&mut output, arg);
                         }
 
-                        // add the newline to println :X
                         if *intrinsic == Intrinsic::PrintLn {
-                            let id = self.symbols.len();
-                            self.symbols.push("\n".to_string());
-                            let newline = Operand::Const(Const::Str { id, len: 1 });
+                            output.push('\n');
+                        }
 
-                            let dest = self.fresh_temporary(Type::I32);
-                            self.emit(
-                                dest,
-                                InstructionKind::Syscall {
-                                    code: SyscallCode::Write,
-                                    args: vec![fd, newline, Operand::Const(Const::Int(1, Type::I32))],
-                                },
-                            );
+                        if !output.is_empty() {
+                            self.emit_write_string(output);
                         }
 
                         Ok(Operand::Const(Const::Unit))
                     }
 
                     Intrinsic::Exit => {
+                        let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+
                         self.emit(
                             dest,
                             InstructionKind::Syscall {
                                 code: SyscallCode::Exit,
                                 args: lowered_args,
+                                returns: false,
                             },
                         );
 
@@ -386,6 +398,121 @@ impl<'a> FunctionLower<'a> {
     fn emit(&mut self, dest: Place, kind: InstructionKind) {
         self.blocks[self.current].instructions.push(Instruction { dest, kind });
     }
+
+    fn emit_write_string(&mut self, text: String) {
+        let len = text.len();
+        let id = self.intern_owned_string(text);
+        let dest = self.fresh_temporary(Type::I32);
+
+        self.emit(
+            dest,
+            InstructionKind::Syscall {
+                code: mir::SyscallCode::Write,
+                args: vec![
+                    Operand::Const(Const::Int(1, Type::I32)),
+                    Operand::Const(Const::Str { id, len }),
+                    Operand::Const(Const::Int(len as i64, Type::I32)),
+                ],
+                returns: false,
+            },
+        );
+    }
+
+    fn push_print_arg(&self, output: &mut String, expr: &Expression) {
+        match &expr.kind {
+            ExpressionKind::String(text) => output.push_str(&self.expand_interpolation(text)),
+            _ => {
+                if let Some(text) = self.capture_constant_expr(expr) {
+                    output.push_str(&text);
+                }
+            }
+        }
+    }
+
+    fn capture_constant_expr(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExpressionKind::Integer(value) => Some(value.to_string()),
+            ExpressionKind::Float(value) => Some(value.to_string()),
+            ExpressionKind::Bool(value) => Some(value.to_string()),
+            ExpressionKind::String(value) => Some(value.clone()),
+            ExpressionKind::Local(id) => self.constant_locals[id.0 as usize].clone(),
+            _ => None,
+        }
+    }
+
+    fn expand_interpolation(&self, input: &str) -> String {
+        let mut output = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch != '{' {
+                output.push(ch);
+                continue;
+            }
+
+            let mut name = String::new();
+            let mut closed = false;
+
+            for ch in chars.by_ref() {
+                if ch == '}' {
+                    closed = true;
+                    break;
+                }
+
+                name.push(ch);
+            }
+
+            if closed {
+                match self.lookup_constant_local(&name) {
+                    Some(value) => output.push_str(value),
+                    None => {
+                        output.push('{');
+                        output.push_str(&name);
+                        output.push('}');
+                    }
+                }
+            } else {
+                output.push('{');
+                output.push_str(&name);
+            }
+        }
+
+        output
+    }
+
+    fn lookup_constant_local(&self, name: &str) -> Option<&str> {
+        self.local_symbols
+            .iter()
+            .enumerate()
+            .find(|(_, symbol)| self.symbols.get(**symbol).is_some_and(|local| local == name))
+            .and_then(|(idx, _)| self.constant_locals[idx].as_deref())
+    }
+
+    fn intern_string(&mut self, value: &str) -> usize {
+        if let Some(id) = self.strings.iter().position(|existing| existing == &value) {
+            return id;
+        }
+
+        let id = self.strings.len();
+        self.strings.push(value.to_owned());
+        id
+    }
+
+    #[inline(always)]
+    fn intern_owned_string(&mut self, value: String) -> usize {
+        if let Some(id) = self.strings.iter().position(|existing| existing == &value) {
+            return id;
+        }
+
+        let id = self.strings.len();
+        self.strings.push(value);
+        id
+    }
+
+    #[inline(always)]
+    fn runtime_local_uses(&self, id: LocalId) -> bool {
+        self.runtime_local_uses.get(id.0 as usize).copied().unwrap_or(false)
+    }
 }
 
 impl PartialBlock {
@@ -408,5 +535,67 @@ impl PartialBlock {
             instructions: self.instructions,
             terminator: self.terminator.expect("block missing terminator"),
         }
+    }
+}
+
+fn collect_runtime_local_uses(function: &hir::Function) -> Vec<bool> {
+    let mut uses = vec![false; function.locals.len()];
+    visit_block_runtime_uses(&function.body, &mut uses);
+
+    uses
+}
+
+fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
+    for statement in &block.statements {
+        match statement {
+            hir::Statement::Let { init, .. } => {
+                if let Some(init) = init {
+                    visit_expr_runtime_uses(init, uses);
+                }
+            }
+            hir::Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
+            hir::Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
+            hir::Statement::Return(None) => {}
+            hir::Statement::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                visit_expr_runtime_uses(condition, uses);
+                visit_block_runtime_uses(then_block, uses);
+                if let Some(else_block) = else_block {
+                    visit_block_runtime_uses(else_block, uses);
+                }
+            }
+            hir::Statement::While { condition, body } => {
+                visit_expr_runtime_uses(condition, uses);
+                visit_block_runtime_uses(body, uses);
+            }
+            hir::Statement::Block(block) => visit_block_runtime_uses(block, uses),
+        }
+    }
+}
+
+fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
+    match &expr.kind {
+        ExpressionKind::Local(id) => {
+            uses[id.0 as usize] = true;
+        }
+        ExpressionKind::Unary { expr, .. } => visit_expr_runtime_uses(expr, uses),
+        ExpressionKind::Binary { left, right, .. } => {
+            visit_expr_runtime_uses(left, uses);
+            visit_expr_runtime_uses(right, uses);
+        }
+        ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
+            for arg in args {
+                visit_expr_runtime_uses(arg, uses);
+            }
+        }
+        ExpressionKind::Unit
+        | ExpressionKind::Integer(_)
+        | ExpressionKind::Float(_)
+        | ExpressionKind::String(_)
+        | ExpressionKind::Bool(_) => {}
     }
 }

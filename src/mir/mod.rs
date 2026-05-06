@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::FunctionId,
+    hir::{FunctionId, Intrinsic},
     parser::{
         expression::{BinaryOperator, UnaryOperator},
         statement::Type,
@@ -36,6 +36,7 @@ mod lower;
 #[derive(Debug, PartialEq)]
 pub struct Mir {
     pub(crate) symbols: Vec<String>,
+    pub(crate) strings: Vec<String>,
     pub(crate) functions: Vec<Function>,
 }
 
@@ -53,6 +54,7 @@ pub struct Instruction {
 #[derive(Debug, PartialEq)]
 pub struct Function {
     id: FunctionId,
+    pub(crate) intrinsic: Option<Intrinsic>,
     /// index into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: usize,
     return_type: Type,
@@ -101,6 +103,7 @@ pub enum InstructionKind {
     Syscall {
         code: SyscallCode,
         args: Vec<Operand>,
+        returns: bool,
     },
 }
 

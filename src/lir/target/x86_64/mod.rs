@@ -171,7 +171,7 @@ pub enum X86Instr {
 
     Syscall {
         id: u32,
-        moves: Vec<(VReg, X86Reg)>,
+        moves: Vec<(X86Operand, X86Reg, u8)>,
         uses: Vec<VReg>,
         ret: Option<VReg>,
         precoloured_def: Option<(VReg, X86Reg)>,

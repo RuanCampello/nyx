@@ -308,20 +308,18 @@ impl Function<X86_64> {
                 ret,
                 ..
             } => {
-                let arg_moves: Vec<_> = moves
-                    .iter()
-                    .map(|(vreg, reg)| {
-                        let bytes = self.reg_bytes(vreg);
-                        let is_float = self.is_float(vreg);
-                        let suffix = typed_suffix(&bytes, is_float);
-                        let src = alloc.location(vreg, &bytes);
-                        let dest = format!("%{}", reg.name(bytes));
+                for (operand, reg, bytes) in moves {
+                    let dest = format!("%{}", reg.name(*bytes));
 
-                        (src, dest, suffix, is_float)
-                    })
-                    .collect();
-
-                resolve_parallel_moves(out, arg_moves);
+                    match operand {
+                        X86Operand::RipRel(src) => emit!(out, "leaq   {src}, {dest}"),
+                        _ => {
+                            let src = self.operand(alloc, operand, bytes);
+                            let suffix = suffix(bytes);
+                            mov_or_scratch(out, &src, &dest, suffix, false);
+                        }
+                    }
+                }
 
                 emit!(out, "movl    ${syscall_id}, %eax");
                 emit!(out, "syscall");

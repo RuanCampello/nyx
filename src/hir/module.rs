@@ -228,7 +228,7 @@ impl<F: FileSystem> ModuleLoader<F> {
                 ));
             }
 
-            map.insert(symbol, local_id);
+            map.insert(symbol, FunctionId(local_offset + local_id.0));
         }
 
         signatures.extend(local_signatures);
