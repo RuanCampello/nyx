@@ -4,43 +4,35 @@ use crate::lexer::{
     token::{Span, TokenKind},
 };
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-#[error("{kind}")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParserError<'i> {
     pub(crate) kind: ParseErrorKind<'i>,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind<'i> {
-    #[error(transparent)]
-    Lexical(#[from] LexError),
-
-    #[error("expected '{expected}', but found '{found}'")]
+    Lexical(LexError),
     Expected {
         expected: TokenKind<'i>,
         found: TokenKind<'i>,
     },
-
-    #[error("expected identifier, found '{found}'")]
-    ExpectedIdentifier { found: TokenKind<'i> },
-
-    #[error("unexpected identifier for assigment target")]
+    ExpectedIdentifier {
+        found: TokenKind<'i>,
+    },
     UnexpectedIdentifier,
-
-    #[error("unexpected binary operator: '{found}'")]
-    InvalidBinaryOperator { found: TokenKind<'i> },
-
-    #[error("unexpected unary operator: '{found}'")]
-    InvalidUnaryOperator { found: TokenKind<'i> },
-
-    #[error("expected expression, found: '{found}'")]
-    ExpectedExpression { found: TokenKind<'i> },
-
-    #[error("expected type identifier, found '{found}'")]
-    ExpectedTypeIdentifier { found: String },
-
-    #[error("unexpected end of file")]
+    InvalidBinaryOperator {
+        found: TokenKind<'i>,
+    },
+    InvalidUnaryOperator {
+        found: TokenKind<'i>,
+    },
+    ExpectedExpression {
+        found: TokenKind<'i>,
+    },
+    ExpectedTypeIdentifier {
+        found: String,
+    },
     UnexpectedEof,
 }
 
@@ -53,5 +45,11 @@ impl<'i> ParserError<'i> {
 impl<'i> From<&LexError> for ParserError<'i> {
     fn from(value: &LexError) -> Self {
         Self::new(ParseErrorKind::Lexical(value.clone()), value.span())
+    }
+}
+
+impl<'i> From<LexError> for ParseErrorKind<'i> {
+    fn from(value: LexError) -> Self {
+        Self::Lexical(value)
     }
 }

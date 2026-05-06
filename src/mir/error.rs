@@ -1,13 +1,19 @@
 use crate::hir::error::HirError;
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-#[error("{kind}")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MirError {
     pub kind: MirErrorKind,
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MirErrorKind {
-    #[error(transparent)]
-    Hir(#[from] HirError<'static>),
+    Hir(HirError<'static>),
+}
+
+impl From<HirError<'static>> for MirError {
+    fn from(value: HirError<'static>) -> Self {
+        Self {
+            kind: MirErrorKind::Hir(value),
+        }
+    }
 }

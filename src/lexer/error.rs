@@ -2,7 +2,6 @@
 //! Produces human-readable diagnostics with source spans and help hints.
 
 use crate::lexer::token::{Position, Span};
-use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
@@ -43,28 +42,3 @@ impl LexError {
         Self::new(LexErrorKind::UnexpectedChar(ch), Span::new(pos, end))
     }
 }
-
-impl fmt::Display for LexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg = match &self.kind {
-            LexErrorKind::UnexpectedChar(ch) => format!("unexpected character `{ch}`"),
-            LexErrorKind::UnterminatedString => "unterminated string literal".into(),
-            LexErrorKind::UnterminatedComment => "unterminated block comment".into(),
-            LexErrorKind::InvalidEscape(ch) => format!("invalid escape sequence `\\{ch}`"),
-            LexErrorKind::InvalidNumber(detail) => format!("invalid number literal: {detail}"),
-        };
-
-        write!(
-            f,
-            "error: {msg}\n --> {}:{}\n",
-            self.span.start.line, self.span.start.column,
-        )?;
-
-        if let Some(help) = &self.help {
-            write!(f, " help: {help}\n")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for LexError {}

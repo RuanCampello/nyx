@@ -17,9 +17,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
         consume_digits(cursor);
 
         // check for fractional part
-        let is_float = match cursor.peek() == Some('.')
-            && cursor.peek_until(2).is_some_and(|c| c.is_ascii_digit())
-        {
+        let is_float = match cursor.peek() == Some('.') && cursor.peek_until(2).is_some_and(|c| c.is_ascii_digit()) {
             true => {
                 cursor.advance();
                 consume_digits(cursor);
@@ -54,9 +52,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
             false => {
                 let value: i64 = parse_str.parse().map_err(|_| {
                     LexError::new(
-                        LexErrorKind::InvalidNumber(format!(
-                            "could not parse `{text}` as an integer"
-                        )),
+                        LexErrorKind::InvalidNumber(format!("could not parse `{text}` as an integer")),
                         span,
                     )
                 })?;

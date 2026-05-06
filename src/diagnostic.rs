@@ -3,7 +3,7 @@ use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
 use crate::lexer::token::Span;
-use crate::mir::error::MirError;
+use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
 use crate::{NyxError, hir::error::HirError};
 use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
@@ -288,6 +288,14 @@ impl Diagnosticable for HirError<'_> {
     }
 }
 
+impl Diagnosticable for MirError {
+    fn info(&self) -> Info {
+        match &self.kind {
+            MirErrorKind::Hir(error) => error.info(),
+        }
+    }
+}
+
 impl HasSpan for LexError {
     fn span(&self) -> Span {
         self.span
@@ -342,16 +350,6 @@ impl<T: Diagnosticable> From<T> for Diagnostic {
 impl<T: Into<Diagnostic>> From<T> for NyxError {
     fn from(value: T) -> Self {
         Self::Compile(value.into())
-    }
-}
-
-impl From<MirError> for Diagnostic {
-    fn from(value: MirError) -> Self {
-        let message = value.to_string();
-        let rendered = format!("error: {message}\n");
-        // TODO: better errors for MIR :X
-
-        Self { message, rendered }
     }
 }
 

@@ -34,8 +34,7 @@ impl BlockComment {
                         ),
                         cursor.position(),
                     );
-                    return Err(LexError::new(LexErrorKind::UnterminatedComment, span)
-                        .with_help("add a closing `*/`"));
+                    return Err(LexError::new(LexErrorKind::UnterminatedComment, span).with_help("add a closing `*/`"));
                 }
                 Some('/') if cursor.consume_optional('*') => depth += 1,
                 Some('*') if cursor.consume_optional('/') => depth -= 1,
