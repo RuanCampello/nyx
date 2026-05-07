@@ -577,7 +577,7 @@ mod tests {
             "#,
         );
 
-        let hir = vloader(fs).load(Path::new("/project/main.nyx")).unwrap();
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 1);
     }
 
@@ -595,7 +595,40 @@ mod tests {
             );
 
         let err = vloader(fs).load("/project/main.nyx").unwrap_err();
-        println!("{err:#?}");
         assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn namespace_import_with_qualified_call() {
+        let fs = VirtualFS::default()
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::math::{add};
+            fn main(): i32 {
+                add(1, 2)
+            }
+            "#,
+            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.functions.len(), 2);
+    }
+
+    #[test]
+    fn qualified_import() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            use std::process;
+            fn main(): i32 {
+                process::exit(0);
+            }
+            "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        println!("{hir:#?}");
     }
 }

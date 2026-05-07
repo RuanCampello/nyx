@@ -99,7 +99,7 @@ impl<'i> Expression<'i> {
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(id) => Ok(Expression::Identifier(id, token.span)),
+            TokenKind::Identifier(ident) => Ok(Expression::Identifier(ident, token.span)),
             TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,

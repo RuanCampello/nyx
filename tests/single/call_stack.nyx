@@ -1,4 +1,4 @@
-use std::process::{exit};
+use std::process;
 
 fn sum6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32): i32 {
     a + b + c + d + e + f
@@ -33,7 +33,7 @@ fn main(): i32 {
     let nine_floats = sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); // 45.0
 
     if nine_floats + eight_floats != 81.0 {
-        exit(0);
+        process::exit(0);
     }
 
     return six_ints + seven_ints; // 49
