@@ -622,7 +622,7 @@ mod tests {
             "/project/main.nyx",
             r#"
             use std::process;
-            fn main(): i32 {
+            fn main() {
                 process::exit(0);
             }
             "#,

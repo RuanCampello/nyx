@@ -150,6 +150,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 6,
             TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 7,
             TokenKind::Punct(Punct::OpenParen) => 8, // function call
+            TokenKind::Punct(Punct::ColonColon) => 9,
             _ => 0,
         }
     }
@@ -158,6 +159,10 @@ impl<'i> Expression<'i> {
         let token = parser.expect_next()?;
 
         match token.kind {
+            TokenKind::Punct(Punct::ColonColon) => {
+                let (name, span) = parser.expect_identifier()?;
+                Ok(Expression::Identifier(name, span))
+            }
             TokenKind::Punct(Punct::OpenParen) => {
                 let mut args = Vec::new();
                 let end_position;
@@ -166,9 +171,7 @@ impl<'i> Expression<'i> {
                 loop {
                     let token = match parser.peek() {
                         Some(Ok(token)) => token,
-                        _ => {
-                            return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                        }
+                        _ => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span)),
                     };
 
                     if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
