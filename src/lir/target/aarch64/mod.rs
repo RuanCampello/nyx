@@ -1,6 +1,6 @@
-use crate::{lir::{
-    target::{PhysicalReg, RegClass, Target, Instruction}, VReg
-}, };
+use crate::lir::{
+    target::{Instruction, PhysicalReg, RegClass, Target}, MachineType, VReg
+};
 
 pub struct AArch64;
 
@@ -20,65 +20,65 @@ pub enum A64Operand {
 /// ADD Xd, Xn, Xm -> Xd = Xn + Xm
 /// ```
 #[derive(Debug, Clone)]
+#[rustfmt::skip]
 pub enum A64Instr {
-    MovImm {
-        dest: VReg,
-        imm: i64,
-        bytes: u8,
-    },
-    Mov {
-        dest: VReg,
-        src: VReg,
-        bytes: u8,
-    },
+    // integer movs
+    MovImm { dest: VReg, imm: i64, bytes: u8 },
+    Mov { dest: VReg, src: VReg, bytes: u8 },
+    /// load a stack-passed param
+    LdrParam { dest: VReg, fp_offset: i32, bytes: u8 },
 
-    Add {
-        dest: VReg,
-        lhs: VReg,
-        rhs: A64Operand,
-        bytes: u8,
-    },
-    Sub {
-        dest: VReg,
-        lhs: VReg,
-        rhs: A64Operand,
-        bytes: u8,
-    },
-    Mul {
-        dest: VReg,
-        lhs: VReg,
-        rhs: VReg,
-        bytes: u8,
-    },
-    SDiv {
-        dest: VReg,
-        lhs: VReg,
-        rhs: VReg,
-        bytes: u8,
-    },
-    Neg {
-        dest: VReg,
-        src: VReg,
-        bytes: u8,
-    },
+    // integer arithmetic
+    Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Sub { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Mul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    SDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    Neg { dest: VReg, src: VReg, bytes: u8 },
 
-    And {
-        dest: VReg,
-        lhs: VReg,
-        rhs: A64Operand,
-        bytes: u8,
+    // logical operations
+    And { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Or { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Eor { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+
+    // comparisons
+    Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Cset { dest: VReg, cond: () },
+    Cmn { lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Tst { lhs: VReg, rhs: A64Operand, bytes: u8 },
+
+    // float movs
+    FMov { dest: VReg, src: VReg, bytes: u8 },
+    FLiteral { dest: VReg, label: String, bytes: u8 },
+
+    // float arithmetic
+    FAdd { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    FSub { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    FMul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    FDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    FNeg { dest: VReg, src: VReg, bytes: u8 },
+
+    // float comparison
+    FCmp { lhs: VReg, rhs: VReg, bytes: u8 },
+
+    Adr { dest: VReg, label: String },
+
+    Call {
+        target: String,
+        /// register-passed arguments
+        moves: Vec<(VReg, A64Reg)>,
+        /// all vregs consumed by the call
+        uses: Vec<VReg>,
+        /// stack-passed arguments in call order
+        stack_args: Vec<(A64Operand, MachineType)>,
+        ret: Option<VReg>,
     },
-    Or {
-        dest: VReg,
-        lhs: VReg,
-        rhs: A64Operand,
-        bytes: u8,
-    },
-    Eor {
-        dest: VReg,
-        lhs: VReg,
-        rhs: A64Operand,
-        bytes: u8,
+ 
+    /// linux syscall (SVC #0)
+    Syscall {
+        id: u64,
+        moves: Vec<(A64Operand, A64Reg, u8)>,
+        uses: Vec<VReg>,
+        ret: Option<VReg>,
     },
 }
 
@@ -254,6 +254,7 @@ impl Instruction<AArch64> for A64Instr {
 impl PhysicalReg for A64Reg {
     fn class(self) -> RegClass {
         match self {
+            r if r >= Self::D0 && r <= Self::D15 => RegClass::Float,
             _ => RegClass::Int,
         }
     }
