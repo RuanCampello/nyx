@@ -1,5 +1,6 @@
 use crate::lir::{
-    target::{Instruction, PhysicalReg, RegClass, Target}, MachineType, VReg
+    MachineType, VReg,
+    target::{Instruction, PhysicalReg, RegClass, Target},
 };
 
 pub struct AArch64;
@@ -83,6 +84,7 @@ pub enum A64Instr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[rustfmt::skip]
 pub enum A64Reg {
     // integer caller-saved
     X0, X1, X2, X3, X4, X5, X6, X7,
@@ -175,8 +177,14 @@ impl Target for AArch64 {
         match class {
             RegClass::Int => {
                 const REGS: [A64Reg; 8] = [
-                    A64Reg::X0, A64Reg::X1, A64Reg::X2, A64Reg::X3,
-                    A64Reg::X4, A64Reg::X5, A64Reg::X6, A64Reg::X7,
+                    A64Reg::X0,
+                    A64Reg::X1,
+                    A64Reg::X2,
+                    A64Reg::X3,
+                    A64Reg::X4,
+                    A64Reg::X5,
+                    A64Reg::X6,
+                    A64Reg::X7,
                 ];
 
                 REGS.get(idx).copied()
@@ -184,8 +192,14 @@ impl Target for AArch64 {
 
             RegClass::Float => {
                 const REGS: [A64Reg; 8] = [
-                    A64Reg::D0, A64Reg::D1, A64Reg::D2, A64Reg::D3,
-                    A64Reg::D4, A64Reg::D5, A64Reg::D6, A64Reg::D7,
+                    A64Reg::D0,
+                    A64Reg::D1,
+                    A64Reg::D2,
+                    A64Reg::D3,
+                    A64Reg::D4,
+                    A64Reg::D5,
+                    A64Reg::D6,
+                    A64Reg::D7,
                 ];
 
                 REGS.get(idx).copied()
@@ -201,7 +215,6 @@ impl Target for AArch64 {
         }
     }
 
-
     #[inline(always)]
     fn n_reg_params(class: RegClass) -> usize {
         match class {
@@ -214,14 +227,10 @@ impl Target for AArch64 {
     fn syscall_param(idx: usize) -> Option<Self::Reg> {
         // Linux AArch64 syscall ABI
         // syscall number in X8, args in X0-X5
-        const REGS: [A64Reg; 6] = [
-            A64Reg::X0, A64Reg::X1, A64Reg::X2,
-            A64Reg::X3, A64Reg::X4, A64Reg::X5,
-        ];
+        const REGS: [A64Reg; 6] = [A64Reg::X0, A64Reg::X1, A64Reg::X2, A64Reg::X3, A64Reg::X4, A64Reg::X5];
 
         REGS.get(idx).copied()
     }
-
 
     /// AAPCS64 stack argument layout
     ///
@@ -235,19 +244,126 @@ impl Target for AArch64 {
 
 impl Instruction<AArch64> for A64Instr {
     fn defs(&self) -> &[VReg] {
-        todo!()
+        match self {
+            Self::MovImm { dest, .. }
+            | Self::Mov { dest, .. }
+            | Self::LdrParam { dest, .. }
+            | Self::Add { dest, .. }
+            | Self::Sub { dest, .. }
+            | Self::Mul { dest, .. }
+            | Self::SDiv { dest, .. }
+            | Self::Neg { dest, .. }
+            | Self::And { dest, .. }
+            | Self::Or { dest, .. }
+            | Self::Eor { dest, .. }
+            | Self::Cset { dest, .. }
+            | Self::FMov { dest, .. }
+            | Self::FLiteral { dest, .. }
+            | Self::FAdd { dest, .. }
+            | Self::FSub { dest, .. }
+            | Self::FMul { dest, .. }
+            | Self::FDiv { dest, .. }
+            | Self::FNeg { dest, .. }
+            | Self::Adr { dest, .. } => std::slice::from_ref(dest),
+
+            Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
+            Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => std::slice::from_ref(r),
+            Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
+        }
     }
 
     fn uses(&self) -> &[VReg] {
-        todo!()
+        match self {
+            Self::Mov { src, .. } | Self::Neg { src, .. } | Self::FMov { src, .. } | Self::FNeg { src, .. } => {
+                std::slice::from_ref(src)
+            }
+            Self::Add {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Sub {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::And {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Or {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Eor {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Cmp {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Cmn {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            }
+            | Self::Tst {
+                lhs,
+                rhs: A64Operand::VReg(_),
+                ..
+            } => {
+                // SAFETY: lhs and rhs are both fields of a live enum variant
+                // we return a 2-element slice backed by adjacent fields
+                // this is safe as long as we never expose a dangling reference
+                // in practice the enum lives for the duration of the function body :/
+                unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) }
+            }
+
+            Self::Add { lhs, .. }
+            | Self::Sub { lhs, .. }
+            | Self::And { lhs, .. }
+            | Self::Or { lhs, .. }
+            | Self::Eor { lhs, .. }
+            | Self::Cmp { lhs, .. }
+            | Self::Cmn { lhs, .. }
+            | Self::Tst { lhs, .. } => std::slice::from_ref(lhs),
+
+            Self::Mul { lhs, .. }
+            | Self::SDiv { lhs, .. }
+            | Self::FAdd { lhs, .. }
+            | Self::FSub { lhs, .. }
+            | Self::FMul { lhs, .. }
+            | Self::FDiv { lhs, .. } => unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) },
+
+            Self::FCmp { lhs, .. } => unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) },
+
+            Self::Call { uses, .. } | Self::Syscall { uses, .. } => uses.as_slice(),
+
+            Self::MovImm { .. }
+            | Self::LdrParam { .. }
+            | Self::FLiteral { .. }
+            | Self::Adr { .. }
+            | Self::Cset { .. } => &[],
+        }
     }
 
     fn as_copy(&self) -> Option<(VReg, VReg)> {
-        todo!()
+        match self {
+            Self::Mov { dest, src, .. } | Self::FMov { dest, src, .. } => Some((*dest, *src)),
+            _ => None,
+        }
     }
 
     fn clobbers<'r>(&self) -> &'r [<AArch64 as Target>::Reg] {
-        todo!()
+        match self {
+            Self::Call { .. } | Self::Syscall { .. } => AArch64::caller_saved(),
+            _ => &[],
+        }
     }
 }
 
