@@ -3,7 +3,9 @@ use crate::{
     mir,
 };
 
+mod aarch64;
 mod x86_64;
+
 pub use x86_64::X86_64;
 
 /// The trait that a target architecture must implement.
