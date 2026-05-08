@@ -18,35 +18,23 @@ default:
       - .cargo/registry/
       - target/
   before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends binutils ca-certificates curl
-    - if [ "$(uname -m)" = "aarch64" ]; then NEXTEST_BIN="linux-arm"; else NEXTEST_BIN="linux"; fi
-    - curl -LsSf "https://get.nexte.st/latest/${NEXTEST_BIN}" -o nextest.tar.gz
-    - tar -xf nextest.tar.gz -C /usr/local/bin
     - rustc --version
-    - cargo nextest --version
-test:cloud-x86_64:
+    - cargo --version
+
+test:x86_64:
   stage: test
   tags:
     - saas-linux-small-amd64
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   script:
-    - cargo nextest run --profile ci --workspace
-  artifacts:
-    when: always
-    reports:
-      junit: target/nextest/ci/junit.xml
+    - cargo test --workspace
 
-test:cloud-aarch64:
+test:aarch64:
   stage: test
   tags:
     - saas-linux-small-arm64
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   script:
-    - cargo nextest run --profile ci --workspace
-  artifacts:
-    when: always
-    reports:
-      junit: target/nextest/ci/junit.xml
+    - cargo test --workspace
