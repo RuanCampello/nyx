@@ -208,7 +208,7 @@ impl Function<AArch64> {
                 let rhs = self.operand(alloc, rhs, bytes);
 
                 match instruction {
-                    A64Instr::Sub { .. } => emit!(out, "add     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Sub { .. } => emit!(out, "sub     {dest}, {lhs}, {rhs}"),
                     A64Instr::Add { .. } => emit!(out, "add     {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
@@ -223,7 +223,7 @@ impl Function<AArch64> {
 
                 match instruction {
                     A64Instr::Mul { .. } => emit!(out, "mul     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Add { .. } => emit!(out, "sdiv     {dest}, {lhs}, {rhs}"),
+                    A64Instr::SDiv { .. } => emit!(out, "sdiv     {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
             }
