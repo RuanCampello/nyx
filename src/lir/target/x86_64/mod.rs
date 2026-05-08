@@ -23,17 +23,10 @@ pub enum X86Operand {
 
 /// An x86_64 LIR instruction in 2-address form.
 #[derive(Debug, Clone)]
+#[rustfmt::skip]
 pub enum X86Instr {
-    Mov {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    MovFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
+    Mov { dest: VReg, src: X86Operand, bytes: u8 },
+    MovFloat { dest: VReg, src: X86Operand, bytes: u8 },
     /// load a parameter that was passed on the caller's stack
     MovFromStack {
         dest: VReg,
@@ -41,36 +34,15 @@ pub enum X86Instr {
         rbp_offset: i32,
         bytes: u8,
     },
-    Lea {
-        dest: VReg,
-        src: X86Operand,
-    },
+    Lea { dest: VReg, src: X86Operand },
     /// zero-extend 1-byte `setcc` result -> 4 bytes
-    Movzx {
-        dest: VReg,
-        src: VReg,
-    },
+    Movzx { dest: VReg, src: VReg },
 
     // integer arithmetic
-    Add {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    Sub {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    Imul {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    Neg {
-        dest: VReg,
-        bytes: u8,
-    },
+    Add { dest: VReg, src: X86Operand, bytes: u8 },
+    Sub { dest: VReg, src: X86Operand, bytes: u8 },
+    Imul { dest: VReg, src: X86Operand, bytes: u8 },
+    Neg { dest: VReg, bytes: u8 },
     /// Allocator constraints:
     ///   `dividend`  → rax  (fixed_use, stored in `fixed_uses_buf`)
     ///   `result`    → rax  (fixed_def)
@@ -88,77 +60,24 @@ pub enum X86Instr {
     },
 
     // float arithmetic
-    AddFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    SubFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    MulFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    DivFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    XorFloat {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
+    AddFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    SubFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    MulFloat{ dest: VReg, src: X86Operand, bytes: u8 },
+    DivFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    XorFloat { dest: VReg, src: X86Operand, bytes: u8 },
 
     // comparison
-    Cmp {
-        lhs: VReg,
-        rhs: X86Operand,
-        bytes: u8,
-        uses: [VReg; 2],
-        uses_len: u8,
-    },
-    Test {
-        lhs: VReg,
-        rhs: X86Operand,
-        bytes: u8,
-        uses: [VReg; 2],
-        uses_len: u8,
-    },
+    Cmp { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
+    Test { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
-    Ucomis {
-        lhs: VReg,
-        rhs: X86Operand,
-        bytes: u8,
-        uses: [VReg; 2],
-        uses_len: u8,
-    },
-    Setcc {
-        dest: VReg,
-        condition: Condition,
-    },
+    Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
+    Setcc { dest: VReg, condition: Condition },
 
     // logical operations
-    And {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    Or {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
-    Xor {
-        dest: VReg,
-        src: X86Operand,
-        bytes: u8,
-    },
+    And { dest: VReg, src: X86Operand, bytes: u8 },
+    Or { dest: VReg, src: X86Operand, bytes: u8 },
+    Xor { dest: VReg, src: X86Operand, bytes: u8 },
 
     Call {
         target: String,
@@ -182,112 +101,66 @@ pub enum X86Instr {
 
 /// Physical registers for x86_64 under the SysV AMD64 ABI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[rustfmt::skip]
 pub enum X86Reg {
     // gp caller-saved
-    Rax,
-    Rcx,
-    Rdx,
-    Rsi,
-    Rdi,
-    R8,
-    R9,
-    R10,
+    Rax, Rcx, Rdx, Rsi, Rdi, R8, R9, R10,
     // gp callee-saved
-    Rbx,
-    R12,
-    R13,
-    R14,
-    R15,
-
+    Rbx, R12, R13, R14, R15,
     // xmm
-    Xmm0,
-    Xmm1,
-    Xmm2,
-    Xmm3,
-    Xmm4,
-    Xmm5,
-    Xmm6,
-    Xmm7,
-    Xmm8,
-    Xmm9,
-    Xmm10,
-    Xmm11,
-    Xmm12,
-    Xmm13,
-    Xmm14,
+    Xmm0, Xmm1, Xmm2, Xmm3, Xmm4, Xmm5, Xmm6, Xmm7,
+    Xmm8, Xmm9, Xmm10, Xmm11, Xmm12, Xmm13, Xmm14,
 }
 
 /// x86 condition codes for `setcc` / `jcc`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
 pub enum Condition {
-    E,
-    Ne,
-    L,
-    Le,
-    G,
-    Ge,
-    B,
-    Be,
-    A,
-    Ae,
+    E, Ne,
+    L, Le,
+    G, Ge,
+    B, Be,
+    A, Ae,
 }
 
 impl Target for X86_64 {
     type Reg = X86Reg;
     type Instruction = X86Instr;
 
+    #[inline(always)]
+    #[rustfmt::skip]
     fn gprs<'r>() -> &'r [Self::Reg] {
         &[
-            X86Reg::Rax,
-            X86Reg::Rcx,
-            X86Reg::Rdx,
-            X86Reg::Rsi,
-            X86Reg::Rdi,
-            X86Reg::R8,
-            X86Reg::R9,
-            X86Reg::R10,
-            X86Reg::Rbx,
-            X86Reg::R12,
-            X86Reg::R13,
-            X86Reg::R14,
+            X86Reg::Rax, X86Reg::Rcx, X86Reg::Rdx, X86Reg::Rsi,
+            X86Reg::Rdi, X86Reg::R8, X86Reg::R9, X86Reg::R10,
+            X86Reg::Rbx, X86Reg::R12, X86Reg::R13, X86Reg::R14,
             X86Reg::R15,
         ]
     }
 
+    #[inline(always)]
+    #[rustfmt::skip]
     fn fprs<'r>() -> &'r [Self::Reg] {
         &[
-            X86Reg::Xmm0,
-            X86Reg::Xmm1,
-            X86Reg::Xmm2,
-            X86Reg::Xmm3,
-            X86Reg::Xmm4,
-            X86Reg::Xmm5,
-            X86Reg::Xmm6,
-            X86Reg::Xmm7,
-            X86Reg::Xmm8,
-            X86Reg::Xmm9,
-            X86Reg::Xmm10,
-            X86Reg::Xmm11,
-            X86Reg::Xmm12,
-            X86Reg::Xmm13,
-            X86Reg::Xmm14,
+            X86Reg::Xmm0, X86Reg::Xmm1, X86Reg::Xmm2, X86Reg::Xmm3,
+            X86Reg::Xmm4, X86Reg::Xmm5, X86Reg::Xmm6, X86Reg::Xmm7,
+            X86Reg::Xmm8, X86Reg::Xmm9, X86Reg::Xmm10, X86Reg::Xmm11,
+            X86Reg::Xmm12, X86Reg::Xmm13, X86Reg::Xmm14,
         ]
     }
 
+    #[inline(always)]
     fn callee_saved<'r>() -> &'r [Self::Reg] {
         &[X86Reg::Rbx, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15]
     }
 
+    #[inline(always)]
+    #[rustfmt::skip]
     fn caller_saved<'r>() -> &'r [Self::Reg] {
         &[
-            X86Reg::Rax,
-            X86Reg::Rcx,
-            X86Reg::Rdx,
-            X86Reg::Rsi,
-            X86Reg::Rdi,
-            X86Reg::R8,
-            X86Reg::R9,
-            X86Reg::R10,
+            X86Reg::Rax, X86Reg::Rcx, X86Reg::Rdx,
+            X86Reg::Rsi, X86Reg::Rdi, X86Reg::R8,
+            X86Reg::R9, X86Reg::R10,
         ]
     }
 
