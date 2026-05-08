@@ -1,4 +1,4 @@
-//! LIR + Allocation → GAS (AT&T syntax) assembly emission.
+//! LIR + Allocation -> GAS (AT&T syntax) assembly emission.
 //!
 //! After register allocation every VReg has a concrete Location (register or
 //! stack slot).
