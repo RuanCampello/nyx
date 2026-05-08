@@ -3,6 +3,7 @@ use crate::{
         MachineType, VReg,
         target::{Instruction, PhysicalReg, RegClass, Target},
     },
+    mir::SyscallCode,
     parser::expression::BinaryOperator,
 };
 
@@ -211,6 +212,14 @@ impl Target for X86_64 {
         // SysV: after prologue the first stack argument is at rbp+16
         // the second at rbp+24 and so on
         Some(16 + (stack_idx as i32) * 8)
+    }
+
+    #[inline(always)]
+    fn syscall_code(code: SyscallCode) -> u64 {
+        match code {
+            SyscallCode::Write => 1,
+            SyscallCode::Exit => 60,
+        }
     }
 }
 

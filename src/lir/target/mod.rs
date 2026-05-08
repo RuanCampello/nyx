@@ -1,11 +1,12 @@
 use crate::{
     lir::{self, VReg, regalloc},
-    mir,
+    mir::{self, SyscallCode},
 };
 
 mod aarch64;
 mod x86_64;
 
+pub use aarch64::AArch64;
 pub use x86_64::X86_64;
 
 /// The trait that a target architecture must implement.
@@ -41,6 +42,9 @@ pub trait Target: Sized {
     fn syscall_param(idx: usize) -> Option<Self::Reg>;
     /// physical register for the return value of the given class
     fn ret(class: RegClass) -> Option<Self::Reg>;
+
+    /// map an abstract syscall code to this platform's numeric value
+    fn syscall_code(code: SyscallCode) -> u64;
 }
 
 /// Lowers MIR into target-specific LIR.

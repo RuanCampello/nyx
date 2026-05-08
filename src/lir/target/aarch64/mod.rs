@@ -1,8 +1,13 @@
-use crate::lir::{
-    MachineType, VReg,
-    target::{Instruction, PhysicalReg, RegClass, Target},
+use crate::parser::expression::BinaryOperator;
+use crate::{
+    lir::{
+        MachineType, VReg,
+        target::{Instruction, PhysicalReg, RegClass, Target},
+    },
+    mir::SyscallCode,
 };
 
+mod codegen;
 mod lower;
 
 pub struct AArch64;
@@ -19,7 +24,7 @@ pub enum A64Operand {
 /// AArch64 LIR instruction set.
 ///
 /// Unlike x86_64, almost every arithmetic instruction is genuinely 3-address:
-/// ```
+/// ```text
 /// ADD Xd, Xn, Xm -> Xd = Xn + Xm
 /// ```
 #[derive(Debug, Clone)]
@@ -45,7 +50,7 @@ pub enum A64Instr {
 
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Cset { dest: VReg, cond: () },
+    Cset { dest: VReg, cond: A64Cond },
     Cmn { lhs: VReg, rhs: A64Operand, bytes: u8 },
     Tst { lhs: VReg, rhs: A64Operand, bytes: u8 },
 
@@ -83,6 +88,59 @@ pub enum A64Instr {
         uses: Vec<VReg>,
         ret: Option<VReg>,
     },
+}
+
+/// AArch64 condition codes for `cset` / `b.cond`
+///
+/// float comparisons (`fcmp`) set NZCV with unsigned semantics,
+/// so we use `Lo`/`Ls`/`Hi`/`Hs` for float ordering
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[rustfmt::skip]
+pub enum A64Cond {
+    Eq, Ne,
+    Lt, Le,
+    Gt, Ge,
+    // unsigned — used after FCMP
+    Lo, Ls,
+    Hi, Hs,
+}
+
+impl A64Cond {
+    pub const fn as_str<'s>(&self) -> &'s str {
+        match self {
+            Self::Eq => "eq",
+            Self::Ne => "ne",
+            Self::Lt => "lt",
+            Self::Le => "le",
+            Self::Gt => "gt",
+            Self::Ge => "ge",
+            Self::Lo => "lo",
+            Self::Ls => "ls",
+            Self::Hi => "hi",
+            Self::Hs => "hs",
+        }
+    }
+
+    pub fn new(operator: &BinaryOperator, is_float: bool) -> Self {
+        match (operator, is_float) {
+            (BinaryOperator::Eq, _) => Self::Eq,
+            (BinaryOperator::Ne, _) => Self::Ne,
+
+            (BinaryOperator::Lt, true) => Self::Lo,
+            (BinaryOperator::Lt, false) => Self::Lt,
+
+            (BinaryOperator::LtEq, true) => Self::Ls,
+            (BinaryOperator::LtEq, false) => Self::Le,
+
+            (BinaryOperator::Gt, true) => Self::Hi,
+            (BinaryOperator::Gt, false) => Self::Gt,
+
+            (BinaryOperator::GtEq, true) => Self::Hs,
+            (BinaryOperator::GtEq, false) => Self::Ge,
+
+            _ => unreachable!("invalid comparison operator"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -243,6 +301,14 @@ impl Target for AArch64 {
     fn param_stack_offset(stack_idx: usize, _class: RegClass) -> Option<i32> {
         Some(16 + (stack_idx as i32) * 8)
     }
+
+    #[inline(always)]
+    fn syscall_code(code: SyscallCode) -> u64 {
+        match code {
+            SyscallCode::Write => 64,
+            SyscallCode::Exit => 93,
+        }
+    }
 }
 
 impl Instruction<AArch64> for A64Instr {
@@ -371,6 +437,31 @@ impl Instruction<AArch64> for A64Instr {
         match self {
             Self::Call { .. } | Self::Syscall { .. } => AArch64::caller_saved(),
             _ => &[],
+        }
+    }
+}
+
+impl A64Instr {
+    pub(super) fn call(
+        target: String,
+        moves: Vec<(VReg, A64Reg)>,
+        stack_args: Vec<(A64Operand, MachineType)>,
+        ret: Option<VReg>,
+    ) -> Self {
+        let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
+
+        for (operand, _) in &stack_args {
+            if let A64Operand::VReg(vreg) = operand {
+                uses.push(*vreg);
+            }
+        }
+
+        Self::Call {
+            target,
+            moves,
+            uses,
+            ret,
+            stack_args,
         }
     }
 }
