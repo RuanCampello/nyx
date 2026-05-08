@@ -4,7 +4,7 @@ A modern, strict, compiled programming language.
 
 ## Overview
 
-Nyx is designed for performance without sacrificing safety and clarity. It is a strictly typed language that focuses on catching errors early through a robust, uncompromising compiler.
+Nyx is a imperative, statically-typed, compiled language designed for performance and clarity. The compiler implements a multi-pass architecture with distinct intermediate representations before emitting native assembly for `x86_64` and `AArch64`.
 
 > [!NOTE]
 > This is primarily a learning project, built while working through books, papers, and online resources on compilers and language design. Things may not always be done in the most optimal way, but the intent is always to improve.
@@ -12,15 +12,20 @@ Nyx is designed for performance without sacrificing safety and clarity. It is a 
 ## The Nyx Look
 
 ```rust
-fn add(a: i32, b: i32): i32 {
-  a + b
+fn factorial(n: i32): i32 {
+    let mut result = 1;
+    let mut i = 2;
+
+    while i <= n {
+        result = result * i;
+        i = i + 1;
+    }
+
+    result
 }
 
-fn main() {
-  let x = 10;
-  let mut y = 20;
-
-  let z = add(x, y);
+fn main(): i32 {
+    factorial(5)  // returns 120
 }
 ```
 
@@ -33,7 +38,6 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 - A complete standard library with collections, I/O, and higher-level utilities like `HTTP`.
 - An ownership and borrowing memory model, adapted to stay as simple as possible in practice.
 - Structs with method implementations and some form of interface-based polymorphism.
-- `x86_64` as the primary target, with `ARM` on the horizon.
 - C ABI compatibility, so interoperating with C code stays practical.
 
 **What we're not building:**
@@ -46,7 +50,7 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 ## Current Status
 
-Nyx is currently in early development. The core compiler pipeline, from the lexer and parser to semantic analysis, register allocation, and `x86_64` code generation, is functional.
+Nyx is currently in early development. However, the core compiler pipeline, from the lexer and parser to semantic analysis, register allocation, and native code generation for `x86_64` and `aarch64`, is functional.
 
 For a detailed breakdown of completed features and active development goals, please see the [ROADMAP](ROADMAP.md).
 

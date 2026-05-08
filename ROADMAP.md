@@ -7,7 +7,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] x86
   - [x] 64-bit (`x86_64`)
   - [ ] 32-bit (`x86`)
-- [ ] ARM64 (`aarch64`)
+- [x] ARM64 (`aarch64`)
 - [ ] RISC-V (`riscv64`)
 
 ## Compiler Optimisations
@@ -33,7 +33,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Boolean (`bool`)
 - [ ] Strings
   - [ ] `char`
-  - [ ] `&str`
+  - [x] `&str`
   - [ ] `String` (**requires** memory allocator implementation)
 - [ ] Fixed-size arrays (`[T; N]`)
   - [ ] Compiler-time bound checking
@@ -55,6 +55,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Expressions & Operators
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
+  - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
@@ -92,12 +93,12 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 ### Others
 
-- [ ] Module system
+- [x] Module system
   - [x] Imports resolver
   - [x] Project (_dir_) compilation
 - [ ] Standard Library
   - [ ] I/O
-    - [ ] Printing to standard out (`println`, `printf`)
+    - [x] Printing to standard out (`println`, `printf`)
   - [ ] Collections (**requires** syntax definition and memory allocator)
     - [ ] Array
     - [ ] Hash table
