@@ -614,4 +614,111 @@ mod tests {
 
         assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
     }
+
+    #[test]
+    fn uptr_iptr_type_resolution() {
+        let src = r#"
+            fn main() {
+                let a: uptr = 10;
+                let b: iptr = 20;
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+
+        assert_eq!(func.locals[0].typ, Type::Uptr);
+        assert_eq!(func.locals[1].typ, Type::Iptr);
+    }
+
+    #[test]
+    fn uptr_iptr_literal_widening() {
+        let src = r#"
+            fn main() {
+                let a: uptr = 100;
+                let b: iptr = 200;
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+
+        let init_a = match &func.body.statements[0] {
+            Statement::Let { init: Some(e), .. } => e,
+            other => panic!("expected Let with init, got {other:?}"),
+        };
+        assert_eq!(init_a.typ, Type::Uptr);
+        assert!(matches!(init_a.kind, ExpressionKind::Integer(100)));
+
+        let init_b = match &func.body.statements[1] {
+            Statement::Let { init: Some(e), .. } => e,
+            other => panic!("expected Let with init, got {other:?}"),
+        };
+        assert_eq!(init_b.typ, Type::Iptr);
+        assert!(matches!(init_b.kind, ExpressionKind::Integer(200)));
+    }
+
+    #[test]
+    fn uptr_arithmetic() {
+        let src = r#"
+            fn add(a: uptr, b: uptr): uptr { a + b }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+
+        assert_eq!(func.return_type, Type::Uptr);
+        assert_eq!(func.params[0].typ, Type::Uptr);
+        assert_eq!(func.params[1].typ, Type::Uptr);
+    }
+
+    #[test]
+    fn iptr_arithmetic() {
+        let src = r#"
+            fn scale(base: iptr, factor: iptr): iptr { base * factor }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+
+        assert_eq!(func.return_type, Type::Iptr);
+        assert_eq!(func.params[0].typ, Type::Iptr);
+        assert_eq!(func.params[1].typ, Type::Iptr);
+    }
+
+    #[test]
+    fn uptr_while_comparison() {
+        let src = r#"
+            fn triangle(limit: uptr): uptr {
+                let mut acc: uptr = 0;
+                let mut i: uptr = 1;
+                while i <= limit {
+                    acc = acc + i;
+                    i = i + 1;
+                }
+                acc
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn uptr_iptr_mixed_type_mismatch() {
+        let src = r#"
+            fn main() {
+                let a: uptr = 1;
+                let b: iptr = a;
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Iptr,
+                found: Type::Uptr,
+            }
+        );
+    }
 }

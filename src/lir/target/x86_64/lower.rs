@@ -598,8 +598,6 @@ impl<'f> Lower<'f> {
 }
 
 impl Type {
-    // TODO: abstract this later in a `SizedType` trait or something
-    // to have arch depedent sizes
     pub(in crate::lir) fn machine_type(&self) -> MachineType {
         match self {
             Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },

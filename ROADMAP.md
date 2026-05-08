@@ -28,7 +28,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Integer Types
   - [x] Signed (`i8`, `i16`, `i32`, `i64`)
   - [x] Unsigned (`u8`, `u16`, `u32`, `u64`)
-  - [ ] Target-dependent pointer-sized (`iptr`, `uptr`)
+  - [x] Target-dependent pointer-sized (`iptr`, `uptr`)
 - [x] Floating-Point Types (`f32`, `f64`)
 - [x] Boolean (`bool`)
 - [ ] Strings
