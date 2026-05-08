@@ -79,7 +79,7 @@ pub trait Instruction<T: Target> {
     /// the virtual registers explicitly **written** by this instruction
     fn defs(&self) -> &[VReg];
     /// the virtual registers explicitly **read** by this instruction
-    fn uses(&self) -> &[VReg];
+    fn uses(&self, uses: &mut Vec<VReg>);
 
     /// `(destination, source)` if the instruction just copies its
     /// value from `source` to `destination` without modifying it

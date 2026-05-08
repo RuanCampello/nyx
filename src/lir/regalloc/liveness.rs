@@ -73,6 +73,7 @@ impl Liveness {
         points[n] = self.blocks[idx].live_out.clone();
 
         let mut live = points[n].clone();
+        let mut uses = Vec::new();
 
         for idx in (0..n).rev() {
             let instruction = &block.instructions[idx];
@@ -81,7 +82,9 @@ impl Liveness {
                 live.remove(def);
             }
 
-            for &used in instruction.uses() {
+            uses.clear();
+            instruction.uses(&mut uses);
+            for &used in &uses {
                 live.insert(used);
             }
 
@@ -112,9 +115,12 @@ impl<I> Block<I> {
     {
         let mut uses = BTreeSet::new();
         let mut defs = BTreeSet::new();
+        let mut instruction_uses = Vec::new();
 
         for instruction in &self.instructions {
-            for &u in instruction.uses() {
+            instruction_uses.clear();
+            instruction.uses(&mut instruction_uses);
+            for &u in &instruction_uses {
                 if !defs.contains(&u) {
                     uses.insert(u);
                 }

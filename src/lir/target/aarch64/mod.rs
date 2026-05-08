@@ -337,86 +337,65 @@ impl Instruction<AArch64> for A64Instr {
         }
     }
 
-    fn uses(&self) -> &[VReg] {
+    fn uses(&self, uses: &mut Vec<VReg>) {
         match self {
             Self::Mov { src, .. }
             | Self::Neg { src, .. }
             | Self::FMov { src, .. }
-            | Self::FNeg { src, .. } => std::slice::from_ref(src),
-            Self::Add {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Sub {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::And {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Or {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Eor {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Cmp {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Cmn {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            }
-            | Self::Tst {
-                lhs,
-                rhs: A64Operand::VReg(_),
-                ..
-            } => {
-                // SAFETY: lhs and rhs are both fields of a live enum variant
-                // we return a 2-element slice backed by adjacent fields
-                // this is safe as long as we never expose a dangling reference
-                // in practice the enum lives for the duration of the function body :/
-                unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) }
-            }
+            | Self::FNeg { src, .. } => uses.push(*src),
 
-            Self::Add { lhs, .. }
-            | Self::Sub { lhs, .. }
-            | Self::And { lhs, .. }
-            | Self::Or { lhs, .. }
-            | Self::Eor { lhs, .. }
-            | Self::Cmp { lhs, .. }
-            | Self::Cmn { lhs, .. }
-            | Self::Tst { lhs, .. } => std::slice::from_ref(lhs),
+            Self::Add { lhs, rhs, .. }
+            | Self::Sub { lhs, rhs, .. }
+            | Self::And { lhs, rhs, .. }
+            | Self::Or { lhs, rhs, .. }
+            | Self::Eor { lhs, rhs, .. }
+            | Self::Cmp { lhs, rhs, .. }
+            | Self::Cmn { lhs, rhs, .. }
+            | Self::Tst { lhs, rhs, .. } => {
+                uses.push(*lhs);
+
+                if let A64Operand::VReg(rhs) = rhs {
+                    uses.push(*rhs);
+                }
+            }
 
             Self::Mul { lhs, .. }
             | Self::SDiv { lhs, .. }
             | Self::FAdd { lhs, .. }
             | Self::FSub { lhs, .. }
             | Self::FMul { lhs, .. }
-            | Self::FDiv { lhs, .. } => unsafe {
-                std::slice::from_raw_parts(lhs as *const VReg, 2)
-            },
+            | Self::FDiv { lhs, .. } => {
+                uses.push(*lhs);
+                match self {
+                    Self::Mul { rhs, .. }
+                    | Self::SDiv { rhs, .. }
+                    | Self::FAdd { rhs, .. }
+                    | Self::FSub { rhs, .. }
+                    | Self::FMul { rhs, .. }
+                    | Self::FDiv { rhs, .. } => uses.push(*rhs),
+                    _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+            }
 
-            Self::FCmp { lhs, .. } => unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) },
+            Self::FCmp { lhs, rhs, .. } => {
+                uses.push(*lhs);
+                uses.push(*rhs);
+            }
 
-            Self::Call { uses, .. } | Self::Syscall { uses, .. } => uses.as_slice(),
+            Self::Call {
+                uses: instruction_uses,
+                ..
+            }
+            | Self::Syscall {
+                uses: instruction_uses,
+                ..
+            } => uses.extend_from_slice(instruction_uses),
 
             Self::MovImm { .. }
             | Self::LdrParam { .. }
             | Self::FLiteral { .. }
             | Self::Adr { .. }
-            | Self::Cset { .. } => &[],
+            | Self::Cset { .. } => {}
         }
     }
 
@@ -463,7 +442,7 @@ impl A64Instr {
 impl PhysicalReg for A64Reg {
     fn class(self) -> RegClass {
         match self {
-            r if r >= Self::D0 && r <= Self::D15 => RegClass::Float,
+            r if r >= Self::D0 && r <= Self::D31 => RegClass::Float,
             _ => RegClass::Int,
         }
     }

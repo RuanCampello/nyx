@@ -48,15 +48,11 @@ pub enum X86Instr {
     ///   `dividend`  → rax  (fixed_use, stored in `fixed_uses_buf`)
     ///   `result`    → rax  (fixed_def)
     ///   rdx         clobbered
-    ///
-    /// `uses_buf[0]` = dividend always
-    /// `uses_buf[1]` = divisor VReg when divisor is `X86Operand::VReg` otherwise duplicate of dividend.
     IDiv {
         result: VReg,
         dividend: VReg,
         divisor: X86Operand,
         bytes: u8,
-        uses: [VReg; 2],
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
@@ -68,11 +64,11 @@ pub enum X86Instr {
     XorFloat { dest: VReg, src: X86Operand, bytes: u8 },
 
     // comparison
-    Cmp { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
-    Test { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
+    Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
+    Test { lhs: VReg, rhs: X86Operand, bytes: u8 },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
-    Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8, uses: [VReg; 2], uses_len: u8 },
+    Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8 },
     Setcc { dest: VReg, condition: Condition },
 
     // logical operations
@@ -162,6 +158,11 @@ impl Target for X86_64 {
             X86Reg::Rax, X86Reg::Rcx, X86Reg::Rdx,
             X86Reg::Rsi, X86Reg::Rdi, X86Reg::R8,
             X86Reg::R9, X86Reg::R10,
+            X86Reg::Xmm0, X86Reg::Xmm1, X86Reg::Xmm2,
+            X86Reg::Xmm3, X86Reg::Xmm4, X86Reg::Xmm5,
+            X86Reg::Xmm6, X86Reg::Xmm7, X86Reg::Xmm8,
+            X86Reg::Xmm9, X86Reg::Xmm10, X86Reg::Xmm11,
+            X86Reg::Xmm12, X86Reg::Xmm13, X86Reg::Xmm14,
         ]
     }
 
@@ -249,11 +250,11 @@ impl Instruction<X86_64> for X86Instr {
     }
 
     #[rustfmt::skip]
-    fn uses(&self) -> &[VReg] {
+    fn uses(&self, uses: &mut Vec<VReg>) {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
             | Self::MovFloat { src: X86Operand::VReg(v), .. }
-            | Self::Lea { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+            | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             // 2-address: dest is read+write, src is read-only
             Self::Add { src: X86Operand::VReg(v), .. }
@@ -266,7 +267,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { src: X86Operand::VReg(v), .. }
             | Self::MulFloat { src: X86Operand::VReg(v), .. }
             | Self::DivFloat { src: X86Operand::VReg(v), .. }
-            | Self::XorFloat { src: X86Operand::VReg(v), .. } => std::slice::from_ref(v),
+            | Self::XorFloat { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             // immediate-source 2-address: only dest is used
             Self::Add { dest, .. }
@@ -279,20 +280,30 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { dest, .. }
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
-            | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
+            | Self::XorFloat { dest, .. } => uses.push(*dest),
 
-            Self::Neg { dest, .. } => std::slice::from_ref(dest),
-            Self::Movzx { src, ..  } => std::slice::from_ref(src),
+            Self::Neg { dest, .. } => uses.push(*dest),
+            Self::Movzx { src, ..  } => uses.push(*src),
 
-            Self::Cmp { uses, uses_len, .. }
-            | Self::Test { uses, uses_len, .. }
-            | Self::Ucomis { uses, uses_len, .. } => &uses[..*uses_len as usize],
+            Self::Cmp { lhs, rhs, .. }
+            | Self::Test { lhs, rhs, .. }
+            | Self::Ucomis { lhs, rhs, .. } => {
+                uses.push(*lhs);
+                if let X86Operand::VReg(rhs) = rhs {
+                    uses.push(*rhs);
+                }
+            }
 
-            Self::IDiv { uses, .. } => uses.as_slice(),
-            Self::Call { uses, .. } => uses.as_slice(),
-            Self::Syscall { uses, .. } => uses.as_slice(),
+            Self::IDiv { dividend, divisor, .. } => {
+                uses.push(*dividend);
+                if let X86Operand::VReg(divisor) = divisor {
+                    uses.push(*divisor);
+                }
+            }
+            Self::Call { uses: instruction_uses, .. }
+            | Self::Syscall { uses: instruction_uses, .. } => uses.extend_from_slice(instruction_uses),
 
-            _ => &[],
+            _ => {}
         }
     }
 
@@ -363,35 +374,22 @@ impl X86Instr {
     #[inline(always)]
     #[rustfmt::skip]
     pub const fn cmp<const O: u8>(lhs: VReg, rhs: X86Operand, bytes: u8) -> Self {
-        let (uses, uses_len) = Self::uses(lhs, &rhs);
-
         match O {
-            0 => Self::Cmp { lhs, rhs, bytes, uses, uses_len },
-            1 => Self::Test { lhs, rhs, bytes, uses, uses_len },
-            2 => Self::Ucomis { lhs, rhs, bytes, uses, uses_len },
+            0 => Self::Cmp { lhs, rhs, bytes },
+            1 => Self::Test { lhs, rhs, bytes },
+            2 => Self::Ucomis { lhs, rhs, bytes },
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
     }
 
     #[inline(always)]
     pub const fn idiv(result: VReg, dividend: VReg, divisor: X86Operand, bytes: u8) -> Self {
-        let (uses, _) = Self::uses(dividend, &divisor);
-
         Self::IDiv {
             bytes,
             result,
             dividend,
             divisor,
-            uses,
             precoloured_uses: [(dividend, X86Reg::Rax)],
-        }
-    }
-
-    #[inline(always)]
-    const fn uses(lhs: VReg, rhs: &X86Operand) -> ([VReg; 2], u8) {
-        match rhs {
-            X86Operand::VReg(reg) => ([lhs, *reg], 2),
-            _ => ([lhs, lhs], 1),
         }
     }
 }

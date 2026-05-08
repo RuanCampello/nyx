@@ -1,7 +1,7 @@
 use crate::lir::{
     MachineType, VReg,
     regalloc::{Allocation, interference::Interference},
-    target::{RegClass, Target},
+    target::{PhysicalReg, RegClass, Target},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,11 +37,22 @@ impl Interference {
             locations.insert(vreg, Location::Reg(reg));
         }
 
+        let int_caller_saved = T::caller_saved()
+            .iter()
+            .copied()
+            .filter(|reg| reg.class() == RegClass::Int)
+            .collect::<Vec<_>>();
+        let float_caller_saved = T::caller_saved()
+            .iter()
+            .copied()
+            .filter(|reg| reg.class() == RegClass::Float)
+            .collect::<Vec<_>>();
+
         self.colour_group(
             T::gprs().len(),
             &ints,
             T::gprs(),
-            T::caller_saved(),
+            &int_caller_saved,
             vreg_types,
             &mut locations,
             &mut spill_offset,
@@ -50,8 +61,8 @@ impl Interference {
         self.colour_group(
             T::fprs().len(),
             &floats,
-            T::fprs(), // all xmm regs are caller saved :D
             T::fprs(),
+            &float_caller_saved,
             vreg_types,
             &mut locations,
             &mut spill_offset,

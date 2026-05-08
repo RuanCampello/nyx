@@ -54,20 +54,8 @@ impl Function<AArch64> {
         emit!(out, "stp     x29, x30, [sp, #-16]!");
         emit!(out, "mov     x29, sp");
 
-        // save callee-saved registers in pairs
-        let callee_saved = &alloc.used_callee_saved;
-        let mut i = 0;
-        while i + 1 < callee_saved.len() {
-            let r1 = callee_saved[i].name(8);
-            let r2 = callee_saved[i + 1].name(8);
-            emit!(out, "stp     {r1}, {r2}, [sp, #-16]!");
-            i += 2;
-        }
-
-        // odd callee-saved register
-        // save solo (still 16-byte aligned with padding)
-        if i < callee_saved.len() {
-            let r = callee_saved[i].name(8);
+        for reg in &alloc.used_callee_saved {
+            let r = reg.name(8);
             emit!(out, "str     {r}, [sp, #-16]!");
         }
 
@@ -83,23 +71,9 @@ impl Function<AArch64> {
             emit!(out, "add     sp, sp, #{frame_size}");
         }
 
-        // restore callee-saved in reverse order
-        let callee_saved = &alloc.used_callee_saved;
-        let n = callee_saved.len();
-        let has_odd = n % 2 != 0;
-
-        if has_odd {
-            let r = callee_saved[n - 1].name(8);
+        for reg in alloc.used_callee_saved.iter().rev() {
+            let r = reg.name(8);
             emit!(out, "ldr     {r}, [sp], #16");
-        }
-
-        let pair_end = if has_odd { n - 1 } else { n };
-        let mut i = pair_end;
-        while i >= 2 {
-            i -= 2;
-            let r1 = callee_saved[i].name(8);
-            let r2 = callee_saved[i + 1].name(8);
-            emit!(out, "ldp     {r1}, {r2}, [sp], #16");
         }
 
         emit!(out, "ldp     x29, x30, [sp], #16");
@@ -328,26 +302,47 @@ impl Function<AArch64> {
                                 let suffix = str_suffix(&bytes);
                                 emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
                             }
-                            A64Operand::Label(label) => {
-                                emit!(out, "adrp    x16, {label}");
-                                emit!(out, "add     x16, x16, :lo12:{label}");
-                                emit!(out, "str     x16, [sp, #{offset}]");
-                            }
+                            A64Operand::Label(label) => match mt {
+                                MachineType::Float { .. } => {
+                                    let scratch = A64Reg::D16.name(bytes);
+                                    let suffix = str_suffix(&bytes);
+                                    emit!(out, "adrp    x16, {label}");
+                                    emit!(out, "ldr     {scratch}, [x16, :lo12:{label}]");
+                                    emit!(out, "str{suffix}    {scratch}, [sp, #{offset}]");
+                                }
+                                MachineType::Int { .. } => {
+                                    emit!(out, "adrp    x16, {label}");
+                                    emit!(out, "add     x16, x16, :lo12:{label}");
+                                    emit!(out, "str     x16, [sp, #{offset}]");
+                                }
+                            },
                         }
                     }
                 }
 
-                // argument register moves
-                for (vreg, reg) in moves {
-                    let bytes = self.reg_bytes(vreg);
-                    let is_float = self.is_float(vreg);
-                    let src = alloc.location(vreg, &bytes);
-                    let dest = reg.name(bytes);
+                let n_moves = moves.len();
+                if n_moves > 0 {
+                    let slot_bytes = n_moves * 8;
+                    let aligned = (slot_bytes + 15) & !15;
+                    emit!(out, "sub     sp, sp, #{aligned}");
 
-                    if src != dest {
-                        let mnemonic = if is_float { "fmov" } else { "mov" };
-                        emit!(out, "{mnemonic}    {dest}, {src}");
+                    for (idx, (vreg, _)) in moves.iter().enumerate() {
+                        let bytes = self.reg_bytes(vreg);
+                        let src = alloc.location(vreg, &bytes);
+                        let suffix = str_suffix(&bytes);
+                        let offset = idx * 8;
+                        emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
                     }
+
+                    for (idx, (vreg, reg)) in moves.iter().enumerate() {
+                        let bytes = self.reg_bytes(vreg);
+                        let dest = reg.name(bytes);
+                        let suffix = ldr_suffix(&bytes);
+                        let offset = idx * 8;
+                        emit!(out, "ldr{suffix}    {dest}, [sp, #{offset}]");
+                    }
+
+                    emit!(out, "add     sp, sp, #{aligned}");
                 }
 
                 emit!(out, "bl      {target}");
@@ -501,7 +496,7 @@ impl Allocation<AArch64> {
         match self.location_of(vreg) {
             Location::Reg(reg) => reg.name(*bytes).to_string(),
             Location::Stack(offset) => {
-                let adjusted = offset - (self.used_callee_saved.len() as i32 * 8);
+                let adjusted = offset - (self.used_callee_saved.len() as u32 * 16) as i32;
                 format!("[x29, #{adjusted}]")
             }
         }
