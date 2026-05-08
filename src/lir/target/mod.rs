@@ -32,9 +32,6 @@ pub trait Target: Sized {
     ///
     /// returns `None` if all arguments of that class fit in registers (no stack slot exists)
     fn param_stack_offset(stack_idx: usize, class: RegClass) -> Option<i32>;
-    /// number of registers parameters of the given class
-    /// arguments at index `>= n_reg_params(class)` are stack-passed
-    fn n_reg_params(class: RegClass) -> usize;
 
     /// physical register used for the `n-th` argument of the given class
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg>;

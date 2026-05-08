@@ -278,14 +278,6 @@ impl Target for AArch64 {
     }
 
     #[inline(always)]
-    fn n_reg_params(class: RegClass) -> usize {
-        match class {
-            RegClass::Int => 8,
-            RegClass::Float => 8,
-        }
-    }
-
-    #[inline(always)]
     fn syscall_param(idx: usize) -> Option<Self::Reg> {
         // Linux AArch64 syscall ABI
         // syscall number in X8, args in X0-X5

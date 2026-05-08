@@ -200,14 +200,6 @@ impl Target for X86_64 {
     }
 
     #[inline(always)]
-    fn n_reg_params(class: RegClass) -> usize {
-        match class {
-            RegClass::Int => 6,   // rdi, rsi, rdx, rcx, r8, r9
-            RegClass::Float => 8, //xmm0-xmm7
-        }
-    }
-
-    #[inline(always)]
     fn param_stack_offset(stack_idx: usize, _class: RegClass) -> Option<i32> {
         // SysV: after prologue the first stack argument is at rbp+16
         // the second at rbp+24 and so on
