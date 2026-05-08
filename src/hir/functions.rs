@@ -485,7 +485,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     _ => ExpressionKind::Call {
                         function,
                         args: lowered_args,
-                        inline: signature.is_const,
+                        inline: signature.inline,
                     },
                 };
 
