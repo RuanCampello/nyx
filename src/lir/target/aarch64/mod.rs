@@ -399,13 +399,6 @@ impl Instruction<AArch64> for A64Instr {
         }
     }
 
-    fn as_copy(&self) -> Option<(VReg, VReg)> {
-        match self {
-            Self::Mov { dest, src, .. } | Self::FMov { dest, src, .. } => Some((*dest, *src)),
-            _ => None,
-        }
-    }
-
     fn clobbers<'r>(&self) -> &'r [<AArch64 as Target>::Reg] {
         match self {
             Self::Call { .. } | Self::Syscall { .. } => AArch64::caller_saved(),

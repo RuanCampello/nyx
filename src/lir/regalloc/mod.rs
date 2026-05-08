@@ -3,13 +3,6 @@ use crate::lir::{
     regalloc::{interference::Interference, liveness::Liveness},
     target::Target,
 };
-use std::collections::BTreeMap;
-
-// PERFORMANCE: we probably should reavaliate the algortihms in this module
-// after doing a bunch of hacky things trying to solve the mad pipeline of before
-// this is very populed
-// there's a lot of iterations, linear or lookups, cloning, probing, wacky derefecings etc
-// we can surely simplify this by a lot with the same results and probably better performance
 
 mod colouring;
 mod interference;
@@ -19,21 +12,21 @@ pub(in crate::lir) use colouring::Location;
 
 #[derive(Debug)]
 pub struct Allocation<T: Target> {
-    locations: BTreeMap<VReg, Location<T>>,
+    locations: Vec<Location<T>>,
     pub(in crate::lir) frame_size: u32,
     pub(in crate::lir) used_callee_saved: Vec<T::Reg>,
 }
 
 impl<T: Target> Allocation<T> {
     pub fn location_of(&self, vreg: &VReg) -> Location<T> {
-        self.locations[vreg]
+        self.locations[vreg.0 as usize]
     }
 }
 
 impl<T: Target> Default for Allocation<T> {
     fn default() -> Self {
         Self {
-            locations: BTreeMap::new(),
+            locations: Vec::new(),
             frame_size: 0,
             used_callee_saved: Vec::new(),
         }
@@ -46,17 +39,9 @@ impl<T: Target> Function<T> {
             return Allocation::default();
         }
 
-        let vreg_types = self
-            .vreg_types
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| (VReg(i as u32), t))
-            .collect::<BTreeMap<_, _>>();
-
         let liveness = Liveness::analyse(self);
-        let mut graph = Interference::build(self, &liveness);
+        let graph = Interference::build(self, &liveness);
 
-        graph.coalesce(self);
-        graph.colour::<T>(&vreg_types, &self.precolours)
+        graph.colour::<T>(&self.vreg_types, &self.precolours)
     }
 }

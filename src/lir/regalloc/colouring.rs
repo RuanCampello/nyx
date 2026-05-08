@@ -16,7 +16,7 @@ pub enum Location<T: Target> {
 impl Interference {
     pub fn colour<T: Target>(
         &self,
-        vreg_types: &BTreeMap<VReg, MachineType>,
+        vreg_types: &[MachineType],
         precolours: &[(VReg, T::Reg)],
     ) -> Allocation<T> {
         let all = self.nodes().collect::<Vec<_>>();
@@ -25,16 +25,15 @@ impl Interference {
             return Allocation::default();
         }
 
-        let (floats, ints): (Vec<_>, Vec<_>) = all.iter().partition(
-            |&vreg| matches!(vreg_types.get(vreg), Some(t) if t.class() == RegClass::Float),
-        );
+        let (floats, ints): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|&vreg| vreg_types[vreg.0 as usize].class() == RegClass::Float);
 
-        let mut locations = BTreeMap::new();
+        let mut locations = vec![None; vreg_types.len()];
         let mut spill_offset = 0;
 
-        // preassign pinned VRegs before colouring
         for &(vreg, reg) in precolours {
-            locations.insert(vreg, Location::Reg(reg));
+            locations[vreg.0 as usize] = Some(Location::Reg(reg));
         }
 
         let int_caller_saved = T::caller_saved()
@@ -74,8 +73,13 @@ impl Interference {
         let used_callee_saved = T::callee_saved()
             .iter()
             .copied()
-            .filter(|&reg| locations.values().any(|loc| *loc == Location::Reg(reg)))
+            .filter(|&reg| locations.iter().any(|loc| *loc == Some(Location::Reg(reg))))
             .collect::<Vec<_>>();
+
+        let locations = locations
+            .into_iter()
+            .map(|location| location.expect("every VReg must receive a location"))
+            .collect();
 
         Allocation {
             locations,
@@ -87,22 +91,22 @@ impl Interference {
     fn colour_group<T: Target>(
         &self,
         k: usize,
-        nodes: &[&VReg],
+        nodes: &[VReg],
         available: &[T::Reg],
         caller_saved: &[T::Reg],
-        vreg_types: &BTreeMap<VReg, MachineType>,
-        locations: &mut BTreeMap<VReg, Location<T>>,
+        vreg_types: &[MachineType],
+        locations: &mut [Option<Location<T>>],
         spill_offset: &mut i32,
     ) {
         if nodes.is_empty() {
             return;
         }
 
-        // skip vregs that are already precoloured
-        let unpinned: Vec<_> = nodes.iter().filter(|&&v| !locations.contains_key(v)).collect();
+        let unpinned: Vec<_> =
+            nodes.iter().copied().filter(|v| locations[v.0 as usize].is_none()).collect();
 
         let mut degree: BTreeMap<VReg, usize> =
-            unpinned.iter().map(|&&v| (*v, self.degree(&v))).collect();
+            unpinned.iter().map(|&v| (v, self.degree(&v))).collect();
         let mut removed = BTreeSet::new();
         let mut stack = Vec::new();
 
@@ -130,21 +134,16 @@ impl Interference {
             }
         }
 
-        let mut colour_map = BTreeMap::new();
-
-        // seed colour_map with precoloured vregs so neighbours see them
-        for (&vreg, loc) in locations.iter() {
-            if let Location::Reg(reg) = loc {
-                colour_map.insert(vreg, Some(*reg));
+        let mut colour_map = vec![None; locations.len()];
+        for (idx, loc) in locations.iter().enumerate() {
+            if let Some(Location::Reg(reg)) = loc {
+                colour_map[idx] = Some(*reg);
             }
         }
 
         while let Some(v) = stack.pop() {
-            let mut forbidden: BTreeSet<T::Reg> = self
-                .neighbours(&v)
-                .iter()
-                .filter_map(|nb| colour_map.get(nb).and_then(|&r| r))
-                .collect();
+            let mut forbidden: BTreeSet<T::Reg> =
+                self.neighbours(&v).iter().filter_map(|nb| colour_map[nb.0 as usize]).collect();
 
             if self.call_crossed.contains(&v) {
                 for &reg in caller_saved {
@@ -153,7 +152,7 @@ impl Interference {
             }
 
             let assigned = available.iter().find(|r| !forbidden.contains(r)).copied();
-            colour_map.insert(v, assigned);
+            colour_map[v.0 as usize] = assigned;
 
             let location = match assigned {
                 Some(reg) => Location::Reg(reg),
@@ -164,7 +163,7 @@ impl Interference {
                 }
             };
 
-            locations.insert(v, location);
+            locations[v.0 as usize] = Some(location);
         }
     }
 }
@@ -194,12 +193,9 @@ where
 }
 
 #[inline(always)]
-fn slot_bytes(v: VReg, types: &BTreeMap<VReg, MachineType>) -> u32 {
-    match types.get(&v) {
-        Some(t) => match t.bytes() {
-            8 => 8,
-            _ => 4,
-        },
-        None => 4,
+fn slot_bytes(v: VReg, types: &[MachineType]) -> u32 {
+    match types[v.0 as usize].bytes() {
+        8 => 8,
+        _ => 4,
     }
 }

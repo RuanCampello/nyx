@@ -307,23 +307,6 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
-    fn as_copy(&self) -> Option<(VReg, VReg)> {
-        match self {
-            Self::Mov {
-                dest,
-                src: X86Operand::VReg(src),
-                ..
-            }
-            | Self::MovFloat {
-                dest,
-                src: X86Operand::VReg(src),
-                ..
-            } => Some((*dest, *src)),
-
-            _ => None,
-        }
-    }
-
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
             Self::IDiv { .. } => &[X86Reg::Rdx],

@@ -14,12 +14,6 @@ pub(super) struct BlockLiveness {
     pub(in crate::lir::regalloc) live_out: BTreeSet<VReg>,
 }
 
-pub struct InstructionLiveness {
-    /// `points[i]` = live set *before* instruction `i` executes
-    /// `points[n]` = live_out of the block
-    pub(in crate::lir::regalloc) points: Vec<BTreeSet<VReg>>,
-}
-
 impl Liveness {
     pub fn analyse<T: Target>(function: &Function<T>) -> Self {
         let n = function.blocks.len();
@@ -33,11 +27,9 @@ impl Liveness {
                 let block = &function.blocks[idx];
 
                 let mut new_out = BTreeSet::new();
-                for successor in block.successors() {
-                    for &vreg in &blocks[successor.0 as usize].live_in {
-                        new_out.insert(vreg);
-                    }
-                }
+                block.for_each_successor(|successor| {
+                    new_out.extend(blocks[successor.0 as usize].live_in.iter().copied());
+                });
 
                 let (uses, defs) = block.uses_and_defs();
 
@@ -60,50 +52,6 @@ impl Liveness {
         }
 
         Self { blocks }
-    }
-
-    pub fn instruction_liveness<T: Target>(
-        &self,
-        function: &Function<T>,
-        idx: usize,
-    ) -> InstructionLiveness {
-        let block = &function.blocks[idx];
-        let n = block.instructions.len();
-        let mut points = vec![BTreeSet::new(); n + 1];
-        points[n] = self.blocks[idx].live_out.clone();
-
-        let mut live = points[n].clone();
-        let mut uses = Vec::new();
-
-        for idx in (0..n).rev() {
-            let instruction = &block.instructions[idx];
-
-            for def in instruction.defs() {
-                live.remove(def);
-            }
-
-            uses.clear();
-            instruction.uses(&mut uses);
-            for &used in &uses {
-                live.insert(used);
-            }
-
-            for &clob in instruction.clobbers() {
-                let _ = clob;
-            }
-
-            for (vreg, _) in instruction.precoloured_uses() {
-                live.insert(*vreg);
-            }
-
-            points[idx] = live.clone();
-        }
-
-        for &vreg in block.term.uses_of() {
-            live.insert(vreg);
-        }
-
-        InstructionLiveness { points }
     }
 }
 
@@ -147,17 +95,18 @@ impl<I> Block<I> {
     }
 
     #[inline(always)]
-    pub fn successors(&self) -> Vec<BlockId> {
+    pub fn for_each_successor(&self, mut f: impl FnMut(BlockId)) {
         match self.term {
-            Term::Jump(id) => vec![id],
+            Term::Jump(id) => f(id),
             Term::Branch {
                 then_block,
                 else_block,
                 ..
             } => {
-                vec![then_block, else_block]
+                f(then_block);
+                f(else_block);
             }
-            Term::Return(_) => vec![],
+            Term::Return(_) => {}
         }
     }
 }
