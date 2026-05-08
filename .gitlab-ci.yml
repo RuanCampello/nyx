@@ -20,10 +20,11 @@ default:
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends binutils ca-certificates curl
-    - curl -LsSf https://get.nexte.st/latest/linux -o nextest.tar.gz
+    - if [ "$(uname -m)" = "aarch64" ]; then NEXTEST_BIN="linux-arm"; else NEXTEST_BIN="linux"; fi
+    - curl -LsSf "https://get.nexte.st/latest/${NEXTEST_BIN}" -o nextest.tar.gz
     - tar -xf nextest.tar.gz -C /usr/local/bin
     - rustc --version
-
+    - cargo nextest --version
 test:cloud-x86_64:
   stage: test
   tags:
