@@ -1,4 +1,4 @@
-//! MIR → x86_64 LIR lowering
+//! MIR -> x86_64 LIR lowering
 //!
 //! Translates 3-address MIR into 2-address x86_64 LIR.
 //!

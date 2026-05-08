@@ -3,6 +3,8 @@ use crate::lir::{
     target::{Instruction, PhysicalReg, RegClass, Target},
 };
 
+mod lower;
+
 pub struct AArch64;
 
 /// An operand for AArch64 LIR instruction.
