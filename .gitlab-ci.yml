@@ -1,0 +1,51 @@
+stages:
+  - test
+
+variables:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+default:
+  image: rust:slim
+  cache:
+    key:
+      files:
+        - Cargo.lock
+      prefix: cargo-cloud
+    paths:
+      - .cargo/bin/
+      - .cargo/registry/
+      - target/
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends binutils ca-certificates curl
+    - curl -LsSf https://get.nexte.st/latest/linux -o nextest.tar.gz
+    - tar -xf nextest.tar.gz -C /usr/local/bin
+    - rustc --version
+
+test:cloud-x86_64:
+  stage: test
+  tags:
+    - saas-linux-small-amd64
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - cargo nextest run --profile ci --workspace
+  artifacts:
+    when: always
+    reports:
+      junit: target/nextest/ci/junit.xml
+
+test:cloud-aarch64:
+  stage: test
+  tags:
+    - saas-linux-small-arm64
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - cargo nextest run --profile ci --workspace
+  artifacts:
+    when: always
+    reports:
+      junit: target/nextest/ci/junit.xml
