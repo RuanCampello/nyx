@@ -338,7 +338,7 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(
                     id,
                     X86Instr::Syscall {
-                        id: *code as u32,
+                        id: X86_64::syscall_code(*code) as u32,
                         moves,
                         uses,
                         ret,

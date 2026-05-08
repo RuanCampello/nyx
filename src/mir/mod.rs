@@ -109,9 +109,8 @@ pub enum InstructionKind {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SyscallCode {
-    // FIXME: make this value generic over the target arch
-    Write = 1,
-    Exit = 60,
+    Write,
+    Exit,
 }
 
 /// This is a *input* of a instruction.
