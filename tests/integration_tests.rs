@@ -103,7 +103,10 @@ fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
 
     if !as_status.success() {
         fs::remove_file(&obj_path).ok();
-        return Err(format!("`as` exited with code {}", as_status.code().unwrap_or(-1)));
+        return Err(format!(
+            "`as` exited with code {}",
+            as_status.code().unwrap_or(-1)
+        ));
     }
 
     Ok(obj_path)
@@ -123,7 +126,10 @@ fn compile_and_run(path: &Path) -> Result<i32, String> {
     fs::remove_file(&obj_path).ok();
 
     if !ld_status.success() {
-        return Err(format!("`ld` exited with code {}", ld_status.code().unwrap_or(-1)));
+        return Err(format!(
+            "`ld` exited with code {}",
+            ld_status.code().unwrap_or(-1)
+        ));
     }
 
     let run_status = Command::new(&exe_path)
@@ -154,7 +160,10 @@ fn run_integration_tests() {
                 Ok(code) => {
                     failed += 1;
 
-                    let msg = format!("{}: expected exit code {}, got {}", test.name, expected_code, code);
+                    let msg = format!(
+                        "{}: expected exit code {}, got {}",
+                        test.name, expected_code, code
+                    );
 
                     eprintln!("{msg}");
                     errors.push(msg);

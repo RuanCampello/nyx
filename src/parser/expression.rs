@@ -155,7 +155,11 @@ impl<'i> Expression<'i> {
         }
     }
 
-    fn parse_infix(parser: &mut Parser<'i>, left: Expression<'i>, precedence: u8) -> Result<Self, ParserError<'i>> {
+    fn parse_infix(
+        parser: &mut Parser<'i>,
+        left: Expression<'i>,
+        precedence: u8,
+    ) -> Result<Self, ParserError<'i>> {
         let token = parser.expect_next()?;
 
         match token.kind {
@@ -171,7 +175,12 @@ impl<'i> Expression<'i> {
                 loop {
                     let token = match parser.peek() {
                         Some(Ok(token)) => token,
-                        _ => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span)),
+                        _ => {
+                            return Err(ParserError::new(
+                                ParseErrorKind::UnexpectedEof,
+                                token.span,
+                            ));
+                        }
                     };
 
                     if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
@@ -208,7 +217,10 @@ impl<'i> Expression<'i> {
                         span,
                     }),
 
-                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
+                    _ => Err(ParserError::new(
+                        ParseErrorKind::UnexpectedIdentifier,
+                        left.span(),
+                    )),
                 }
             }
 

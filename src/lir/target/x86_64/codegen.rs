@@ -113,7 +113,12 @@ impl Function<X86_64> {
 }
 
 impl Function<X86_64> {
-    fn emit_instruction(&self, instruction: &X86Instr, alloc: &Allocation<X86_64>, out: &mut String) {
+    fn emit_instruction(
+        &self,
+        instruction: &X86Instr,
+        alloc: &Allocation<X86_64>,
+        out: &mut String,
+    ) {
         use lir::target::x86_64::X86Instr as Inst;
 
         match instruction {
@@ -172,8 +177,12 @@ impl Function<X86_64> {
                 let src = self.operand(alloc, src, bytes);
 
                 match instruction {
-                    Inst::Add { .. } | Inst::AddFloat { .. } => emit!(out, "add{suffix}    {src}, {dest}"),
-                    Inst::Sub { .. } | Inst::SubFloat { .. } => emit!(out, "sub{suffix}    {src}, {dest}"),
+                    Inst::Add { .. } | Inst::AddFloat { .. } => {
+                        emit!(out, "add{suffix}    {src}, {dest}")
+                    }
+                    Inst::Sub { .. } | Inst::SubFloat { .. } => {
+                        emit!(out, "sub{suffix}    {src}, {dest}")
+                    }
                     Inst::Imul { .. } => emit!(out, "imul{suffix}    {src}, {dest}"),
                     Inst::MulFloat { .. } => emit!(out, "mul{suffix}    {src}, {dest}"),
                     Inst::DivFloat { .. } => emit!(out, "div{suffix}    {src}, {dest}"),
@@ -240,7 +249,9 @@ impl Function<X86_64> {
                 emit!(out, "{operand}   {src}, {dest}");
             }
 
-            Inst::Ucomis { lhs, rhs, bytes, .. } => {
+            Inst::Ucomis {
+                lhs, rhs, bytes, ..
+            } => {
                 let suffix = float_suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -256,7 +267,12 @@ impl Function<X86_64> {
                 emit!(out, "set{}  {dest}", condition.as_str())
             }
 
-            Inst::Test { lhs, rhs, bytes, .. } | Inst::Cmp { lhs, rhs, bytes, .. } => {
+            Inst::Test {
+                lhs, rhs, bytes, ..
+            }
+            | Inst::Cmp {
+                lhs, rhs, bytes, ..
+            } => {
                 let suffix = suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -466,11 +482,19 @@ impl Function<X86_64> {
 
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
-        matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Float { .. })
+        )
     }
 
     #[inline(always)]
-    fn operand<'s>(&self, alloc: &Allocation<X86_64>, operand: &'s X86Operand, bytes: &u8) -> Cow<'s, str> {
+    fn operand<'s>(
+        &self,
+        alloc: &Allocation<X86_64>,
+        operand: &'s X86Operand,
+        bytes: &u8,
+    ) -> Cow<'s, str> {
         match operand {
             X86Operand::VReg(vreg) => Cow::Owned(alloc.location(vreg, bytes)),
             X86Operand::Imm(n) => Cow::Owned(format!("${n}")),
@@ -484,7 +508,10 @@ impl Allocation<X86_64> {
     fn location(&self, vreg: &VReg, bytes: &u8) -> String {
         match self.location_of(vreg) {
             Location::Reg(reg) => format!("%{}", reg.name(*bytes)),
-            Location::Stack(offset) => format!("{}(%rbp)", offset - (self.used_callee_saved.len() as i32 * 8)),
+            Location::Stack(offset) => format!(
+                "{}(%rbp)",
+                offset - (self.used_callee_saved.len() as i32 * 8)
+            ),
         }
     }
 }
@@ -549,9 +576,9 @@ fn resolve_parallel_moves(out: &mut String, mut moves: Vec<(String, String, &str
 
     loop {
         // find a move whose dest is not read by any other pending move
-        let safe = moves
-            .iter()
-            .position(|(_, dest, _, _)| !moves.iter().any(|(src, other_dest, _, _)| other_dest != dest && src == dest));
+        let safe = moves.iter().position(|(_, dest, _, _)| {
+            !moves.iter().any(|(src, other_dest, _, _)| other_dest != dest && src == dest)
+        });
 
         match safe {
             Some(i) => {

@@ -1,7 +1,7 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId, Parameter, Statement,
-        SymbolId, Type,
+        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
+        Parameter, Statement, SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
@@ -115,14 +115,19 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         })
     }
 
-    fn lower_block(&mut self, block: &statement::Block<'f>, is_tail: bool) -> Result<(Block, bool), HirError<'f>> {
+    fn lower_block(
+        &mut self,
+        block: &statement::Block<'f>,
+        is_tail: bool,
+    ) -> Result<(Block, bool), HirError<'f>> {
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
         let (statements, returns) = block.statements.iter().enumerate().try_fold(
             (Vec::new(), false),
             |(mut statements, mut returns), (idx, statement)| -> Result<_, HirError> {
-                let (statement, did_return) = self.lower_statement(statement, is_tail && idx == last_idx)?;
+                let (statement, did_return) =
+                    self.lower_statement(statement, is_tail && idx == last_idx)?;
                 statements.push(statement);
 
                 returns |= did_return;
@@ -238,7 +243,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// expected type is known from context (call arguments, let bindings, assignments, etc.).
     ///
     /// When the hint is `None`, literals default to `i32` and `f64` respectively.
-    fn lower_expr(&mut self, expr: &expression::Expression, hint: Option<Type>) -> Result<Expression, HirError<'f>> {
+    fn lower_expr(
+        &mut self,
+        expr: &expression::Expression,
+        hint: Option<Type>,
+    ) -> Result<Expression, HirError<'f>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -292,7 +301,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 })
             }
 
-            Expr::Unary { operator, expr, span } => {
+            Expr::Unary {
+                operator,
+                expr,
+                span,
+            } => {
                 // for negation the hint flows through to the operand
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
@@ -370,7 +383,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 })
             }
 
-            Expr::Assignment { target, value, span } => {
+            Expr::Assignment {
+                target,
+                value,
+                span,
+            } => {
                 let symbol = self.symbols.insert(target);
                 let id = self.resolve_local(symbol, *span)?;
 
@@ -410,7 +427,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(name);
                         let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownFunction { name: name.to_string() },
+                            kind: HirErrorKind::UnknownFunction {
+                                name: name.to_string(),
+                            },
                             span: *span,
                         })?;
 
@@ -479,7 +498,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    fn lower_if(&mut self, if_stmt: &statement::If<'f>, is_tail: bool) -> Result<(Statement, bool), HirError<'f>> {
+    fn lower_if(
+        &mut self,
+        if_stmt: &statement::If<'f>,
+        is_tail: bool,
+    ) -> Result<(Statement, bool), HirError<'f>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::Bool, condition.typ, condition.span)?;
 
@@ -568,7 +591,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         span: Span,
     ) -> Result<Type, HirError<'f>> {
         match operator {
-            BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div => {
+            BinaryOperator::Add
+            | BinaryOperator::Sub
+            | BinaryOperator::Mul
+            | BinaryOperator::Div => {
                 self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(left),
@@ -587,7 +613,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 Ok(Type::Bool)
             }
 
-            BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq => {
+            BinaryOperator::Lt
+            | BinaryOperator::LtEq
+            | BinaryOperator::Gt
+            | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(Type::Bool),
@@ -628,7 +657,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    fn declare_local(&mut self, name: SymbolId, typ: Type, mutable: bool) -> Result<LocalId, HirError<'f>> {
+    fn declare_local(
+        &mut self,
+        name: SymbolId,
+        typ: Type,
+        mutable: bool,
+    ) -> Result<LocalId, HirError<'f>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
@@ -644,7 +678,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         self.next_local += 1;
 
         scope.insert(name, id);
-        self.locals.push(Local { id, name, typ, mutable });
+        self.locals.push(Local {
+            id,
+            name,
+            typ,
+            mutable,
+        });
 
         Ok(id)
     }
@@ -709,7 +748,8 @@ pub fn collect_function_signatures<'h>(
         functions.insert(symbol, function_id);
 
         let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
-        let return_type = function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
+        let return_type =
+            function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
 
         let name_str = symbols.get(symbol);
         let intrinsic = Intrinsic::from_str(name_str).ok();

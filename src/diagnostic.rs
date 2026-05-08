@@ -70,7 +70,11 @@ impl Diagnostic {
 }
 
 #[inline(always)]
-fn render<'s>(src: &'s str, filename: &str, report: Report<'_, (&str, std::ops::Range<usize>)>) -> String {
+fn render<'s>(
+    src: &'s str,
+    filename: &str,
+    report: Report<'_, (&str, std::ops::Range<usize>)>,
+) -> String {
     let mut buf = Vec::with_capacity(src.len());
     report.write((filename, Source::from(src)), &mut buf).ok();
 
@@ -217,7 +221,9 @@ impl Diagnosticable for HirError<'_> {
                 format!("use of undeclared identifier `{name}`"),
                 format!("`{name}` is not declared in this scope"),
                 None,
-                Some(format!("declare `{name}` with `let {name} = ...` before using it")),
+                Some(format!(
+                    "declare `{name}` with `let {name} = ...` before using it"
+                )),
             ),
 
             Kind::UnknownFunction { name } => (
@@ -227,7 +233,11 @@ impl Diagnosticable for HirError<'_> {
                 Some(format!("declare `fn {name}(...)` before calling it")),
             ),
 
-            Kind::ArityMismatch { name, expected, found } => (
+            Kind::ArityMismatch {
+                name,
+                expected,
+                found,
+            } => (
                 format!("wrong number of arguments to `{name}`"),
                 format!(
                     "{found} argument{} provided, but `{name}` expects {expected}",
@@ -271,7 +281,9 @@ impl Diagnosticable for HirError<'_> {
                 format!("cannot call non-const function `{name}` in a const context"),
                 format!("`{name}` is not declared `const`"),
                 Some("const functions may only call other const functions".to_string()),
-                Some(format!("mark `fn {name}` as `const fn {name}` if it qualifies")),
+                Some(format!(
+                    "mark `fn {name}` as `const fn {name}` if it qualifies"
+                )),
             ),
         };
 
@@ -327,7 +339,9 @@ impl std::fmt::Display for NyxError {
             Self::Io(io) => writeln!(f, "i/o error: {io}"),
             Self::Assembler(code) => writeln!(f, "assembler failed with exit code: {code}"),
             Self::Linker(code) => writeln!(f, "linker failed with exit code: {code}"),
-            Self::ToolNotFound(msg) => writeln!(f, "tool not found — is binutils installed? ({msg})"),
+            Self::ToolNotFound(msg) => {
+                writeln!(f, "tool not found — is binutils installed? ({msg})")
+            }
         }
     }
 }
@@ -362,7 +376,10 @@ impl From<ModuleError> for Diagnostic {
                 note: None,
             }),
             ModuleError::CircularImport { path, span } => Self::from_info(Info {
-                message: format!("circular import: `{}` is already being loaded", path.display()),
+                message: format!(
+                    "circular import: `{}` is already being loaded",
+                    path.display()
+                ),
                 label: "this import creates a cycle".to_string(),
                 span,
                 help: Some("remove the circular dependency between modules".to_string()),
@@ -383,7 +400,10 @@ impl From<ModuleError> for Diagnostic {
                 note: None,
             }),
             ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {
-                message: format!("module `{}` has no exported symbol `{name}`", path.display()),
+                message: format!(
+                    "module `{}` has no exported symbol `{name}`",
+                    path.display()
+                ),
                 label: format!("`{name}` is not exported from this module"),
                 span,
                 help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),

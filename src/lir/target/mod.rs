@@ -47,7 +47,11 @@ pub trait Target: Sized {
 ///
 /// The lowering translates 3-address MIR into the target ISA.
 pub trait Lowerable: Target {
-    fn lower(function: &mir::Function, symbols: &[String], all_functions: &[mir::Function]) -> lir::Function<Self>;
+    fn lower(
+        function: &mir::Function,
+        symbols: &[String],
+        all_functions: &[mir::Function],
+    ) -> lir::Function<Self>;
 }
 
 /// Emits assembly text from a fully allocated LIR function.

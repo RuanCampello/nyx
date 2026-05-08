@@ -8,7 +8,9 @@ pub(in crate::hir) struct SymbolTable {
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self { interner: Rodeo::new() }
+        Self {
+            interner: Rodeo::new(),
+        }
     }
 
     #[inline(always)]

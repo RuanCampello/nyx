@@ -3,8 +3,8 @@
 use crate::{
     hir::{self, Expression, ExpressionKind, Hir, LocalId},
     mir::{
-        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place, Terminator, ValueId,
-        error::MirError,
+        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
+        Terminator, ValueId, error::MirError,
     },
     parser::statement::Type,
 };
@@ -140,7 +140,9 @@ impl<'a> FunctionLower<'a> {
                 if let Some(expr) = init {
                     self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
 
-                    if !self.runtime_local_uses(*id) && self.constant_locals[id.0 as usize].is_some() {
+                    if !self.runtime_local_uses(*id)
+                        && self.constant_locals[id.0 as usize].is_some()
+                    {
                         return Ok(());
                     }
 
@@ -247,9 +249,14 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Const(Const::Str { id, len }))
             }
 
-            ExpressionKind::Local(local_id) => Ok(Operand::Place(self.place_for_local(*local_id, expr.typ))),
+            ExpressionKind::Local(local_id) => {
+                Ok(Operand::Place(self.place_for_local(*local_id, expr.typ)))
+            }
 
-            ExpressionKind::Unary { operator, expr: inner } => {
+            ExpressionKind::Unary {
+                operator,
+                expr: inner,
+            } => {
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -264,7 +271,11 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Binary { operator, left, right } => {
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ);
@@ -296,7 +307,8 @@ impl<'a> FunctionLower<'a> {
             }
 
             ExpressionKind::Call { function, args, .. } => {
-                let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let lowered_args =
+                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
 
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -337,7 +349,10 @@ impl<'a> FunctionLower<'a> {
                     }
 
                     Intrinsic::Exit => {
-                        let lowered_args = args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                        let lowered_args = args
+                            .iter()
+                            .map(|a| self.lower_expr(a))
+                            .collect::<Result<Vec<_>, _>>()?;
 
                         self.emit(
                             dest,

@@ -25,7 +25,11 @@ struct Lower<'f> {
 }
 
 impl Lowerable for X86_64 {
-    fn lower(function: &Function, symbols: &[String], all_functions: &[Function]) -> lir::Function<Self> {
+    fn lower(
+        function: &Function,
+        symbols: &[String],
+        all_functions: &[Function],
+    ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
             .map(|n| format!("nyx_{n}"))
@@ -126,7 +130,11 @@ impl<'f> Lower<'f> {
                 }
             }
 
-            InstructionKind::Binary { operation, rhs, lhs } => {
+            InstructionKind::Binary {
+                operation,
+                rhs,
+                lhs,
+            } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type().bytes();
@@ -137,8 +145,22 @@ impl<'f> Lower<'f> {
 
                 match operation {
                     B::Div if is_float => {
-                        self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
-                        self.lir.push_instr(id, X86Instr::DivFloat { dest, src: rhs, bytes });
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::MovFloat {
+                                dest,
+                                src: lhs,
+                                bytes,
+                            },
+                        );
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::DivFloat {
+                                dest,
+                                src: rhs,
+                                bytes,
+                            },
+                        );
                     }
                     B::Div => {
                         let dividend = self.lir.new_vreg(lhs_type.machine_type());
@@ -153,31 +175,69 @@ impl<'f> Lower<'f> {
                         self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes));
                     }
 
-                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
-                        self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, Condition::new(&comp, is_float))
-                    }
+                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => self.lower_cmp(
+                        id,
+                        dest,
+                        lhs,
+                        rhs,
+                        bytes,
+                        is_float,
+                        Condition::new(&comp, is_float),
+                    ),
 
                     _ => {
                         let copy = match is_float {
-                            true => X86Instr::MovFloat { dest, bytes, src: lhs },
-                            _ => X86Instr::Mov { dest, src: lhs, bytes },
+                            true => X86Instr::MovFloat {
+                                dest,
+                                bytes,
+                                src: lhs,
+                            },
+                            _ => X86Instr::Mov {
+                                dest,
+                                src: lhs,
+                                bytes,
+                            },
                         };
                         self.lir.push_instr(id, copy);
 
                         let arith = match operation {
                             B::Add => match is_float {
-                                true => X86Instr::AddFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Add { dest, src: rhs, bytes },
+                                true => X86Instr::AddFloat {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
+                                _ => X86Instr::Add {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
                             },
 
                             B::Sub => match is_float {
-                                true => X86Instr::SubFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Sub { dest, src: rhs, bytes },
+                                true => X86Instr::SubFloat {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
+                                _ => X86Instr::Sub {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
                             },
 
                             B::Mul => match is_float {
-                                true => X86Instr::MulFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Imul { dest, src: rhs, bytes },
+                                true => X86Instr::MulFloat {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
+                                _ => X86Instr::Imul {
+                                    dest,
+                                    src: rhs,
+                                    bytes,
+                                },
                             },
 
                             B::And => X86Instr::And {
@@ -254,7 +314,11 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, X86Instr::call(callee, moves, stack_args, ret));
             }
 
-            InstructionKind::Syscall { code, args, returns } => {
+            InstructionKind::Syscall {
+                code,
+                args,
+                returns,
+            } => {
                 let mut moves = Vec::with_capacity(args.len());
                 let mut uses = Vec::with_capacity(args.len());
 
@@ -310,7 +374,14 @@ impl<'f> Lower<'f> {
                     X86Operand::VReg(reg) => reg,
                     _ => {
                         let dest = self.lir.new_vreg(MachineType::Int { bytes });
-                        self.lir.push_instr(id, X86Instr::Mov { dest, src: lhs, bytes });
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::Mov {
+                                dest,
+                                src: lhs,
+                                bytes,
+                            },
+                        );
 
                         dest
                     }
@@ -320,7 +391,13 @@ impl<'f> Lower<'f> {
             }
         }
 
-        self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
+        self.lir.push_instr(
+            id,
+            X86Instr::Setcc {
+                dest: flag,
+                condition,
+            },
+        );
         self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
 
         // movzx widens 1-byte setcc result to i32, so we need to update dest's type
@@ -390,7 +467,9 @@ impl<'f> Lower<'f> {
 
                         None => {
                             let offset = X86_64::param_stack_offset(int_stack_idx, RegClass::Int)
-                                .expect("param_stack_offset must be defined when param() returns None");
+                                .expect(
+                                    "param_stack_offset must be defined when param() returns None",
+                                );
 
                             let dest = self.vreg(*vid);
                             self.lir.push_instr(
@@ -426,8 +505,11 @@ impl<'f> Lower<'f> {
                         }
 
                         None => {
-                            let offset = X86_64::param_stack_offset(float_stack_idx, RegClass::Float)
-                                .expect("param_stack_offset must be defined when param() returns None");
+                            let offset = X86_64::param_stack_offset(
+                                float_stack_idx,
+                                RegClass::Float,
+                            )
+                            .expect("param_stack_offset must be defined when param() returns None");
 
                             let dest = self.vreg(*vid);
                             self.lir.push_instr(
@@ -483,7 +565,9 @@ impl<'f> Lower<'f> {
             }
             Operand::Const(Const::Int(n, _)) => X86Operand::Imm(*n),
             Operand::Const(Const::Bool(b)) => X86Operand::Imm(if *b { 1 } else { 0 }),
-            Operand::Const(Const::Str { id, .. }) => X86Operand::RipRel(format!(".L_str_{id}(%rip)")),
+            Operand::Const(Const::Str { id, .. }) => {
+                X86Operand::RipRel(format!(".L_str_{id}(%rip)"))
+            }
             Operand::Const(Const::Unit) => unreachable!("unit operand"),
         }
     }
@@ -494,7 +578,11 @@ impl<'f> Lower<'f> {
 
         match c {
             Const::Int(_, _) => X86Instr::Mov { dest, src, bytes },
-            Const::Bool(_) => X86Instr::Mov { dest, src, bytes: 4 },
+            Const::Bool(_) => X86Instr::Mov {
+                dest,
+                src,
+                bytes: 4,
+            },
             Const::Float(_, _) => X86Instr::MovFloat {
                 dest,
                 src,
@@ -517,7 +605,9 @@ impl Type {
             Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
             Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
             Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
-            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => MachineType::Int { bytes: 8 },
+            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
+                MachineType::Int { bytes: 8 }
+            }
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },
             Type::Unit => unreachable!("unit doesn't have a machine type"),

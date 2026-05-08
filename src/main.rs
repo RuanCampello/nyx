@@ -113,7 +113,11 @@ fn main() -> Result<(), NyxError> {
             cmd_build(&entry, output.as_deref(), &emit, &name)
         }
 
-        Commands::Run { path, entry, project } => {
+        Commands::Run {
+            path,
+            entry,
+            project,
+        } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
@@ -129,7 +133,12 @@ fn main() -> Result<(), NyxError> {
     process::exit(1)
 }
 
-fn cmd_build(entry: &Path, output: Option<&Path>, emit: &[Emit], project: &str) -> Result<i32, NyxError> {
+fn cmd_build(
+    entry: &Path,
+    output: Option<&Path>,
+    emit: &[Emit],
+    project: &str,
+) -> Result<i32, NyxError> {
     let exe = output.map(PathBuf::from).unwrap_or_else(|| entry.with_extension(""));
     let kinds = match emit.is_empty() {
         true => HashSet::from([Emit::Link]),
@@ -150,7 +159,8 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
     let result = (|| -> Result<i32, NyxError> {
         build_emit(entry, &exe, &HashSet::from([Emit::Link]), project)?;
 
-        let status = Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+        let status =
+            Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
 
         Ok(status.code().unwrap_or(1))
     })();
@@ -160,7 +170,12 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
 }
 
 /// Emits whichever outputs [kinds](self::Emit) requests.
-fn build_emit(source: &Path, stem: &Path, kinds: &HashSet<Emit>, project: &str) -> Result<Vec<PathBuf>, NyxError> {
+fn build_emit(
+    source: &Path,
+    stem: &Path,
+    kinds: &HashSet<Emit>,
+    project: &str,
+) -> Result<Vec<PathBuf>, NyxError> {
     let asm = nyx::compile_project(&source, &project)?;
     let mut emitted = Vec::new();
 
@@ -225,7 +240,11 @@ fn resolve_entry(path: Option<PathBuf>, entry_filename: &str) -> Result<PathBuf,
 
     Err(NyxError::Io(Error::new(
         ErrorKind::NotFound,
-        format!("entry file `{}` not found in `{}`", entry_filename, root.display()),
+        format!(
+            "entry file `{}` not found in `{}`",
+            entry_filename,
+            root.display()
+        ),
     )))
 }
 

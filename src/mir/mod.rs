@@ -247,7 +247,10 @@ mod tests {
             .iter()
             .filter(|i| matches!(i.kind, InstructionKind::Assign(_)))
             .collect();
-        assert!(!assigns.is_empty(), "expected at least one Assign instruction");
+        assert!(
+            !assigns.is_empty(),
+            "expected at least one Assign instruction"
+        );
 
         assert!(f.locals.iter().any(|(_, t)| *t == Type::I32));
     }
@@ -289,6 +292,9 @@ mod tests {
         });
         assert!(has_add, "expected Binary(Add) instruction");
 
-        assert!(matches!(f.blocks[0].terminator, Terminator::Return(Some(_))));
+        assert!(matches!(
+            f.blocks[0].terminator,
+            Terminator::Return(Some(_))
+        ));
     }
 }

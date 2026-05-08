@@ -62,7 +62,11 @@ impl Liveness {
         Self { blocks }
     }
 
-    pub fn instruction_liveness<T: Target>(&self, function: &Function<T>, idx: usize) -> InstructionLiveness {
+    pub fn instruction_liveness<T: Target>(
+        &self,
+        function: &Function<T>,
+        idx: usize,
+    ) -> InstructionLiveness {
         let block = &function.blocks[idx];
         let n = block.instructions.len();
         let mut points = vec![BTreeSet::new(); n + 1];
@@ -141,7 +145,9 @@ impl<I> Block<I> {
         match self.term {
             Term::Jump(id) => vec![id],
             Term::Branch {
-                then_block, else_block, ..
+                then_block,
+                else_block,
+                ..
             } => {
                 vec![then_block, else_block]
             }

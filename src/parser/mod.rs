@@ -76,8 +76,9 @@ impl<'i> Parser<'i> {
     }
 
     pub fn expect_next(&mut self) -> Result<Token<'i>, ParserError<'i>> {
-        self.next_token()?
-            .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, self.last.unwrap_or_default()))
+        self.next_token()?.ok_or_else(|| {
+            ParserError::new(ParseErrorKind::UnexpectedEof, self.last.unwrap_or_default())
+        })
     }
 
     #[inline(always)]

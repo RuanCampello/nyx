@@ -28,7 +28,11 @@ pub(crate) enum LexErrorKind {
 impl LexError {
     #[inline]
     pub(in crate::lexer) fn new(kind: LexErrorKind, span: Span) -> Self {
-        Self { kind, span, help: None }
+        Self {
+            kind,
+            span,
+            help: None,
+        }
     }
 
     #[inline]

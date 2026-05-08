@@ -157,7 +157,8 @@ impl<'src> Lexer<'src> {
                 match self.cursor.consume_optional('|') {
                     true => self.token(Punct::Or, start),
                     _ => {
-                        return Err(LexError::unexpected_char('|', start).with_help("did you mean `||` (logical or)?"));
+                        return Err(LexError::unexpected_char('|', start)
+                            .with_help("did you mean `||` (logical or)?"));
                     }
                 }
             }
@@ -206,7 +207,10 @@ impl<'src> Lexer<'src> {
     /// Builds a punctuation token from `start` to the current cursor position.
     #[inline]
     fn token(&self, punct: Punct, start: token::Position) -> Token<'src> {
-        Token::new(TokenKind::Punct(punct), Span::new(start, self.cursor.position()))
+        Token::new(
+            TokenKind::Punct(punct),
+            Span::new(start, self.cursor.position()),
+        )
     }
 }
 
@@ -340,7 +344,10 @@ mod tests {
 
     #[test]
     fn boolean_literals() {
-        assert_eq!(kinds("true false"), vec![TokenKind::Bool(true), TokenKind::Bool(false)]);
+        assert_eq!(
+            kinds("true false"),
+            vec![TokenKind::Bool(true), TokenKind::Bool(false)]
+        );
     }
 
     #[test]
@@ -471,7 +478,10 @@ mod tests {
     #[test]
     fn bang_without_eq() {
         let ks = kinds("!x");
-        assert_eq!(ks, vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]);
+        assert_eq!(
+            ks,
+            vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]
+        );
     }
 
     #[test]

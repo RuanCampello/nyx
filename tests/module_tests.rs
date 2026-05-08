@@ -78,7 +78,10 @@ fn run_module_tests() {
 
             Ok(code) => {
                 failed += 1;
-                let msg = format!("{}: expected exit code {} but got {}", test.name, test.exit_code, code);
+                let msg = format!(
+                    "{}: expected exit code {} but got {}",
+                    test.name, test.exit_code, code
+                );
                 errors.push(msg);
             }
 

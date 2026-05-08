@@ -135,7 +135,10 @@ impl<'i> Parsable<'i> for Statement<'i> {
         let kind = match parser.peek() {
             Some(Ok(token)) => &token.kind,
             _ => {
-                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
             }
         };
 
@@ -149,11 +152,19 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Fn | Keyword::Pub | Keyword::Inline | Keyword::Const) => {
                 Ok(Statement::Fn(parser.parse_node()?))
             }
-            TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
+            TokenKind::Eof => Err(ParserError::new(
+                ParseErrorKind::UnexpectedEof,
+                Span::default(),
+            )),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
-                    Some(Ok(token)) if matches!(token.kind, TokenKind::Punct(Punct::CloseBrace) | TokenKind::Eof) => {
+                    Some(Ok(token))
+                        if matches!(
+                            token.kind,
+                            TokenKind::Punct(Punct::CloseBrace) | TokenKind::Eof
+                        ) =>
+                    {
                         expr.span().end
                     }
                     Some(Err(err)) => return Err(err.into()),
@@ -297,7 +308,10 @@ impl<'i> Parsable<'i> for If<'i> {
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
             let Some(Ok(next_token)) = parser.peek() else {
-                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
             };
 
             match next_token.kind {
@@ -340,7 +354,11 @@ impl<'i> Parsable<'i> for While<'i> {
         let body = Block::parse(parser)?;
         let span = Span::new(while_token.span.start, body.span.end);
 
-        Ok(While { condition, body, span })
+        Ok(While {
+            condition,
+            body,
+            span,
+        })
     }
 }
 

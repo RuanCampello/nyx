@@ -144,7 +144,8 @@ pub struct LocalId(pub u32);
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
-    let (signatures, functions_map) = functions::collect_function_signatures(&statements, &mut symbols)?;
+    let (signatures, functions_map) =
+        functions::collect_function_signatures(&statements, &mut symbols)?;
 
     let mut functions = Vec::new();
     for statement in statements {
@@ -216,12 +217,18 @@ impl Type {
 
     #[allow(unused)]
     pub(in crate::hir) const fn is_signed(&self) -> bool {
-        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Iptr)
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Iptr
+        )
     }
 
     #[allow(unused)]
     pub(in crate::hir) const fn is_unsigned(&self) -> bool {
-        matches!(self, Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr)
+        matches!(
+            self,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr
+        )
     }
 }
 
@@ -281,7 +288,12 @@ mod tests {
         let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "x".to_string() })
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UndeclaredIdentifier {
+                name: "x".to_string()
+            }
+        )
     }
 
     #[test]
@@ -373,7 +385,10 @@ mod tests {
 
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::DuplicateFunction { name: "foo".into() });
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateFunction { name: "foo".into() }
+        );
     }
 
     #[test]
@@ -405,7 +420,10 @@ mod tests {
 
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::UnknownFunction { name: "foo".into() });
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UnknownFunction { name: "foo".into() }
+        );
     }
 
     #[test]

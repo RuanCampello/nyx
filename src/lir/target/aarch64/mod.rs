@@ -227,7 +227,8 @@ impl Target for AArch64 {
     fn syscall_param(idx: usize) -> Option<Self::Reg> {
         // Linux AArch64 syscall ABI
         // syscall number in X8, args in X0-X5
-        const REGS: [A64Reg; 6] = [A64Reg::X0, A64Reg::X1, A64Reg::X2, A64Reg::X3, A64Reg::X4, A64Reg::X5];
+        const REGS: [A64Reg; 6] =
+            [A64Reg::X0, A64Reg::X1, A64Reg::X2, A64Reg::X3, A64Reg::X4, A64Reg::X5];
 
         REGS.get(idx).copied()
     }
@@ -267,16 +268,19 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
-            Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => std::slice::from_ref(r),
+            Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
+                std::slice::from_ref(r)
+            }
             Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
         }
     }
 
     fn uses(&self) -> &[VReg] {
         match self {
-            Self::Mov { src, .. } | Self::Neg { src, .. } | Self::FMov { src, .. } | Self::FNeg { src, .. } => {
-                std::slice::from_ref(src)
-            }
+            Self::Mov { src, .. }
+            | Self::Neg { src, .. }
+            | Self::FMov { src, .. }
+            | Self::FNeg { src, .. } => std::slice::from_ref(src),
             Self::Add {
                 lhs,
                 rhs: A64Operand::VReg(_),
@@ -338,7 +342,9 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FAdd { lhs, .. }
             | Self::FSub { lhs, .. }
             | Self::FMul { lhs, .. }
-            | Self::FDiv { lhs, .. } => unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) },
+            | Self::FDiv { lhs, .. } => unsafe {
+                std::slice::from_raw_parts(lhs as *const VReg, 2)
+            },
 
             Self::FCmp { lhs, .. } => unsafe { std::slice::from_raw_parts(lhs as *const VReg, 2) },
 
@@ -409,7 +415,6 @@ impl PhysicalReg for A64Reg {
             Self::X28 => if bytes == 8 { "x28" } else { "w28" },
             Self::X29 => "x29",
             Self::X30 => "x30",
- 
             Self::D0  => if bytes == 8 { "d0"  } else { "s0"  },
             Self::D1  => if bytes == 8 { "d1"  } else { "s1"  },
             Self::D2  => if bytes == 8 { "d2"  } else { "s2"  },

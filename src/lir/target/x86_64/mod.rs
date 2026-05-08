@@ -301,7 +301,8 @@ impl Target for X86_64 {
                 REGS.get(idx).copied()
             }
             RegClass::Float => {
-                const REGS: [R; 8] = [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
+                const REGS: [R; 8] =
+                    [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
 
                 REGS.get(idx).copied()
             }
@@ -366,7 +367,9 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::Cmp { .. } | Self::Test { .. } | Self::Ucomis { .. } => &[],
 
-            Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => std::slice::from_ref(ret),
+            Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
+                std::slice::from_ref(ret)
+            }
             Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
         }
     }
@@ -446,7 +449,9 @@ impl Instruction<X86_64> for X86Instr {
 
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
-            Self::IDiv { precoloured_uses, .. } => precoloured_uses,
+            Self::IDiv {
+                precoloured_uses, ..
+            } => precoloured_uses,
             _ => &[],
         }
     }

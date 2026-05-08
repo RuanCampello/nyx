@@ -47,12 +47,28 @@ struct Module {
 
 #[derive(Debug)]
 pub enum ModuleError {
-    FileNotFound { path: PathBuf, span: Option<Span> },
-    CircularImport { path: PathBuf, span: Span },
+    FileNotFound {
+        path: PathBuf,
+        span: Option<Span>,
+    },
+    CircularImport {
+        path: PathBuf,
+        span: Span,
+    },
     EmptyPath,
-    UnknownRoot { name: String, span: Span },
-    UnknownExport { path: PathBuf, name: String, span: Span },
-    TopLevelNonFunction { path: PathBuf, span: Span },
+    UnknownRoot {
+        name: String,
+        span: Span,
+    },
+    UnknownExport {
+        path: PathBuf,
+        name: String,
+        span: Span,
+    },
+    TopLevelNonFunction {
+        path: PathBuf,
+        span: Span,
+    },
     Diagnostic(Diagnostic),
 }
 
@@ -87,10 +103,11 @@ impl<F: FileSystem> ModuleLoader<F> {
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
-        let canonical = self.fs.canonicalise(entry.as_ref()).map_err(|_| ModuleError::FileNotFound {
-            path: entry.as_ref().into(),
-            span: None,
-        })?;
+        let canonical =
+            self.fs.canonicalise(entry.as_ref()).map_err(|_| ModuleError::FileNotFound {
+                path: entry.as_ref().into(),
+                span: None,
+            })?;
 
         self.discover(&canonical, None)?;
 
@@ -116,7 +133,11 @@ impl<F: FileSystem> ModuleLoader<F> {
     }
 
     /// Recursevly load a module and all its dependencies
-    fn discover(&mut self, canonical: &Path, triggered_by: Option<Span>) -> Result<(), ModuleError> {
+    fn discover(
+        &mut self,
+        canonical: &Path,
+        triggered_by: Option<Span>,
+    ) -> Result<(), ModuleError> {
         if self.cache.contains_key(canonical) {
             return Ok(());
         }
@@ -201,7 +222,8 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         let local_offset = signatures.len() as u32;
         let (local_signatures, local_map) =
-            collect_function_signatures(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+            collect_function_signatures(&statements, &mut self.symbols)
+                .map_err(|e| Diagnostic::from(e))?;
 
         // merge local signatures into combined table
         for (&symbol, &local_id) in &local_map {
@@ -348,7 +370,10 @@ mod tests {
         fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
             match self.files.contains_key(path) {
                 true => Ok(path.to_path_buf()),
-                _ => Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string())),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    path.display().to_string(),
+                )),
             }
         }
     }
@@ -423,7 +448,10 @@ mod tests {
     #[test]
     fn import_and_call() {
         let _fs = VirtualFS::default()
-            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/math.nyx",
+                "pub fn add(a: i32, b: i32): i32 { a + b }",
+            )
             .add(
                 "/project/main.nyx",
                 r#"
@@ -515,7 +543,10 @@ mod tests {
     #[test]
     fn same_dependency_imported_twice_was_not_duplicated() {
         let fs = VirtualFS::default()
-            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/math.nyx",
+                "pub fn add(a: i32, b: i32): i32 { a + b }",
+            )
             .add(
                 "/project/util.nyx",
                 r#"
@@ -538,13 +569,19 @@ mod tests {
             .iter()
             .filter(|f| hir.symbols.get(f.name.0.into_usize()).map(|s| s == "add").unwrap_or(false))
             .count();
-        assert_eq!(add_count, 1, "add should appear exactly once in the merged HIR");
+        assert_eq!(
+            add_count, 1,
+            "add should appear exactly once in the merged HIR"
+        );
     }
 
     #[test]
     fn arity_mismatch_across_modules() {
         let fs = VirtualFS::default()
-            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/math.nyx",
+                "pub fn add(a: i32, b: i32): i32 { a + b }",
+            )
             .add(
                 "/project/main.nyx",
                 r#"
@@ -584,7 +621,10 @@ mod tests {
     #[test]
     fn duplicate_function_across_modules_rejected() {
         let fs = VirtualFS::default()
-            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
+            .add(
+                "/project/math.nyx",
+                "pub fn add(a: i32, b: i32): i32 { a + b }",
+            )
             .add(
                 "/project/main.nyx",
                 r#"
@@ -610,7 +650,10 @@ mod tests {
             }
             "#,
             )
-            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
+            .add(
+                "/project/math.nyx",
+                "pub fn add(a: i32, b: i32): i32 { a + b }",
+            );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
