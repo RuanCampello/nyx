@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use nyx::NyxError;
+use nyx::{NyxError, TargetArch};
 use std::{
     collections::HashSet,
     fs,
@@ -60,6 +60,13 @@ enum Commands {
         /// Defaults to the entry file's parent directory name.
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
+
+        /// Target architecture for code generation
+        ///
+        /// Defaults to the host architecture.
+        /// Values: x86_64, aarch64 (aliases: x86-64, arm64)
+        #[arg(long, value_name = "ARCH")]
+        target: Option<String>,
     },
 
     /// Compile a nyx source file or project and immediately run it
@@ -106,11 +113,13 @@ fn main() -> Result<(), NyxError> {
             output,
             emit,
             project,
+            target,
         } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
+            let arch = resolve_target(target)?;
 
-            cmd_build(&entry, output.as_deref(), &emit, &name)
+            cmd_build(&entry, output.as_deref(), &emit, &name, arch)
         }
 
         Commands::Run {
@@ -138,6 +147,7 @@ fn cmd_build(
     output: Option<&Path>,
     emit: &[Emit],
     project: &str,
+    target: TargetArch,
 ) -> Result<i32, NyxError> {
     let exe = output.map(PathBuf::from).unwrap_or_else(|| entry.with_extension(""));
     let kinds = match emit.is_empty() {
@@ -145,7 +155,7 @@ fn cmd_build(
         _ => emit.iter().copied().collect(),
     };
 
-    let emitted = build_emit(entry, &exe, &kinds, project)?;
+    let emitted = build_emit(entry, &exe, &kinds, project, target)?;
     for path in emitted {
         println!("Emmitted: {}", path.display());
     }
@@ -155,9 +165,10 @@ fn cmd_build(
 
 fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
     let exe = temp_exe_path(entry);
+    let target = TargetArch::host();
 
     let result = (|| -> Result<i32, NyxError> {
-        build_emit(entry, &exe, &HashSet::from([Emit::Link]), project)?;
+        build_emit(entry, &exe, &HashSet::from([Emit::Link]), project, target)?;
 
         let status =
             Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
@@ -175,8 +186,9 @@ fn build_emit(
     stem: &Path,
     kinds: &HashSet<Emit>,
     project: &str,
+    target: TargetArch,
 ) -> Result<Vec<PathBuf>, NyxError> {
-    let asm = nyx::compile_project(&source, &project)?;
+    let asm = nyx::compile_project_for(&source, &project, target)?;
     let mut emitted = Vec::new();
 
     // write assembly to a temp `.s` file
@@ -192,7 +204,7 @@ fn build_emit(
     let obj_path = stem.with_extension("o");
     let keep_obj = kinds.contains(&Emit::Obj);
 
-    let assemble_result = nyx::assemble(&asm_path, &obj_path);
+    let assemble_result = nyx::assemble_for(&asm_path, &obj_path, target);
     if !keep_asm {
         fs::remove_file(&asm_path).ok();
     }
@@ -207,7 +219,7 @@ fn build_emit(
     }
 
     let exe_path = stem.with_extension("");
-    let link_result = nyx::link(&obj_path, stem, &[]);
+    let link_result = nyx::link_for(&obj_path, stem, &[], target);
     fs::remove_file(&obj_path).ok();
     link_result?;
 
@@ -258,6 +270,20 @@ fn resolve_project_name(entry: &Path, override_name: Option<String>) -> String {
             .unwrap_or("project")
             .to_string()
     })
+}
+
+fn resolve_target(target: Option<String>) -> Result<TargetArch, NyxError> {
+    use std::io::{Error, ErrorKind};
+
+    match target {
+        None => Ok(TargetArch::host()),
+        Some(s) => TargetArch::from_str(&s).ok_or_else(|| {
+            NyxError::Io(Error::new(
+                ErrorKind::InvalidInput,
+                format!("unknown target architecture: `{s}` (expected: x86_64, aarch64)"),
+            ))
+        }),
+    }
 }
 
 #[inline(always)]
