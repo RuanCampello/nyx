@@ -13,6 +13,7 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
+    hir::Type,
     lir::{
         self, BlockId, Term, VReg,
         target::{
@@ -21,7 +22,6 @@ use crate::{
         },
     },
     mir::{self, Const, Function, Operand, ValueId},
-    parser::statement::Type,
 };
 
 struct Lower<'f> {

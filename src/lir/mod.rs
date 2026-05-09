@@ -7,6 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
+    hir::Type,
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir,
 };
@@ -225,6 +226,23 @@ impl MachineType {
         match self {
             Self::Int { .. } => RegClass::Int,
             Self::Float { .. } => RegClass::Float,
+        }
+    }
+}
+
+impl Type {
+    pub(in crate::lir) fn machine_type(&self) -> MachineType {
+        match self {
+            Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
+            Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
+            Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
+            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
+                MachineType::Int { bytes: 8 }
+            }
+            Type::Struct(_) => MachineType::Int { bytes: 8 },
+            Type::F32 => MachineType::Float { bytes: 4 },
+            Type::F64 => MachineType::Float { bytes: 8 },
+            Type::Unit => unreachable!("unit doesn't have a machine type"),
         }
     }
 }

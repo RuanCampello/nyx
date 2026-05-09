@@ -10,11 +10,11 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
+use crate::hir::Type;
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Operand, ValueId};
-use crate::parser::statement::Type;
 
 struct Lower<'f> {
     function: &'f Function,
@@ -593,22 +593,6 @@ impl<'f> Lower<'f> {
                 src: X86Operand::RipRel(format!(".L_str_{id}(%rip)")),
             },
             Const::Unit => unreachable!("unit operand"),
-        }
-    }
-}
-
-impl Type {
-    pub(in crate::lir) fn machine_type(&self) -> MachineType {
-        match self {
-            Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
-            Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
-            Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
-            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
-                MachineType::Int { bytes: 8 }
-            }
-            Type::F32 => MachineType::Float { bytes: 4 },
-            Type::F64 => MachineType::Float { bytes: 8 },
-            Type::Unit => unreachable!("unit doesn't have a machine type"),
         }
     }
 }
