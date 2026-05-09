@@ -1,7 +1,7 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId, Type},
+    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, StructId, SymbolId, Type},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
@@ -23,6 +23,9 @@ struct FunctionLower<'a> {
     locals: Vec<(ValueId, Type)>,
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
+    structs: &'a [Struct],
+    struct_fields: Vec<Option<Vec<ValueId>>>,
+    local_struct_id: Vec<Option<StructId>>,
     local_symbols: Vec<usize>,
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
@@ -32,9 +35,15 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
     let symbols = hir.symbols;
+    let structs = hir.structs;
 
     for function in hir.functions {
-        functions.push(FunctionLower::run(function, &symbols, &mut strings)?);
+        functions.push(FunctionLower::run(
+            function,
+            &symbols,
+            &structs,
+            &mut strings,
+        )?);
     }
 
     Ok(Mir {
@@ -48,6 +57,7 @@ impl<'a> FunctionLower<'a> {
     fn run(
         function: hir::Function,
         symbols: &'a [String],
+        structs: &'a [Struct],
         strings: &'a mut Vec<String>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
@@ -59,12 +69,36 @@ impl<'a> FunctionLower<'a> {
         let mut local_map = vec![ValueId(0); n_hir_locals];
         let mut local_symbols = vec![0; n_hir_locals];
         let mut locals = Vec::with_capacity(n_hir_locals);
+        let mut struct_fields = vec![None; n_hir_locals];
+        let mut local_struct_id = vec![None; n_hir_locals];
 
         for local in &function.locals {
-            let value_id = ValueId(locals.len() as u32);
-            local_map[local.id.0 as usize] = value_id;
-            local_symbols[local.id.0 as usize] = local.name.0.into_usize();
-            locals.push((value_id, local.typ));
+            match local.typ {
+                Type::Struct(id) => {
+                    let definition = &structs[id.0 as usize];
+                    let ids: Vec<_> = definition
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            let id = ValueId(locals.len() as u32);
+                            locals.push((id, f.typ));
+                            id
+                        })
+                        .collect();
+
+                    local_map[local.id.0 as usize] = ids[0];
+                    local_symbols[local.id.0 as usize] = local.name.0.into_usize();
+                    local_struct_id[local.id.0 as usize] = Some(id);
+                    struct_fields[local.id.0 as usize] = Some(ids);
+                }
+
+                _ => {
+                    let value_id = ValueId(locals.len() as u32);
+                    local_map[local.id.0 as usize] = value_id;
+                    local_symbols[local.id.0 as usize] = local.name.0.into_usize();
+                    locals.push((value_id, local.typ));
+                }
+            }
         }
 
         let params = function
@@ -86,6 +120,9 @@ impl<'a> FunctionLower<'a> {
             next,
             symbols,
             strings,
+            structs,
+            struct_fields,
+            local_struct_id,
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
             runtime_local_uses: collect_runtime_local_uses(&function),
@@ -305,14 +342,6 @@ impl<'a> FunctionLower<'a> {
                 Ok(src)
             }
 
-            ExpressionKind::Struct { fields, .. } => {
-                for (_, value) in fields {
-                    self.lower_expr(value)?;
-                }
-
-                Ok(Operand::Const(Const::Unit))
-            }
-
             ExpressionKind::Call { function, args, .. } => {
                 let lowered_args =
                     args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
@@ -373,6 +402,44 @@ impl<'a> FunctionLower<'a> {
                         Ok(Operand::Const(Const::Unit))
                     }
                 }
+            }
+
+            ExpressionKind::Struct { id, fields } => {
+                let definition = &self.structs[id.0 as usize];
+
+                for (field, value) in fields {
+                    let src = self.lower_expr(value)?;
+                    let layout_idx = definition
+                        .fields
+                        .iter()
+                        .position(|f| &f.name == field)
+                        .expect("field must exist");
+
+                    let typ = definition.fields[layout_idx].typ;
+                    let place = self.fresh_temporary(typ);
+                    self.emit(place, InstructionKind::Assign(src));
+                }
+
+                Ok(Operand::Const(Const::Unit))
+            }
+
+            ExpressionKind::FieldAccess { local, field, typ } => {
+                let id = self.field_value_id(local, *field);
+                Ok(Operand::Place(Place { id, typ: *typ }))
+            }
+
+            ExpressionKind::FieldAssign {
+                local,
+                field,
+                value,
+            } => {
+                let src = self.lower_expr(value)?;
+                let id = self.field_value_id(local, *field);
+                let dest = Place { typ: value.typ, id };
+
+                self.emit(dest, InstructionKind::Assign(src));
+
+                Ok(Operand::Place(dest))
             }
         }
     }
@@ -532,6 +599,23 @@ impl<'a> FunctionLower<'a> {
     fn runtime_local_uses(&self, id: LocalId) -> bool {
         self.runtime_local_uses.get(id.0 as usize).copied().unwrap_or(false)
     }
+
+    fn field_value_id(&self, local_id: &LocalId, field: SymbolId) -> ValueId {
+        let sid =
+            self.local_struct_id[local_id.0 as usize].expect("field access on non-struct local");
+
+        let field_vids = self.struct_fields[local_id.0 as usize]
+            .as_ref()
+            .expect("struct local must have field slots");
+
+        let layout_idx = self.structs[sid.0 as usize]
+            .fields
+            .iter()
+            .position(|f| f.name == field)
+            .expect("field not found in struct definition");
+
+        field_vids[layout_idx]
+    }
 }
 
 impl PartialBlock {
@@ -615,6 +699,11 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
+        }
+        ExpressionKind::FieldAccess { local, .. } => uses[local.0 as usize] = true,
+        ExpressionKind::FieldAssign { local, value, .. } => {
+            uses[local.0 as usize] = true;
+            visit_expr_runtime_uses(value, uses);
         }
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
