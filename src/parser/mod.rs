@@ -41,7 +41,7 @@ impl<'i> Parser<'i> {
 
         loop {
             match self.peek() {
-                Some(Ok(token)) if token.kind == TokenKind::Eof => break,
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
                 Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
                 None => break,
                 Some(Err(err)) => return Err(ParserError::new(err.clone().into(), err.span())),
@@ -58,11 +58,6 @@ impl<'i> Parser<'i> {
     #[inline(always)]
     pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError>> {
         self.cursor.peek()
-    }
-
-    #[inline(always)]
-    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
-        self.cursor.clone().nth(n)
     }
 
     #[inline(always)]
@@ -89,7 +84,7 @@ impl<'i> Parser<'i> {
     #[inline(always)]
     pub fn expect_token(&mut self, expected: TokenKind<'i>) -> Result<Token<'i>, ParserError<'i>> {
         let token = self.expect_next()?;
-        match token.kind == expected {
+        match token.is_kind(expected) {
             true => Ok(token),
             false => Err(ParserError::new(
                 ParseErrorKind::Expected {
@@ -127,7 +122,7 @@ impl<'i> Parser<'i> {
     #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
         if let Some(Ok(token)) = self.peek() {
-            if token.kind == kind {
+            if token.is_kind(kind) {
                 let _ = self.next_token();
                 return true;
             }
@@ -148,7 +143,7 @@ impl<'i> Parser<'i> {
 
     fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
-            Some(Ok(token)) if token.kind == kind => {
+            Some(Ok(token)) if token.is_kind(kind) => {
                 self.next_token()?;
                 Ok(true)
             }

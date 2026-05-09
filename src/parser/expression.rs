@@ -112,10 +112,13 @@ impl<'i> Expression<'i> {
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
-                true => Self::parse_struct(parser, ident, token.span),
-                false => Ok(Expression::Identifier(ident, token.span)),
-            },
+            TokenKind::Identifier(ident) => {
+                // FIXME: correctly avaliate if it's a struct before trying to parse
+                match matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenBrace)) {
+                    true => Self::parse_struct(parser, ident, token.span),
+                    false => Ok(Expression::Identifier(ident, token.span)),
+                }
+            }
             TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
@@ -169,10 +172,10 @@ impl<'i> Expression<'i> {
 
         loop {
             match parser.peek() {
-                Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                     return make_struct(parser, fields);
                 }
-                Some(Ok(token)) if token.kind == TokenKind::Eof => {
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
                 }
                 Some(Err(err)) => return Err(err.into()),
@@ -184,7 +187,7 @@ impl<'i> Expression<'i> {
                 parser.expect_punct(Punct::Comma)?;
 
                 match parser.peek() {
-                    Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                         return make_struct(parser, fields);
                     }
                     _ => {}
@@ -321,24 +324,5 @@ impl<'i> Expression<'i> {
                 })
             }
         }
-    }
-
-    fn next_is_struct(parser: &Parser<'i>) -> bool {
-        let first = parser.peek_nth(0);
-        let second = parser.peek_nth(1);
-        let third = parser.peek_nth(2);
-
-        matches!(
-            (
-                first.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
-                second.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
-                third.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
-            ),
-            (
-                Some(Ok(TokenKind::Punct(Punct::OpenBrace))),
-                Some(Ok(TokenKind::Identifier(_))),
-                Some(Ok(TokenKind::Punct(Punct::Colon)))
-            )
-        )
     }
 }

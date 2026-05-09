@@ -16,13 +16,13 @@ pub trait Tokenize<'src> {
 }
 
 /// A single token produced by the lexer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'src> {
     pub kind: TokenKind<'src>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'src> {
     Integer(i64),
     Float(f64),
@@ -130,6 +130,11 @@ impl<'src> Token<'src> {
     pub(in crate::lexer) const fn new(kind: TokenKind<'src>, span: Span) -> Self {
         Self { kind, span }
     }
+
+    #[inline]
+    pub(crate) fn is_kind(&self, kind: impl Into<TokenKind<'src>>) -> bool {
+        self.kind == kind.into()
+    }
 }
 
 impl Keyword {
@@ -221,6 +226,12 @@ impl fmt::Display for TokenKind<'_> {
             Self::Punct(p) => write!(f, "{p}"),
             Self::Eof => write!(f, "EOF"),
         }
+    }
+}
+
+impl From<Punct> for TokenKind<'_> {
+    fn from(value: Punct) -> Self {
+        Self::Punct(value)
     }
 }
 
