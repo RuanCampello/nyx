@@ -1,7 +1,7 @@
 use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Statement, SymbolId, Type,
+        Parameter, Statement, Struct, StructField, StructId, SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
@@ -11,7 +11,10 @@ use crate::{
         statement::{self, Else},
     },
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -28,6 +31,8 @@ pub(in crate::hir) struct FunctionSignature {
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     signatures: &'s [FunctionSignature],
     functions: &'s Functions,
+    structs: &'s [Struct],
+    struct_map: &'s Structs,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -36,7 +41,15 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     symbols: &'s mut SymbolTable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visit {
+    Unvisited,
+    Visiting,
+    Visited,
+}
+
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
+pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 
 impl Default for FunctionSignature {
     fn default() -> Self {
@@ -58,16 +71,18 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     pub fn new(
         signatures: &'s [FunctionSignature],
         functions: &'s Functions,
+        structs: &'s [Struct],
+        struct_map: &'s Structs,
         symbols: &'s mut SymbolTable,
         function: statement::Function<'f>,
     ) -> Self {
-        let return_type = function.return_type.map(|s| s.value()).unwrap_or(Type::Unit);
-
         Self {
-            return_type,
             functions,
+            structs,
+            struct_map,
             symbols,
             signatures,
+            return_type: Type::Unit,
             function: Some(function),
             next_local: 0,
             locals: Vec::new(),
@@ -106,7 +121,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             name: symbol,
             params,
             locals: self.locals,
-            return_type: self.return_type,
+            return_type: signatures.return_type,
             is_const: function.is_const,
             inline: function.inline,
             is_pub: function.is_pub,
@@ -154,8 +169,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
         match statement {
             Stmt::Let(statement) => {
-                let typ = match (statement.typ, statement.value.as_ref()) {
-                    (Some(typ), _) => Type::from(typ.value()),
+                let typ = match (statement.typ.as_ref(), statement.value.as_ref()) {
+                    (Some(typ), _) => self.resolve_type(&typ.value(), typ.span())?,
                     (_, Some(expr)) => self.infer(expr)?,
                     (None, None) => {
                         return Err(HirError {
@@ -233,6 +248,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
+            Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
         }
     }
@@ -413,6 +429,69 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     },
                     typ: target_typ,
                     span: *span,
+                })
+            }
+
+            Expr::Struct { name, fields, span } => {
+                let symbol = self.symbols.insert(name);
+                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: (*name).to_string(),
+                    },
+                    span: *span,
+                })?;
+                let definition = &self.structs[id.0 as usize];
+                let struct_name = self.symbols.get(definition.name).to_string();
+
+                let mut seen = HashSet::with_capacity(fields.len());
+                let mut lowered = Vec::with_capacity(fields.len());
+
+                for field in fields {
+                    let field_symbol = self.symbols.insert(field.name);
+                    if !seen.insert(field_symbol) {
+                        return Err(HirError {
+                            kind: HirErrorKind::DuplicateField {
+                                name: field.name.to_string(),
+                            },
+                            span: field.span,
+                        });
+                    }
+
+                    let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
+                    else {
+                        return Err(HirError {
+                            kind: HirErrorKind::UnknownField {
+                                struct_name: struct_name,
+                                field: field.name.to_string(),
+                            },
+                            span: field.span,
+                        });
+                    };
+
+                    let value = self.lower_expr(&field.value, Some(expected.typ))?;
+                    self.assert_type(expected.typ, value.typ, value.span)?;
+                    lowered.push((field_symbol, value));
+                }
+
+                for expected in &definition.fields {
+                    if !seen.contains(&expected.name) {
+                        return Err(HirError {
+                            kind: HirErrorKind::MissingField {
+                                struct_name,
+                                field: self.symbols.get(expected.name).to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+                }
+
+                Ok(Expression {
+                    typ: Type::Struct(id),
+                    span: *span,
+                    kind: ExpressionKind::Struct {
+                        id,
+                        fields: lowered,
+                    },
                 })
             }
 
@@ -646,6 +725,29 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
+    fn resolve_type(
+        &mut self,
+        typ: &statement::Type<'f>,
+        span: Span,
+    ) -> Result<Type, HirError<'f>> {
+        match typ {
+            statement::Type::Named(name) => {
+                let symbol = self.symbols.insert(name);
+                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: name.to_string(),
+                    },
+                    span,
+                })?;
+
+                Ok(Type::Struct(id))
+            }
+
+            typ => Ok(typ.into()),
+        }
+    }
+
+    #[inline(always)]
     #[must_use]
     fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'f>> {
         match expected == found {
@@ -713,9 +815,74 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 }
 
+fn lower_struct<'h>(
+    id: usize,
+    declarations: &[(SymbolId, &statement::Struct<'h>)],
+    map: &Structs,
+    symbols: &mut SymbolTable,
+    lowered: &mut [Option<Struct>],
+    states: &mut [Visit],
+) -> Result<(), HirError<'h>> {
+    match states[id] {
+        Visit::Visited => return Ok(()),
+        Visit::Visiting => {
+            let (_, declaration) = declarations[id];
+            return Err(HirError {
+                kind: HirErrorKind::CircularStruct {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+        Visit::Unvisited => {}
+    }
+
+    states[id] = Visit::Visiting;
+    let (name, declaration) = declarations[id];
+    let mut seen = HashSet::new();
+    let mut fields = Vec::with_capacity(declaration.fields.len());
+
+    for (idx, field) in declaration.fields.iter().enumerate() {
+        let field_symbol = symbols.insert(field.name);
+        if !seen.insert(field_symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateField {
+                    name: field.name.to_string(),
+                },
+                span: field.span,
+            });
+        }
+
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        if let Type::Struct(dep) = typ {
+            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
+        }
+
+        fields.push(StructField {
+            name: field_symbol,
+            typ,
+            offset: 0,
+            declared_index: idx as u32,
+        });
+    }
+
+    let (fields, size, align) = layout_fields(fields, lowered);
+    lowered[id] = Some(Struct {
+        id: StructId(id as u32),
+        name,
+        fields,
+        size,
+        align,
+    });
+    states[id] = Visit::Visited;
+
+    Ok(())
+}
+
 pub fn collect_function_signatures<'h>(
     statements: &[statement::Statement<'h>],
     symbols: &mut SymbolTable,
+    struct_map: &Structs,
 ) -> Result<(Vec<FunctionSignature>, Functions), HirError<'h>> {
     let mut signatures = Vec::new();
     let mut functions = Functions::new();
@@ -725,7 +892,7 @@ pub fn collect_function_signatures<'h>(
             statement::Statement::Fn(func) => func,
             // 'use' declarations are valid at the top level but carry no signature information
             // they are resolved by the module loader before this function is called
-            statement::Statement::Use(_) => continue,
+            statement::Statement::Use(_) | statement::Statement::Struct(_) => continue,
             _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
@@ -747,9 +914,17 @@ pub fn collect_function_signatures<'h>(
         let function_id = FunctionId(signatures.len() as u32);
         functions.insert(symbol, function_id);
 
-        let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
-        let return_type =
-            function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
+        let params = function
+            .params
+            .iter()
+            .map(|p| resolve_annotation(symbols, struct_map, &p.typ.value(), p.typ.span()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let return_type = function
+            .return_type
+            .as_ref()
+            .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
+            .transpose()?
+            .unwrap_or(Type::Unit);
 
         let name_str = symbols.get(symbol);
         let intrinsic = Intrinsic::from_str(name_str).ok();
@@ -766,6 +941,105 @@ pub fn collect_function_signatures<'h>(
     }
 
     Ok((signatures, functions))
+}
+
+pub fn collect_structs<'h>(
+    statements: &[statement::Statement<'h>],
+    symbols: &mut SymbolTable,
+) -> Result<(Vec<Struct>, Structs), HirError<'h>> {
+    let mut map = Structs::new();
+    let mut declarations = Vec::new();
+
+    for statement in statements {
+        let statement::Statement::Struct(declaration) = statement else {
+            continue;
+        };
+
+        let symbol = symbols.insert(declaration.name);
+        if map.contains_key(&symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateStruct {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+
+        let id = StructId(declarations.len() as u32);
+        map.insert(symbol, id);
+        declarations.push((symbol, declaration));
+    }
+
+    let mut lowered = vec![None; declarations.len()];
+    let mut states = vec![Visit::Unvisited; declarations.len()];
+
+    for id in 0..declarations.len() {
+        lower_struct(id, &declarations, &map, symbols, &mut lowered, &mut states)?;
+    }
+
+    let structs = lowered
+        .into_iter()
+        .map(|definition| definition.expect("all struct definitions are lowered"))
+        .collect();
+
+    Ok((structs, map))
+}
+
+fn resolve_annotation<'h>(
+    symbols: &mut SymbolTable,
+    struct_map: &Structs,
+    typ: &statement::Type<'h>,
+    span: Span,
+) -> Result<Type, HirError<'h>> {
+    match typ {
+        statement::Type::Named(name) => {
+            let symbol = symbols.insert(name);
+            struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: (*name).to_string(),
+                },
+                span,
+            })
+        }
+        typ => Ok(typ.into()),
+    }
+}
+
+fn layout_fields(
+    mut fields: Vec<StructField>,
+    structs: &[Option<Struct>],
+) -> (Vec<StructField>, u32, u32) {
+    // PERFORMANCE: maybe we should test this with unstable_sort_by :D
+    fields.sort_by(|a, b| {
+        let (a_size, a_align) = &a.typ.layout(structs);
+        let (b_size, b_align) = &b.typ.layout(structs);
+
+        b_align
+            .cmp(&a_align)
+            .then_with(|| b_size.cmp(&a_size))
+            .then_with(|| a.declared_index.cmp(&b.declared_index))
+    });
+
+    let mut offset = 0;
+    let mut struct_align = 1;
+
+    for field in &mut fields {
+        let (size, align) = field.typ.layout(structs);
+
+        struct_align = struct_align.max(align);
+        offset = align_to(offset, align);
+        field.offset = offset;
+        offset += size;
+    }
+
+    let size = align_to(offset, struct_align);
+
+    (fields, size, struct_align)
+}
+
+#[inline(always)]
+const fn align_to(value: u32, align: u32) -> u32 {
+    (value + align - 1) & !(align - 1)
 }
 
 pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions) {

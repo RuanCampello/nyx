@@ -12,7 +12,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         expression::{BinaryOperator, UnaryOperator},
-        statement::{self, Type},
+        statement,
     },
 };
 use lasso::{Key, Spur};
@@ -26,8 +26,55 @@ mod symbols;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {
     pub symbols: Vec<String>,
+    pub structs: Vec<Struct>,
     pub functions: Vec<Function>,
 }
+
+// PERFORMANCE: I probably don't need a u32 right here for size and alignmnet
+// but I need to reavaliate it
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Struct {
+    id: StructId,
+    name: SymbolId,
+    fields: Vec<StructField>,
+    size: u32,
+    align: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    name: SymbolId,
+    typ: Type,
+    offset: u32,
+    declared_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Type {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Uptr,
+    Iptr,
+    Char,
+    Str,
+    String,
+    Struct(StructId),
+    Unit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
@@ -114,6 +161,10 @@ pub enum ExpressionKind {
         target: LocalId,
         value: Box<Expression>,
     },
+    Struct {
+        id: StructId,
+        fields: Vec<(SymbolId, Expression)>,
+    },
     Call {
         function: FunctionId,
         args: Vec<Expression>,
@@ -144,13 +195,15 @@ pub struct LocalId(pub u32);
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
+    let (structs, structs_map) = functions::collect_structs(&statements, &mut symbols)?;
     let (signatures, functions_map) =
-        functions::collect_function_signatures(&statements, &mut symbols)?;
+        functions::collect_function_signatures(&statements, &mut symbols, &structs_map)?;
 
     let mut functions = Vec::new();
     for statement in statements {
         let function = match statement {
             statement::Statement::Fn(function) => function,
+            statement::Statement::Struct(_) => continue,
             // 'use' declarations are valid at the top level but have no HIR representation
             // symbol resolution happens at the module loader level, not here
             statement::Statement::Use(_) => continue,
@@ -162,12 +215,20 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
             }
         };
 
-        let function = FunctionBuilder::new(&signatures, &functions_map, &mut symbols, function);
+        let function = FunctionBuilder::new(
+            &signatures,
+            &functions_map,
+            &structs,
+            &structs_map,
+            &mut symbols,
+            function,
+        );
         functions.push(function.lower()?);
     }
 
     Ok(Hir {
         symbols: symbols.into_symbols(),
+        structs,
         functions,
     })
 }
@@ -230,6 +291,58 @@ impl Type {
             Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr
         )
     }
+
+    #[inline(always)]
+    /// returns (size, alignment) of the type
+    const fn layout(&self, structs: &[Option<Struct>]) -> (u32, u32) {
+        match self {
+            Type::I8 | Type::U8 | Type::Bool | Type::Char => (1, 1),
+            Type::I16 | Type::U16 => (2, 2),
+            Type::I32 | Type::U32 | Type::F32 => (4, 4),
+            Type::I64
+            | Type::U64
+            | Type::Iptr
+            | Type::Uptr
+            | Type::Str
+            | Type::String
+            | Type::F64 => (8, 8),
+            Type::Unit => (0, 1),
+
+            Type::Struct(id) => {
+                let definition =
+                    structs[id.0 as usize].as_ref().expect("dependent struct is already lowered");
+
+                (definition.size, definition.align)
+            }
+        }
+    }
+}
+
+impl From<&statement::Type<'_>> for Type {
+    fn from(value: &statement::Type<'_>) -> Self {
+        use statement::Type as AstType;
+
+        match value {
+            AstType::I8 => Type::I8,
+            AstType::U8 => Type::U8,
+            AstType::I16 => Type::I16,
+            AstType::U16 => Type::U16,
+            AstType::I32 => Type::I32,
+            AstType::U32 => Type::U32,
+            AstType::I64 => Type::I64,
+            AstType::U64 => Type::U64,
+            AstType::F32 => Type::F32,
+            AstType::F64 => Type::F64,
+            AstType::Bool => Type::Bool,
+            AstType::Uptr => Type::Uptr,
+            AstType::Iptr => Type::Iptr,
+            AstType::Char => Type::Char,
+            AstType::Str => Type::Str,
+            AstType::String => Type::String,
+            AstType::Unit => Type::Unit,
+            AstType::Named(_) => unreachable!("already resolved by resolve_type"),
+        }
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -251,6 +364,7 @@ impl std::fmt::Display for Type {
             Type::Iptr => "iptr",
             Type::Str => "&str",
             Type::String => "String",
+            Type::Struct(id) => return write!(f, "struct#{}", id.0),
             Type::Unit => "unit",
         };
 
@@ -282,6 +396,7 @@ impl std::fmt::Debug for SymbolId {
 mod tests {
     use super::*;
     use crate::parser::Parser;
+    use lasso::Key;
 
     #[test]
     fn unknown_identifier() {
@@ -718,6 +833,122 @@ mod tests {
             HirErrorKind::TypeMismatch {
                 expected: Type::Iptr,
                 found: Type::Uptr,
+            }
+        );
+    }
+
+    #[test]
+    fn struct_layout_reorders_fields_to_reduce_padding() {
+        let src = r#"
+            struct Packed {
+                a: i8,
+                b: i64,
+                c: i32,
+            }
+
+            fn main() {
+                let value: Packed = Packed { a: 1, b: 2, c: 3 };
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+
+        assert_eq!(hir.structs.len(), 1);
+        let layout = &hir.structs[0];
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
+
+        let field_names: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    hir.symbols[field.name.0.into_usize()].as_str(),
+                    field.offset,
+                )
+            })
+            .collect();
+        assert_eq!(field_names, vec![("b", 0), ("c", 8), ("a", 12)]);
+
+        let func = &hir.functions[0];
+        assert_eq!(func.locals[0].typ, Type::Struct(StructId(0)));
+    }
+
+    #[test]
+    fn nested_struct_fields_are_resolved() {
+        let src = r#"
+            struct Inner {
+                n: i32,
+            }
+
+            struct Outer {
+                inner: Inner,
+                flag: bool,
+            }
+
+            fn main() {
+                let value = Outer {
+                    inner: Inner { n: 1 },
+                    flag: true,
+                };
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        assert_eq!(hir.structs.len(), 2);
+        assert_eq!(hir.structs[0].size, 4);
+        assert_eq!(hir.structs[1].align, 4);
+
+        let outer_inner = hir.structs[1]
+            .fields
+            .iter()
+            .find(|field| hir.symbols[field.name.0.into_usize()] == "inner")
+            .unwrap();
+        assert_eq!(outer_inner.typ, Type::Struct(StructId(0)));
+    }
+
+    #[test]
+    fn circular_structs_are_rejected() {
+        let src = r#"
+            struct A {
+                b: B,
+            }
+
+            struct B {
+                a: A,
+            }
+
+            fn main() { }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::CircularStruct {
+                name: "A".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn struct_literal_requires_all_fields() {
+        let src = r#"
+            struct Point {
+                x: i32,
+                y: i32,
+            }
+
+            fn main() {
+                let p = Point { x: 1 };
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::MissingField {
+                struct_name: "Point".to_string(),
+                field: "y".to_string(),
             }
         );
     }

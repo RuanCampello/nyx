@@ -128,6 +128,7 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         Ok(Hir {
             functions,
+            structs: Vec::new(),
             symbols: self.symbols.clone().into_symbols(),
         })
     }
@@ -198,7 +199,7 @@ impl<F: FileSystem> ModuleLoader<F> {
     fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
         for statement in &statements {
             match statement {
-                Statement::Fn(_) | Statement::Use(_) => {}
+                Statement::Fn(_) | Statement::Use(_) | Statement::Struct(_) => {}
                 _ => {
                     return Err(ModuleError::TopLevelNonFunction {
                         path: path.into(),
@@ -219,10 +220,12 @@ impl<F: FileSystem> ModuleLoader<F> {
         }
 
         let (mut signatures, mut map) = signatures_from_hir(&functions);
+        let structs = Vec::new();
+        let struct_map = HashMap::new();
 
         let local_offset = signatures.len() as u32;
         let (local_signatures, local_map) =
-            collect_function_signatures(&statements, &mut self.symbols)
+            collect_function_signatures(&statements, &mut self.symbols, &struct_map)
                 .map_err(|e| Diagnostic::from(e))?;
 
         // merge local signatures into combined table
@@ -264,7 +267,14 @@ impl<F: FileSystem> ModuleLoader<F> {
                 _ => continue,
             };
 
-            let builder = FunctionBuilder::new(&signatures, &map, &mut self.symbols, function);
+            let builder = FunctionBuilder::new(
+                &signatures,
+                &map,
+                &structs,
+                &struct_map,
+                &mut self.symbols,
+                function,
+            );
             let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
 
             hir.id = FunctionId(local_offset + functions.len() as u32);
@@ -349,7 +359,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::statement::Type;
+    use crate::hir::Type;
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
