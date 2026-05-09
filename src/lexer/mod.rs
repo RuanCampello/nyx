@@ -30,7 +30,7 @@ use token::{Punct, Span, Token, TokenKind, Tokenize};
 /// The Nyx lexer.
 ///
 /// Wraps a [`Cursor`] and exposes an [`Iterator`] of `Result<Token, LexError>`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lexer<'src> {
     cursor: Cursor<'src>,
     /// set to `true` once we've emitted [`TokenKind::Eof`].

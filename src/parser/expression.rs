@@ -112,13 +112,10 @@ impl<'i> Expression<'i> {
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => {
-                // FIXME: correctly avaliate if it's a struct before trying to parse
-                match matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenBrace)) {
-                    true => Self::parse_struct(parser, ident, token.span),
-                    false => Ok(Expression::Identifier(ident, token.span)),
-                }
-            }
+            TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
+                true => Self::parse_struct(parser, ident, token.span),
+                false => Ok(Expression::Identifier(ident, token.span)),
+            },
             TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
@@ -324,5 +321,13 @@ impl<'i> Expression<'i> {
                 })
             }
         }
+    }
+
+    // FIXME: I wanna find a way of make this without having to clone
+    // the entire lexer, I don't know if it's possible but will dive into this later
+    fn next_is_struct(parser: &mut Parser<'i>) -> bool {
+        matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
+            && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
+            && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
     }
 }

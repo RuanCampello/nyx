@@ -61,6 +61,11 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
+    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
+        self.cursor.clone().nth(n)
+    }
+
+    #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
         match self.cursor.next() {
             Some(Ok(token)) => {
