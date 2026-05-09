@@ -1,12 +1,11 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId},
+    hir::{self, Expression, ExpressionKind, Hir, LocalId, Type},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
     },
-    parser::statement::Type,
 };
 use lasso::Key;
 
@@ -306,6 +305,14 @@ impl<'a> FunctionLower<'a> {
                 Ok(src)
             }
 
+            ExpressionKind::Struct { fields, .. } => {
+                for (_, value) in fields {
+                    self.lower_expr(value)?;
+                }
+
+                Ok(Operand::Const(Const::Unit))
+            }
+
             ExpressionKind::Call { function, args, .. } => {
                 let lowered_args =
                     args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
@@ -599,6 +606,11 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
             visit_expr_runtime_uses(right, uses);
         }
         ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Struct { fields, .. } => {
+            for (_, value) in fields {
+                visit_expr_runtime_uses(value, uses);
+            }
+        }
         ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);

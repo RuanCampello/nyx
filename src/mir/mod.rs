@@ -19,11 +19,8 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic},
-    parser::{
-        expression::{BinaryOperator, UnaryOperator},
-        statement::Type,
-    },
+    hir::{FunctionId, Intrinsic, Type},
+    parser::expression::{BinaryOperator, UnaryOperator},
 };
 
 pub use lower::lower;
