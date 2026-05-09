@@ -284,7 +284,10 @@ mod tests {
     fn assignment_is_right_associative() {
         let statements = Parser::new("a = b = c;").parse().unwrap();
         let b_eq_c = Box::new(Expression::Assignment {
-            target: "b",
+            target: Box::new(Expression::Identifier(
+                "b",
+                Span::new(Position::new(4, 1, 5), Position::new(5, 1, 6)),
+            )),
             value: Box::new(Expression::Identifier(
                 "c",
                 Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
@@ -296,7 +299,10 @@ mod tests {
             statements,
             vec![Statement::Expr(
                 Expression::Assignment {
-                    target: "a",
+                    target: Box::new(Expression::Identifier(
+                        "a",
+                        Span::new(Position::new(0, 1, 1), Position::new(1, 1, 2)),
+                    )),
                     value: b_eq_c,
                     span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
                 },

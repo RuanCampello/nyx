@@ -13,6 +13,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ops::Index,
     str::FromStr,
 };
 
@@ -312,7 +313,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 Ok(Expression {
                     kind: ExpressionKind::Local(id),
-                    typ: self.locals[id.0 as usize].typ,
+                    typ: self[id].typ,
                     span: *span,
                 })
             }
@@ -403,34 +404,106 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 target,
                 value,
                 span,
-            } => {
-                let symbol = self.symbols.insert(target);
-                let id = self.resolve_local(symbol, *span)?;
+            } => match target.as_ref() {
+                Expr::Identifier(name, _) => {
+                    let symbol = self.symbols.insert(name);
+                    let id = self.resolve_local(symbol, *span)?;
 
-                if !self.locals[id.0 as usize].mutable {
-                    return Err(HirError {
-                        kind: HirErrorKind::ImmutableBind {
-                            name: target.to_string(),
+                    if !self[id].mutable {
+                        return Err(HirError {
+                            kind: HirErrorKind::ImmutableBind {
+                                name: name.to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let typ = self[id].typ;
+                    let value = self.lower_expr(value, Some(typ))?;
+                    self.assert_type(typ, value.typ, *span)?;
+
+                    Ok(Expression {
+                        kind: ExpressionKind::Assign {
+                            target: id,
+                            value: Box::new(value),
                         },
+                        typ,
                         span: *span,
-                    });
+                    })
                 }
 
-                let target_typ = self.locals[id.0 as usize].typ;
-                // we need to pass the targets type as a hint :D
-                let value = self.lower_expr(value, Some(target_typ))?;
+                Expr::Field { expr, field, span } => {
+                    let Expr::Identifier(name, local_span) = expr.as_ref() else {
+                        return Err(HirError {
+                            // FIXME: better error message here
+                            kind: HirErrorKind::UndeclaredIdentifier {
+                                name: format!("{expr:#?}"),
+                            },
+                            span: *span,
+                        });
+                    };
 
-                self.assert_type(target_typ, value.typ, value.span)?;
+                    let symbol = self.symbols.insert(name);
+                    let local = self.resolve_local(symbol, *local_span)?;
 
-                Ok(Expression {
-                    kind: ExpressionKind::Assign {
-                        target: id,
-                        value: Box::new(value),
+                    if !self[local].mutable {
+                        return Err(HirError {
+                            kind: HirErrorKind::ImmutableBind {
+                                name: name.to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let typ = self[local].typ;
+                    let Type::Struct(id) = typ else {
+                        return Err(HirError {
+                            kind: HirErrorKind::TypeMismatch {
+                                expected: Type::Struct(StructId(0)),
+                                found: typ,
+                            },
+                            span: *span,
+                        });
+                    };
+
+                    let field_id = self.symbols.insert(field);
+                    let definition = &self[id];
+                    let struct_name = self.symbols.get(definition.name).to_string();
+
+                    let field_def =
+                        definition.fields.iter().find(|f| f.name == field_id).ok_or_else(|| {
+                            HirError {
+                                kind: HirErrorKind::UnknownField {
+                                    struct_name: struct_name.to_string(),
+                                    field: field.to_string(),
+                                },
+                                span: *span,
+                            }
+                        })?;
+
+                    let typ = field_def.typ;
+                    let value = self.lower_expr(value, Some(typ))?;
+                    self.assert_type(typ, value.typ, *span)?;
+
+                    Ok(Expression {
+                        kind: ExpressionKind::FieldAssign {
+                            local,
+                            field: field_id,
+                            value: Box::new(value),
+                        },
+                        typ,
+                        span: *span,
+                    })
+                }
+
+                // FIXME: improve this error message
+                _ => Err(HirError {
+                    kind: HirErrorKind::UndeclaredIdentifier {
+                        name: format!("{target:#?}"),
                     },
-                    typ: target_typ,
                     span: *span,
-                })
-            }
+                }),
+            },
 
             Expr::Struct { name, fields, span } => {
                 let symbol = self.symbols.insert(name);
@@ -492,6 +565,58 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                         id,
                         fields: lowered,
                     },
+                })
+            }
+
+            Expr::Field { expr, field, span } => {
+                let Expr::Identifier(name, local_span) = expr.as_ref() else {
+                    return Err(HirError {
+                        kind: HirErrorKind::UndeclaredIdentifier {
+                            name: format!("{expr:#?}"),
+                        },
+                        span: *span,
+                    });
+                };
+
+                let symbol = self.symbols.insert(name);
+                let local_id = self.resolve_local(symbol, *local_span)?;
+                let struct_type = self[local_id].typ;
+
+                let Type::Struct(struct_id) = struct_type else {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId(0)),
+                            found: struct_type,
+                        },
+                        span: *span,
+                    });
+                };
+
+                let field_id = self.symbols.insert(field);
+                let definition = &self[struct_id];
+                let struct_name = self.symbols.get(definition.name);
+
+                let field_def =
+                    definition.fields.iter().find(|f| f.name == field_id).ok_or_else(|| {
+                        HirError {
+                            kind: HirErrorKind::UnknownField {
+                                struct_name: struct_name.to_string(),
+                                field: field.to_string(),
+                            },
+                            span: *span,
+                        }
+                    })?;
+
+                let typ = field_def.typ;
+
+                Ok(Expression {
+                    typ,
+                    kind: ExpressionKind::FieldAccess {
+                        local: local_id,
+                        field: field_id,
+                        typ,
+                    },
+                    span: *span,
                 })
             }
 
@@ -1054,4 +1179,20 @@ pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, F
     }
 
     (signatures, map)
+}
+
+impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {
+    type Output = Local;
+
+    fn index(&self, index: LocalId) -> &Self::Output {
+        &self.locals[index.0 as usize]
+    }
+}
+
+impl<'s, 'f> Index<StructId> for FunctionBuilder<'s, 'f> {
+    type Output = Struct;
+
+    fn index(&self, index: StructId) -> &Self::Output {
+        &self.structs[index.0 as usize]
+    }
 }

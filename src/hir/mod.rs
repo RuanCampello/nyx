@@ -161,6 +161,16 @@ pub enum ExpressionKind {
         target: LocalId,
         value: Box<Expression>,
     },
+    FieldAccess {
+        local: LocalId,
+        field: SymbolId,
+        typ: Type,
+    },
+    FieldAssign {
+        local: LocalId,
+        field: SymbolId,
+        value: Box<Expression>,
+    },
     Struct {
         id: StructId,
         fields: Vec<(SymbolId, Expression)>,

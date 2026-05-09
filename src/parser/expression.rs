@@ -21,8 +21,13 @@ pub enum Expression<'i> {
         span: Span,
     },
     Assignment {
-        target: &'i str,
+        target: Box<Expression<'i>>,
         value: Box<Expression<'i>>,
+        span: Span,
+    },
+    Field {
+        expr: Box<Expression<'i>>,
+        field: &'i str,
         span: Span,
     },
     Struct {
@@ -85,6 +90,7 @@ impl<'i> Expression<'i> {
             | Self::Binary { span, .. }
             | Self::Assignment { span, .. }
             | Self::Struct { span, .. }
+            | Self::Field { span, .. }
             | Self::Call { span, .. } => *span,
         }
     }
@@ -215,6 +221,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 7,
             TokenKind::Punct(Punct::OpenParen) => 8, // function call
             TokenKind::Punct(Punct::ColonColon) => 9,
+            TokenKind::Punct(Punct::Dot) => 10, // field access
             _ => 0,
         }
     }
@@ -227,6 +234,16 @@ impl<'i> Expression<'i> {
         let token = parser.expect_next()?;
 
         match token.kind {
+            TokenKind::Punct(Punct::Dot) => {
+                let (field, span) = parser.expect_identifier()?;
+                let span = Span::new(left.span().start, span.end);
+
+                Ok(Expression::Field {
+                    expr: Box::new(left),
+                    field,
+                    span,
+                })
+            }
             TokenKind::Punct(Punct::ColonColon) => {
                 let (name, span) = parser.expect_identifier()?;
                 Ok(Expression::Identifier(name, span))
@@ -275,11 +292,13 @@ impl<'i> Expression<'i> {
                 let span = Span::new(left.span().start, right.span().end);
 
                 match left {
-                    Expression::Identifier(name, _) => Ok(Expression::Assignment {
-                        target: name,
-                        value: Box::new(right),
-                        span,
-                    }),
+                    Expression::Identifier { .. } | Expression::Field { .. } => {
+                        Ok(Expression::Assignment {
+                            target: Box::new(left),
+                            value: Box::new(right),
+                            span,
+                        })
+                    }
 
                     _ => Err(ParserError::new(
                         ParseErrorKind::UnexpectedIdentifier,
