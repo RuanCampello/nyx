@@ -61,6 +61,11 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
+    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
+        self.cursor.clone().nth(n)
+    }
+
+    #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
         match self.cursor.next() {
             Some(Ok(token)) => {
@@ -364,5 +369,51 @@ mod tests {
             }
             _ => unreachable!(),
         };
+    }
+
+    #[test]
+    fn parses_struct_statement_and_expression() {
+        let statements = Parser::new(
+            r#"
+            struct Point {
+                y: i64,
+                x: i32,
+            }
+
+            fn main() {
+                let p: Point = Point { x: 1, y: 2 };
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Struct(declaration) => declaration,
+            other => panic!("expected struct declaration, got {other:?}"),
+        };
+        assert_eq!(declaration.name, "Point");
+        assert_eq!(declaration.fields.len(), 2);
+        assert_eq!(declaration.fields[0].name, "y");
+        assert!(matches!(declaration.fields[0].typ.value(), Type::I64));
+        assert_eq!(declaration.fields[1].name, "x");
+        assert!(matches!(declaration.fields[1].typ.value(), Type::I32));
+
+        let function = match &statements[1] {
+            Statement::Fn(function) => function,
+            _ => panic!(),
+        };
+        let let_statement = match &function.body.statements[0] {
+            Statement::Let(statement) => statement,
+            _ => panic!(),
+        };
+        assert!(matches!(
+            let_statement.typ.as_ref().map(|typ| typ.value()),
+            Some(Type::Named("Point"))
+        ));
+        assert!(matches!(
+            let_statement.value,
+            Some(Expression::Struct { name: "Point", .. })
+        ));
     }
 }

@@ -25,11 +25,23 @@ pub enum Expression<'i> {
         value: Box<Expression<'i>>,
         span: Span,
     },
+    Struct {
+        name: &'i str,
+        fields: Vec<StructField<'i>>,
+        span: Span,
+    },
     Call {
         callee: Box<Expression<'i>>,
         args: Vec<Expression<'i>>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField<'i> {
+    pub name: &'i str,
+    pub value: Expression<'i>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +84,7 @@ impl<'i> Expression<'i> {
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Assignment { span, .. }
+            | Self::Struct { span, .. }
             | Self::Call { span, .. } => *span,
         }
     }
@@ -99,7 +112,10 @@ impl<'i> Expression<'i> {
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => Ok(Expression::Identifier(ident, token.span)),
+            TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
+                true => Self::parse_struct(parser, ident, token.span),
+                false => Ok(Expression::Identifier(ident, token.span)),
+            },
             TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
@@ -133,6 +149,54 @@ impl<'i> Expression<'i> {
                 ParseErrorKind::ExpectedExpression { found: token.kind },
                 token.span,
             )),
+        }
+    }
+
+    fn parse_struct(
+        parser: &mut Parser<'i>,
+        name: &'i str,
+        span: Span,
+    ) -> Result<Self, ParserError<'i>> {
+        parser.expect_punct(Punct::OpenBrace)?;
+        let mut fields = Vec::new();
+
+        let make_struct = |parser: &mut Parser<'i>, fields| {
+            let close = parser.expect_punct(Punct::CloseBrace)?;
+            let span = Span::new(span.start, close.span.end);
+
+            Ok(Expression::Struct { name, fields, span })
+        };
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                    return make_struct(parser, fields);
+                }
+                Some(Ok(token)) if token.kind == TokenKind::Eof => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+                }
+                Some(Err(err)) => return Err(err.into()),
+                _ => {}
+            }
+
+            if !fields.is_empty() {
+                // trailing commas maybe?
+                parser.expect_punct(Punct::Comma)?;
+
+                match parser.peek() {
+                    Some(Ok(token)) if token.kind == TokenKind::Punct(Punct::CloseBrace) => {
+                        return make_struct(parser, fields);
+                    }
+                    _ => {}
+                }
+            }
+
+            let (name, field_span) = parser.expect_identifier()?;
+            parser.expect_punct(Punct::Colon)?;
+            let value = parser.parse_node::<Expression>()?;
+            let span = Span::new(field_span.start, value.span().end);
+
+            fields.push(StructField { name, value, span });
         }
     }
 
@@ -257,5 +321,24 @@ impl<'i> Expression<'i> {
                 })
             }
         }
+    }
+
+    fn next_is_struct(parser: &Parser<'i>) -> bool {
+        let first = parser.peek_nth(0);
+        let second = parser.peek_nth(1);
+        let third = parser.peek_nth(2);
+
+        matches!(
+            (
+                first.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
+                second.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
+                third.as_ref().map(|r| r.as_ref().map(|t| &t.kind)),
+            ),
+            (
+                Some(Ok(TokenKind::Punct(Punct::OpenBrace))),
+                Some(Ok(TokenKind::Identifier(_))),
+                Some(Ok(TokenKind::Punct(Punct::Colon)))
+            )
+        )
     }
 }
