@@ -12,36 +12,37 @@ pub struct HirError<'h> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum HirErrorKind<'h> {
     Parser(ParserError<'h>),
     TopLevelNonFunction,
-    DuplicateFunction {
-        name: String,
+    DuplicateFunction { name: String },
+    UndeclaredIdentifier { name: String },
+    UnknownFunction { name: String },
+    UnknownType { name: String },
+    DuplicateStruct { name: String },
+    DuplicateField { name: String },
+    UnknownField {
+        struct_name: String,
+        field: String,
     },
-    UndeclaredIdentifier {
-        name: String,
+    MissingField {
+        struct_name: String,
+        field: String,
     },
-    UnknownFunction {
-        name: String,
-    },
+    CircularStruct { name: String },
     ArityMismatch {
         name: String,
         expected: usize,
         found: usize,
     },
-    DuplicateBind {
-        name: String,
-    },
-    MissingInitialiser {
-        name: String,
-    },
+    DuplicateBind { name: String },
+    MissingInitialiser { name: String },
     TypeMismatch {
         expected: Type,
         found: Type,
     },
-    ImmutableBind {
-        name: String,
-    },
+    ImmutableBind { name: String },
     ConstFnViolation(ConstFnViolationKind),
 }
 
