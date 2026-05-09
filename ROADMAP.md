@@ -56,6 +56,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
   - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
+  - [ ] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
@@ -72,9 +73,10 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Control Flow
 
 - [x] `if` / `else` statements
+  - [ ] Inline return (`if this return that;`)
 - [x] `while` loops
 - [ ] `for` loops
-- [ ] Pattern matching
+- [ ] Pattern matching (**requires** syntax definition)
 
 ### Variables & Functions
 
