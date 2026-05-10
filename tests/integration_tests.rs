@@ -83,7 +83,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "target_dependent",
-        file: "tests/single/target-dependent.nyx",
+        file: "tests/single/target_dependent.nyx",
         exit_code: Some(77),
     },
     Case {

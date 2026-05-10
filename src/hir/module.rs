@@ -3,7 +3,7 @@
 use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
-        Function, FunctionBuilder, FunctionId, Hir, SymbolTable,
+        Function, FunctionBuilder, FunctionId, Hir, Struct, SymbolTable,
         functions::{collect_function_signatures, collect_structs, signatures_from_hir},
     },
     lexer::token::Span,
@@ -41,6 +41,8 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
 struct Module {
     #[allow(dead_code)]
     exports: HashMap<String, usize>,
+    /// all struct definitions in declaration order
+    structs: Vec<Struct>,
     /// all functions in declaration order
     functions: Vec<Function>,
 }
