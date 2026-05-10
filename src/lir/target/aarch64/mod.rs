@@ -76,7 +76,6 @@ pub enum A64Instr {
         origin: VReg,
         offset: i32,
         bytes: u8,
-        is_float: bool,
     },
 
     FieldStore {

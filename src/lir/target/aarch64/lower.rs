@@ -19,7 +19,6 @@ use crate::{
         target::{
             Lowerable, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
-            x86_64::X86Instr,
         },
     },
     mir::{self, Const, Function, Layout, Operand, ValueId},
@@ -316,7 +315,6 @@ impl<'f> Lower<'f> {
 
             InstructionKind::FieldAccess { src, offset, typ } => {
                 let bytes = typ.machine_type(self.layouts).bytes();
-                let is_float = typ.is_float();
 
                 match src {
                     Operand::Place(place) => {
@@ -327,7 +325,6 @@ impl<'f> Lower<'f> {
                                 dest,
                                 origin,
                                 bytes,
-                                is_float,
                                 offset: *offset as i32,
                             },
                         );
