@@ -97,6 +97,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         let symbol = self.symbols.insert(function.name);
         let id = *self.functions.get(&symbol).expect("function id present for this name");
         let signatures = &self.signatures[id.0 as usize];
+        self.return_type = signatures.return_type;
 
         let params = function
             .params
@@ -254,12 +255,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
     }
 
-    /// Lowers an expression with an optional type hint flowing downward (biderectional checking).
+    /// Lowers an expression with an optional type hint flowing downward (biderectional checking)
     ///
     /// The hint is used to resolve the concrete type of integer and float literals when the
-    /// expected type is known from context (call arguments, let bindings, assignments, etc.).
+    /// expected type is known from context
     ///
-    /// When the hint is `None`, literals default to `i32` and `f64` respectively.
+    /// When the hint is `None`, literals default to `i32` and `f64` respectively
     fn lower_expr(
         &mut self,
         expr: &expression::Expression,

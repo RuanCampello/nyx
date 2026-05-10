@@ -193,7 +193,7 @@ impl<'a> FunctionLower<'a> {
                     ExpressionKind::Struct {
                         id: struct_id,
                         fields,
-                    } => self.lower_struct(*id, *struct_id, &fields)?,
+                    } => self.lower_struct(id, struct_id, &fields)?,
 
                     _ => {
                         self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
@@ -471,8 +471,8 @@ impl<'a> FunctionLower<'a> {
 
     fn lower_struct(
         &mut self,
-        local_id: LocalId,
-        struct_id: StructId,
+        local_id: &LocalId,
+        struct_id: &StructId,
         fields: &[(SymbolId, Expression)],
     ) -> Result<(), MirError> {
         let field_ids = self.struct_fields[local_id.0 as usize]
@@ -761,9 +761,7 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
 
 fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
     match &expr.kind {
-        ExpressionKind::Local(id) => {
-            uses[id.0 as usize] = true;
-        }
+        ExpressionKind::Local(id) => uses[id.0 as usize] = true,
         ExpressionKind::Unary { expr, .. } => visit_expr_runtime_uses(expr, uses),
         ExpressionKind::Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
