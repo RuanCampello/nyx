@@ -92,7 +92,7 @@ impl<'f> Lower<'f> {
 
         let dest = self.vreg(instruction.dest.id);
         let typ = instruction.dest.typ;
-        let bytes = typ.machine_type().bytes();
+        let bytes = typ.machine_type(self.layouts).bytes();
         let is_float = typ.is_float();
 
         match &instruction.kind {
@@ -146,7 +146,7 @@ impl<'f> Lower<'f> {
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
-                let bytes = lhs.typ().machine_type().bytes();
+                let bytes = lhs.typ().machine_type(self.layouts).bytes();
                 let lhs_type = lhs.typ();
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(lhs, id);
@@ -272,7 +272,7 @@ impl<'f> Lower<'f> {
                 let mut float_idx = 0;
 
                 for arg in args {
-                    let mt = arg.typ().machine_type();
+                    let mt = arg.typ().machine_type(self.layouts);
                     let class = mt.class();
 
                     match class {
@@ -315,11 +315,43 @@ impl<'f> Lower<'f> {
             }
 
             InstructionKind::FieldAccess { src, offset, typ } => {
-                unimplemented!("field access lowering");
+                let bytes = typ.machine_type(self.layouts).bytes();
+                let is_float = typ.is_float();
+
+                match src {
+                    Operand::Place(place) => {
+                        let origin = self.vreg(place.id);
+                        self.lir.push_instr(
+                            id,
+                            A64Instr::FieldLoad {
+                                dest,
+                                origin,
+                                bytes,
+                                is_float,
+                                offset: *offset as i32,
+                            },
+                        );
+                    }
+
+                    Operand::Const(_) => unreachable!("struct constant in field access"),
+                }
             }
 
             InstructionKind::FieldAssign { value, offset } => {
-                unimplemented!("field assignment lowering");
+                let mt = typ.machine_type(self.layouts);
+                let bytes = mt.bytes();
+                let src = self.lower_operand(value, id);
+
+                self.lir.push_instr(
+                    id,
+                    A64Instr::FieldStore {
+                        bytes,
+                        src,
+                        origin: dest,
+                        is_float: value.typ().is_float(),
+                        offset: *offset as i32,
+                    },
+                );
             }
 
             InstructionKind::Syscall {
@@ -333,7 +365,7 @@ impl<'f> Lower<'f> {
                 for (idx, arg) in args.iter().enumerate() {
                     let abi_reg = AArch64::syscall_param(idx).expect("too many syscall arguments");
                     let operand = self.lower_operand(arg, id);
-                    let bytes = arg.typ().machine_type().bytes();
+                    let bytes = arg.typ().machine_type(self.layouts).bytes();
 
                     if let A64Operand::VReg(vreg) = &operand {
                         uses.push(*vreg);
@@ -419,7 +451,7 @@ impl<'f> Lower<'f> {
         let mut float_stack_idx = 0;
 
         for (vid, typ) in &self.function.params {
-            let mt = typ.machine_type();
+            let mt = typ.machine_type(self.layouts);
             let class = mt.class();
 
             match class {
@@ -515,7 +547,7 @@ impl<'f> Lower<'f> {
         match op {
             Operand::Place(p) => self.vreg(p.id),
             Operand::Const(c) => {
-                let vreg = self.lir.new_vreg(c.typ().machine_type());
+                let vreg = self.lir.new_vreg(c.typ().machine_type(self.layouts));
                 let instruction = self.constant_mov(vreg, c);
                 self.lir.push_instr(block, instruction);
 
@@ -547,7 +579,7 @@ impl<'f> Lower<'f> {
 
     #[inline(always)]
     fn constant_mov(&mut self, dest: VReg, c: &Const) -> A64Instr {
-        let bytes = c.typ().machine_type().bytes();
+        let bytes = c.typ().machine_type(self.layouts).bytes();
 
         match c {
             Const::Int(n, _) => A64Instr::MovImm {
@@ -585,7 +617,7 @@ impl<'f> Lower<'f> {
         match op {
             A64Operand::VReg(v) => v,
             A64Operand::Imm(n) => {
-                let mt = hint_type.machine_type();
+                let mt = hint_type.machine_type(self.layouts);
                 let vreg = self.lir.new_vreg(mt);
 
                 self.lir.push_instr(
@@ -600,7 +632,7 @@ impl<'f> Lower<'f> {
                 vreg
             }
             A64Operand::Label(label) => {
-                let mt = hint_type.machine_type();
+                let mt = hint_type.machine_type(self.layouts);
                 let vreg = self.lir.new_vreg(mt);
 
                 if hint_type.is_float() {
