@@ -1076,4 +1076,21 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn chained_field_access() {
+        let src = r#"
+            struct Point { x: i64, y: i64 }
+            struct Rect { top_left: Point, bottom_right: Point }
+ 
+            fn main(): i64 {
+                let p1 = Point { x: 0, y: 10 };
+                let p2 = Point { x: 10, y: 0 };
+                let r = Rect { top_left: p1, bottom_right: p2 };
+                r.bottom_right.x
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
+    }
 }
