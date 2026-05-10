@@ -136,7 +136,7 @@ impl<'i> Expression<'i> {
                 };
 
                 let expr = Self::parse_expr(parser, 10)?;
-                let span = Span::new(token.span.start, expr.span().end);
+                let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
                     operator,
@@ -147,7 +147,7 @@ impl<'i> Expression<'i> {
 
             TokenKind::Punct(Punct::OpenParen) => {
                 let expr = parser.parse_node::<Expression<'i>>()?;
-                parser.expect_punct(Punct::CloseParen)?;
+                parser.expect_token(Punct::CloseParen)?;
                 Ok(expr)
             }
 
@@ -163,12 +163,12 @@ impl<'i> Expression<'i> {
         name: &'i str,
         span: Span,
     ) -> Result<Self, ParserError<'i>> {
-        parser.expect_punct(Punct::OpenBrace)?;
+        parser.expect_token(Punct::OpenBrace)?;
         let mut fields = Vec::new();
 
         let make_struct = |parser: &mut Parser<'i>, fields| {
-            let close = parser.expect_punct(Punct::CloseBrace)?;
-            let span = Span::new(span.start, close.span.end);
+            let close = parser.expect_token(Punct::CloseBrace)?;
+            let span = span + close.span;
 
             Ok(Expression::Struct { name, fields, span })
         };
@@ -187,7 +187,7 @@ impl<'i> Expression<'i> {
 
             if !fields.is_empty() {
                 // trailing commas maybe?
-                parser.expect_punct(Punct::Comma)?;
+                parser.expect_token(Punct::Comma)?;
 
                 match parser.peek() {
                     Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
@@ -198,9 +198,9 @@ impl<'i> Expression<'i> {
             }
 
             let (name, field_span) = parser.expect_identifier()?;
-            parser.expect_punct(Punct::Colon)?;
+            parser.expect_token(Punct::Colon)?;
             let value = parser.parse_node::<Expression>()?;
-            let span = Span::new(field_span.start, value.span().end);
+            let span = field_span + value.span();
 
             fields.push(StructField { name, value, span });
         }
@@ -236,7 +236,7 @@ impl<'i> Expression<'i> {
         match token.kind {
             TokenKind::Punct(Punct::Dot) => {
                 let (field, span) = parser.expect_identifier()?;
-                let span = Span::new(left.span().start, span.end);
+                let span = left.span() + span;
 
                 Ok(Expression::Field {
                     expr: Box::new(left),
@@ -265,14 +265,14 @@ impl<'i> Expression<'i> {
                     };
 
                     if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
-                        end_position = parser.expect_punct(Punct::CloseParen)?.span.end;
+                        end_position = parser.expect_token(Punct::CloseParen)?.span.end;
                         break;
                     }
 
                     match first {
                         true => first = false,
                         _ => {
-                            parser.expect_punct(Punct::Comma)?;
+                            parser.expect_token(Punct::Comma)?;
                         }
                     };
 
@@ -289,7 +289,7 @@ impl<'i> Expression<'i> {
 
             TokenKind::Punct(Punct::Eq) => {
                 let right = Self::parse_expr(parser, precedence - 1)?;
-                let span = Span::new(left.span().start, right.span().end);
+                let span = left.span() + right.span();
 
                 match left {
                     Expression::Identifier { .. } | Expression::Field { .. } => {
@@ -330,7 +330,7 @@ impl<'i> Expression<'i> {
                 };
 
                 let right = Self::parse_expr(parser, precedence)?;
-                let span = Span::new(left.span().start, right.span().end);
+                let span = left.span() + right.span();
 
                 Ok(Expression::Binary {
                     left: Box::new(left),

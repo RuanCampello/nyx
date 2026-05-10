@@ -11,7 +11,7 @@ fn main(): i64 {
 
     // (2*5) + (4*10) = 50
     let result = dot_product(v, u);
-    if result != 50 { return 1; }
+    if result != 50 return 1;
 
     0
 }

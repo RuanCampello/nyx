@@ -87,7 +87,11 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
-    pub fn expect_token(&mut self, expected: TokenKind<'i>) -> Result<Token<'i>, ParserError<'i>> {
+    pub fn expect_token(
+        &mut self,
+        expected: impl Into<TokenKind<'i>>,
+    ) -> Result<Token<'i>, ParserError<'i>> {
+        let expected = expected.into();
         let token = self.expect_next()?;
         match token.is_kind(expected) {
             true => Ok(token),
@@ -99,16 +103,6 @@ impl<'i> Parser<'i> {
                 token.span,
             )),
         }
-    }
-
-    #[inline(always)]
-    pub fn expect_keyword(&mut self, expected: Keyword) -> Result<Token<'i>, ParserError<'i>> {
-        self.expect_token(TokenKind::Keyword(expected))
-    }
-
-    #[inline(always)]
-    pub fn expect_punct(&mut self, punct: Punct) -> Result<Token<'i>, ParserError<'i>> {
-        self.expect_token(TokenKind::Punct(punct))
     }
 
     #[inline(always)]

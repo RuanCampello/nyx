@@ -184,7 +184,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
                     }
                     Some(Err(err)) => return Err(err.into()),
                     _ => {
-                        parser.expect_punct(Punct::Semicolon)?;
+                        parser.expect_token(Punct::Semicolon)?;
                         expr.span().end
                     }
                 };
@@ -239,7 +239,7 @@ impl<'i> Spanned<Type<'i>> {
 
 impl<'i> Parsable<'i> for Let<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let let_token = parser.expect_keyword(Keyword::Let)?;
+        let let_token = parser.expect_token(Keyword::Let)?;
         let mutable = parser.consume_keyword(Keyword::Mut)?;
         let (name, _) = parser.expect_identifier()?;
 
@@ -253,8 +253,8 @@ impl<'i> Parsable<'i> for Let<'i> {
             false => None,
         };
 
-        let semicolon = parser.expect_punct(Punct::Semicolon)?;
-        let span = Span::new(let_token.span.start, semicolon.span.end);
+        let semicolon = parser.expect_token(Punct::Semicolon)?;
+        let span = let_token.span + semicolon.span;
 
         Ok(Let {
             mutable,
@@ -268,7 +268,7 @@ impl<'i> Parsable<'i> for Let<'i> {
 
 impl<'i> Parsable<'i> for Return<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let return_token = parser.expect_keyword(Keyword::Return)?;
+        let return_token = parser.expect_token(Keyword::Return)?;
 
         let mut value = None;
         if let Some(Ok(token)) = parser.peek() {
@@ -276,8 +276,8 @@ impl<'i> Parsable<'i> for Return<'i> {
                 value = Some(Expression::parse(parser)?);
             }
         }
-        let semi_token = parser.expect_punct(Punct::Semicolon)?;
-        let span = Span::new(return_token.span.start, semi_token.span.end);
+        let semi_token = parser.expect_token(Punct::Semicolon)?;
+        let span = return_token.span + semi_token.span;
 
         Ok(Return { value, span })
     }
@@ -285,7 +285,7 @@ impl<'i> Parsable<'i> for Return<'i> {
 
 impl<'i> Parsable<'i> for If<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let if_token = parser.expect_keyword(Keyword::If)?;
+        let if_token = parser.expect_token(Keyword::If)?;
 
         let condition = Expression::parse(parser)?;
         let has_block = matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::OpenBrace));
@@ -298,12 +298,34 @@ impl<'i> Parsable<'i> for If<'i> {
                 (block, end)
             }
             false => {
-                let expr = Expression::parse(parser)?;
-                let semi = parser.expect_punct(Punct::Semicolon)?;
-                let span = Span::new(expr.span().start, semi.span.end);
+                let (statement, end) = match parser.peek() {
+                    Some(Ok(token)) if token.is_kind(Keyword::Return) => {
+                        let ret = Return::parse(parser)?;
+                        let end = ret.span.end;
+
+                        Ok((Statement::Return(ret), end))
+                    }
+
+                    Some(Ok(_)) => {
+                        let expr = Expression::parse(parser)?;
+                        let semi = parser.expect_token(Punct::Semicolon)?;
+                        let span = expr.span() + semi.span;
+
+                        Ok((Statement::Expr(expr, span), semi.span.end))
+                    }
+
+                    Some(Err(err)) => Err(err.into()),
+
+                    _ => Err(ParserError::new(
+                        ParseErrorKind::UnexpectedEof,
+                        if_token.span,
+                    )),
+                }?;
+
+                let span = Span::new(if_token.span.start, end);
                 let block = Block {
                     span,
-                    statements: vec![Statement::Expr(expr, span)],
+                    statements: vec![statement],
                 };
 
                 (block, span.end)
@@ -336,7 +358,7 @@ impl<'i> Parsable<'i> for If<'i> {
 
                 _ => {
                     let expr = Expression::parse(parser)?;
-                    let semi = parser.expect_punct(Punct::Semicolon)?;
+                    let semi = parser.expect_token(Punct::Semicolon)?;
 
                     end_pos = semi.span.end;
                     else_branch = Some(Box::new(Else::Expr(expr)));
@@ -356,10 +378,10 @@ impl<'i> Parsable<'i> for If<'i> {
 
 impl<'i> Parsable<'i> for While<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let while_token = parser.expect_keyword(Keyword::While)?;
+        let while_token = parser.expect_token(Keyword::While)?;
         let condition = Expression::parse(parser)?;
         let body = Block::parse(parser)?;
-        let span = Span::new(while_token.span.start, body.span.end);
+        let span = while_token.span + body.span;
 
         Ok(While {
             condition,
@@ -375,9 +397,9 @@ impl<'i> Parsable<'i> for Function<'i> {
         let inline = parser.consume_keyword(Keyword::Inline)?;
         let is_const = parser.consume_keyword(Keyword::Const)?;
 
-        let fn_token = parser.expect_keyword(Keyword::Fn)?;
+        let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
-        parser.expect_punct(Punct::OpenParen)?;
+        parser.expect_token(Punct::OpenParen)?;
 
         let mut params = Vec::new();
 
@@ -388,25 +410,24 @@ impl<'i> Parsable<'i> for Function<'i> {
 
             match token {
                 Ok(token) if token.is_kind(Punct::CloseParen) => {
-                    parser.expect_punct(Punct::CloseParen)?;
+                    parser.expect_token(Punct::CloseParen)?;
                     break;
                 }
 
                 Ok(_) => {
                     if !params.is_empty() {
-                        parser.expect_punct(Punct::Comma)?;
+                        parser.expect_token(Punct::Comma)?;
                     }
 
                     let mutable = parser.consume_keyword(Keyword::Mut)?;
                     let (param_name, param_span) = parser.expect_identifier()?;
-                    parser.expect_punct(Punct::Colon)?;
+                    parser.expect_token(Punct::Colon)?;
                     let typ = parser.parse_node::<Spanned<Type>>()?;
-                    let span = Span::new(param_span.start, typ.span().end);
 
                     params.push(Parameter {
                         name: param_name,
                         typ,
-                        span,
+                        span: param_span + typ.span(),
                         mutable,
                     })
                 }
@@ -420,7 +441,7 @@ impl<'i> Parsable<'i> for Function<'i> {
             false => None,
         };
         let body = Block::parse(parser)?;
-        let span = Span::new(fn_token.span.start, body.span.end);
+        let span = fn_token.span + body.span;
 
         Ok(Function {
             params,
@@ -437,17 +458,17 @@ impl<'i> Parsable<'i> for Function<'i> {
 
 impl<'i> Parsable<'i> for Struct<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let struct_token = parser.expect_keyword(Keyword::Struct)?;
+        let struct_token = parser.expect_token(Keyword::Struct)?;
         let (name, _) = parser.expect_identifier()?;
-        parser.expect_punct(Punct::OpenBrace)?;
+        parser.expect_token(Punct::OpenBrace)?;
 
         let mut fields = Vec::new();
 
         loop {
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    let close = parser.expect_punct(Punct::CloseBrace)?;
-                    let span = Span::new(struct_token.span.start, close.span.end);
+                    let close = parser.expect_token(Punct::CloseBrace)?;
+                    let span = struct_token.span + close.span;
 
                     return Ok(Self { name, fields, span });
                 }
@@ -461,7 +482,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
             }
 
             if !fields.is_empty() {
-                parser.expect_punct(Punct::Comma)?;
+                parser.expect_token(Punct::Comma)?;
 
                 match parser.peek() {
                     Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
@@ -472,9 +493,9 @@ impl<'i> Parsable<'i> for Struct<'i> {
             }
 
             let (field_name, field_span) = parser.expect_identifier()?;
-            parser.expect_punct(Punct::Colon)?;
+            parser.expect_token(Punct::Colon)?;
             let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
-            let span = Span::new(field_span.start, typ.span().end);
+            let span = field_span + typ.span();
 
             fields.push(StructField {
                 name: field_name,
@@ -487,7 +508,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
 
 impl<'i> Parsable<'i> for Block<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let open_brace = parser.expect_punct(Punct::OpenBrace)?;
+        let open_brace = parser.expect_token(Punct::OpenBrace)?;
         let mut statements = Vec::new();
 
         let close_brace = loop {
@@ -497,7 +518,7 @@ impl<'i> Parsable<'i> for Block<'i> {
                 .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, open_brace.span))?;
 
             if token.is_kind(Punct::CloseBrace) {
-                let close = parser.expect_punct(Punct::CloseBrace)?;
+                let close = parser.expect_token(Punct::CloseBrace)?;
                 break close;
             }
 
@@ -508,14 +529,14 @@ impl<'i> Parsable<'i> for Block<'i> {
             statements.push(parser.parse_node::<Statement>()?);
         };
 
-        let span = Span::new(open_brace.span.start, close_brace.span.end);
+        let span = open_brace.span + close_brace.span;
         Ok(Self { span, statements })
     }
 }
 
 impl<'i> Parsable<'i> for UseDecl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let use_token = parser.expect_keyword(Keyword::Use)?;
+        let use_token = parser.expect_token(Keyword::Use)?;
         let (first, _) = parser.expect_identifier()?;
         let mut segments = vec![first];
 
@@ -523,7 +544,7 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
         loop {
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::ColonColon) => {
-                    parser.expect_punct(Punct::ColonColon)?;
+                    parser.expect_token(Punct::ColonColon)?;
                 }
                 _ => break,
             }
@@ -539,14 +560,14 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
 
         let items = match parser.peek() {
             Some(Ok(token)) if token.is_kind(Punct::OpenBrace) => {
-                parser.expect_punct(Punct::OpenBrace)?;
+                parser.expect_token(Punct::OpenBrace)?;
                 let mut names = Vec::new();
                 let mut first = true;
 
                 loop {
                     match parser.peek() {
                         Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                            parser.expect_punct(Punct::CloseBrace)?;
+                            parser.expect_token(Punct::CloseBrace)?;
                             break;
                         }
 
@@ -554,14 +575,14 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
                     }
 
                     if !first {
-                        parser.expect_punct(Punct::Comma)?;
+                        parser.expect_token(Punct::Comma)?;
                     }
                     first = false;
 
                     // trailing comma: '{a, b,}'
                     match parser.peek() {
                         Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                            parser.expect_punct(Punct::CloseBrace)?;
+                            parser.expect_token(Punct::CloseBrace)?;
                             break;
                         }
                         _ => {}
@@ -577,8 +598,8 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
             _ => UseItems::Namespace,
         };
 
-        let semi = parser.expect_punct(Punct::Semicolon)?;
-        let span = Span::new(use_token.span.start, semi.span.end);
+        let semi = parser.expect_token(Punct::Semicolon)?;
+        let span = use_token.span + semi.span;
 
         Ok(UseDecl {
             path: UsePath { segments },

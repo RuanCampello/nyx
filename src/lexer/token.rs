@@ -3,6 +3,7 @@
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::LexError;
 use std::fmt;
+use std::ops::Add;
 
 /// Trait implemented by every sub-tokenizer.
 ///
@@ -125,6 +126,14 @@ impl Span {
     }
 }
 
+impl Add<Span> for Span {
+    type Output = Self;
+
+    fn add(self, rhs: Span) -> Self::Output {
+        Span::new(self.start, rhs.end)
+    }
+}
+
 impl<'src> Token<'src> {
     #[inline]
     pub(in crate::lexer) const fn new(kind: TokenKind<'src>, span: Span) -> Self {
@@ -232,6 +241,12 @@ impl fmt::Display for TokenKind<'_> {
 impl From<Punct> for TokenKind<'_> {
     fn from(value: Punct) -> Self {
         Self::Punct(value)
+    }
+}
+
+impl From<Keyword> for TokenKind<'_> {
+    fn from(value: Keyword) -> Self {
+        Self::Keyword(value)
     }
 }
 
