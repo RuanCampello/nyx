@@ -1063,7 +1063,7 @@ mod tests {
             }
 
             fn main() {
-                let p = Point { x: 1 };
+                let point = Point { x: 1 };
             }
         "#;
 
