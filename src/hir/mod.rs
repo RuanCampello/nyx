@@ -73,7 +73,7 @@ pub enum Type {
     Unit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,12 +163,12 @@ pub enum ExpressionKind {
     },
     FieldAccess {
         local: LocalId,
-        field: SymbolId,
+        fields: Vec<SymbolId>,
         typ: Type,
     },
     FieldAssign {
         local: LocalId,
-        field: SymbolId,
+        fields: Vec<SymbolId>,
         value: Box<Expression>,
     },
     Struct {

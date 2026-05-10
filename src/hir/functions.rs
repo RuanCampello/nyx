@@ -263,7 +263,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// When the hint is `None`, literals default to `i32` and `f64` respectively
     fn lower_expr(
         &mut self,
-        expr: &expression::Expression,
+        expr: &expression::Expression<'f>,
         hint: Option<Type>,
     ) -> Result<Expression, HirError<'f>> {
         use expression::Expression as Expr;
@@ -434,62 +434,24 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 }
 
                 Expr::Field { expr, field, span } => {
-                    let Expr::Identifier(name, local_span) = expr.as_ref() else {
-                        return Err(HirError {
-                            // FIXME: better error message here
-                            kind: HirErrorKind::UndeclaredIdentifier {
-                                name: format!("{expr:#?}"),
-                            },
-                            span: *span,
-                        });
-                    };
-
-                    let symbol = self.symbols.insert(name);
-                    let local = self.resolve_local(symbol, *local_span)?;
+                    let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
 
                     if !self[local].mutable {
                         return Err(HirError {
                             kind: HirErrorKind::ImmutableBind {
-                                name: name.to_string(),
+                                name: self.symbols.get(self[local].name).to_string(),
                             },
                             span: *span,
                         });
                     }
 
-                    let typ = self[local].typ;
-                    let Type::Struct(id) = typ else {
-                        return Err(HirError {
-                            kind: HirErrorKind::TypeMismatch {
-                                expected: Type::Struct(StructId(0)),
-                                found: typ,
-                            },
-                            span: *span,
-                        });
-                    };
-
-                    let field_id = self.symbols.insert(field);
-                    let definition = &self[id];
-                    let struct_name = self.symbols.get(definition.name).to_string();
-
-                    let field_def =
-                        definition.fields.iter().find(|f| f.name == field_id).ok_or_else(|| {
-                            HirError {
-                                kind: HirErrorKind::UnknownField {
-                                    struct_name: struct_name.to_string(),
-                                    field: field.to_string(),
-                                },
-                                span: *span,
-                            }
-                        })?;
-
-                    let typ = field_def.typ;
                     let value = self.lower_expr(value, Some(typ))?;
                     self.assert_type(typ, value.typ, *span)?;
 
                     Ok(Expression {
                         kind: ExpressionKind::FieldAssign {
                             local,
-                            field: field_id,
+                            fields,
                             value: Box::new(value),
                         },
                         typ,
@@ -497,11 +459,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     })
                 }
 
-                // FIXME: improve this error message
                 _ => Err(HirError {
-                    kind: HirErrorKind::UndeclaredIdentifier {
-                        name: format!("{target:#?}"),
-                    },
+                    kind: HirErrorKind::InvalidAssignmentTarget,
                     span: *span,
                 }),
             },
@@ -570,53 +529,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Expr::Field { expr, field, span } => {
-                let Expr::Identifier(name, local_span) = expr.as_ref() else {
-                    return Err(HirError {
-                        kind: HirErrorKind::UndeclaredIdentifier {
-                            name: format!("{expr:#?}"),
-                        },
-                        span: *span,
-                    });
-                };
-
-                let symbol = self.symbols.insert(name);
-                let local_id = self.resolve_local(symbol, *local_span)?;
-                let struct_type = self[local_id].typ;
-
-                let Type::Struct(struct_id) = struct_type else {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId(0)),
-                            found: struct_type,
-                        },
-                        span: *span,
-                    });
-                };
-
-                let field_id = self.symbols.insert(field);
-                let definition = &self[struct_id];
-                let struct_name = self.symbols.get(definition.name);
-
-                let field_def =
-                    definition.fields.iter().find(|f| f.name == field_id).ok_or_else(|| {
-                        HirError {
-                            kind: HirErrorKind::UnknownField {
-                                struct_name: struct_name.to_string(),
-                                field: field.to_string(),
-                            },
-                            span: *span,
-                        }
-                    })?;
-
-                let typ = field_def.typ;
+                let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
 
                 Ok(Expression {
+                    kind: ExpressionKind::FieldAccess { local, fields, typ },
                     typ,
-                    kind: ExpressionKind::FieldAccess {
-                        local: local_id,
-                        field: field_id,
-                        typ,
-                    },
                     span: *span,
                 })
             }
@@ -643,6 +560,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                     other => {
                         return Err(HirError {
+                            // FIXME: improve this error messag
                             kind: HirErrorKind::UnknownFunction {
                                 name: format!("{other:?}"),
                             },
@@ -773,7 +691,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     fn lower_intrinsic(
         &mut self,
         intrinsic: Intrinsic,
-        args: &[expression::Expression],
+        args: &[expression::Expression<'f>],
         span: Span,
     ) -> Result<Expression, HirError<'f>> {
         let args = args
@@ -845,7 +763,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
+    fn infer(&mut self, expr: &expression::Expression<'f>) -> Result<Type, HirError<'f>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
@@ -928,6 +846,93 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 },
                 span,
             })
+    }
+
+    /// this is used to resolve chain like `r.field.other_field` into
+    /// `(LocalId(r), [sym("field"), sym("other_field")], Type::I32)`
+    ///
+    /// returns the origin `LocalId`, the full path as symbols and the final field's `Type`
+    fn resolve_field_chain(
+        &mut self,
+        mut expr: &expression::Expression,
+        last: &'f str,
+        span: Span,
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+        use expression::Expression as Expr;
+
+        let mut fields = vec![last];
+
+        let id = loop {
+            match expr {
+                Expr::Identifier(name, ident_span) => {
+                    let symbol = self.symbols.insert(name);
+                    break self.resolve_local(symbol, *ident_span)?;
+                }
+
+                Expr::Field {
+                    expr: next, field, ..
+                } => {
+                    fields.push(field);
+                    expr = next;
+                }
+
+                _ => {
+                    return Err(HirError {
+                        kind: HirErrorKind::InvalidFieldAccess,
+                        span,
+                    });
+                }
+            }
+        };
+
+        fields.reverse();
+
+        let mut current_type = self[id].typ;
+        let mut field_symbols = Vec::with_capacity(fields.len());
+
+        for (idx, &field_name) in fields.iter().enumerate() {
+            let Type::Struct(id) = current_type else {
+                return Err(HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: current_type,
+                    },
+                    span,
+                });
+            };
+
+            let field = self.symbols.insert(field_name);
+            let struct_def = &self[id];
+            let name = self.symbols.get(struct_def.name);
+
+            let field_def = {
+                struct_def.fields.iter().find(|f| f.name == field).ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownField {
+                        struct_name: name.to_string(),
+                        field: field_name.to_string(),
+                    },
+                    span,
+                })
+            }?;
+
+            current_type = field_def.typ;
+            field_symbols.push(field);
+
+            let is_last = idx == fields.len() - 1;
+            if !is_last {
+                if !matches!(current_type, Type::Struct(_)) {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId::default()),
+                            found: current_type,
+                        },
+                        span,
+                    });
+                }
+            }
+        }
+
+        Ok((id, field_symbols, current_type))
     }
 
     #[inline(always)]

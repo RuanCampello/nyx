@@ -448,18 +448,18 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Const(Const::Unit))
             }
 
-            ExpressionKind::FieldAccess { local, field, typ } => {
-                let id = self.field_value_id(local, *field);
+            ExpressionKind::FieldAccess { local, fields, typ } => {
+                let id = self.field_value_id(local, fields);
                 Ok(Operand::Place(Place { id, typ: *typ }))
             }
 
             ExpressionKind::FieldAssign {
                 local,
-                field,
+                fields,
                 value,
             } => {
                 let src = self.lower_expr(value)?;
-                let id = self.field_value_id(local, *field);
+                let id = self.field_value_id(local, fields);
                 let dest = Place { typ: value.typ, id };
 
                 self.emit(dest, InstructionKind::Assign(src));
@@ -680,21 +680,36 @@ impl<'a> FunctionLower<'a> {
         self.runtime_local_uses.get(id.0 as usize).copied().unwrap_or(false)
     }
 
-    fn field_value_id(&self, local_id: &LocalId, field: SymbolId) -> ValueId {
-        let sid =
-            self.local_struct_id[local_id.0 as usize].expect("field access on non-struct local");
+    fn field_value_id(&self, local_id: &LocalId, fields: &[SymbolId]) -> ValueId {
+        assert!(!fields.is_empty(), "field path must not be empty");
 
-        let field_vids = self.struct_fields[local_id.0 as usize]
-            .as_ref()
-            .expect("struct local must have field slots");
+        let mut current = *local_id;
+        let last = fields.len() - 1;
 
-        let layout_idx = self.structs[sid.0 as usize]
-            .fields
-            .iter()
-            .position(|f| f.name == field)
-            .expect("field not found in struct definition");
+        for (idx, &field) in fields.iter().enumerate() {
+            let sid = self.local_struct_id[current.0 as usize].unwrap();
+            let field_ids = self.struct_fields[current.0 as usize].as_ref().unwrap();
 
-        field_vids[layout_idx]
+            let layout_idx = self.structs[sid.0 as usize]
+                .fields
+                .iter()
+                .position(|f| f.name == field)
+                .expect("field must be present in struct definition");
+
+            if idx == last {
+                return field_ids[layout_idx];
+            }
+
+            let target = field_ids[layout_idx];
+            current = self
+                .local_map
+                .iter()
+                .position(|&id| id == target)
+                .map(|idx| LocalId(idx as u32))
+                .expect("ValueId must be a known local");
+        }
+
+        unreachable!("ValueId should be solved at this point")
     }
 }
 
