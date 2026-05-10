@@ -692,6 +692,8 @@ mod tests {
 
     #[test]
     fn qualified_import() {
+        use crate::hir;
+
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -703,7 +705,32 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        println!("{hir:#?}");
+        assert_eq!(hir.functions.len(), 1);
+
+        let main = &hir.functions[0];
+        let has_exit_call = main.body.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                hir::Statement::Expr(hir::Expression {
+                    kind: hir::ExpressionKind::IntrinsicCall {
+                        intrinsic: hir::Intrinsic::Exit,
+                        args,
+                        ..
+                    },
+                    ..
+                })
+                if args.len() == 1 && matches!(
+                    &args[0],
+                    hir::Expression {
+                        kind: hir::ExpressionKind::Integer(0),
+                        typ: hir::Type::I32,
+                        ..
+                    }
+                )
+            )
+        });
+
+        assert!(has_exit_call);
     }
 
     #[test]
