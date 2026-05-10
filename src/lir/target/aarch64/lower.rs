@@ -310,6 +310,14 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
             }
 
+            InstructionKind::FieldAccess { src, offset, typ } => {
+                unimplemented!("field access lowering");
+            }
+
+            InstructionKind::FieldAssign { value, offset } => {
+                unimplemented!("field assignment lowering");
+            }
+
             InstructionKind::Syscall {
                 code,
                 args,

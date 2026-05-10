@@ -9,7 +9,7 @@
 use crate::{
     hir::Type,
     lir::target::{Emittable, Lowerable, RegClass, Target},
-    mir,
+    mir::{self, Layout},
 };
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -80,6 +80,7 @@ pub struct BlockId(u32);
 pub enum MachineType {
     Int { bytes: u8 },
     Float { bytes: u8 },
+    Struct { size: u32, align: u32 },
 }
 
 const DEFAULT_SIZE: usize = 1 << 10;
@@ -110,7 +111,7 @@ where
             continue;
         }
 
-        let lir = T::lower(function, &mir.symbols, &mir.functions);
+        let lir = T::lower(function, &mir.symbols, &mir.functions, &mir.struct_layouts);
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
@@ -218,20 +219,37 @@ impl MachineType {
     pub const fn bytes(self) -> u8 {
         match self {
             Self::Int { bytes } | Self::Float { bytes } => bytes,
+            Self::Struct { .. } => 8,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn stack_size(self) -> u32 {
+        match self {
+            Self::Int { bytes } | Self::Float { bytes } => bytes as u32,
+            Self::Struct { size, .. } => size,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn stack_align(self) -> u32 {
+        match self {
+            Self::Int { bytes } | Self::Float { bytes } => bytes as u32,
+            Self::Struct { align, .. } => align,
         }
     }
 
     #[inline(always)]
     pub const fn class(self) -> RegClass {
         match self {
-            Self::Int { .. } => RegClass::Int,
+            Self::Int { .. } | Self::Struct { .. } => RegClass::Int,
             Self::Float { .. } => RegClass::Float,
         }
     }
 }
 
 impl Type {
-    pub(in crate::lir) fn machine_type(&self) -> MachineType {
+    pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
             Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
             Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
@@ -239,9 +257,12 @@ impl Type {
             Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
                 MachineType::Int { bytes: 8 }
             }
-            Type::Struct(_) => MachineType::Int { bytes: 8 },
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },
+            Type::Struct(id) => {
+                let (size, align) = layouts[id.0 as usize].into();
+                MachineType::Struct { size, align }
+            }
             Type::Unit => unreachable!("unit doesn't have a machine type"),
         }
     }

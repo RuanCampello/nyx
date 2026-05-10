@@ -192,6 +192,12 @@ impl From<&Struct> for Layout {
     }
 }
 
+impl From<Layout> for (u32, u32) {
+    fn from(value: Layout) -> Self {
+        (value.size, value.align)
+    }
+}
+
 impl Operand {
     pub const fn typ(&self) -> Type {
         match self {

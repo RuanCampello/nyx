@@ -52,6 +52,7 @@ pub trait Lowerable: Target {
         function: &mir::Function,
         symbols: &[String],
         all_functions: &[mir::Function],
+        layouts: &[mir::Layout],
     ) -> lir::Function<Self>;
 }
 
