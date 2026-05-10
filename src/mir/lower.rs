@@ -366,8 +366,10 @@ impl<'a> FunctionLower<'a> {
             }
 
             ExpressionKind::Call { function, args, .. } => {
-                let lowered_args =
-                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let mut lowered_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    lowered_args.extend(self.flatten_arg(arg)?);
+                }
 
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -497,6 +499,29 @@ impl<'a> FunctionLower<'a> {
         }
 
         Ok(())
+    }
+
+    fn flatten_arg(&mut self, expr: &Expression) -> Result<Vec<Operand>, MirError> {
+        match (&expr.kind, expr.typ) {
+            (ExpressionKind::Local(id), Type::Struct(struct_id)) => {
+                let fields = self.struct_fields[id.0 as usize]
+                    .clone()
+                    .expect("struct must have field slots");
+                let types: Vec<_> = self.structs[struct_id.0 as usize]
+                    .fields
+                    .iter()
+                    .map(|field| field.typ)
+                    .collect();
+
+                Ok(fields
+                    .iter()
+                    .zip(types.iter())
+                    .map(|(&id, &typ)| Operand::Place(Place { id, typ }))
+                    .collect())
+            }
+
+            _ => Ok(vec![self.lower_expr(expr)?]),
+        }
     }
 
     fn terminate(&mut self, term: Terminator) {
