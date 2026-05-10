@@ -202,6 +202,15 @@ pub struct SymbolId(pub Spur);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
 
+// FIXME: maybe I should reavaliate latter using a better way to not
+// need re-index this thing
+// probably I could solve it by a stable index not a sequential one but be it for now :X
+
+pub(crate) trait Offset {
+    /// remaps module-local into merged index space by applying a per-module offset
+    fn offset(&mut self, offset: u32);
+}
+
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
@@ -325,6 +334,111 @@ impl Type {
                 (definition.size, definition.align)
             }
         }
+    }
+}
+
+impl Offset for Type {
+    #[inline(always)]
+    fn offset(&mut self, offset: u32) {
+        if let Type::Struct(id) = *self {
+            *self = Type::Struct(StructId(id.0 + offset))
+        }
+    }
+}
+
+impl Offset for Struct {
+    fn offset(&mut self, offset: u32) {
+        self.id = StructId(self.id.0 + offset);
+
+        for StructField { typ, .. } in &mut self.fields {
+            typ.offset(offset);
+        }
+    }
+}
+
+impl Offset for Expression {
+    fn offset(&mut self, offset: u32) {
+        self.typ.offset(offset);
+
+        match &mut self.kind {
+            ExpressionKind::Unit
+            | ExpressionKind::Integer(_)
+            | ExpressionKind::Float(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::String(_)
+            | ExpressionKind::Local(_) => {}
+
+            ExpressionKind::Unary { expr, .. } => expr.offset(offset),
+            ExpressionKind::Binary { left, right, .. } => {
+                left.offset(offset);
+                right.offset(offset);
+            }
+
+            ExpressionKind::Assign { value, .. } => value.offset(offset),
+            ExpressionKind::FieldAssign { value, .. } => value.offset(offset),
+            ExpressionKind::FieldAccess { typ, .. } => typ.offset(offset),
+            ExpressionKind::Struct { fields, id } => {
+                *id = StructId(id.0 + offset);
+
+                for (_, value) in fields {
+                    value.offset(offset);
+                }
+            }
+            ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
+                for arg in args {
+                    arg.offset(offset);
+                }
+            }
+        }
+    }
+}
+
+impl Offset for Block {
+    fn offset(&mut self, offset: u32) {
+        for statement in &mut self.statements {
+            match statement {
+                Statement::Expr(expr)
+                | Statement::Return(Some(expr))
+                | Statement::Let {
+                    init: Some(expr), ..
+                } => {
+                    expr.offset(offset);
+                }
+                Statement::Return(None) | Statement::Let { init: None, .. } => {}
+                Statement::Block(block) => block.offset(offset),
+                Statement::While { condition, body } => {
+                    condition.offset(offset);
+                    body.offset(offset);
+                }
+                Statement::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    condition.offset(offset);
+                    then_block.offset(offset);
+                    if let Some(else_block) = else_block {
+                        else_block.offset(offset);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Offset for Function {
+    fn offset(&mut self, offset: u32) {
+        self.return_type.offset(offset);
+
+        for param in &mut self.params {
+            param.typ.offset(offset);
+        }
+
+        for local in &mut self.locals {
+            local.typ.offset(offset);
+        }
+
+        self.body.offset(offset);
     }
 }
 

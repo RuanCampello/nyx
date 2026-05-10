@@ -3,7 +3,7 @@
 use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
-        Function, FunctionBuilder, FunctionId, Hir, Struct, SymbolTable,
+        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, SymbolTable,
         functions::{collect_function_signatures, collect_structs, signatures_from_hir},
     },
     lexer::token::Span,
@@ -123,14 +123,28 @@ impl<F: FileSystem> ModuleLoader<F> {
         }
 
         let mut functions = Vec::with_capacity(1 << 8);
+        let mut structs = Vec::with_capacity(1 << 8);
+
+        let mut offset = 0;
         for path in &dependencies {
             let module = Arc::clone(&self.cache[path]);
-            functions.extend(module.functions.iter().cloned());
+
+            for mut struct_def in module.structs.iter().cloned() {
+                struct_def.offset(offset);
+                structs.push(struct_def);
+            }
+
+            for mut function in module.functions.iter().cloned() {
+                function.offset(offset);
+                functions.push(function);
+            }
+
+            offset += module.structs.len() as u32;
         }
 
         Ok(Hir {
             functions,
-            structs: Vec::new(),
+            structs,
             symbols: self.symbols.clone().into_symbols(),
         })
     }
@@ -289,7 +303,11 @@ impl<F: FileSystem> ModuleLoader<F> {
             functions.push(hir);
         }
 
-        Ok(Module { functions, exports })
+        Ok(Module {
+            functions,
+            structs,
+            exports,
+        })
     }
 
     fn resolve_path(&self, segments: &[&str], span: Span) -> Result<PathBuf, ModuleError> {
