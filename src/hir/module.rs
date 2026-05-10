@@ -4,7 +4,7 @@ use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
         Function, FunctionBuilder, FunctionId, Hir, SymbolTable,
-        functions::{collect_function_signatures, signatures_from_hir},
+        functions::{collect_function_signatures, collect_structs, signatures_from_hir},
     },
     lexer::token::Span,
     parser::{
@@ -209,6 +209,9 @@ impl<F: FileSystem> ModuleLoader<F> {
             }
         }
 
+        let (structs, struct_map) =
+            collect_structs(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+
         // build a combined signature + id table that includes all already-lowered dependencies
         let mut dependencies: Vec<_> = self.cache.keys().collect();
         dependencies.sort_unstable();
@@ -220,8 +223,6 @@ impl<F: FileSystem> ModuleLoader<F> {
         }
 
         let (mut signatures, mut map) = signatures_from_hir(&functions);
-        let structs = Vec::new();
-        let struct_map = HashMap::new();
 
         let local_offset = signatures.len() as u32;
         let (local_signatures, local_map) =
@@ -683,5 +684,31 @@ mod tests {
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         println!("{hir:#?}");
+    }
+
+    #[test]
+    fn struct_in_single_mod() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+
+            fn make(x: i64, y: i64): Point {
+                Point { x: x, y: y }
+            }
+
+            fn main(): i64 {
+                let point = make(3, 4);
+                p.x
+            }
+            "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.functions.len(), 2);
+        assert_eq!(hir.structs.len(), 1);
     }
 }
