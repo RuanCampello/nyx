@@ -38,15 +38,15 @@ pub struct Struct {
     id: StructId,
     name: SymbolId,
     pub(crate) fields: Vec<StructField>,
-    size: u32,
-    align: u32,
+    pub(crate) size: u32,
+    pub(crate) align: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
     pub(crate) name: SymbolId,
     pub(crate) typ: Type,
-    offset: u32,
+    pub(crate) offset: u32,
     declared_index: u32,
 }
 

@@ -24,8 +24,6 @@ struct FunctionLower<'a> {
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
     structs: &'a [Struct],
-    struct_fields: Vec<Option<Vec<ValueId>>>,
-    local_struct_id: Vec<Option<StructId>>,
     local_symbols: Vec<usize>,
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
@@ -35,13 +33,12 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
     let symbols = hir.symbols;
-    let structs = hir.structs;
 
     for function in hir.functions {
         functions.push(FunctionLower::run(
             function,
             &symbols,
-            &structs,
+            &hir.structs,
             &mut strings,
         )?);
     }
@@ -50,6 +47,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
+        struct_layouts: hir.structs.iter().map(From::from).collect(),
     })
 }
 
@@ -69,57 +67,19 @@ impl<'a> FunctionLower<'a> {
         let mut local_map = vec![ValueId(0); n_hir_locals];
         let mut local_symbols = vec![0; n_hir_locals];
         let mut locals = Vec::with_capacity(n_hir_locals);
-        let mut struct_fields = vec![None; n_hir_locals];
-        let mut local_struct_id = vec![None; n_hir_locals];
 
         for local in &function.locals {
-            match local.typ {
-                Type::Struct(id) => {
-                    let definition = &structs[id.0 as usize];
-                    let ids: Vec<_> = definition
-                        .fields
-                        .iter()
-                        .map(|f| {
-                            let id = ValueId(locals.len() as u32);
-                            locals.push((id, f.typ));
-                            id
-                        })
-                        .collect();
-
-                    local_map[local.id.0 as usize] = ids[0];
-                    local_symbols[local.id.0 as usize] = local.name.0.into_usize();
-                    local_struct_id[local.id.0 as usize] = Some(id);
-                    struct_fields[local.id.0 as usize] = Some(ids);
-                }
-
-                _ => {
-                    let value_id = ValueId(locals.len() as u32);
-                    local_map[local.id.0 as usize] = value_id;
-                    local_symbols[local.id.0 as usize] = local.name.0.into_usize();
-                    locals.push((value_id, local.typ));
-                }
-            }
+            let value_id = ValueId(locals.len() as u32);
+            let idx = local.id.0 as usize;
+            local_map[idx] = value_id;
+            local_symbols[idx] = local.name.0.into_usize();
+            locals.push((value_id, local.typ))
         }
 
         let params = function
             .params
             .iter()
-            .flat_map(|param| match param.typ {
-                Type::Struct(id) => {
-                    let fields = struct_fields[param.id.0 as usize]
-                        .as_ref()
-                        .expect("struct param must have field slots");
-
-                    let definition = &structs[id.0 as usize];
-
-                    fields
-                        .iter()
-                        .zip(definition.fields.iter())
-                        .map(|(&id, field)| (id, field.typ))
-                        .collect()
-                }
-                _ => vec![(local_map[param.id.0 as usize], param.typ)],
-            })
+            .map(|param| (local_map[param.id.0 as usize], param.typ))
             .collect();
 
         let next = locals.len() as u32;
@@ -133,8 +93,6 @@ impl<'a> FunctionLower<'a> {
             symbols,
             strings,
             structs,
-            struct_fields,
-            local_struct_id,
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
             runtime_local_uses: collect_runtime_local_uses(&function),
@@ -185,31 +143,20 @@ impl<'a> FunctionLower<'a> {
 
         match statement {
             Stmt::Let { id, init } => {
-                let Some(expr) = init else {
-                    return Ok(());
-                };
+                if let Some(expr) = init {
+                    self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
 
-                match &expr.kind {
-                    ExpressionKind::Struct {
-                        id: struct_id,
-                        fields,
-                    } => self.lower_struct(id, struct_id, &fields)?,
+                    if !self.runtime_local_uses(*id)
+                        && self.constant_locals[id.0 as usize].is_some()
+                    {
+                        return Ok(());
+                    }
 
-                    _ => {
-                        self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
+                    let src = self.lower_expr(expr)?;
+                    let dest = self.place_for_local(*id, expr.typ);
 
-                        if !self.runtime_local_uses(*id)
-                            && self.constant_locals[id.0 as usize].is_some()
-                        {
-                            return Ok(());
-                        }
-
-                        let src = self.lower_expr(expr)?;
-                        let dest = self.place_for_local(*id, expr.typ);
-
-                        if self.runtime_local_uses(*id) {
-                            self.emit(dest, InstructionKind::Assign(src));
-                        }
+                    if self.runtime_local_uses(*id) {
+                        self.emit(dest, InstructionKind::Assign(src));
                     }
                 }
             }
@@ -368,7 +315,11 @@ impl<'a> FunctionLower<'a> {
             ExpressionKind::Call { function, args, .. } => {
                 let mut lowered_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    lowered_args.extend(self.flatten_arg(arg)?);
+                    let operand = self.lower_expr(arg)?;
+                    match arg.typ {
+                        Type::Struct(sid) => self.flatten_struct(operand, sid, &mut lowered_args),
+                        _ => lowered_args.push(operand),
+                    }
                 }
 
                 let dest = self.fresh_temporary(expr.typ);
@@ -430,27 +381,48 @@ impl<'a> FunctionLower<'a> {
             }
 
             ExpressionKind::Struct { id, fields } => {
-                let definition = &self.structs[id.0 as usize];
+                let dest = self.fresh_temporary(Type::Struct(*id));
+                let field: Vec<_> =
+                    self.structs[id.0 as usize].fields.iter().map(|f| (f.name, f.offset)).collect();
 
-                for (field, value) in fields {
-                    let src = self.lower_expr(value)?;
-                    let layout_idx = definition
-                        .fields
+                for (sym, value) in fields {
+                    let offset = field
                         .iter()
-                        .position(|f| &f.name == field)
-                        .expect("field must exist");
+                        .find(|(name, _)| name == sym)
+                        .map(|&(_, offset)| offset)
+                        .expect("field must exists");
+                    let value = self.lower_expr(value)?;
 
-                    let typ = definition.fields[layout_idx].typ;
-                    let place = self.fresh_temporary(typ);
-                    self.emit(place, InstructionKind::Assign(src));
+                    self.emit(dest, InstructionKind::FieldAssign { value, offset });
                 }
 
-                Ok(Operand::Const(Const::Unit))
+                Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::FieldAccess { local, fields, typ } => {
-                let id = self.field_value_id(local, fields);
-                Ok(Operand::Place(Place { id, typ: *typ }))
+            ExpressionKind::FieldAccess { local, fields, .. } => {
+                let mut current =
+                    Operand::Place(self.place_for_local(*local, self.local_type(*local)));
+
+                for &sym in fields {
+                    let Type::Struct(sid) = current.typ() else {
+                        unreachable!("field access on non-struct");
+                    };
+
+                    let (offset, typ) = self.field_info(sid, sym);
+                    let dest = self.fresh_temporary(typ);
+                    self.emit(
+                        dest,
+                        InstructionKind::FieldAccess {
+                            src: current,
+                            offset,
+                            typ,
+                        },
+                    );
+
+                    current = Operand::Place(dest);
+                }
+
+                Ok(current)
             }
 
             ExpressionKind::FieldAssign {
@@ -458,69 +430,113 @@ impl<'a> FunctionLower<'a> {
                 fields,
                 value,
             } => {
-                let src = self.lower_expr(value)?;
-                let id = self.field_value_id(local, fields);
-                let dest = Place { typ: value.typ, id };
+                let value = self.lower_expr(value)?;
+                let mut current =
+                    Operand::Place(self.place_for_local(*local, self.local_type(*local)));
 
-                self.emit(dest, InstructionKind::Assign(src));
+                for &sym in &fields[..fields.len() - 1] {
+                    let Type::Struct(sid) = current.typ() else {
+                        unreachable!("field assignment on non-struct");
+                    };
+                    let (offset, typ) = self.field_info(sid, sym);
+                    let dest = self.fresh_temporary(typ);
+                    self.emit(
+                        dest,
+                        InstructionKind::FieldAccess {
+                            src: current,
+                            offset,
+                            typ,
+                        },
+                    );
 
-                Ok(Operand::Place(dest))
+                    current = Operand::Place(dest);
+                }
+
+                let last = *fields.last().expect("non-empty fields");
+                let Type::Struct(sid) = current.typ() else {
+                    unreachable!("parent is not a struct");
+                };
+                let (offset, _) = self.field_info(sid, last);
+                let struct_place = match current {
+                    Operand::Place(place) => place,
+                    _ => unreachable!("struct must be a place"),
+                };
+                self.emit(
+                    struct_place,
+                    InstructionKind::FieldAssign {
+                        value: current,
+                        offset,
+                    },
+                );
+
+                Ok(value)
             }
         }
     }
 
-    fn lower_struct(
+    #[inline(always)]
+    fn local_type(&self, id: LocalId) -> Type {
+        self.locals[self.local_map[id.0 as usize].0 as usize].1
+    }
+
+    fn with_fields(&self, sid: StructId) -> impl Iterator<Item = (SymbolId, (u32, Type))> + '_ {
+        self.structs[sid.0 as usize].fields.iter().map(|f| (f.name, (f.offset, f.typ)))
+    }
+
+    #[inline]
+    fn field_info(&self, sid: StructId, sym: SymbolId) -> (u32, Type) {
+        self.with_fields(sid)
+            .find_map(|(name, data)| (name == sym).then_some(data))
+            .expect("field must exist in struct definition")
+    }
+
+    #[inline]
+    fn fields(&mut self, sid: StructId) -> Vec<(u32, Type)> {
+        self.with_fields(sid).map(|(_, data)| data).collect()
+    }
+
+    fn flatten_struct(&mut self, src: Operand, sid: StructId, out: &mut Vec<Operand>) {
+        let fields = self.fields(sid);
+
+        for (offset, typ) in fields {
+            let dest = self.fresh_temporary(typ);
+            self.emit(dest, InstructionKind::FieldAccess { src, offset, typ });
+
+            match typ {
+                Type::Struct(sid) => self.flatten_struct(Operand::Place(dest), sid, out),
+                _ => out.push(Operand::Place(dest)),
+            }
+        }
+    }
+
+    fn fill_struct(
         &mut self,
-        local_id: &LocalId,
-        struct_id: &StructId,
-        fields: &[(SymbolId, Expression)],
-    ) -> Result<(), MirError> {
-        let field_ids = self.struct_fields[local_id.0 as usize]
-            .clone()
-            .expect("struct local must have field slots");
+        dest: Place,
+        sid: StructId,
+        scalars: &mut std::slice::Iter<'_, Operand>,
+    ) {
+        let fields = self.fields(sid);
 
-        let field_info: Vec<_> = self.structs[struct_id.0 as usize]
-            .fields
-            .iter()
-            .map(|f| (f.name, f.typ))
-            .collect();
+        for (offset, typ) in fields {
+            match typ {
+                Type::Struct(sid) => {
+                    let nested = self.fresh_temporary(typ);
 
-        for (symbol, value) in fields {
-            let src = self.lower_expr(value)?;
-            let layout_idx = field_info
-                .iter()
-                .position(|(name, _)| name == symbol)
-                .expect("field must exist in struct definition");
+                    self.fill_struct(nested, sid, scalars);
+                    self.emit(
+                        dest,
+                        InstructionKind::FieldAssign {
+                            value: Operand::Place(nested),
+                            offset,
+                        },
+                    )
+                }
 
-            let (_, typ) = field_info[layout_idx];
-            let id = field_ids[layout_idx];
-
-            self.emit(Place { id, typ }, InstructionKind::Assign(src));
-        }
-
-        Ok(())
-    }
-
-    fn flatten_arg(&mut self, expr: &Expression) -> Result<Vec<Operand>, MirError> {
-        match (&expr.kind, expr.typ) {
-            (ExpressionKind::Local(id), Type::Struct(struct_id)) => {
-                let fields = self.struct_fields[id.0 as usize]
-                    .clone()
-                    .expect("struct must have field slots");
-                let types: Vec<_> = self.structs[struct_id.0 as usize]
-                    .fields
-                    .iter()
-                    .map(|field| field.typ)
-                    .collect();
-
-                Ok(fields
-                    .iter()
-                    .zip(types.iter())
-                    .map(|(&id, &typ)| Operand::Place(Place { id, typ }))
-                    .collect())
+                _ => {
+                    let value = *scalars.next().expect("scalar count must match struct fields");
+                    self.emit(dest, InstructionKind::FieldAssign { value, offset });
+                }
             }
-
-            _ => Ok(vec![self.lower_expr(expr)?]),
         }
     }
 
@@ -678,38 +694,6 @@ impl<'a> FunctionLower<'a> {
     #[inline(always)]
     fn runtime_local_uses(&self, id: LocalId) -> bool {
         self.runtime_local_uses.get(id.0 as usize).copied().unwrap_or(false)
-    }
-
-    fn field_value_id(&self, local_id: &LocalId, fields: &[SymbolId]) -> ValueId {
-        assert!(!fields.is_empty(), "field path must not be empty");
-
-        let mut current = *local_id;
-        let last = fields.len() - 1;
-
-        for (idx, &field) in fields.iter().enumerate() {
-            let sid = self.local_struct_id[current.0 as usize].unwrap();
-            let field_ids = self.struct_fields[current.0 as usize].as_ref().unwrap();
-
-            let layout_idx = self.structs[sid.0 as usize]
-                .fields
-                .iter()
-                .position(|f| f.name == field)
-                .expect("field must be present in struct definition");
-
-            if idx == last {
-                return field_ids[layout_idx];
-            }
-
-            let target = field_ids[layout_idx];
-            current = self
-                .local_map
-                .iter()
-                .position(|&id| id == target)
-                .map(|idx| LocalId(idx as u32))
-                .expect("ValueId must be a known local");
-        }
-
-        unreachable!("ValueId should be solved at this point")
     }
 }
 

@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, Type},
+    hir::{FunctionId, Intrinsic, Struct, Type},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
@@ -35,6 +35,7 @@ pub struct Mir {
     pub(crate) symbols: Vec<String>,
     pub(crate) strings: Vec<String>,
     pub(crate) functions: Vec<Function>,
+    pub(crate) struct_layouts: Vec<Layout>,
 }
 
 /// Single side-effecting or value-producing operation.
@@ -76,6 +77,12 @@ pub struct Block {
     pub(crate) terminator: Terminator,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Layout {
+    size: u32,
+    align: u32,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum InstructionKind {
     /// `dest = operand` (copy or constant load)
@@ -90,6 +97,17 @@ pub enum InstructionKind {
         operation: BinaryOperator,
         rhs: Operand,
         lhs: Operand,
+    },
+
+    FieldAccess {
+        src: Operand,
+        offset: u32,
+        typ: Type,
+    },
+
+    FieldAssign {
+        value: Operand,
+        offset: u32,
     },
 
     Call {
@@ -164,6 +182,15 @@ pub struct ValueId(pub u32);
 /// Stable index into a function's `blocks` vec.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
+
+impl From<&Struct> for Layout {
+    fn from(value: &Struct) -> Self {
+        Self {
+            size: value.size,
+            align: value.align,
+        }
+    }
+}
 
 impl Operand {
     pub const fn typ(&self) -> Type {
