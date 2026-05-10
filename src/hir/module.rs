@@ -722,7 +722,7 @@ mod tests {
 
             fn main(): i64 {
                 let point = make(3, 4);
-                p.x
+                point.x
             }
             "#,
         );
