@@ -1,0 +1,26 @@
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+struct Rect {
+    top_left: Point,
+    bottom_right: Point,
+}
+
+fn area(r: Rect): i64 {
+    let width = r.bottom_right.x - r.top_left.x;
+    let height = r.top_left.y - r.bottom_right.y;
+    width * height
+}
+
+fn main(): i64 {
+    let p1 = Point { x: 0, y: 10 };
+    let p2 = Point { x: 10, y: 0 };
+    let r = Rect { top_left: p1, bottom_right: p2 };
+
+    // (10 - 0) * (10 - 0) = 100
+    if area(r) != 100 return 1;
+
+    0
+}
