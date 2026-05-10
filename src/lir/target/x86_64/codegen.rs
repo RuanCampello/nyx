@@ -162,6 +162,57 @@ impl Function<X86_64> {
                 emit!(out, "movzbl   {src}, {dest}");
             }
 
+            Inst::FieldLoad {
+                dest,
+                origin,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let dest = alloc.location(dest, bytes);
+
+                let suffix = typed_suffix(bytes, *is_float);
+
+                emit!(out, "mov{suffix}    {offset}(%rbp), {dest}");
+            }
+
+            Inst::FieldStore {
+                origin,
+                src,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let src = self.operand(alloc, src, bytes);
+                let suffix = typed_suffix(bytes, *is_float);
+
+                let need_scratch = src.contains("(%rbp)");
+
+                match is_float {
+                    true => match need_scratch {
+                        true => {
+                            emit!(out, "mov{suffix}    {src}, %xmm15");
+                            emit!(out, "mov{suffix}    %xmm15, {offset}(%rbp)");
+                        }
+                        false => emit!(out, "mov{suffix}   {src}, {offset}(%rbp)"),
+                    },
+
+                    false => match need_scratch {
+                        true => {
+                            let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                            emit!(out, "mov{suffix}    {src}, {scratch}");
+                            emit!(out, "mov{suffix}    {scratch}, {offset}(%rbp)");
+                        }
+
+                        false => emit!(out, "mov{suffix}    {src}, {offset}(%rbp)"),
+                    },
+                }
+            }
+
             Inst::Add { dest, src, bytes }
             | Inst::Sub { dest, src, bytes }
             | Inst::Imul { dest, src, bytes }
@@ -512,6 +563,13 @@ impl Allocation<X86_64> {
                 "{}(%rbp)",
                 offset - (self.used_callee_saved.len() as i32 * 8)
             ),
+        }
+    }
+
+    fn struct_offset(&self, vreg: &VReg) -> i32 {
+        match self.location_of(vreg) {
+            Location::Stack(offset) => offset - (self.used_callee_saved.len() as i32 * 8),
+            _ => panic!("struct VReg unexpectedly allocated to a register"),
         }
     }
 }
