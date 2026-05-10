@@ -104,9 +104,21 @@ impl<'a> FunctionLower<'a> {
         let params = function
             .params
             .iter()
-            .map(|param| {
-                let id = local_map[param.id.0 as usize];
-                (id, param.typ)
+            .flat_map(|param| match param.typ {
+                Type::Struct(id) => {
+                    let fields = struct_fields[param.id.0 as usize]
+                        .as_ref()
+                        .expect("struct param must have field slots");
+
+                    let definition = &structs[id.0 as usize];
+
+                    fields
+                        .iter()
+                        .zip(definition.fields.iter())
+                        .map(|(&id, field)| (id, field.typ))
+                        .collect()
+                }
+                _ => vec![(local_map[param.id.0 as usize], param.typ)],
             })
             .collect();
 
@@ -173,20 +185,31 @@ impl<'a> FunctionLower<'a> {
 
         match statement {
             Stmt::Let { id, init } => {
-                if let Some(expr) = init {
-                    self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
+                let Some(expr) = init else {
+                    return Ok(());
+                };
 
-                    if !self.runtime_local_uses(*id)
-                        && self.constant_locals[id.0 as usize].is_some()
-                    {
-                        return Ok(());
-                    }
+                match &expr.kind {
+                    ExpressionKind::Struct {
+                        id: struct_id,
+                        fields,
+                    } => self.lower_struct(*id, *struct_id, &fields)?,
 
-                    let src = self.lower_expr(expr)?;
-                    let dest = self.place_for_local(*id, expr.typ);
+                    _ => {
+                        self.constant_locals[id.0 as usize] = self.capture_constant_expr(expr);
 
-                    if self.runtime_local_uses(*id) {
-                        self.emit(dest, InstructionKind::Assign(src));
+                        if !self.runtime_local_uses(*id)
+                            && self.constant_locals[id.0 as usize].is_some()
+                        {
+                            return Ok(());
+                        }
+
+                        let src = self.lower_expr(expr)?;
+                        let dest = self.place_for_local(*id, expr.typ);
+
+                        if self.runtime_local_uses(*id) {
+                            self.emit(dest, InstructionKind::Assign(src));
+                        }
                     }
                 }
             }
@@ -442,6 +465,38 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Place(dest))
             }
         }
+    }
+
+    fn lower_struct(
+        &mut self,
+        local_id: LocalId,
+        struct_id: StructId,
+        fields: &[(SymbolId, Expression)],
+    ) -> Result<(), MirError> {
+        let field_ids = self.struct_fields[local_id.0 as usize]
+            .clone()
+            .expect("struct local must have field slots");
+
+        let field_info: Vec<_> = self.structs[struct_id.0 as usize]
+            .fields
+            .iter()
+            .map(|f| (f.name, f.typ))
+            .collect();
+
+        for (symbol, value) in fields {
+            let src = self.lower_expr(value)?;
+            let layout_idx = field_info
+                .iter()
+                .position(|(name, _)| name == symbol)
+                .expect("field must exist in struct definition");
+
+            let (_, typ) = field_info[layout_idx];
+            let id = field_ids[layout_idx];
+
+            self.emit(Place { id, typ }, InstructionKind::Assign(src));
+        }
+
+        Ok(())
     }
 
     fn terminate(&mut self, term: Terminator) {
