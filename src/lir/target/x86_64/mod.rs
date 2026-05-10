@@ -76,6 +76,23 @@ pub enum X86Instr {
     Or { dest: VReg, src: X86Operand, bytes: u8 },
     Xor { dest: VReg, src: X86Operand, bytes: u8 },
 
+    /// load a scalar field struct on the stack
+    FieldLoad {
+        dest: VReg,
+        origin: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    // store a scalar value into a field of a struct on the stack
+    FieldStore {
+        origin: VReg,
+        src: X86Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+
     Call {
         target: String,
         /// register-passed arguments
@@ -236,11 +253,15 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { dest, .. }
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
+            | Self::FieldLoad { dest, .. }
             | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Cmp { .. } | Self::Test { .. } | Self::Ucomis { .. } => &[],
+            Self::FieldStore { .. }
+            | Self::Cmp { .. }
+            | Self::Test { .. }
+            | Self::Ucomis { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
@@ -281,6 +302,13 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
             | Self::XorFloat { dest, .. } => uses.push(*dest),
+
+            Self::FieldStore {origin, src: X86Operand::VReg(vreg), ..} => {
+                uses.push(*origin);
+                uses.push(*vreg);
+            },
+            Self::FieldLoad { origin, .. } | Self::FieldStore {origin, ..} => uses.push(*origin),
+
 
             Self::Neg { dest, .. } => uses.push(*dest),
             Self::Movzx { src, ..  } => uses.push(*src),

@@ -14,7 +14,7 @@ use crate::hir::Type;
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
 use crate::lir::target::{Lowerable, RegClass, Target};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
-use crate::mir::{self, Const, Function, Operand, ValueId};
+use crate::mir::{self, Const, Function, Layout, Operand, ValueId};
 
 struct Lower<'f> {
     function: &'f Function,
@@ -22,6 +22,7 @@ struct Lower<'f> {
     value: Vec<VReg>,
     symbols: &'f [String],
     all_functions: &'f [Function],
+    layouts: &'f [Layout],
 }
 
 impl Lowerable for X86_64 {
@@ -29,6 +30,7 @@ impl Lowerable for X86_64 {
         function: &Function,
         symbols: &[String],
         all_functions: &[Function],
+        layouts: &[Layout],
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
@@ -40,7 +42,7 @@ impl Lowerable for X86_64 {
         let value: Vec<VReg> = function
             .locals
             .iter()
-            .map(|(_, typ)| lir.new_vreg(typ.machine_type()))
+            .map(|(_, typ)| lir.new_vreg(typ.machine_type(layouts)))
             .collect();
 
         for _ in &function.blocks {
@@ -53,6 +55,7 @@ impl Lowerable for X86_64 {
             value,
             symbols,
             all_functions,
+            layouts,
         };
 
         lower.lower_param_moves();
@@ -71,7 +74,7 @@ impl<'f> Lower<'f> {
 
         let dest = self.vreg(instruction.dest.id);
         let typ = instruction.dest.typ;
-        let bytes = typ.machine_type().bytes();
+        let bytes = typ.machine_type(self.layouts).bytes();
         let is_float = typ.is_float();
 
         match &instruction.kind {
@@ -137,7 +140,7 @@ impl<'f> Lower<'f> {
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
-                let bytes = lhs.typ().machine_type().bytes();
+                let bytes = lhs.typ().machine_type(self.layouts).bytes();
                 let lhs_type = lhs.typ();
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(&lhs);
@@ -163,7 +166,7 @@ impl<'f> Lower<'f> {
                         );
                     }
                     B::Div => {
-                        let dividend = self.lir.new_vreg(lhs_type.machine_type());
+                        let dividend = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
                         self.lir.push_instr(
                             id,
                             X86Instr::Mov {
@@ -259,6 +262,48 @@ impl<'f> Lower<'f> {
                 };
             }
 
+            InstructionKind::FieldAccess { src, offset, typ } => {
+                let bytes = typ.machine_type(self.layouts).bytes();
+                let is_float = typ.is_float();
+
+                match src {
+                    Operand::Place(place) => {
+                        let origin = self.vreg(place.id);
+                        let offset = *offset as i32;
+
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::FieldLoad {
+                                offset,
+                                dest,
+                                origin,
+                                bytes,
+                                is_float,
+                            },
+                        );
+                    }
+
+                    Operand::Const(_) => unreachable!("struct constant in field access"),
+                }
+            }
+
+            InstructionKind::FieldAssign { value, offset } => {
+                let mt = value.typ().machine_type(self.layouts);
+                let bytes = mt.bytes();
+                let src = self.lower_operand(value);
+
+                self.lir.push_instr(
+                    id,
+                    X86Instr::FieldStore {
+                        bytes,
+                        src,
+                        origin: dest,
+                        offset: *offset as i32,
+                        is_float: value.typ().is_float(),
+                    },
+                );
+            }
+
             InstructionKind::Call { callee, args } => {
                 let callee = self
                     .symbols
@@ -272,7 +317,7 @@ impl<'f> Lower<'f> {
                 let mut float_idx = 0;
 
                 for arg in args {
-                    let mt = arg.typ().machine_type();
+                    let mt = arg.typ().machine_type(self.layouts);
                     let class = mt.class();
 
                     match class {
@@ -325,7 +370,7 @@ impl<'f> Lower<'f> {
                 for (i, arg) in args.iter().enumerate() {
                     let abi_reg = X86_64::syscall_param(i).expect("too many syscall arguments");
                     let operand = self.lower_operand(arg);
-                    let bytes = arg.typ().machine_type().bytes();
+                    let bytes = arg.typ().machine_type(self.layouts).bytes();
 
                     if let X86Operand::VReg(vreg) = &operand {
                         uses.push(*vreg);
@@ -444,7 +489,7 @@ impl<'f> Lower<'f> {
         let mut float_stack_idx = 0;
 
         for (vid, typ) in &self.function.params {
-            let mt = typ.machine_type();
+            let mt = typ.machine_type(self.layouts);
             let class = mt.class();
 
             match class {
@@ -540,7 +585,7 @@ impl<'f> Lower<'f> {
         match op {
             Operand::Place(p) => self.vreg(p.id),
             Operand::Const(c) => {
-                let vreg = self.lir.new_vreg(c.typ().machine_type());
+                let vreg = self.lir.new_vreg(c.typ().machine_type(self.layouts));
                 let instruction = self.constant_mov(vreg, c);
                 self.lir.push_instr(block, instruction);
 
@@ -573,7 +618,7 @@ impl<'f> Lower<'f> {
     }
 
     fn constant_mov(&mut self, dest: VReg, c: &Const) -> X86Instr {
-        let bytes = c.typ().machine_type().bytes();
+        let bytes = c.typ().machine_type(self.layouts).bytes();
         let src = self.lower_operand(&Operand::Const(*c));
 
         match c {

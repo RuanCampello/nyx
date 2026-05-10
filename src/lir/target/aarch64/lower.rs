@@ -19,9 +19,10 @@ use crate::{
         target::{
             Lowerable, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
+            x86_64::X86Instr,
         },
     },
-    mir::{self, Const, Function, Operand, ValueId},
+    mir::{self, Const, Function, Layout, Operand, ValueId},
 };
 
 struct Lower<'f> {
@@ -31,6 +32,7 @@ struct Lower<'f> {
     value: Vec<VReg>,
     symbols: &'f [String],
     all_functions: &'f [Function],
+    layouts: &'f [Layout],
 }
 
 impl Lowerable for AArch64 {
@@ -38,6 +40,7 @@ impl Lowerable for AArch64 {
         function: &Function,
         symbols: &[String],
         all_functions: &[Function],
+        layouts: &[Layout],
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
@@ -49,7 +52,7 @@ impl Lowerable for AArch64 {
         let value: Vec<VReg> = function
             .locals
             .iter()
-            .map(|(_, typ)| lir.new_vreg(typ.machine_type()))
+            .map(|(_, typ)| lir.new_vreg(typ.machine_type(layouts)))
             .collect();
 
         for _ in &function.blocks {
@@ -62,6 +65,7 @@ impl Lowerable for AArch64 {
             value,
             symbols,
             all_functions,
+            layouts,
         };
 
         lower.lower_param_moves();
