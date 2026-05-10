@@ -278,6 +278,21 @@ impl Diagnosticable for HirError<'_> {
                 ),
             ),
 
+            Kind::InvalidFieldAccess => (
+                "invalid field access".to_string(),
+                "field access is only supported on local bindings".to_string(),
+                None,
+                None,
+            ),
+
+            Kind::InvalidAssignmentTarget => (
+                "invalid assignment target".to_string(),
+                "the left-hand side of an assignment must be an identifier or a field access"
+                    .to_string(),
+                None,
+                Some("use `name = value` or `name.field = value`".to_string()),
+            ),
+
             Kind::ArityMismatch {
                 name,
                 expected,

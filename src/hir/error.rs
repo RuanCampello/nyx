@@ -22,6 +22,8 @@ pub enum HirErrorKind<'h> {
     UnknownType { name: String },
     DuplicateStruct { name: String },
     DuplicateField { name: String },
+    InvalidFieldAccess,
+    InvalidAssignmentTarget,
     UnknownField {
         struct_name: String,
         field: String,
