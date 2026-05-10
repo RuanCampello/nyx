@@ -47,8 +47,8 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Polymorphism (`Interface`)
     - [ ] Static dispatch
   - [ ] Composite data declaration (`struct`)
-    - [ ] Field access and instantiation
-    - [ ] Compatibility with `C` memory layout representation
+    - [x] Field access and instantiation
+    - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
     - [ ] Methods
   - [ ] Enumerables / Tag Union (`enum`)
 
