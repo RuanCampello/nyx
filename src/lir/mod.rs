@@ -17,9 +17,6 @@ use std::fmt::Write;
 mod regalloc;
 pub mod target;
 
-// PERFORMANCE: currently we're using owned values for everything making a lot of clones
-// reavaliate this after integration of LIR
-
 /// A function in LIR form, parameterised over the target.
 #[derive(Debug)]
 pub struct Function<T: Target> {
@@ -125,8 +122,6 @@ where
         Function::<T>::start(&mut out);
     }
 
-    // FIXME: this probably should be abstracted away from here
-    // but be it as for now
     if !mir.strings.is_empty() {
         label!(out, ".section .rodata");
         for (idx, string) in mir.strings.iter().enumerate() {
@@ -266,6 +261,28 @@ impl Type {
             Type::Unit => unreachable!("unit doesn't have a machine type"),
         }
     }
+}
+
+pub(in crate::lir) fn aggregate_chunks(size: u32) -> impl Iterator<Item = (i32, u8)> {
+    // PERFORMANCE: aggregate copies are lowered once in LIR using 8/4/2/1 byte chunks
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        if offset >= size {
+            return None;
+        }
+
+        let remaining = size - offset;
+        let chunk = match remaining {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        let current = offset as i32;
+        offset += chunk as u32;
+
+        Some((current, chunk))
+    })
 }
 
 impl Term {
