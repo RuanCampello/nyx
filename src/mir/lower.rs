@@ -1,7 +1,7 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, StructId, SymbolId, Type},
+    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, SymbolId, Type},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
@@ -316,10 +316,7 @@ impl<'a> FunctionLower<'a> {
                 let mut lowered_args = Vec::with_capacity(args.len());
                 for arg in args {
                     let operand = self.lower_expr(arg)?;
-                    match arg.typ {
-                        Type::Struct(sid) => self.flatten_struct(operand, sid, &mut lowered_args),
-                        _ => lowered_args.push(operand),
-                    }
+                    lowered_args.push(operand);
                 }
 
                 let dest = self.fresh_temporary(expr.typ);
@@ -382,47 +379,38 @@ impl<'a> FunctionLower<'a> {
 
             ExpressionKind::Struct { id, fields } => {
                 let dest = self.fresh_temporary(Type::Struct(*id));
-                let field: Vec<_> =
+                let field_offsets: Vec<_> =
                     self.structs[id.0 as usize].fields.iter().map(|f| (f.name, f.offset)).collect();
 
                 for (sym, value) in fields {
-                    let offset = field
+                    let offset = field_offsets
                         .iter()
                         .find(|(name, _)| name == sym)
                         .map(|&(_, offset)| offset)
-                        .expect("field must exists");
+                        .expect("field offset must exist after HIR validation");
                     let value = self.lower_expr(value)?;
 
-                    self.emit(dest, InstructionKind::FieldAssign { value, offset });
+                    self.emit(dest, InstructionKind::FieldStore { value, offset });
                 }
 
                 Ok(Operand::Place(dest))
             }
 
             ExpressionKind::FieldAccess { local, fields, .. } => {
-                let mut current =
-                    Operand::Place(self.place_for_local(*local, self.local_type(*local)));
+                let origin = self.place_for_local(*local, self.local_type(*local));
+                let (offset, typ) = self.field_path_info(origin.typ, fields);
 
-                for &sym in fields {
-                    let Type::Struct(sid) = current.typ() else {
-                        unreachable!("field access on non-struct");
-                    };
+                let dest = self.fresh_temporary(typ);
+                self.emit(
+                    dest,
+                    InstructionKind::FieldLoad {
+                        src: Operand::Place(origin),
+                        offset,
+                        typ,
+                    },
+                );
 
-                    let (offset, typ) = self.field_info(sid, sym);
-                    let dest = self.fresh_temporary(typ);
-                    self.emit(
-                        dest,
-                        InstructionKind::FieldAccess {
-                            src: current,
-                            offset,
-                            typ,
-                        },
-                    );
-
-                    current = Operand::Place(dest);
-                }
-
-                Ok(current)
+                Ok(Operand::Place(dest))
             }
 
             ExpressionKind::FieldAssign {
@@ -431,43 +419,11 @@ impl<'a> FunctionLower<'a> {
                 value,
             } => {
                 let value = self.lower_expr(value)?;
-                let mut current =
-                    Operand::Place(self.place_for_local(*local, self.local_type(*local)));
+                let origin = self.place_for_local(*local, self.local_type(*local));
+                let (offset, typ) = self.field_path_info(origin.typ, fields);
+                debug_assert_eq!(typ, value.typ());
 
-                for &sym in &fields[..fields.len() - 1] {
-                    let Type::Struct(sid) = current.typ() else {
-                        unreachable!("field assignment on non-struct");
-                    };
-                    let (offset, typ) = self.field_info(sid, sym);
-                    let dest = self.fresh_temporary(typ);
-                    self.emit(
-                        dest,
-                        InstructionKind::FieldAccess {
-                            src: current,
-                            offset,
-                            typ,
-                        },
-                    );
-
-                    current = Operand::Place(dest);
-                }
-
-                let last = *fields.last().expect("non-empty fields");
-                let Type::Struct(sid) = current.typ() else {
-                    unreachable!("parent is not a struct");
-                };
-                let (offset, _) = self.field_info(sid, last);
-                let struct_place = match current {
-                    Operand::Place(place) => place,
-                    _ => unreachable!("struct must be a place"),
-                };
-                self.emit(
-                    struct_place,
-                    InstructionKind::FieldAssign {
-                        value: current,
-                        offset,
-                    },
-                );
+                self.emit(origin, InstructionKind::FieldStore { value, offset });
 
                 Ok(value)
             }
@@ -479,34 +435,27 @@ impl<'a> FunctionLower<'a> {
         self.locals[self.local_map[id.0 as usize].0 as usize].1
     }
 
-    fn with_fields(&self, sid: StructId) -> impl Iterator<Item = (SymbolId, (u32, Type))> + '_ {
-        self.structs[sid.0 as usize].fields.iter().map(|f| (f.name, (f.offset, f.typ)))
-    }
+    fn field_path_info(&self, origin: Type, fields: &[SymbolId]) -> (u32, Type) {
+        let mut current_type = origin;
+        let mut total_offset = 0;
 
-    #[inline]
-    fn field_info(&self, sid: StructId, sym: SymbolId) -> (u32, Type) {
-        self.with_fields(sid)
-            .find_map(|(name, data)| (name == sym).then_some(data))
-            .expect("field must exist in struct definition")
-    }
+        // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
+        for &sym in fields {
+            let Type::Struct(sid) = current_type else {
+                unreachable!("field projection on non-struct");
+            };
 
-    #[inline]
-    fn fields(&mut self, sid: StructId) -> Vec<(u32, Type)> {
-        self.with_fields(sid).map(|(_, data)| data).collect()
-    }
-
-    fn flatten_struct(&mut self, src: Operand, sid: StructId, out: &mut Vec<Operand>) {
-        let fields = self.fields(sid);
-
-        for (offset, typ) in fields {
-            let dest = self.fresh_temporary(typ);
-            self.emit(dest, InstructionKind::FieldAccess { src, offset, typ });
-
-            match typ {
-                Type::Struct(sid) => self.flatten_struct(Operand::Place(dest), sid, out),
-                _ => out.push(Operand::Place(dest)),
-            }
+            let (offset, typ) = self.structs[sid.0 as usize]
+                .fields
+                .iter()
+                .find(|field| field.name == sym)
+                .map(|field| (field.offset, field.typ))
+                .expect("field offset must exist after HIR validation");
+            total_offset += offset;
+            current_type = typ;
         }
+
+        (total_offset, current_type)
     }
 
     fn terminate(&mut self, term: Terminator) {
