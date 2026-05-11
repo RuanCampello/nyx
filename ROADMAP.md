@@ -13,6 +13,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ## Compiler Optimisations
 
 - [ ] Optimisations flags (**requires** definition of each optimisation level scope)
+- [ ] If-conversion
 - [ ] Constant Folding & Propagation
 - [ ] Dead Code Elimination (DCE)
 - [ ] Function Inlining
@@ -50,6 +51,8 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Field access and instantiation
     - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
     - [ ] Methods
+      - [ ] Reference (`&self`)
+      - [ ] Mutable reference (`&mut self`)
   - [ ] Enumerables / Tag Union (`enum`)
 
 ### Expressions & Operators
@@ -73,7 +76,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Control Flow
 
 - [x] `if` / `else` statements
-  - [ ] Inline return (`if this return that;`)
+  - [x] Inline return (`if this return that;`)
 - [x] `while` loops
 - [ ] `for` loops
 - [ ] Pattern matching (**requires** syntax definition)
