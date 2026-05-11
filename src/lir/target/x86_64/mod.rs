@@ -36,6 +36,8 @@ pub enum X86Instr {
         bytes: u8,
     },
     Lea { dest: VReg, src: X86Operand },
+    /// materialise the frame-pointer-relative address of a stack aggregate
+    StackAddr { dest: VReg, origin: VReg },
     /// zero-extend 1-byte `setcc` result -> 4 bytes
     Movzx { dest: VReg, src: VReg },
 
@@ -87,6 +89,20 @@ pub enum X86Instr {
     // store a scalar value into a field of a struct on the stack
     FieldStore {
         origin: VReg,
+        src: X86Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    PtrLoad {
+        dest: VReg,
+        ptr: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    PtrStore {
+        ptr: VReg,
         src: X86Operand,
         offset: i32,
         bytes: u8,
@@ -240,6 +256,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MovFloat { dest, .. }
             | Self::MovFromStack { dest, .. }
             | Self::Lea { dest, .. }
+            | Self::StackAddr { dest, .. }
             | Self::Movzx { dest, .. }
             | Self::Add { dest, .. }
             | Self::Sub { dest, .. }
@@ -254,11 +271,13 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
             | Self::FieldLoad { dest, .. }
+            | Self::PtrLoad { dest, .. }
             | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
             Self::FieldStore { .. }
+            | Self::PtrStore { .. }
             | Self::Cmp { .. }
             | Self::Test { .. }
             | Self::Ucomis { .. } => &[],
@@ -307,8 +326,15 @@ impl Instruction<X86_64> for X86Instr {
                 uses.push(*origin);
                 uses.push(*vreg);
             },
-            Self::FieldLoad { origin, .. } | Self::FieldStore {origin, ..} => uses.push(*origin),
+            Self::StackAddr { origin , ..}
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore {origin, ..} => uses.push(*origin),
 
+            Self::PtrStore { ptr, src: X86Operand::VReg(vreg), .. } => {
+                uses.push(*ptr);
+                uses.push(*vreg);
+            }
+            Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::Neg { dest, .. } => uses.push(*dest),
             Self::Movzx { src, ..  } => uses.push(*src),
