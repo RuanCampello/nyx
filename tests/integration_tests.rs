@@ -93,7 +93,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "nested_structs",
-        file: "test/single/nested_structs.nyx",
+        file: "tests/single/nested_structs.nyx",
         exit_code: Some(0),
     },
 ];

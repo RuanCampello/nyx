@@ -224,18 +224,18 @@ impl MachineType {
     }
 
     #[inline(always)]
-    pub const fn stack_size(self) -> u32 {
+    pub const fn stack_size(self) -> i32 {
         match self {
-            Self::Int { bytes } | Self::Float { bytes } => bytes as u32,
-            Self::Struct { size, .. } => size,
+            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Struct { size, .. } => size as i32,
         }
     }
 
     #[inline(always)]
-    pub const fn stack_align(self) -> u32 {
+    pub const fn stack_align(self) -> i32 {
         match self {
-            Self::Int { bytes } | Self::Float { bytes } => bytes as u32,
-            Self::Struct { align, .. } => align,
+            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Struct { align, .. } => align as i32,
         }
     }
 

@@ -30,13 +30,11 @@ pub struct Hir {
     pub functions: Vec<Function>,
 }
 
-// PERFORMANCE: I probably don't need a u32 right here for size and alignmnet
-// but I need to reavaliate it
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
     id: StructId,
     name: SymbolId,
+    /// fields after layout ordering, with byte offsets assigned
     pub(crate) fields: Vec<StructField>,
     pub(crate) size: u32,
     pub(crate) align: u32,
@@ -111,7 +109,6 @@ pub struct Function {
     pub locals: Vec<Local>,
     pub return_type: Type,
     pub is_const: bool,
-    pub inline: bool,
     pub is_pub: bool,
     pub intrinsic: Option<Intrinsic>,
     pub body: Block,
@@ -161,11 +158,14 @@ pub enum ExpressionKind {
         target: LocalId,
         value: Box<Expression>,
     },
+    /// source-level field path resolved to a base local plus field symbols
+    /// MIR turns this into a byte-offset load from that base aggregate
     FieldAccess {
         local: LocalId,
         fields: Vec<SymbolId>,
-        typ: Type,
     },
+    /// source-level field path assignment
+    /// the base local mutability is checked in HIR
     FieldAssign {
         local: LocalId,
         fields: Vec<SymbolId>,
@@ -178,7 +178,6 @@ pub enum ExpressionKind {
     Call {
         function: FunctionId,
         args: Vec<Expression>,
-        inline: bool,
     },
     IntrinsicCall {
         intrinsic: Intrinsic,
@@ -201,10 +200,6 @@ pub struct SymbolId(pub Spur);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
-
-// FIXME: maybe I should reavaliate latter using a better way to not
-// need re-index this thing
-// probably I could solve it by a stable index not a sequential one but be it for now :X
 
 pub(crate) trait Offset {
     /// remaps module-local into merged index space by applying a per-module offset
@@ -258,9 +253,6 @@ impl From<&Function> for FunctionSignature {
             params: value.params.iter().map(|param| param.typ).collect(),
             return_type: value.return_type,
             name: value.name,
-            is_const: value.is_const,
-            inline: value.inline,
-            is_pub: value.is_pub,
             intrinsic: value.intrinsic,
         }
     }
@@ -293,22 +285,6 @@ impl Type {
 
     pub const fn is_32_bit(&self) -> bool {
         matches!(self, Self::F32 | Self::I32 | Self::U32)
-    }
-
-    #[allow(unused)]
-    pub(in crate::hir) const fn is_signed(&self) -> bool {
-        matches!(
-            self,
-            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Iptr
-        )
-    }
-
-    #[allow(unused)]
-    pub(in crate::hir) const fn is_unsigned(&self) -> bool {
-        matches!(
-            self,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Uptr
-        )
     }
 
     #[inline(always)]
@@ -366,6 +342,7 @@ impl Offset for Expression {
             | ExpressionKind::Float(_)
             | ExpressionKind::Bool(_)
             | ExpressionKind::String(_)
+            | ExpressionKind::FieldAccess { .. }
             | ExpressionKind::Local(_) => {}
 
             ExpressionKind::Unary { expr, .. } => expr.offset(offset),
@@ -376,7 +353,6 @@ impl Offset for Expression {
 
             ExpressionKind::Assign { value, .. } => value.offset(offset),
             ExpressionKind::FieldAssign { value, .. } => value.offset(offset),
-            ExpressionKind::FieldAccess { typ, .. } => typ.offset(offset),
             ExpressionKind::Struct { fields, id } => {
                 *id = StructId(id.0 + offset);
 
@@ -1075,6 +1051,52 @@ mod tests {
                 field: "y".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn struct_literal_rejects_unknown_field_with_span() {
+        let src = "struct Point{x:i32}\nfn main(){let p=Point{z:1};}";
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UnknownField {
+                struct_name: "Point".to_string(),
+                field: "z".to_string(),
+            }
+        );
+        assert_eq!(err.span.start.column, 23);
+        assert_eq!(err.span.end.column, 26);
+    }
+
+    #[test]
+    fn struct_literal_rejects_duplicate_field_with_span() {
+        let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1,x:2};}";
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateField {
+                name: "x".to_string(),
+            }
+        );
+        assert_eq!(err.span.start.column, 27);
+        assert_eq!(err.span.end.column, 30);
+    }
+
+    #[test]
+    fn immutable_field_assignment_reports_assignment_span() {
+        let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1};p.x=2;}";
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::ImmutableBind {
+                name: "p".to_string(),
+            }
+        );
+        assert_eq!(err.span.start.column, 28);
+        assert_eq!(err.span.end.column, 31);
     }
 
     #[test]

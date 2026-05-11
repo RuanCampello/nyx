@@ -18,14 +18,10 @@ use std::{
 };
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    pub is_const: bool,
-    pub inline: bool,
-    pub is_pub: bool,
     pub intrinsic: Option<Intrinsic>,
 }
 
@@ -60,9 +56,6 @@ impl Default for FunctionSignature {
             name: SymbolId(Spur::try_from_usize(0).expect("spur shouldn't fail")),
             params: Vec::new(),
             return_type: Type::Unit,
-            is_const: false,
-            inline: false,
-            is_pub: false,
             intrinsic: None,
         }
     }
@@ -125,7 +118,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             locals: self.locals,
             return_type: signatures.return_type,
             is_const: function.is_const,
-            inline: function.inline,
             is_pub: function.is_pub,
             intrinsic: signatures.intrinsic,
             body,
@@ -532,7 +524,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
 
                 Ok(Expression {
-                    kind: ExpressionKind::FieldAccess { local, fields, typ },
+                    kind: ExpressionKind::FieldAccess { local, fields },
                     typ,
                     span: *span,
                 })
@@ -608,7 +600,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     _ => ExpressionKind::Call {
                         function,
                         args: lowered_args,
-                        inline: signature.inline,
                     },
                 };
 
@@ -1064,9 +1055,6 @@ pub fn collect_function_signatures<'h>(
             return_type,
             params,
             name: symbol,
-            is_const: function.is_const,
-            inline: function.inline,
-            is_pub: function.is_pub,
             intrinsic,
         })
     }
@@ -1140,7 +1128,7 @@ fn layout_fields(
     mut fields: Vec<StructField>,
     structs: &[Option<Struct>],
 ) -> (Vec<StructField>, u32, u32) {
-    // PERFORMANCE: maybe we should test this with unstable_sort_by :D
+    // PERFORMANCE: field reordering is a small stable sort by layout class
     fields.sort_by(|a, b| {
         let (a_size, a_align) = &a.typ.layout(structs);
         let (b_size, b_align) = &b.typ.layout(structs);

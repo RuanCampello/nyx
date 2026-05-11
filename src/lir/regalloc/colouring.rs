@@ -25,12 +25,27 @@ impl Interference {
             return Allocation::default();
         }
 
+        let mut locations = vec![None; vreg_types.len()];
+        let mut spill_offset = 0;
+
+        // struct always live on the stack
+        // so we spill them before any colouring :D
+        for vreg in &all {
+            let idx = vreg.0 as usize;
+            if matches!(vreg_types[idx], MachineType::Struct { .. }) {
+                let mt = vreg_types[idx];
+                let size = mt.stack_size();
+                let align = mt.stack_align();
+                spill_offset -= size;
+                spill_offset &= !(align - 1);
+
+                locations[idx] = Some(Location::Stack(spill_offset))
+            }
+        }
+
         let (floats, ints): (Vec<_>, Vec<_>) = all
             .into_iter()
             .partition(|&vreg| vreg_types[vreg.0 as usize].class() == RegClass::Float);
-
-        let mut locations = vec![None; vreg_types.len()];
-        let mut spill_offset = 0;
 
         for &(vreg, reg) in precolours {
             locations[vreg.0 as usize] = Some(Location::Reg(reg));

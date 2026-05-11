@@ -15,7 +15,7 @@
 use crate::{
     hir::Type,
     lir::{
-        self, BlockId, Term, VReg,
+        self, BlockId, MachineType, Term, VReg,
         target::{
             Lowerable, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
@@ -95,29 +95,59 @@ impl<'f> Lower<'f> {
         let is_float = typ.is_float();
 
         match &instruction.kind {
-            InstructionKind::Assign(operand) => match self.lower_operand(operand, id) {
-                A64Operand::VReg(src) => {
-                    let instruction = match is_float {
-                        true => A64Instr::FMov { dest, src, bytes },
-                        false => A64Instr::Mov { dest, src, bytes },
+            InstructionKind::Assign(operand) => {
+                if let Type::Struct(sid) = typ {
+                    let (size, _) = self.layouts[sid.0 as usize].into();
+                    let src = match operand {
+                        Operand::Place(p) => self.vreg(p.id),
+                        Operand::Const(_) => unreachable!("struct constant assign"),
                     };
 
-                    self.lir.push_instr(id, instruction);
+                    let mut offset = 0;
+                    while offset < size as i32 {
+                        let chunk = if size as i32 - offset >= 8 { 8 } else { 4 };
+                        let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
+                        #[rustfmt::skip]
+                        let load = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
+                        let store = A64Instr::FieldStore {
+                            origin: dest,
+                            src: A64Operand::VReg(scratch),
+                            offset,
+                            bytes: chunk,
+                            is_float: false,
+                        };
+                        self.lir.push_instr(id, load);
+                        self.lir.push_instr(id, store);
+
+                        offset += chunk as i32;
+                    }
+                    return;
                 }
 
-                A64Operand::Imm(imm) => {
-                    self.lir.push_instr(id, A64Instr::MovImm { dest, imm, bytes });
-                }
+                match self.lower_operand(operand, id) {
+                    A64Operand::VReg(src) => {
+                        let instruction = match is_float {
+                            true => A64Instr::FMov { dest, src, bytes },
+                            false => A64Instr::Mov { dest, src, bytes },
+                        };
 
-                A64Operand::Label(label) => {
-                    let instruction = match is_float {
-                        true => A64Instr::FLiteral { dest, label, bytes },
-                        false => A64Instr::Adr { dest, label },
-                    };
+                        self.lir.push_instr(id, instruction);
+                    }
 
-                    self.lir.push_instr(id, instruction);
+                    A64Operand::Imm(imm) => {
+                        self.lir.push_instr(id, A64Instr::MovImm { dest, imm, bytes });
+                    }
+
+                    A64Operand::Label(label) => {
+                        let instruction = match is_float {
+                            true => A64Instr::FLiteral { dest, label, bytes },
+                            false => A64Instr::Adr { dest, label },
+                        };
+
+                        self.lir.push_instr(id, instruction);
+                    }
                 }
-            },
+            }
 
             InstructionKind::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;

@@ -263,18 +263,54 @@ impl<'f> Lower<'f> {
             }
 
             InstructionKind::FieldAccess { src, offset, typ } => {
-                let bytes = typ.machine_type(self.layouts).bytes();
-                let is_float = typ.is_float();
-
-                match src {
-                    Operand::Place(place) => {
-                        let origin = self.vreg(place.id);
-                        let offset = *offset as i32;
-
+                if let Type::Struct(sid) = typ {
+                    let (size, _) = self.layouts[sid.0 as usize].into();
+                    let origin = match src {
+                        Operand::Place(p) => self.vreg(p.id),
+                        Operand::Const(_) => unreachable!("struct constant in field access"),
+                    };
+                    let mut word_offset = 0i32;
+                    while word_offset < size as i32 {
+                        let chunk = if size as i32 - word_offset >= 8 {
+                            8u8
+                        } else {
+                            4
+                        };
+                        let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
                         self.lir.push_instr(
                             id,
                             X86Instr::FieldLoad {
-                                offset,
+                                dest: scratch,
+                                origin,
+                                offset: *offset as i32 + word_offset,
+                                bytes: chunk,
+                                is_float: false,
+                            },
+                        );
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::FieldStore {
+                                origin: dest,
+                                src: X86Operand::VReg(scratch),
+                                offset: word_offset,
+                                bytes: chunk,
+                                is_float: false,
+                            },
+                        );
+                        word_offset += chunk as i32;
+                    }
+                    return;
+                }
+
+                let bytes = typ.machine_type(self.layouts).bytes();
+                let is_float = typ.is_float();
+                match src {
+                    Operand::Place(place) => {
+                        let origin = self.vreg(place.id);
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::FieldLoad {
+                                offset: *offset as i32,
                                 dest,
                                 origin,
                                 bytes,
@@ -282,7 +318,6 @@ impl<'f> Lower<'f> {
                             },
                         );
                     }
-
                     Operand::Const(_) => unreachable!("struct constant in field access"),
                 }
             }

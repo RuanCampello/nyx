@@ -509,37 +509,6 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    fn fill_struct(
-        &mut self,
-        dest: Place,
-        sid: StructId,
-        scalars: &mut std::slice::Iter<'_, Operand>,
-    ) {
-        let fields = self.fields(sid);
-
-        for (offset, typ) in fields {
-            match typ {
-                Type::Struct(sid) => {
-                    let nested = self.fresh_temporary(typ);
-
-                    self.fill_struct(nested, sid, scalars);
-                    self.emit(
-                        dest,
-                        InstructionKind::FieldAssign {
-                            value: Operand::Place(nested),
-                            offset,
-                        },
-                    )
-                }
-
-                _ => {
-                    let value = *scalars.next().expect("scalar count must match struct fields");
-                    self.emit(dest, InstructionKind::FieldAssign { value, offset });
-                }
-            }
-        }
-    }
-
     fn terminate(&mut self, term: Terminator) {
         debug_assert!(
             !self.blocks[self.current].is_terminated(),
