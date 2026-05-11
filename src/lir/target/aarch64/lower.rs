@@ -103,9 +103,7 @@ impl<'f> Lower<'f> {
                         Operand::Const(_) => unreachable!("struct constant assign"),
                     };
 
-                    let mut offset = 0;
-                    while offset < size as i32 {
-                        let chunk = if size as i32 - offset >= 8 { 8 } else { 4 };
+                    for (offset, chunk) in lir::aggregate_chunks(size) {
                         let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
                         #[rustfmt::skip]
                         let load = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
@@ -118,8 +116,6 @@ impl<'f> Lower<'f> {
                         };
                         self.lir.push_instr(id, load);
                         self.lir.push_instr(id, store);
-
-                        offset += chunk as i32;
                     }
                     return;
                 }
@@ -343,7 +339,7 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
             }
 
-            InstructionKind::FieldAccess { src, offset, typ } => {
+            InstructionKind::FieldLoad { src, offset, typ } => {
                 let bytes = typ.machine_type(self.layouts).bytes();
 
                 match src {
@@ -364,7 +360,7 @@ impl<'f> Lower<'f> {
                 }
             }
 
-            InstructionKind::FieldAssign { value, offset } => {
+            InstructionKind::FieldStore { value, offset } => {
                 let mt = typ.machine_type(self.layouts);
                 let bytes = mt.bytes();
                 let src = self.lower_operand(value, id);
