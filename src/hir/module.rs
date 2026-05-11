@@ -3,8 +3,8 @@
 use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
-        Function, FunctionBuilder, FunctionId, Hir, SymbolTable,
-        functions::{collect_function_signatures, signatures_from_hir},
+        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, SymbolTable,
+        functions::{collect_function_signatures, collect_structs, signatures_from_hir},
     },
     lexer::token::Span,
     parser::{
@@ -41,6 +41,8 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
 struct Module {
     #[allow(dead_code)]
     exports: HashMap<String, usize>,
+    /// all struct definitions in declaration order
+    structs: Vec<Struct>,
     /// all functions in declaration order
     functions: Vec<Function>,
 }
@@ -121,13 +123,28 @@ impl<F: FileSystem> ModuleLoader<F> {
         }
 
         let mut functions = Vec::with_capacity(1 << 8);
+        let mut structs = Vec::with_capacity(1 << 8);
+
+        let mut offset = 0;
         for path in &dependencies {
             let module = Arc::clone(&self.cache[path]);
-            functions.extend(module.functions.iter().cloned());
+
+            for mut struct_def in module.structs.iter().cloned() {
+                struct_def.offset(offset);
+                structs.push(struct_def);
+            }
+
+            for mut function in module.functions.iter().cloned() {
+                function.offset(offset);
+                functions.push(function);
+            }
+
+            offset += module.structs.len() as u32;
         }
 
         Ok(Hir {
             functions,
+            structs,
             symbols: self.symbols.clone().into_symbols(),
         })
     }
@@ -198,7 +215,7 @@ impl<F: FileSystem> ModuleLoader<F> {
     fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
         for statement in &statements {
             match statement {
-                Statement::Fn(_) | Statement::Use(_) => {}
+                Statement::Fn(_) | Statement::Use(_) | Statement::Struct(_) => {}
                 _ => {
                     return Err(ModuleError::TopLevelNonFunction {
                         path: path.into(),
@@ -207,6 +224,9 @@ impl<F: FileSystem> ModuleLoader<F> {
                 }
             }
         }
+
+        let (structs, struct_map) =
+            collect_structs(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
 
         // build a combined signature + id table that includes all already-lowered dependencies
         let mut dependencies: Vec<_> = self.cache.keys().collect();
@@ -222,7 +242,7 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         let local_offset = signatures.len() as u32;
         let (local_signatures, local_map) =
-            collect_function_signatures(&statements, &mut self.symbols)
+            collect_function_signatures(&statements, &mut self.symbols, &struct_map)
                 .map_err(|e| Diagnostic::from(e))?;
 
         // merge local signatures into combined table
@@ -264,7 +284,14 @@ impl<F: FileSystem> ModuleLoader<F> {
                 _ => continue,
             };
 
-            let builder = FunctionBuilder::new(&signatures, &map, &mut self.symbols, function);
+            let builder = FunctionBuilder::new(
+                &signatures,
+                &map,
+                &structs,
+                &struct_map,
+                &mut self.symbols,
+                function,
+            );
             let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
 
             hir.id = FunctionId(local_offset + functions.len() as u32);
@@ -276,7 +303,11 @@ impl<F: FileSystem> ModuleLoader<F> {
             functions.push(hir);
         }
 
-        Ok(Module { functions, exports })
+        Ok(Module {
+            functions,
+            structs,
+            exports,
+        })
     }
 
     fn resolve_path(&self, segments: &[&str], span: Span) -> Result<PathBuf, ModuleError> {
@@ -349,7 +380,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::statement::Type;
+    use crate::hir::Type;
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
@@ -661,6 +692,8 @@ mod tests {
 
     #[test]
     fn qualified_import() {
+        use crate::hir;
+
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -672,6 +705,57 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        println!("{hir:#?}");
+        assert_eq!(hir.functions.len(), 1);
+
+        let main = &hir.functions[0];
+        let has_exit_call = main.body.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                hir::Statement::Expr(hir::Expression {
+                    kind: hir::ExpressionKind::IntrinsicCall {
+                        intrinsic: hir::Intrinsic::Exit,
+                        args,
+                        ..
+                    },
+                    ..
+                })
+                if args.len() == 1 && matches!(
+                    &args[0],
+                    hir::Expression {
+                        kind: hir::ExpressionKind::Integer(0),
+                        typ: hir::Type::I32,
+                        ..
+                    }
+                )
+            )
+        });
+
+        assert!(has_exit_call);
+    }
+
+    #[test]
+    fn struct_in_single_mod() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+
+            fn make(x: i64, y: i64): Point {
+                Point { x: x, y: y }
+            }
+
+            fn main(): i64 {
+                let point = make(3, 4);
+                point.x
+            }
+            "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.functions.len(), 2);
+        assert_eq!(hir.structs.len(), 1);
     }
 }

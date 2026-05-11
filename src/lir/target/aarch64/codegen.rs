@@ -173,6 +173,62 @@ impl Function<AArch64> {
                 emit!(out, "add     {dest}, {dest}, :lo12:{label}");
             }
 
+            A64Instr::FieldLoad {
+                dest,
+                origin,
+                offset,
+                bytes,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let dest = alloc.location(dest, bytes);
+                let suffix = ldr_suffix(bytes);
+
+                emit!(out, "ldr{suffix}    {dest}, [x29, #{offset}]");
+            }
+
+            A64Instr::FieldStore {
+                origin,
+                src,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let suffix = str_suffix(bytes);
+
+                match src {
+                    A64Operand::VReg(vreg) => {
+                        let src = alloc.location(vreg, bytes);
+                        // mem-to-mem load into scratch first
+                        match src.starts_with('[') {
+                            true => match is_float {
+                                true => {
+                                    let scratch = A64Reg::D16.name(*bytes);
+                                    emit!(out, "ldr{suffix}    {scratch}, {src}");
+                                    emit!(out, "str{suffix}    {scratch}, [x29, #{offset}]");
+                                }
+                                false => {
+                                    emit!(out, "ldr    x16, {src}");
+                                    emit!(out, "str{suffix}    x16, [x29, #{offset}]");
+                                }
+                            },
+                            false => emit!(out, "str{suffix}    {src}, [x29, #{offset}]"),
+                        }
+                    }
+                    A64Operand::Imm(n) => {
+                        emit!(out, "mov     x16, #{n}");
+                        emit!(out, "str{suffix}    x16, [x29, #{offset}]");
+                    }
+                    A64Operand::Label(label) => {
+                        emit!(out, "adrp    x16, {label}");
+                        emit!(out, "ldr     x16, [x16, :lo12:{label}]");
+                        emit!(out, "str{suffix}    x16, [x29, #{offset}]");
+                    }
+                }
+            }
+
             // integer arithmetic
             #[rustfmt::skip]
             A64Instr::Add { dest, lhs, rhs, bytes }
@@ -315,6 +371,7 @@ impl Function<AArch64> {
                                     emit!(out, "add     x16, x16, :lo12:{label}");
                                     emit!(out, "str     x16, [sp, #{offset}]");
                                 }
+                                _ => unimplemented!(),
                             },
                         }
                     }

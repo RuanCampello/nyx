@@ -1,0 +1,44 @@
+struct Vector {
+    x: i64,
+    y: i64,
+}
+
+struct Vector3 {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+fn main(): i64 {
+    let mut v = Vector { x: 3, y: 4 };
+    let u = Vector { x: 5, y: 10 };
+
+    v.x = 2;
+
+    // (2*5) + (4*10) = 50
+    let result = dot_product(v, u);
+    if result != 50 return 1;
+
+    let v1 = Vector3 { x: 1, y: 2, z: 3 };
+    let v2 = Vector3 { x: 4, y: 5, z: 6 };
+
+    let res = add_vec3(v1, v2);
+
+    if res.x != 5 return 1;
+    if res.y != 7 return 1;
+    if res.z != 9 return 1;
+
+    0
+}
+
+fn dot_product(a: Vector, b: Vector): i64 {
+    (a.x * b.x) + (a.y * b.y)
+}
+
+fn add_vec3(a: Vector3, b: Vector3): Vector3 {
+    Vector3 {
+        x: a.x + b.x,
+        y: a.y + b.y,
+        z: a.z + b.z,
+    }
+}

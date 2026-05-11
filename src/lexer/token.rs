@@ -3,6 +3,7 @@
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::LexError;
 use std::fmt;
+use std::ops::Add;
 
 /// Trait implemented by every sub-tokenizer.
 ///
@@ -16,13 +17,13 @@ pub trait Tokenize<'src> {
 }
 
 /// A single token produced by the lexer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'src> {
     pub kind: TokenKind<'src>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'src> {
     Integer(i64),
     Float(f64),
@@ -125,10 +126,23 @@ impl Span {
     }
 }
 
+impl Add<Span> for Span {
+    type Output = Self;
+
+    fn add(self, rhs: Span) -> Self::Output {
+        Span::new(self.start, rhs.end)
+    }
+}
+
 impl<'src> Token<'src> {
     #[inline]
     pub(in crate::lexer) const fn new(kind: TokenKind<'src>, span: Span) -> Self {
         Self { kind, span }
+    }
+
+    #[inline]
+    pub(crate) fn is_kind(&self, kind: impl Into<TokenKind<'src>>) -> bool {
+        self.kind == kind.into()
     }
 }
 
@@ -221,6 +235,18 @@ impl fmt::Display for TokenKind<'_> {
             Self::Punct(p) => write!(f, "{p}"),
             Self::Eof => write!(f, "EOF"),
         }
+    }
+}
+
+impl From<Punct> for TokenKind<'_> {
+    fn from(value: Punct) -> Self {
+        Self::Punct(value)
+    }
+}
+
+impl From<Keyword> for TokenKind<'_> {
+    fn from(value: Keyword) -> Self {
+        Self::Keyword(value)
     }
 }
 

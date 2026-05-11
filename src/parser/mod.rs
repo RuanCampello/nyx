@@ -41,7 +41,7 @@ impl<'i> Parser<'i> {
 
         loop {
             match self.peek() {
-                Some(Ok(token)) if token.kind == TokenKind::Eof => break,
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
                 Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
                 None => break,
                 Some(Err(err)) => return Err(ParserError::new(err.clone().into(), err.span())),
@@ -58,6 +58,11 @@ impl<'i> Parser<'i> {
     #[inline(always)]
     pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError>> {
         self.cursor.peek()
+    }
+
+    #[inline(always)]
+    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
+        self.cursor.clone().nth(n)
     }
 
     #[inline(always)]
@@ -82,9 +87,13 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
-    pub fn expect_token(&mut self, expected: TokenKind<'i>) -> Result<Token<'i>, ParserError<'i>> {
+    pub fn expect_token(
+        &mut self,
+        expected: impl Into<TokenKind<'i>>,
+    ) -> Result<Token<'i>, ParserError<'i>> {
+        let expected = expected.into();
         let token = self.expect_next()?;
-        match token.kind == expected {
+        match token.is_kind(expected) {
             true => Ok(token),
             false => Err(ParserError::new(
                 ParseErrorKind::Expected {
@@ -94,16 +103,6 @@ impl<'i> Parser<'i> {
                 token.span,
             )),
         }
-    }
-
-    #[inline(always)]
-    pub fn expect_keyword(&mut self, expected: Keyword) -> Result<Token<'i>, ParserError<'i>> {
-        self.expect_token(TokenKind::Keyword(expected))
-    }
-
-    #[inline(always)]
-    pub fn expect_punct(&mut self, punct: Punct) -> Result<Token<'i>, ParserError<'i>> {
-        self.expect_token(TokenKind::Punct(punct))
     }
 
     #[inline(always)]
@@ -122,7 +121,7 @@ impl<'i> Parser<'i> {
     #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
         if let Some(Ok(token)) = self.peek() {
-            if token.kind == kind {
+            if token.is_kind(kind) {
                 let _ = self.next_token();
                 return true;
             }
@@ -143,7 +142,7 @@ impl<'i> Parser<'i> {
 
     fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
-            Some(Ok(token)) if token.kind == kind => {
+            Some(Ok(token)) if token.is_kind(kind) => {
                 self.next_token()?;
                 Ok(true)
             }
@@ -279,7 +278,10 @@ mod tests {
     fn assignment_is_right_associative() {
         let statements = Parser::new("a = b = c;").parse().unwrap();
         let b_eq_c = Box::new(Expression::Assignment {
-            target: "b",
+            target: Box::new(Expression::Identifier(
+                "b",
+                Span::new(Position::new(4, 1, 5), Position::new(5, 1, 6)),
+            )),
             value: Box::new(Expression::Identifier(
                 "c",
                 Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
@@ -291,7 +293,10 @@ mod tests {
             statements,
             vec![Statement::Expr(
                 Expression::Assignment {
-                    target: "a",
+                    target: Box::new(Expression::Identifier(
+                        "a",
+                        Span::new(Position::new(0, 1, 1), Position::new(1, 1, 2)),
+                    )),
                     value: b_eq_c,
                     span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
                 },
@@ -364,5 +369,51 @@ mod tests {
             }
             _ => unreachable!(),
         };
+    }
+
+    #[test]
+    fn parses_struct_statement_and_expression() {
+        let statements = Parser::new(
+            r#"
+            struct Point {
+                y: i64,
+                x: i32,
+            }
+
+            fn main() {
+                let p: Point = Point { x: 1, y: 2 };
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Struct(declaration) => declaration,
+            other => panic!("expected struct declaration, got {other:?}"),
+        };
+        assert_eq!(declaration.name, "Point");
+        assert_eq!(declaration.fields.len(), 2);
+        assert_eq!(declaration.fields[0].name, "y");
+        assert!(matches!(declaration.fields[0].typ.value(), Type::I64));
+        assert_eq!(declaration.fields[1].name, "x");
+        assert!(matches!(declaration.fields[1].typ.value(), Type::I32));
+
+        let function = match &statements[1] {
+            Statement::Fn(function) => function,
+            _ => panic!(),
+        };
+        let let_statement = match &function.body.statements[0] {
+            Statement::Let(statement) => statement,
+            _ => panic!(),
+        };
+        assert!(matches!(
+            let_statement.typ.as_ref().map(|typ| typ.value()),
+            Some(Type::Named("Point"))
+        ));
+        assert!(matches!(
+            let_statement.value,
+            Some(Expression::Struct { name: "Point", .. })
+        ));
     }
 }

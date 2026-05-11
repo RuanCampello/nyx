@@ -233,6 +233,66 @@ impl Diagnosticable for HirError<'_> {
                 Some(format!("declare `fn {name}(...)` before calling it")),
             ),
 
+            Kind::UnknownType { name } => (
+                format!("unknown type `{name}`"),
+                format!("`{name}` is not a known type"),
+                None,
+                Some(format!("declare `struct {name} {{ ... }}` before using it")),
+            ),
+
+            Kind::DuplicateStruct { name } => (
+                format!("duplicate struct `{name}`"),
+                format!("`{name}` is defined here again"),
+                None,
+                Some(format!("rename one of the `{name}` structs")),
+            ),
+
+            Kind::DuplicateField { name } => (
+                format!("duplicate field `{name}`"),
+                format!("`{name}` is already declared"),
+                Some("struct field names must be unique".to_string()),
+                None,
+            ),
+
+            Kind::UnknownField { struct_name, field } => (
+                format!("unknown field `{field}` for struct `{struct_name}`"),
+                format!("`{struct_name}` has no field named `{field}`"),
+                None,
+                None,
+            ),
+
+            Kind::MissingField { struct_name, field } => (
+                format!("missing field `{field}` for struct `{struct_name}`"),
+                format!("`{field}` must be initialised"),
+                Some(format!("all fields of `{struct_name}` must be provided")),
+                None,
+            ),
+
+            Kind::CircularStruct { name } => (
+                format!("circular struct definition involving `{name}`"),
+                format!("`{name}` is part of a by-value struct cycle"),
+                Some("Nyx does not support self-referential or circular structs yet".to_string()),
+                Some(
+                    "break the cycle; an eventual pointer/box type will be needed for this"
+                        .to_string(),
+                ),
+            ),
+
+            Kind::InvalidFieldAccess => (
+                "invalid field access".to_string(),
+                "field access is only supported on local bindings".to_string(),
+                None,
+                None,
+            ),
+
+            Kind::InvalidAssignmentTarget => (
+                "invalid assignment target".to_string(),
+                "the left-hand side of an assignment must be an identifier or a field access"
+                    .to_string(),
+                None,
+                Some("use `name = value` or `name.field = value`".to_string()),
+            ),
+
             Kind::ArityMismatch {
                 name,
                 expected,

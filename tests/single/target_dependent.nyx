@@ -1,0 +1,45 @@
+fn add_uptr(a: uptr, b: uptr): uptr {
+    a + b
+}
+
+fn scale_iptr(base: iptr, factor: iptr): iptr {
+    base * factor
+}
+
+// sum 1..=limit with uptr — triangle number
+fn triangle(limit: uptr): uptr {
+    let mut acc: uptr = 0;
+    let mut i: uptr = 1;
+
+    while i <= limit {
+        acc = add_uptr(acc, i);
+        i = i + 1;
+    }
+
+    acc
+}
+
+// 2+4+...+2*n using iptr
+fn dot_iptr(n: iptr): iptr {
+    let mut acc: iptr = 0;
+    let mut i: iptr = 1;
+
+    while i <= n {
+        acc = acc + scale_iptr(i, 2);
+        i = i + 1;
+    }
+
+    acc
+}
+
+fn main(): uptr {
+    let t = triangle(11);
+
+    // dot_iptr(3) = 2+4+6 = 12
+    // iptr path: 12 - 1 = 11
+    let d = dot_iptr(3) - 1;
+
+    // uptr path: 66 + 22 = 88, 88 - 11 = 77
+    let result = t + 22;
+    result - 11
+}

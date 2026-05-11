@@ -13,6 +13,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ## Compiler Optimisations
 
 - [ ] Optimisations flags (**requires** definition of each optimisation level scope)
+- [ ] If-conversion
 - [ ] Constant Folding & Propagation
 - [ ] Dead Code Elimination (DCE)
 - [ ] Function Inlining
@@ -28,7 +29,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Integer Types
   - [x] Signed (`i8`, `i16`, `i32`, `i64`)
   - [x] Unsigned (`u8`, `u16`, `u32`, `u64`)
-  - [ ] Target-dependent pointer-sized (`iptr`, `uptr`)
+  - [x] Target-dependent pointer-sized (`iptr`, `uptr`)
 - [x] Floating-Point Types (`f32`, `f64`)
 - [x] Boolean (`bool`)
 - [ ] Strings
@@ -47,15 +48,18 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Polymorphism (`Interface`)
     - [ ] Static dispatch
   - [ ] Composite data declaration (`struct`)
-    - [ ] Field access and instantiation
-    - [ ] Compatibility with `C` memory layout representation
+    - [x] Field access and instantiation
+    - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
     - [ ] Methods
+      - [ ] Reference (`&self`)
+      - [ ] Mutable reference (`&mut self`)
   - [ ] Enumerables / Tag Union (`enum`)
 
 ### Expressions & Operators
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
   - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
+  - [ ] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
@@ -72,9 +76,10 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Control Flow
 
 - [x] `if` / `else` statements
+  - [x] Inline return (`if this return that;`)
 - [x] `while` loops
 - [ ] `for` loops
-- [ ] Pattern matching
+- [ ] Pattern matching (**requires** syntax definition)
 
 ### Variables & Functions
 

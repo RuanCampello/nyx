@@ -21,8 +21,18 @@ pub enum Expression<'i> {
         span: Span,
     },
     Assignment {
-        target: &'i str,
+        target: Box<Expression<'i>>,
         value: Box<Expression<'i>>,
+        span: Span,
+    },
+    Field {
+        expr: Box<Expression<'i>>,
+        field: &'i str,
+        span: Span,
+    },
+    Struct {
+        name: &'i str,
+        fields: Vec<StructField<'i>>,
         span: Span,
     },
     Call {
@@ -30,6 +40,13 @@ pub enum Expression<'i> {
         args: Vec<Expression<'i>>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField<'i> {
+    pub name: &'i str,
+    pub value: Expression<'i>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +89,8 @@ impl<'i> Expression<'i> {
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Assignment { span, .. }
+            | Self::Struct { span, .. }
+            | Self::Field { span, .. }
             | Self::Call { span, .. } => *span,
         }
     }
@@ -99,7 +118,10 @@ impl<'i> Expression<'i> {
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => Ok(Expression::Identifier(ident, token.span)),
+            TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
+                true => Self::parse_struct(parser, ident, token.span),
+                false => Ok(Expression::Identifier(ident, token.span)),
+            },
             TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
@@ -114,7 +136,7 @@ impl<'i> Expression<'i> {
                 };
 
                 let expr = Self::parse_expr(parser, 10)?;
-                let span = Span::new(token.span.start, expr.span().end);
+                let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
                     operator,
@@ -125,7 +147,7 @@ impl<'i> Expression<'i> {
 
             TokenKind::Punct(Punct::OpenParen) => {
                 let expr = parser.parse_node::<Expression<'i>>()?;
-                parser.expect_punct(Punct::CloseParen)?;
+                parser.expect_token(Punct::CloseParen)?;
                 Ok(expr)
             }
 
@@ -133,6 +155,54 @@ impl<'i> Expression<'i> {
                 ParseErrorKind::ExpectedExpression { found: token.kind },
                 token.span,
             )),
+        }
+    }
+
+    fn parse_struct(
+        parser: &mut Parser<'i>,
+        name: &'i str,
+        span: Span,
+    ) -> Result<Self, ParserError<'i>> {
+        parser.expect_token(Punct::OpenBrace)?;
+        let mut fields = Vec::new();
+
+        let make_struct = |parser: &mut Parser<'i>, fields| {
+            let close = parser.expect_token(Punct::CloseBrace)?;
+            let span = span + close.span;
+
+            Ok(Expression::Struct { name, fields, span })
+        };
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                    return make_struct(parser, fields);
+                }
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+                }
+                Some(Err(err)) => return Err(err.into()),
+                _ => {}
+            }
+
+            if !fields.is_empty() {
+                // trailing commas maybe?
+                parser.expect_token(Punct::Comma)?;
+
+                match parser.peek() {
+                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                        return make_struct(parser, fields);
+                    }
+                    _ => {}
+                }
+            }
+
+            let (name, field_span) = parser.expect_identifier()?;
+            parser.expect_token(Punct::Colon)?;
+            let value = parser.parse_node::<Expression>()?;
+            let span = field_span + value.span();
+
+            fields.push(StructField { name, value, span });
         }
     }
 
@@ -151,6 +221,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 7,
             TokenKind::Punct(Punct::OpenParen) => 8, // function call
             TokenKind::Punct(Punct::ColonColon) => 9,
+            TokenKind::Punct(Punct::Dot) => 10, // field access
             _ => 0,
         }
     }
@@ -163,6 +234,16 @@ impl<'i> Expression<'i> {
         let token = parser.expect_next()?;
 
         match token.kind {
+            TokenKind::Punct(Punct::Dot) => {
+                let (field, span) = parser.expect_identifier()?;
+                let span = left.span() + span;
+
+                Ok(Expression::Field {
+                    expr: Box::new(left),
+                    field,
+                    span,
+                })
+            }
             TokenKind::Punct(Punct::ColonColon) => {
                 let (name, span) = parser.expect_identifier()?;
                 Ok(Expression::Identifier(name, span))
@@ -184,14 +265,14 @@ impl<'i> Expression<'i> {
                     };
 
                     if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
-                        end_position = parser.expect_punct(Punct::CloseParen)?.span.end;
+                        end_position = parser.expect_token(Punct::CloseParen)?.span.end;
                         break;
                     }
 
                     match first {
                         true => first = false,
                         _ => {
-                            parser.expect_punct(Punct::Comma)?;
+                            parser.expect_token(Punct::Comma)?;
                         }
                     };
 
@@ -208,14 +289,16 @@ impl<'i> Expression<'i> {
 
             TokenKind::Punct(Punct::Eq) => {
                 let right = Self::parse_expr(parser, precedence - 1)?;
-                let span = Span::new(left.span().start, right.span().end);
+                let span = left.span() + right.span();
 
                 match left {
-                    Expression::Identifier(name, _) => Ok(Expression::Assignment {
-                        target: name,
-                        value: Box::new(right),
-                        span,
-                    }),
+                    Expression::Identifier { .. } | Expression::Field { .. } => {
+                        Ok(Expression::Assignment {
+                            target: Box::new(left),
+                            value: Box::new(right),
+                            span,
+                        })
+                    }
 
                     _ => Err(ParserError::new(
                         ParseErrorKind::UnexpectedIdentifier,
@@ -247,7 +330,7 @@ impl<'i> Expression<'i> {
                 };
 
                 let right = Self::parse_expr(parser, precedence)?;
-                let span = Span::new(left.span().start, right.span().end);
+                let span = left.span() + right.span();
 
                 Ok(Expression::Binary {
                     left: Box::new(left),
@@ -257,5 +340,13 @@ impl<'i> Expression<'i> {
                 })
             }
         }
+    }
+
+    // FIXME: I wanna find a way of make this without having to clone
+    // the entire lexer, I don't know if it's possible but will dive into this later
+    fn next_is_struct(parser: &mut Parser<'i>) -> bool {
+        matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
+            && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
+            && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
     }
 }

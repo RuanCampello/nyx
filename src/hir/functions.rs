@@ -1,7 +1,7 @@
 use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Statement, SymbolId, Type,
+        Parameter, Statement, Struct, StructField, StructId, SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
@@ -11,23 +11,25 @@ use crate::{
         statement::{self, Else},
     },
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Index,
+    str::FromStr,
+};
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    pub is_const: bool,
-    pub inline: bool,
-    pub is_pub: bool,
     pub intrinsic: Option<Intrinsic>,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     signatures: &'s [FunctionSignature],
     functions: &'s Functions,
+    structs: &'s [Struct],
+    struct_map: &'s Structs,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -36,7 +38,15 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     symbols: &'s mut SymbolTable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visit {
+    Unvisited,
+    Visiting,
+    Visited,
+}
+
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
+pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 
 impl Default for FunctionSignature {
     fn default() -> Self {
@@ -46,9 +56,6 @@ impl Default for FunctionSignature {
             name: SymbolId(Spur::try_from_usize(0).expect("spur shouldn't fail")),
             params: Vec::new(),
             return_type: Type::Unit,
-            is_const: false,
-            inline: false,
-            is_pub: false,
             intrinsic: None,
         }
     }
@@ -58,16 +65,18 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     pub fn new(
         signatures: &'s [FunctionSignature],
         functions: &'s Functions,
+        structs: &'s [Struct],
+        struct_map: &'s Structs,
         symbols: &'s mut SymbolTable,
         function: statement::Function<'f>,
     ) -> Self {
-        let return_type = function.return_type.map(|s| s.value()).unwrap_or(Type::Unit);
-
         Self {
-            return_type,
             functions,
+            structs,
+            struct_map,
             symbols,
             signatures,
+            return_type: Type::Unit,
             function: Some(function),
             next_local: 0,
             locals: Vec::new(),
@@ -81,6 +90,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         let symbol = self.symbols.insert(function.name);
         let id = *self.functions.get(&symbol).expect("function id present for this name");
         let signatures = &self.signatures[id.0 as usize];
+        self.return_type = signatures.return_type;
 
         let params = function
             .params
@@ -106,9 +116,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             name: symbol,
             params,
             locals: self.locals,
-            return_type: self.return_type,
+            return_type: signatures.return_type,
             is_const: function.is_const,
-            inline: function.inline,
             is_pub: function.is_pub,
             intrinsic: signatures.intrinsic,
             body,
@@ -154,8 +163,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
         match statement {
             Stmt::Let(statement) => {
-                let typ = match (statement.typ, statement.value.as_ref()) {
-                    (Some(typ), _) => Type::from(typ.value()),
+                let typ = match (statement.typ.as_ref(), statement.value.as_ref()) {
+                    (Some(typ), _) => self.resolve_type(&typ.value(), typ.span())?,
                     (_, Some(expr)) => self.infer(expr)?,
                     (None, None) => {
                         return Err(HirError {
@@ -233,19 +242,20 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
+            Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
         }
     }
 
-    /// Lowers an expression with an optional type hint flowing downward (biderectional checking).
+    /// Lowers an expression with an optional type hint flowing downward (biderectional checking)
     ///
     /// The hint is used to resolve the concrete type of integer and float literals when the
-    /// expected type is known from context (call arguments, let bindings, assignments, etc.).
+    /// expected type is known from context
     ///
-    /// When the hint is `None`, literals default to `i32` and `f64` respectively.
+    /// When the hint is `None`, literals default to `i32` and `f64` respectively
     fn lower_expr(
         &mut self,
-        expr: &expression::Expression,
+        expr: &expression::Expression<'f>,
         hint: Option<Type>,
     ) -> Result<Expression, HirError<'f>> {
         use expression::Expression as Expr;
@@ -296,7 +306,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                 Ok(Expression {
                     kind: ExpressionKind::Local(id),
-                    typ: self.locals[id.0 as usize].typ,
+                    typ: self[id].typ,
                     span: *span,
                 })
             }
@@ -387,31 +397,135 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 target,
                 value,
                 span,
-            } => {
-                let symbol = self.symbols.insert(target);
-                let id = self.resolve_local(symbol, *span)?;
+            } => match target.as_ref() {
+                Expr::Identifier(name, _) => {
+                    let symbol = self.symbols.insert(name);
+                    let id = self.resolve_local(symbol, *span)?;
 
-                if !self.locals[id.0 as usize].mutable {
-                    return Err(HirError {
-                        kind: HirErrorKind::ImmutableBind {
-                            name: target.to_string(),
+                    if !self[id].mutable {
+                        return Err(HirError {
+                            kind: HirErrorKind::ImmutableBind {
+                                name: name.to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let typ = self[id].typ;
+                    let value = self.lower_expr(value, Some(typ))?;
+                    self.assert_type(typ, value.typ, *span)?;
+
+                    Ok(Expression {
+                        kind: ExpressionKind::Assign {
+                            target: id,
+                            value: Box::new(value),
                         },
+                        typ,
                         span: *span,
-                    });
+                    })
                 }
 
-                let target_typ = self.locals[id.0 as usize].typ;
-                // we need to pass the targets type as a hint :D
-                let value = self.lower_expr(value, Some(target_typ))?;
+                Expr::Field { expr, field, span } => {
+                    let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
 
-                self.assert_type(target_typ, value.typ, value.span)?;
+                    if !self[local].mutable {
+                        return Err(HirError {
+                            kind: HirErrorKind::ImmutableBind {
+                                name: self.symbols.get(self[local].name).to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let value = self.lower_expr(value, Some(typ))?;
+                    self.assert_type(typ, value.typ, *span)?;
+
+                    Ok(Expression {
+                        kind: ExpressionKind::FieldAssign {
+                            local,
+                            fields,
+                            value: Box::new(value),
+                        },
+                        typ,
+                        span: *span,
+                    })
+                }
+
+                _ => Err(HirError {
+                    kind: HirErrorKind::InvalidAssignmentTarget,
+                    span: *span,
+                }),
+            },
+
+            Expr::Struct { name, fields, span } => {
+                let symbol = self.symbols.insert(name);
+                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: (*name).to_string(),
+                    },
+                    span: *span,
+                })?;
+                let definition = &self.structs[id.0 as usize];
+                let struct_name = self.symbols.get(definition.name).to_string();
+
+                let mut seen = HashSet::with_capacity(fields.len());
+                let mut lowered = Vec::with_capacity(fields.len());
+
+                for field in fields {
+                    let field_symbol = self.symbols.insert(field.name);
+                    if !seen.insert(field_symbol) {
+                        return Err(HirError {
+                            kind: HirErrorKind::DuplicateField {
+                                name: field.name.to_string(),
+                            },
+                            span: field.span,
+                        });
+                    }
+
+                    let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
+                    else {
+                        return Err(HirError {
+                            kind: HirErrorKind::UnknownField {
+                                struct_name: struct_name,
+                                field: field.name.to_string(),
+                            },
+                            span: field.span,
+                        });
+                    };
+
+                    let value = self.lower_expr(&field.value, Some(expected.typ))?;
+                    self.assert_type(expected.typ, value.typ, value.span)?;
+                    lowered.push((field_symbol, value));
+                }
+
+                for expected in &definition.fields {
+                    if !seen.contains(&expected.name) {
+                        return Err(HirError {
+                            kind: HirErrorKind::MissingField {
+                                struct_name,
+                                field: self.symbols.get(expected.name).to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+                }
 
                 Ok(Expression {
-                    kind: ExpressionKind::Assign {
-                        target: id,
-                        value: Box::new(value),
+                    typ: Type::Struct(id),
+                    span: *span,
+                    kind: ExpressionKind::Struct {
+                        id,
+                        fields: lowered,
                     },
-                    typ: target_typ,
+                })
+            }
+
+            Expr::Field { expr, field, span } => {
+                let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
+
+                Ok(Expression {
+                    kind: ExpressionKind::FieldAccess { local, fields },
+                    typ,
                     span: *span,
                 })
             }
@@ -438,6 +552,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
                     other => {
                         return Err(HirError {
+                            // FIXME: improve this error messag
                             kind: HirErrorKind::UnknownFunction {
                                 name: format!("{other:?}"),
                             },
@@ -485,7 +600,6 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     _ => ExpressionKind::Call {
                         function,
                         args: lowered_args,
-                        inline: signature.inline,
                     },
                 };
 
@@ -568,7 +682,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     fn lower_intrinsic(
         &mut self,
         intrinsic: Intrinsic,
-        args: &[expression::Expression],
+        args: &[expression::Expression<'f>],
         span: Span,
     ) -> Result<Expression, HirError<'f>> {
         let args = args
@@ -640,9 +754,32 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression) -> Result<Type, HirError<'f>> {
+    fn infer(&mut self, expr: &expression::Expression<'f>) -> Result<Type, HirError<'f>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
+    }
+
+    #[inline(always)]
+    fn resolve_type(
+        &mut self,
+        typ: &statement::Type<'f>,
+        span: Span,
+    ) -> Result<Type, HirError<'f>> {
+        match typ {
+            statement::Type::Named(name) => {
+                let symbol = self.symbols.insert(name);
+                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: name.to_string(),
+                    },
+                    span,
+                })?;
+
+                Ok(Type::Struct(id))
+            }
+
+            typ => Ok(typ.into()),
+        }
     }
 
     #[inline(always)]
@@ -702,6 +839,93 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             })
     }
 
+    /// this is used to resolve chain like `r.field.other_field` into
+    /// `(LocalId(r), [sym("field"), sym("other_field")], Type::I32)`
+    ///
+    /// returns the origin `LocalId`, the full path as symbols and the final field's `Type`
+    fn resolve_field_chain(
+        &mut self,
+        mut expr: &expression::Expression,
+        last: &'f str,
+        span: Span,
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+        use expression::Expression as Expr;
+
+        let mut fields = vec![last];
+
+        let id = loop {
+            match expr {
+                Expr::Identifier(name, ident_span) => {
+                    let symbol = self.symbols.insert(name);
+                    break self.resolve_local(symbol, *ident_span)?;
+                }
+
+                Expr::Field {
+                    expr: next, field, ..
+                } => {
+                    fields.push(field);
+                    expr = next;
+                }
+
+                _ => {
+                    return Err(HirError {
+                        kind: HirErrorKind::InvalidFieldAccess,
+                        span,
+                    });
+                }
+            }
+        };
+
+        fields.reverse();
+
+        let mut current_type = self[id].typ;
+        let mut field_symbols = Vec::with_capacity(fields.len());
+
+        for (idx, &field_name) in fields.iter().enumerate() {
+            let Type::Struct(id) = current_type else {
+                return Err(HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: current_type,
+                    },
+                    span,
+                });
+            };
+
+            let field = self.symbols.insert(field_name);
+            let struct_def = &self[id];
+            let name = self.symbols.get(struct_def.name);
+
+            let field_def = {
+                struct_def.fields.iter().find(|f| f.name == field).ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownField {
+                        struct_name: name.to_string(),
+                        field: field_name.to_string(),
+                    },
+                    span,
+                })
+            }?;
+
+            current_type = field_def.typ;
+            field_symbols.push(field);
+
+            let is_last = idx == fields.len() - 1;
+            if !is_last {
+                if !matches!(current_type, Type::Struct(_)) {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId::default()),
+                            found: current_type,
+                        },
+                        span,
+                    });
+                }
+            }
+        }
+
+        Ok((id, field_symbols, current_type))
+    }
+
     #[inline(always)]
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new())
@@ -713,9 +937,74 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 }
 
+fn lower_struct<'h>(
+    id: usize,
+    declarations: &[(SymbolId, &statement::Struct<'h>)],
+    map: &Structs,
+    symbols: &mut SymbolTable,
+    lowered: &mut [Option<Struct>],
+    states: &mut [Visit],
+) -> Result<(), HirError<'h>> {
+    match states[id] {
+        Visit::Visited => return Ok(()),
+        Visit::Visiting => {
+            let (_, declaration) = declarations[id];
+            return Err(HirError {
+                kind: HirErrorKind::CircularStruct {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+        Visit::Unvisited => {}
+    }
+
+    states[id] = Visit::Visiting;
+    let (name, declaration) = declarations[id];
+    let mut seen = HashSet::new();
+    let mut fields = Vec::with_capacity(declaration.fields.len());
+
+    for (idx, field) in declaration.fields.iter().enumerate() {
+        let field_symbol = symbols.insert(field.name);
+        if !seen.insert(field_symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateField {
+                    name: field.name.to_string(),
+                },
+                span: field.span,
+            });
+        }
+
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        if let Type::Struct(dep) = typ {
+            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
+        }
+
+        fields.push(StructField {
+            name: field_symbol,
+            typ,
+            offset: 0,
+            declared_index: idx as u32,
+        });
+    }
+
+    let (fields, size, align) = layout_fields(fields, lowered);
+    lowered[id] = Some(Struct {
+        id: StructId(id as u32),
+        name,
+        fields,
+        size,
+        align,
+    });
+    states[id] = Visit::Visited;
+
+    Ok(())
+}
+
 pub fn collect_function_signatures<'h>(
     statements: &[statement::Statement<'h>],
     symbols: &mut SymbolTable,
+    struct_map: &Structs,
 ) -> Result<(Vec<FunctionSignature>, Functions), HirError<'h>> {
     let mut signatures = Vec::new();
     let mut functions = Functions::new();
@@ -725,7 +1014,7 @@ pub fn collect_function_signatures<'h>(
             statement::Statement::Fn(func) => func,
             // 'use' declarations are valid at the top level but carry no signature information
             // they are resolved by the module loader before this function is called
-            statement::Statement::Use(_) => continue,
+            statement::Statement::Use(_) | statement::Statement::Struct(_) => continue,
             _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
@@ -747,9 +1036,17 @@ pub fn collect_function_signatures<'h>(
         let function_id = FunctionId(signatures.len() as u32);
         functions.insert(symbol, function_id);
 
-        let params = function.params.iter().map(|p| Type::from(p.typ.value())).collect();
-        let return_type =
-            function.return_type.map(|s| s.value()).map(From::from).unwrap_or(Type::Unit);
+        let params = function
+            .params
+            .iter()
+            .map(|p| resolve_annotation(symbols, struct_map, &p.typ.value(), p.typ.span()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let return_type = function
+            .return_type
+            .as_ref()
+            .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
+            .transpose()?
+            .unwrap_or(Type::Unit);
 
         let name_str = symbols.get(symbol);
         let intrinsic = Intrinsic::from_str(name_str).ok();
@@ -758,14 +1055,110 @@ pub fn collect_function_signatures<'h>(
             return_type,
             params,
             name: symbol,
-            is_const: function.is_const,
-            inline: function.inline,
-            is_pub: function.is_pub,
             intrinsic,
         })
     }
 
     Ok((signatures, functions))
+}
+
+pub fn collect_structs<'h>(
+    statements: &[statement::Statement<'h>],
+    symbols: &mut SymbolTable,
+) -> Result<(Vec<Struct>, Structs), HirError<'h>> {
+    let mut map = Structs::new();
+    let mut declarations = Vec::new();
+
+    for statement in statements {
+        let statement::Statement::Struct(declaration) = statement else {
+            continue;
+        };
+
+        let symbol = symbols.insert(declaration.name);
+        if map.contains_key(&symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateStruct {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+
+        let id = StructId(declarations.len() as u32);
+        map.insert(symbol, id);
+        declarations.push((symbol, declaration));
+    }
+
+    let mut lowered = vec![None; declarations.len()];
+    let mut states = vec![Visit::Unvisited; declarations.len()];
+
+    for id in 0..declarations.len() {
+        lower_struct(id, &declarations, &map, symbols, &mut lowered, &mut states)?;
+    }
+
+    let structs = lowered
+        .into_iter()
+        .map(|definition| definition.expect("all struct definitions are lowered"))
+        .collect();
+
+    Ok((structs, map))
+}
+
+fn resolve_annotation<'h>(
+    symbols: &mut SymbolTable,
+    struct_map: &Structs,
+    typ: &statement::Type<'h>,
+    span: Span,
+) -> Result<Type, HirError<'h>> {
+    match typ {
+        statement::Type::Named(name) => {
+            let symbol = symbols.insert(name);
+            struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: (*name).to_string(),
+                },
+                span,
+            })
+        }
+        typ => Ok(typ.into()),
+    }
+}
+
+fn layout_fields(
+    mut fields: Vec<StructField>,
+    structs: &[Option<Struct>],
+) -> (Vec<StructField>, u32, u32) {
+    // PERFORMANCE: field reordering is a small stable sort by layout class
+    fields.sort_by(|a, b| {
+        let (a_size, a_align) = &a.typ.layout(structs);
+        let (b_size, b_align) = &b.typ.layout(structs);
+
+        b_align
+            .cmp(&a_align)
+            .then_with(|| b_size.cmp(&a_size))
+            .then_with(|| a.declared_index.cmp(&b.declared_index))
+    });
+
+    let mut offset = 0;
+    let mut struct_align = 1;
+
+    for field in &mut fields {
+        let (size, align) = field.typ.layout(structs);
+
+        struct_align = struct_align.max(align);
+        offset = align_to(offset, align);
+        field.offset = offset;
+        offset += size;
+    }
+
+    let size = align_to(offset, struct_align);
+
+    (fields, size, struct_align)
+}
+
+#[inline(always)]
+const fn align_to(value: u32, align: u32) -> u32 {
+    (value + align - 1) & !(align - 1)
 }
 
 pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions) {
@@ -780,4 +1173,20 @@ pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, F
     }
 
     (signatures, map)
+}
+
+impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {
+    type Output = Local;
+
+    fn index(&self, index: LocalId) -> &Self::Output {
+        &self.locals[index.0 as usize]
+    }
+}
+
+impl<'s, 'f> Index<StructId> for FunctionBuilder<'s, 'f> {
+    type Output = Struct;
+
+    fn index(&self, index: StructId) -> &Self::Output {
+        &self.structs[index.0 as usize]
+    }
 }

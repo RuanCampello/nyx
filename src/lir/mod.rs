@@ -7,17 +7,15 @@
 //! physical registers or stack slots.
 
 use crate::{
+    hir::Type,
     lir::target::{Emittable, Lowerable, RegClass, Target},
-    mir,
+    mir::{self, Layout},
 };
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 mod regalloc;
 pub mod target;
-
-// PERFORMANCE: currently we're using owned values for everything making a lot of clones
-// reavaliate this after integration of LIR
 
 /// A function in LIR form, parameterised over the target.
 #[derive(Debug)]
@@ -79,6 +77,7 @@ pub struct BlockId(u32);
 pub enum MachineType {
     Int { bytes: u8 },
     Float { bytes: u8 },
+    Struct { size: u32, align: u32 },
 }
 
 const DEFAULT_SIZE: usize = 1 << 10;
@@ -109,7 +108,7 @@ where
             continue;
         }
 
-        let lir = T::lower(function, &mir.symbols, &mir.functions);
+        let lir = T::lower(function, &mir.symbols, &mir.functions, &mir.struct_layouts);
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
@@ -123,8 +122,6 @@ where
         Function::<T>::start(&mut out);
     }
 
-    // FIXME: this probably should be abstracted away from here
-    // but be it as for now
     if !mir.strings.is_empty() {
         label!(out, ".section .rodata");
         for (idx, string) in mir.strings.iter().enumerate() {
@@ -217,16 +214,75 @@ impl MachineType {
     pub const fn bytes(self) -> u8 {
         match self {
             Self::Int { bytes } | Self::Float { bytes } => bytes,
+            Self::Struct { .. } => 8,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn stack_size(self) -> i32 {
+        match self {
+            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Struct { size, .. } => size as i32,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn stack_align(self) -> i32 {
+        match self {
+            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Struct { align, .. } => align as i32,
         }
     }
 
     #[inline(always)]
     pub const fn class(self) -> RegClass {
         match self {
-            Self::Int { .. } => RegClass::Int,
+            Self::Int { .. } | Self::Struct { .. } => RegClass::Int,
             Self::Float { .. } => RegClass::Float,
         }
     }
+}
+
+impl Type {
+    pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
+        match self {
+            Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
+            Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
+            Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
+            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
+                MachineType::Int { bytes: 8 }
+            }
+            Type::F32 => MachineType::Float { bytes: 4 },
+            Type::F64 => MachineType::Float { bytes: 8 },
+            Type::Struct(id) => {
+                let (size, align) = layouts[id.0 as usize].into();
+                MachineType::Struct { size, align }
+            }
+            Type::Unit => unreachable!("unit doesn't have a machine type"),
+        }
+    }
+}
+
+pub(in crate::lir) fn aggregate_chunks(size: u32) -> impl Iterator<Item = (i32, u8)> {
+    // PERFORMANCE: aggregate copies are lowered once in LIR using 8/4/2/1 byte chunks
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        if offset >= size {
+            return None;
+        }
+
+        let remaining = size - offset;
+        let chunk = match remaining {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        let current = offset as i32;
+        offset += chunk as u32;
+
+        Some((current, chunk))
+    })
 }
 
 impl Term {

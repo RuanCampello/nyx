@@ -21,6 +21,13 @@ impl<T: Target> Allocation<T> {
     pub fn location_of(&self, vreg: &VReg) -> Location<T> {
         self.locations[vreg.0 as usize]
     }
+
+    pub(in crate::lir) fn struct_offset(&self, vreg: &VReg) -> i32 {
+        match self.location_of(vreg) {
+            Location::Stack(offset) => offset - (self.used_callee_saved.len() as i32 * 8),
+            _ => panic!("struct VReg unexpectedly allocated to a register"),
+        }
+    }
 }
 
 impl<T: Target> Default for Allocation<T> {

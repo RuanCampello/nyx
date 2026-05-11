@@ -9,7 +9,7 @@ use std::str::Chars;
 
 /// A cursor that walks through source code one character at a time,
 /// maintaining the current [`Position`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Cursor<'src> {
     /// The full source text.
     source: &'src str,

@@ -155,11 +155,135 @@ impl Function<X86_64> {
                 emit!(out, "leaq   {src}, {dest}");
             }
 
+            Inst::StackAddr { dest, origin } => {
+                let dest = alloc.location(dest, &8);
+                let offset = alloc.struct_offset(origin);
+
+                emit!(out, "leaq   {offset}(%rbp), {dest}");
+            }
+
             Inst::Movzx { dest, src } => {
                 let dest = alloc.location(dest, &4);
                 let src = alloc.location(src, &1);
 
                 emit!(out, "movzbl   {src}, {dest}");
+            }
+
+            Inst::FieldLoad {
+                dest,
+                origin,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let dest = alloc.location(dest, bytes);
+
+                let suffix = typed_suffix(bytes, *is_float);
+
+                emit!(out, "mov{suffix}    {offset}(%rbp), {dest}");
+            }
+
+            Inst::FieldStore {
+                origin,
+                src,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let origin_offset = alloc.struct_offset(origin);
+                let offset = origin_offset + offset;
+                let src = self.operand(alloc, src, bytes);
+                let suffix = typed_suffix(bytes, *is_float);
+
+                let need_scratch = src.contains("(%rbp)");
+
+                match is_float {
+                    true => match need_scratch {
+                        true => {
+                            emit!(out, "mov{suffix}    {src}, %xmm15");
+                            emit!(out, "mov{suffix}    %xmm15, {offset}(%rbp)");
+                        }
+                        false => emit!(out, "mov{suffix}   {src}, {offset}(%rbp)"),
+                    },
+
+                    false => match need_scratch {
+                        true => {
+                            let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                            emit!(out, "mov{suffix}    {src}, {scratch}");
+                            emit!(out, "mov{suffix}    {scratch}, {offset}(%rbp)");
+                        }
+
+                        false => emit!(out, "mov{suffix}    {src}, {offset}(%rbp)"),
+                    },
+                }
+            }
+
+            Inst::PtrLoad {
+                dest,
+                ptr,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let ptr = alloc.location(ptr, &8);
+                let dest = alloc.location(dest, bytes);
+                let suffix = typed_suffix(bytes, *is_float);
+
+                match ptr.contains("(%rbp)") {
+                    true => {
+                        emit!(out, "movq    {ptr}, %r11");
+                        emit!(out, "mov{suffix}    {offset}(%r11), {dest}");
+                    }
+                    false => emit!(out, "mov{suffix}    {offset}({ptr}), {dest}"),
+                }
+            }
+
+            Inst::PtrStore {
+                ptr,
+                src,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let ptr = alloc.location(ptr, &8);
+                let src = self.operand(alloc, src, bytes);
+                let suffix = typed_suffix(bytes, *is_float);
+
+                // x86_64 can't do memory-to-memory moves
+                // so we need to check if the operands are on the stack and
+                // move them to scratch register :/
+                let ptr_is_spilled = ptr.contains("(%rbp)");
+                let src_is_spilled = src.contains("(%rbp)");
+
+                match (ptr_is_spilled, src_is_spilled, *is_float) {
+                    (true, true, true) => {
+                        emit!(out, "movq    {ptr}, %r11");
+                        emit!(out, "mov{suffix}    {src}, %xmm15");
+                        emit!(out, "mov{suffix}    %xmm15, {offset}(%r11)");
+                    }
+                    (true, true, false) => {
+                        emit!(out, "movq    {ptr}, %r10");
+                        let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                        emit!(out, "mov{suffix}    {src}, {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {offset}(%r10)");
+                    }
+                    (true, false, _) => {
+                        emit!(out, "movq    {ptr}, %r11");
+                        emit!(out, "mov{suffix}    {src}, {offset}(%r11)");
+                    }
+                    (false, true, true) => {
+                        emit!(out, "mov{suffix}    {src}, %xmm15");
+                        emit!(out, "mov{suffix}    %xmm15, {offset}({ptr})");
+                    }
+                    (false, true, false) => {
+                        let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                        emit!(out, "mov{suffix}    {src}, {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {offset}({ptr})");
+                    }
+                    (false, false, _) => emit!(out, "mov{suffix}    {src}, {offset}({ptr})"),
+                }
             }
 
             Inst::Add { dest, src, bytes }
@@ -542,8 +666,6 @@ const fn float_suffix<'s>(bytes: &u8) -> &'s str {
     }
 }
 
-#[inline(always)]
-// TODO: should we really do this here? reavaliate the process in the pipeline
 fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_float: bool) {
     if src == dest {
         return;

@@ -71,6 +71,21 @@ pub enum A64Instr {
 
     Adr { dest: VReg, label: String },
 
+    FieldLoad {
+        dest: VReg,
+        origin: VReg,
+        offset: i32,
+        bytes: u8,
+    },
+
+    FieldStore {
+        origin: VReg,
+        src: A64Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+
     Call {
         target: String,
         /// register-passed arguments
@@ -327,13 +342,16 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FMul { dest, .. }
             | Self::FDiv { dest, .. }
             | Self::FNeg { dest, .. }
+            | Self::FieldLoad { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
                 std::slice::from_ref(r)
             }
-            Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
+            Self::FieldStore { .. }
+            | Self::Call { ret: None, .. }
+            | Self::Syscall { ret: None, .. } => &[],
         }
     }
 
@@ -390,6 +408,16 @@ impl Instruction<AArch64> for A64Instr {
                 uses: instruction_uses,
                 ..
             } => uses.extend_from_slice(instruction_uses),
+
+            Self::FieldStore {
+                origin,
+                src: A64Operand::VReg(v),
+                ..
+            } => {
+                uses.push(*origin);
+                uses.push(*v);
+            }
+            Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
 
             Self::MovImm { .. }
             | Self::LdrParam { .. }

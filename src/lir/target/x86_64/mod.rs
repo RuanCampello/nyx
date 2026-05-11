@@ -36,6 +36,8 @@ pub enum X86Instr {
         bytes: u8,
     },
     Lea { dest: VReg, src: X86Operand },
+    /// materialise the frame-pointer-relative address of a stack aggregate
+    StackAddr { dest: VReg, origin: VReg },
     /// zero-extend 1-byte `setcc` result -> 4 bytes
     Movzx { dest: VReg, src: VReg },
 
@@ -75,6 +77,37 @@ pub enum X86Instr {
     And { dest: VReg, src: X86Operand, bytes: u8 },
     Or { dest: VReg, src: X86Operand, bytes: u8 },
     Xor { dest: VReg, src: X86Operand, bytes: u8 },
+
+    /// load a scalar field struct on the stack
+    FieldLoad {
+        dest: VReg,
+        origin: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    // store a scalar value into a field of a struct on the stack
+    FieldStore {
+        origin: VReg,
+        src: X86Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    PtrLoad {
+        dest: VReg,
+        ptr: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+    PtrStore {
+        ptr: VReg,
+        src: X86Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
 
     Call {
         target: String,
@@ -223,6 +256,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MovFloat { dest, .. }
             | Self::MovFromStack { dest, .. }
             | Self::Lea { dest, .. }
+            | Self::StackAddr { dest, .. }
             | Self::Movzx { dest, .. }
             | Self::Add { dest, .. }
             | Self::Sub { dest, .. }
@@ -236,11 +270,17 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { dest, .. }
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
+            | Self::FieldLoad { dest, .. }
+            | Self::PtrLoad { dest, .. }
             | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::Cmp { .. } | Self::Test { .. } | Self::Ucomis { .. } => &[],
+            Self::FieldStore { .. }
+            | Self::PtrStore { .. }
+            | Self::Cmp { .. }
+            | Self::Test { .. }
+            | Self::Ucomis { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
@@ -281,6 +321,20 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
             | Self::XorFloat { dest, .. } => uses.push(*dest),
+
+            Self::FieldStore {origin, src: X86Operand::VReg(vreg), ..} => {
+                uses.push(*origin);
+                uses.push(*vreg);
+            },
+            Self::StackAddr { origin , ..}
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore {origin, ..} => uses.push(*origin),
+
+            Self::PtrStore { ptr, src: X86Operand::VReg(vreg), .. } => {
+                uses.push(*ptr);
+                uses.push(*vreg);
+            }
+            Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::Neg { dest, .. } => uses.push(*dest),
             Self::Movzx { src, ..  } => uses.push(*src),

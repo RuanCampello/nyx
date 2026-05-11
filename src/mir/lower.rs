@@ -1,12 +1,11 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId},
+    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, SymbolId, Type},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
     },
-    parser::statement::Type,
 };
 use lasso::Key;
 
@@ -24,6 +23,7 @@ struct FunctionLower<'a> {
     locals: Vec<(ValueId, Type)>,
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
+    structs: &'a [Struct],
     local_symbols: Vec<usize>,
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
@@ -35,13 +35,19 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let symbols = hir.symbols;
 
     for function in hir.functions {
-        functions.push(FunctionLower::run(function, &symbols, &mut strings)?);
+        functions.push(FunctionLower::run(
+            function,
+            &symbols,
+            &hir.structs,
+            &mut strings,
+        )?);
     }
 
     Ok(Mir {
         functions,
         symbols,
         strings,
+        struct_layouts: hir.structs.iter().map(From::from).collect(),
     })
 }
 
@@ -49,6 +55,7 @@ impl<'a> FunctionLower<'a> {
     fn run(
         function: hir::Function,
         symbols: &'a [String],
+        structs: &'a [Struct],
         strings: &'a mut Vec<String>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
@@ -63,18 +70,16 @@ impl<'a> FunctionLower<'a> {
 
         for local in &function.locals {
             let value_id = ValueId(locals.len() as u32);
-            local_map[local.id.0 as usize] = value_id;
-            local_symbols[local.id.0 as usize] = local.name.0.into_usize();
-            locals.push((value_id, local.typ));
+            let idx = local.id.0 as usize;
+            local_map[idx] = value_id;
+            local_symbols[idx] = local.name.0.into_usize();
+            locals.push((value_id, local.typ))
         }
 
         let params = function
             .params
             .iter()
-            .map(|param| {
-                let id = local_map[param.id.0 as usize];
-                (id, param.typ)
-            })
+            .map(|param| (local_map[param.id.0 as usize], param.typ))
             .collect();
 
         let next = locals.len() as u32;
@@ -87,6 +92,7 @@ impl<'a> FunctionLower<'a> {
             next,
             symbols,
             strings,
+            structs,
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
             runtime_local_uses: collect_runtime_local_uses(&function),
@@ -307,8 +313,11 @@ impl<'a> FunctionLower<'a> {
             }
 
             ExpressionKind::Call { function, args, .. } => {
-                let lowered_args =
-                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let mut lowered_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    let operand = self.lower_expr(arg)?;
+                    lowered_args.push(operand);
+                }
 
                 let dest = self.fresh_temporary(expr.typ);
 
@@ -367,7 +376,86 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
             }
+
+            ExpressionKind::Struct { id, fields } => {
+                let dest = self.fresh_temporary(Type::Struct(*id));
+                let field_offsets: Vec<_> =
+                    self.structs[id.0 as usize].fields.iter().map(|f| (f.name, f.offset)).collect();
+
+                for (sym, value) in fields {
+                    let offset = field_offsets
+                        .iter()
+                        .find(|(name, _)| name == sym)
+                        .map(|&(_, offset)| offset)
+                        .expect("field offset must exist after HIR validation");
+                    let value = self.lower_expr(value)?;
+
+                    self.emit(dest, InstructionKind::FieldStore { value, offset });
+                }
+
+                Ok(Operand::Place(dest))
+            }
+
+            ExpressionKind::FieldAccess { local, fields, .. } => {
+                let origin = self.place_for_local(*local, self.local_type(*local));
+                let (offset, typ) = self.field_path_info(origin.typ, fields);
+
+                let dest = self.fresh_temporary(typ);
+                self.emit(
+                    dest,
+                    InstructionKind::FieldLoad {
+                        src: Operand::Place(origin),
+                        offset,
+                        typ,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
+            }
+
+            ExpressionKind::FieldAssign {
+                local,
+                fields,
+                value,
+            } => {
+                let value = self.lower_expr(value)?;
+                let origin = self.place_for_local(*local, self.local_type(*local));
+                let (offset, typ) = self.field_path_info(origin.typ, fields);
+                debug_assert_eq!(typ, value.typ());
+
+                self.emit(origin, InstructionKind::FieldStore { value, offset });
+
+                Ok(value)
+            }
         }
+    }
+
+    #[inline(always)]
+    fn local_type(&self, id: LocalId) -> Type {
+        self.locals[self.local_map[id.0 as usize].0 as usize].1
+    }
+
+    fn field_path_info(&self, origin: Type, fields: &[SymbolId]) -> (u32, Type) {
+        let mut current_type = origin;
+        let mut total_offset = 0;
+
+        // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
+        for &sym in fields {
+            let Type::Struct(sid) = current_type else {
+                unreachable!("field projection on non-struct");
+            };
+
+            let (offset, typ) = self.structs[sid.0 as usize]
+                .fields
+                .iter()
+                .find(|field| field.name == sym)
+                .map(|field| (field.offset, field.typ))
+                .expect("field offset must exist after HIR validation");
+            total_offset += offset;
+            current_type = typ;
+        }
+
+        (total_offset, current_type)
     }
 
     fn terminate(&mut self, term: Terminator) {
@@ -590,19 +678,27 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
 
 fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
     match &expr.kind {
-        ExpressionKind::Local(id) => {
-            uses[id.0 as usize] = true;
-        }
+        ExpressionKind::Local(id) => uses[id.0 as usize] = true,
         ExpressionKind::Unary { expr, .. } => visit_expr_runtime_uses(expr, uses),
         ExpressionKind::Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
         }
         ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Struct { fields, .. } => {
+            for (_, value) in fields {
+                visit_expr_runtime_uses(value, uses);
+            }
+        }
         ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
+        }
+        ExpressionKind::FieldAccess { local, .. } => uses[local.0 as usize] = true,
+        ExpressionKind::FieldAssign { local, value, .. } => {
+            uses[local.0 as usize] = true;
+            visit_expr_runtime_uses(value, uses);
         }
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
