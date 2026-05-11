@@ -55,7 +55,7 @@ pub struct Function {
     pub(crate) intrinsic: Option<Intrinsic>,
     /// index into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: usize,
-    return_type: Type,
+    pub(crate) return_type: Type,
     /// params in declaration order.
     /// these are the first entries of `locals` but are kept separated
     /// so that codegen can emit the correct argument-register moves without
@@ -79,6 +79,7 @@ pub struct Block {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Layout {
+    /// Fully resolved aggregate size and alignment, copied from HIR layout.
     size: u32,
     align: u32,
 }
@@ -99,16 +100,15 @@ pub enum InstructionKind {
         lhs: Operand,
     },
 
-    FieldAccess {
+    /// load `typ` bytes from an aggregate place at byte `offset`
+    FieldLoad {
         src: Operand,
         offset: u32,
         typ: Type,
     },
 
-    FieldAssign {
-        value: Operand,
-        offset: u32,
-    },
+    /// store `value` into the destination aggregate at byte `offset`
+    FieldStore { value: Operand, offset: u32 },
 
     Call {
         callee: FunctionId,
@@ -325,5 +325,119 @@ mod tests {
             f.blocks[0].terminator,
             Terminator::Return(Some(_))
         ));
+    }
+
+    #[test]
+    fn struct_literal_lowers_to_field_stores() {
+        let mir = parse_and_lower(
+            r#"
+            struct Point { x: i64, y: i64 }
+            fn main() { let p = Point { x: 1, y: 2 }; }
+        "#,
+        );
+
+        let main = &mir.functions[0];
+        let offsets = main.blocks[0]
+            .instructions
+            .iter()
+            .filter_map(|instruction| match &instruction.kind {
+                InstructionKind::FieldStore { offset, .. } => Some(*offset),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(offsets, vec![0, 8]);
+    }
+
+    #[test]
+    fn nested_field_load_uses_combined_offset() {
+        let mir = parse_and_lower(
+            r#"
+            struct Point { x: i64, y: i64 }
+            struct Rect { top_left: Point, bottom_right: Point }
+            fn main(): i64 {
+                let p1 = Point { x: 0, y: 10 };
+                let p2 = Point { x: 10, y: 0 };
+                let r = Rect { top_left: p1, bottom_right: p2 };
+                r.bottom_right.x
+            }
+        "#,
+        );
+
+        let main = &mir.functions[0];
+        let has_combined_load = main.blocks[0].instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                InstructionKind::FieldLoad {
+                    offset: 16,
+                    typ: Type::I64,
+                    ..
+                }
+            )
+        });
+
+        assert!(
+            has_combined_load,
+            "expected bottom_right.x to load at byte offset 16"
+        );
+    }
+
+    #[test]
+    fn nested_field_assignment_uses_assigned_value_and_combined_offset() {
+        let mir = parse_and_lower(
+            r#"
+            struct Point { x: i64, y: i64 }
+            struct Rect { top_left: Point, bottom_right: Point }
+            fn main(): i64 {
+                let p1 = Point { x: 0, y: 10 };
+                let p2 = Point { x: 10, y: 0 };
+                let mut r = Rect { top_left: p1, bottom_right: p2 };
+                r.bottom_right.x = 5;
+                r.bottom_right.x
+            }
+        "#,
+        );
+
+        let main = &mir.functions[0];
+        let has_assignment = main.blocks[0].instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                InstructionKind::FieldStore {
+                    offset: 16,
+                    value: Operand::Const(Const::Int(5, Type::I64)),
+                }
+            )
+        });
+
+        assert!(
+            has_assignment,
+            "expected bottom_right.x assignment at byte offset 16"
+        );
+    }
+
+    #[test]
+    fn struct_call_arguments_are_not_flattened_in_mir() {
+        let mir = parse_and_lower(
+            r#"
+            struct Pair { x: i64, y: i64 }
+            fn id(p: Pair): Pair { p }
+            fn main() {
+                let p = Pair { x: 1, y: 2 };
+                let q = id(p);
+            }
+        "#,
+        );
+
+        let main = &mir.functions[1];
+        let call = main.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|instruction| match &instruction.kind {
+                InstructionKind::Call { args, .. } => Some((instruction.dest.typ, args.len())),
+                _ => None,
+            })
+            .expect("expected a call instruction");
+
+        assert_eq!(call, (Type::Struct(crate::hir::StructId(0)), 1));
     }
 }
