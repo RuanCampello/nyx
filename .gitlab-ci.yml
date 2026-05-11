@@ -26,7 +26,8 @@ test:x86_64:
   tags:
     - saas-linux-small-amd64
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - cargo test --workspace
 
@@ -35,6 +36,7 @@ test:aarch64:
   tags:
     - saas-linux-small-arm64
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - cargo test --workspace
