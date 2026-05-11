@@ -28,8 +28,8 @@ impl Interference {
         let mut locations = vec![None; vreg_types.len()];
         let mut spill_offset = 0;
 
-        // struct always live on the stack
-        // so we spill them before any colouring :D
+        // aggregate values are stack-only >:(
+        // scalar registers may still point at them
         for vreg in &all {
             let idx = vreg.0 as usize;
             if matches!(vreg_types[idx], MachineType::Struct { .. }) {
