@@ -28,6 +28,10 @@ test:x86_64:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+    - changes:
+        - "**/*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
   script:
     - cargo test --workspace
 
@@ -38,5 +42,9 @@ test:aarch64:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+    - changes:
+        - "**/*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
   script:
     - cargo test --workspace
