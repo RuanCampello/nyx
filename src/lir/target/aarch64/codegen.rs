@@ -54,10 +54,8 @@ impl Function<AArch64> {
         emit!(out, "stp     x29, x30, [sp, #-16]!");
         emit!(out, "mov     x29, sp");
 
-        for reg in &alloc.used_callee_saved {
-            let r = reg.name(8);
-            emit!(out, "str     {r}, [sp, #-16]!");
-        }
+        emit_save_regs(out, &callee_saved_regs(alloc, RegClass::Int));
+        emit_save_regs(out, &callee_saved_regs(alloc, RegClass::Float));
 
         if frame_size > 0 {
             emit!(out, "sub     sp, sp, #{frame_size}");
@@ -71,10 +69,8 @@ impl Function<AArch64> {
             emit!(out, "add     sp, sp, #{frame_size}");
         }
 
-        for reg in alloc.used_callee_saved.iter().rev() {
-            let r = reg.name(8);
-            emit!(out, "ldr     {r}, [sp], #16");
-        }
+        emit_restore_regs(out, &callee_saved_regs(alloc, RegClass::Float));
+        emit_restore_regs(out, &callee_saved_regs(alloc, RegClass::Int));
 
         emit!(out, "ldp     x29, x30, [sp], #16");
         emit!(out, "ret");
@@ -132,13 +128,19 @@ impl Function<AArch64> {
                 let src = alloc.location(src, bytes);
 
                 if dest != src {
-                    emit!(out, "mov     {dest}, {src}");
+                    emit_move(out, &dest, &src, *bytes, false);
                 }
             }
 
             A64Instr::MovImm { dest, imm, bytes } => {
                 let dest_loc = alloc.location(dest, bytes);
-                emit_wide_immediate(out, &dest_loc, *imm, *bytes);
+                match is_mem(&dest_loc) {
+                    true => {
+                        emit_wide_immediate(out, "x16", *imm, *bytes);
+                        emit_store(out, "x16", &dest_loc, *bytes);
+                    }
+                    false => emit_wide_immediate(out, &dest_loc, *imm, *bytes),
+                }
             }
 
             A64Instr::LdrParam {
@@ -148,7 +150,13 @@ impl Function<AArch64> {
             } => {
                 let suffix = ldr_suffix(bytes);
                 let dest = alloc.location(dest, bytes);
-                emit!(out, "ldr{suffix}    {dest}, [x29, #{fp_offset}]");
+                match is_mem(&dest) {
+                    true => {
+                        emit!(out, "ldr{suffix}    x16, [x29, #{fp_offset}]");
+                        emit_store(out, "x16", &dest, *bytes);
+                    }
+                    false => emit!(out, "ldr{suffix}    {dest}, [x29, #{fp_offset}]"),
+                }
             }
 
             A64Instr::FMov { dest, src, bytes } => {
@@ -156,21 +164,35 @@ impl Function<AArch64> {
                 let src = alloc.location(src, bytes);
 
                 if dest != src {
-                    emit!(out, "fmov    {dest}, {src}");
+                    emit_move(out, &dest, &src, *bytes, true);
                 }
             }
 
             A64Instr::FLiteral { dest, label, bytes } => {
                 let dest = alloc.location(dest, bytes);
-                // page-relative load from .rodata literal pool
+                let scratch = match is_mem(&dest) {
+                    true => A64Reg::D16.name(*bytes),
+                    false => dest.as_str(),
+                };
+
                 emit!(out, "adrp    x16, {label}");
-                emit!(out, "ldr     {dest}, [x16, :lo12:{label}]");
+                emit!(out, "ldr     {scratch}, [x16, :lo12:{label}]");
+
+                if is_mem(&dest) {
+                    emit_store(out, scratch, &dest, *bytes);
+                }
             }
 
             A64Instr::Adr { dest, label } => {
                 let dest = alloc.location(dest, &8);
-                emit!(out, "adrp    {dest}, {label}");
-                emit!(out, "add     {dest}, {dest}, :lo12:{label}");
+                let scratch = if is_mem(&dest) { "x16" } else { dest.as_str() };
+
+                emit!(out, "adrp    {scratch}, {label}");
+                emit!(out, "add     {scratch}, {scratch}, :lo12:{label}");
+
+                if is_mem(&dest) {
+                    emit_store(out, scratch, &dest, 8);
+                }
             }
 
             A64Instr::FieldLoad {
@@ -184,7 +206,13 @@ impl Function<AArch64> {
                 let dest = alloc.location(dest, bytes);
                 let suffix = ldr_suffix(bytes);
 
-                emit!(out, "ldr{suffix}    {dest}, [x29, #{offset}]");
+                match is_mem(&dest) {
+                    true => {
+                        emit!(out, "ldr{suffix}    x16, [x29, #{offset}]");
+                        emit_store(out, "x16", &dest, *bytes);
+                    }
+                    false => emit!(out, "ldr{suffix}    {dest}, [x29, #{offset}]"),
+                }
             }
 
             A64Instr::FieldStore {
@@ -196,37 +224,58 @@ impl Function<AArch64> {
             } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
-                let suffix = str_suffix(bytes);
+                let dest = format!("[x29, #{offset}]");
 
-                match src {
-                    A64Operand::VReg(vreg) => {
-                        let src = alloc.location(vreg, bytes);
-                        // mem-to-mem load into scratch first
-                        match src.starts_with('[') {
-                            true => match is_float {
-                                true => {
-                                    let scratch = A64Reg::D16.name(*bytes);
-                                    emit!(out, "ldr{suffix}    {scratch}, {src}");
-                                    emit!(out, "str{suffix}    {scratch}, [x29, #{offset}]");
-                                }
-                                false => {
-                                    emit!(out, "ldr    x16, {src}");
-                                    emit!(out, "str{suffix}    x16, [x29, #{offset}]");
-                                }
-                            },
-                            false => emit!(out, "str{suffix}    {src}, [x29, #{offset}]"),
-                        }
+                emit_store_operand(out, alloc, src, &dest, *bytes, *is_float);
+            }
+
+            A64Instr::StackAddr { dest, origin } => {
+                let offset = alloc.struct_offset(origin);
+                let dest = alloc.location(dest, &8);
+                match is_mem(&dest) {
+                    true => {
+                        emit!(out, "add     x16, x29, #{offset}");
+                        emit_store(out, "x16", &dest, 8);
                     }
-                    A64Operand::Imm(n) => {
-                        emit!(out, "mov     x16, #{n}");
-                        emit!(out, "str{suffix}    x16, [x29, #{offset}]");
-                    }
-                    A64Operand::Label(label) => {
-                        emit!(out, "adrp    x16, {label}");
-                        emit!(out, "ldr     x16, [x16, :lo12:{label}]");
-                        emit!(out, "str{suffix}    x16, [x29, #{offset}]");
-                    }
+                    false => emit!(out, "add     {dest}, x29, #{offset}"),
                 }
+            }
+
+            A64Instr::PtrLoad {
+                dest,
+                ptr,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let ptr = alloc.location(ptr, &8);
+                let dest = alloc.location(dest, bytes);
+                let addr = load_ptr_addr(out, &ptr);
+                let suffix = ldr_suffix(bytes);
+                let scratch = match (*is_float, is_mem(&dest)) {
+                    (true, true) => A64Reg::D16.name(*bytes),
+                    (false, true) => A64Reg::X16.name(*bytes),
+                    _ => dest.as_str(),
+                };
+
+                emit!(out, "ldr{suffix}    {scratch}, [{addr}, #{offset}]");
+                if is_mem(&dest) {
+                    emit_store(out, scratch, &dest, *bytes);
+                }
+            }
+
+            A64Instr::PtrStore {
+                ptr,
+                src,
+                offset,
+                bytes,
+                is_float,
+            } => {
+                let ptr = alloc.location(ptr, &8);
+                let addr = load_ptr_addr(out, &ptr);
+                let dest = format!("[{addr}, #{offset}]");
+
+                emit_store_operand(out, alloc, src, &dest, *bytes, *is_float);
             }
 
             // integer arithmetic
@@ -552,11 +601,20 @@ impl Allocation<AArch64> {
     fn location(&self, vreg: &VReg, bytes: &u8) -> String {
         match self.location_of(vreg) {
             Location::Reg(reg) => reg.name(*bytes).to_string(),
-            Location::Stack(offset) => {
-                let adjusted = offset - (self.used_callee_saved.len() as u32 * 16) as i32;
-                format!("[x29, #{adjusted}]")
-            }
+            Location::Stack(offset) => format!("[x29, #{}]", self.stack_offset(offset)),
         }
+    }
+
+    #[inline(always)]
+    fn struct_offset(&self, vreg: &VReg) -> i32 {
+        match self.location_of(vreg) {
+            Location::Stack(offset) => self.stack_offset(offset),
+            Location::Reg(_) => panic!("struct VReg unexpectedly allocated to a register"),
+        }
+    }
+
+    fn stack_offset(&self, offset: i32) -> i32 {
+        offset - callee_saved_area(self) as i32
     }
 }
 
@@ -596,6 +654,140 @@ fn emit_wide_immediate(out: &mut String, dest: &str, value: i64, bytes: u8) {
             emit!(out, "movk    {dest}, #{chunk}, lsl #{}", shift * 16);
         }
     }
+}
+
+fn emit_move(out: &mut String, dest: &str, src: &str, bytes: u8, is_float: bool) {
+    match (is_mem(dest), is_mem(src), is_float) {
+        (false, false, true) => emit!(out, "fmov    {dest}, {src}"),
+        (false, false, false) => emit!(out, "mov     {dest}, {src}"),
+        (false, true, _) => emit_load(out, dest, src, bytes),
+        (true, false, _) => emit_store(out, src, dest, bytes),
+        (true, true, true) => {
+            let scratch = A64Reg::D16.name(bytes);
+            emit_load(out, scratch, src, bytes);
+            emit_store(out, scratch, dest, bytes);
+        }
+        (true, true, false) => {
+            let scratch = A64Reg::X16.name(bytes);
+            emit_load(out, scratch, src, bytes);
+            emit_store(out, scratch, dest, bytes);
+        }
+    }
+}
+
+fn emit_load(out: &mut String, dest: &str, src: &str, bytes: u8) {
+    let suffix = ldr_suffix(&bytes);
+    emit!(out, "ldr{suffix}    {dest}, {src}");
+}
+
+fn emit_store(out: &mut String, src: &str, dest: &str, bytes: u8) {
+    let suffix = str_suffix(&bytes);
+    emit!(out, "str{suffix}    {src}, {dest}");
+}
+
+fn load_ptr_addr<'s>(out: &mut String, ptr: &'s str) -> &'s str {
+    match is_mem(ptr) {
+        true => {
+            emit!(out, "ldr     x16, {ptr}");
+            "x16"
+        }
+        false => ptr,
+    }
+}
+
+fn load_src_if_mem<'s>(out: &mut String, src: &'s str, bytes: u8, is_float: bool) -> &'s str {
+    match is_mem(src) {
+        true => {
+            let scratch = match is_float {
+                true => A64Reg::D16.name(bytes),
+                false => A64Reg::X16.name(bytes),
+            };
+            emit_load(out, scratch, src, bytes);
+            scratch
+        }
+        false => src,
+    }
+}
+
+fn emit_store_operand(
+    out: &mut String,
+    alloc: &Allocation<AArch64>,
+    src: &A64Operand,
+    dest: &str,
+    bytes: u8,
+    is_float: bool,
+) {
+    match src {
+        A64Operand::VReg(vreg) => {
+            let src = alloc.location(vreg, &bytes);
+            let src = load_src_if_mem(out, &src, bytes, is_float);
+            emit_store(out, &src, dest, bytes);
+        }
+        A64Operand::Imm(n) => {
+            emit!(out, "mov     x16, #{n}");
+            emit_store(out, "x16", dest, bytes);
+        }
+        A64Operand::Label(label) => {
+            emit!(out, "adrp    x16, {label}");
+            emit!(out, "ldr     x16, [x16, :lo12:{label}]");
+            emit_store(out, "x16", dest, bytes);
+        }
+    }
+}
+
+#[inline(always)]
+fn is_mem(location: &str) -> bool {
+    location.starts_with('[')
+}
+
+#[inline(always)]
+fn emit_save_regs(out: &mut String, regs: &[A64Reg]) {
+    for pair in regs.chunks(2) {
+        match pair {
+            [a, b] => emit!(out, "stp     {}, {}, [sp, #-16]!", a.name(8), b.name(8)),
+            [a] => emit!(out, "str     {}, [sp, #-16]!", a.name(8)),
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+}
+
+fn emit_restore_regs(out: &mut String, regs: &[A64Reg]) {
+    let mut len = regs.len();
+
+    if len % 2 == 1 {
+        len -= 1;
+        emit!(out, "ldr     {}, [sp], #16", regs[len].name(8));
+    }
+
+    while len > 0 {
+        len -= 2;
+        emit!(
+            out,
+            "ldp     {}, {}, [sp], #16",
+            regs[len].name(8),
+            regs[len + 1].name(8)
+        );
+    }
+}
+
+fn callee_saved_regs(alloc: &Allocation<AArch64>, class: RegClass) -> Vec<A64Reg> {
+    alloc
+        .used_callee_saved
+        .iter()
+        .copied()
+        .filter(|reg| reg.class() == class)
+        .collect()
+}
+
+fn callee_saved_area(alloc: &Allocation<AArch64>) -> u32 {
+    let ints = callee_saved_regs(alloc, RegClass::Int).len() as u32;
+    let floats = callee_saved_regs(alloc, RegClass::Float).len() as u32;
+
+    align_pair(ints * 8) + align_pair(floats * 8)
+}
+
+const fn align_pair(bytes: u32) -> u32 {
+    (bytes + 15) & !15
 }
 
 #[inline(always)]

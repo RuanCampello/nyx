@@ -86,6 +86,24 @@ pub enum A64Instr {
         is_float: bool,
     },
 
+    StackAddr { dest: VReg, origin: VReg },
+
+    PtrLoad {
+        dest: VReg,
+        ptr: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+
+    PtrStore {
+        ptr: VReg,
+        src: A64Operand,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    },
+
     Call {
         target: String,
         /// register-passed arguments
@@ -343,6 +361,8 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FDiv { dest, .. }
             | Self::FNeg { dest, .. }
             | Self::FieldLoad { dest, .. }
+            | Self::StackAddr { dest, .. }
+            | Self::PtrLoad { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
@@ -350,6 +370,7 @@ impl Instruction<AArch64> for A64Instr {
                 std::slice::from_ref(r)
             }
             Self::FieldStore { .. }
+            | Self::PtrStore { .. }
             | Self::Call { ret: None, .. }
             | Self::Syscall { ret: None, .. } => &[],
         }
@@ -418,6 +439,19 @@ impl Instruction<AArch64> for A64Instr {
                 uses.push(*v);
             }
             Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
+
+            Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => {
+                uses.push(*origin)
+            }
+            Self::PtrStore {
+                ptr,
+                src: A64Operand::VReg(v),
+                ..
+            } => {
+                uses.push(*ptr);
+                uses.push(*v);
+            }
+            Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::MovImm { .. }
             | Self::LdrParam { .. }
