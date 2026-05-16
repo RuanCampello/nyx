@@ -4,7 +4,7 @@ use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
 use crate::parser::{Parsable, Parser};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement<'i> {
     Let(Let<'i>),
     Return(Return<'i>),
@@ -12,12 +12,13 @@ pub enum Statement<'i> {
     While(While<'i>),
     Fn(Function<'i>),
     Struct(Struct<'i>),
+    Impl(Impl<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
     Use(UseDecl<'i>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Let<'i> {
     pub mutable: bool,
     pub name: &'i str,
@@ -26,13 +27,13 @@ pub struct Let<'i> {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Return<'i> {
     pub value: Option<Expression<'i>>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct If<'i> {
     pub condition: Expression<'i>,
     pub then_branch: Block<'i>,
@@ -40,16 +41,18 @@ pub struct If<'i> {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct While<'i> {
     pub condition: Expression<'i>,
     pub body: Block<'i>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Function<'i> {
     pub name: &'i str,
+    pub impl_type: Option<&'i str>,
+    pub receiver: Option<Receiver>,
     pub params: Vec<Parameter<'i>>,
     pub return_type: Option<Spanned<Type<'i>>>,
     pub body: Block<'i>,
@@ -59,21 +62,34 @@ pub struct Function<'i> {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Receiver {
+    pub mutable: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Struct<'i> {
     pub name: &'i str,
     pub fields: Vec<StructField<'i>>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
+pub struct Impl<'i> {
+    pub name: &'i str,
+    pub methods: Vec<Function<'i>>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct StructField<'i> {
     pub name: &'i str,
     pub typ: Spanned<Type<'i>>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Parameter<'i> {
     pub name: &'i str,
     pub mutable: bool,
@@ -81,38 +97,38 @@ pub struct Parameter<'i> {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Block<'i> {
     pub statements: Vec<Statement<'i>>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Else<'i> {
     If(If<'i>),
     Block(Block<'i>),
     Expr(Expression<'i>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UseDecl<'i> {
     pub path: UsePath<'i>,
     pub items: UseItems<'i>,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UsePath<'i> {
     pub segments: Vec<&'i str>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct UseItem<'i> {
     pub name: &'i str,
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum UseItems<'i> {
     Namespace,
     Named(Vec<UseItem<'i>>),
@@ -149,8 +165,8 @@ pub enum Type<'i> {
 
 impl<'i> Parsable<'i> for Statement<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let kind = match parser.peek() {
-            Some(Ok(token)) => &token.kind,
+        let token = match parser.peek() {
+            Some(Ok(token)) => token,
             _ => {
                 return Err(ParserError::new(
                     ParseErrorKind::UnexpectedEof,
@@ -159,17 +175,16 @@ impl<'i> Parsable<'i> for Statement<'i> {
             }
         };
 
-        match kind {
+        match token.kind {
             TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Use) => Ok(Statement::Use(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Struct) => Ok(Statement::Struct(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Impl) => Ok(Statement::Impl(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Fn | Keyword::Pub | Keyword::Inline | Keyword::Const) => {
-                Ok(Statement::Fn(parser.parse_node()?))
-            }
+            TokenKind::Keyword(_) if token.is_fn_start() => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(
                 ParseErrorKind::UnexpectedEof,
                 Span::default(),
@@ -402,6 +417,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         parser.expect_token(Punct::OpenParen)?;
 
         let mut params = Vec::new();
+        let mut receiver = None;
 
         loop {
             let token = parser
@@ -415,8 +431,32 @@ impl<'i> Parsable<'i> for Function<'i> {
                 }
 
                 Ok(_) => {
-                    if !params.is_empty() {
+                    if !params.is_empty() || receiver.is_some() {
                         parser.expect_token(Punct::Comma)?;
+                    }
+
+                    if params.is_empty()
+                        && receiver.is_none()
+                        && parser.consume_punct(Punct::Ampersand)?
+                    {
+                        let receiver_start = parser.last_span().unwrap_or(fn_token.span);
+                        let mutable = parser.consume_keyword(Keyword::Mut)?;
+                        let (name, name_span) = parser.expect_identifier()?;
+                        if name != "self" {
+                            return Err(ParserError::new(
+                                ParseErrorKind::ExpectedIdentifier {
+                                    found: TokenKind::Identifier(name),
+                                },
+                                name_span,
+                            ));
+                        }
+
+                        receiver = Some(Receiver {
+                            mutable,
+                            span: receiver_start + name_span,
+                        });
+
+                        continue;
                     }
 
                     let mutable = parser.consume_keyword(Keyword::Mut)?;
@@ -445,6 +485,8 @@ impl<'i> Parsable<'i> for Function<'i> {
 
         Ok(Function {
             params,
+            impl_type: None,
+            receiver,
             name,
             return_type,
             body,
@@ -453,6 +495,59 @@ impl<'i> Parsable<'i> for Function<'i> {
             is_pub,
             inline,
         })
+    }
+}
+
+impl<'i> Parsable<'i> for Impl<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let impl_token = parser.expect_token(Keyword::Impl)?;
+        let (name, _) = parser.expect_identifier()?;
+        parser.expect_token(Punct::OpenBrace)?;
+
+        let mut methods = Vec::new();
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                    let close = parser.expect_token(Punct::CloseBrace)?;
+                    let span = impl_token.span + close.span;
+
+                    return Ok(Self {
+                        name,
+                        methods,
+                        span,
+                    });
+                }
+
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+                }
+
+                Some(Ok(token)) if token.is_fn_start() => {
+                    let mut method = parser.parse_node::<Function>()?;
+                    method.impl_type = Some(name);
+                    methods.push(method);
+                }
+
+                Some(Ok(token)) => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::Expected {
+                            expected: TokenKind::Keyword(Keyword::Fn),
+                            found: token.kind,
+                        },
+                        token.span,
+                    ));
+                }
+
+                Some(Err(err)) => return Err(err.into()),
+                None => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::UnexpectedEof,
+                        impl_token.span,
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -624,6 +719,7 @@ impl<'s> Statement<'s> {
             Self::While(s) => s.span,
             Self::Fn(s) => s.span,
             Self::Struct(s) => s.span,
+            Self::Impl(s) => s.span,
             Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,

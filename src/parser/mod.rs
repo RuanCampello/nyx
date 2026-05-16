@@ -87,6 +87,11 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
+    pub(crate) const fn last_span(&self) -> Option<Span> {
+        self.last
+    }
+
+    #[inline(always)]
     pub fn expect_token(
         &mut self,
         expected: impl Into<TokenKind<'i>>,
