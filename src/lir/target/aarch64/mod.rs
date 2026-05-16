@@ -340,14 +340,19 @@ impl Target for AArch64 {
 
 #[rustfmt::skip]
 impl MemOps for AArch64 {
+    type Operand = A64Operand;
+
+    #[inline(always)]
+    fn vreg_operand(v: VReg) -> A64Operand { A64Operand::VReg(v) }
+
     #[inline(always)]
     fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, _is_float: bool) -> A64Instr {
         A64Instr::FieldLoad { dest, origin, offset, bytes }
     }
 
     #[inline(always)]
-    fn field_store(origin: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> A64Instr {
-        A64Instr::FieldStore { origin, src: A64Operand::VReg(src), offset, bytes, is_float }
+    fn field_store(origin: VReg, src: A64Operand, offset: i32, bytes: u8, is_float: bool) -> A64Instr {
+        A64Instr::FieldStore { origin, src, offset, bytes, is_float }
     }
 
     #[inline(always)]
@@ -356,8 +361,8 @@ impl MemOps for AArch64 {
     }
 
     #[inline(always)]
-    fn ptr_store(ptr: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> A64Instr {
-        A64Instr::PtrStore { ptr, src: A64Operand::VReg(src), offset, bytes, is_float }
+    fn ptr_store(ptr: VReg, src: A64Operand, offset: i32, bytes: u8, is_float: bool) -> A64Instr {
+        A64Instr::PtrStore { ptr, src, offset, bytes, is_float }
     }
 }
 

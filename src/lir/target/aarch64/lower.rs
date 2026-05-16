@@ -17,8 +17,9 @@ use crate::{
     lir::{
         self, BlockId, MachineType, Term, VReg,
         target::{
-            Lowerable, RegClass, Target,
+            Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
+            aggregate_copy,
         },
     },
     mir::{self, Const, Function, Layout, Operand, ValueId},
@@ -102,27 +103,13 @@ impl<'f> Lower<'f> {
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 if let Type::Struct(sid) = typ {
-                    let (size, _) = self.layouts[sid.0 as usize].into();
+                    let size = self.struct_size(sid);
                     let src = match operand {
                         Operand::Place(p) => self.vreg(p.id),
                         Operand::Const(_) => unreachable!("struct constant assign"),
                     };
 
-                    for (offset, chunk) in lir::aggregate_chunks(size) {
-                        let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
-                        #[rustfmt::skip]
-                        let load = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
-                        let store = A64Instr::FieldStore {
-                            origin: dest,
-                            src: A64Operand::VReg(scratch),
-                            offset,
-                            bytes: chunk,
-                            is_float: false,
-                        };
-                        self.lir.push_instr(id, load);
-                        self.lir.push_instr(id, store);
-                    }
-                    return;
+                    return aggregate_copy(&mut self.lir, id, false, false, src, dest, 0, 0, size);
                 }
 
                 match self.lower_operand(operand, id) {
@@ -378,18 +365,18 @@ impl<'f> Lower<'f> {
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
 
-                    self.copy(
+                    let size = self.struct_size(*sid);
+                    return aggregate_copy(
+                        &mut self.lir,
                         id,
                         matches!(src.typ(), Type::Ref { .. }),
-                        matches!(typ, Type::Ref { .. }),
+                        false,
                         origin,
                         dest,
                         *offset as i32,
                         0,
-                        self.struct_size(*sid),
+                        size,
                     );
-
-                    return;
                 }
 
                 let bytes = typ.machine_type(self.layouts).bytes();
@@ -397,21 +384,14 @@ impl<'f> Lower<'f> {
                 match src {
                     Operand::Place(place) => {
                         let origin = self.vreg(place.id);
-                        let instruction = match place.typ {
-                            Type::Ref { .. } => A64Instr::PtrLoad {
-                                dest,
-                                ptr: origin,
-                                bytes,
-                                offset: *offset as i32,
-                                is_float: typ.is_float(),
-                            },
-                            _ => A64Instr::FieldLoad {
-                                dest,
-                                origin,
-                                bytes,
-                                offset: *offset as i32,
-                            },
-                        };
+                        let instruction = AArch64::scalar_load(
+                            matches!(place.typ, Type::Ref { .. }),
+                            dest,
+                            origin,
+                            *offset as i32,
+                            bytes,
+                            typ.is_float(),
+                        );
                         self.lir.push_instr(id, instruction);
                     }
 
@@ -427,18 +407,19 @@ impl<'f> Lower<'f> {
                         unreachable!("aggregate field store source must be a place");
                     };
 
-                    self.copy(
+                    let src_vreg = self.vreg(src.id);
+                    let size = self.struct_size(sid);
+                    return aggregate_copy(
+                        &mut self.lir,
                         id,
                         matches!(src.typ, Type::Ref { .. }),
-                        matches!(src.typ, Type::Ref { .. }),
-                        self.vreg(src.id),
+                        matches!(typ, Type::Ref { .. }),
+                        src_vreg,
                         dest,
                         0,
                         offset,
-                        self.struct_size(sid),
+                        size,
                     );
-
-                    return;
                 }
 
                 let is_float = value.typ().is_float();
@@ -446,11 +427,14 @@ impl<'f> Lower<'f> {
                 let bytes = mt.bytes();
                 let src = self.lower_operand(value, id);
 
-                #[rustfmt::skip]
-                let instruction = match typ {
-                    Type::Ref { .. } => A64Instr::PtrStore { ptr: dest, src, is_float, offset, bytes },
-                    _ => A64Instr::FieldStore { bytes, src, origin: dest, is_float, offset },
-                };
+                let instruction = AArch64::scalar_store(
+                    matches!(typ, Type::Ref { .. }),
+                    dest,
+                    src,
+                    offset,
+                    bytes,
+                    is_float,
+                );
                 self.lir.push_instr(id, instruction);
             }
 
@@ -551,15 +535,18 @@ impl<'f> Lower<'f> {
                 };
                 let sret_ptr =
                     self.sret_ptr.expect("struct-returning function must have an sret pointer");
-                self.copy(
+                let src_vreg = self.vreg(place.id);
+                let size = self.struct_size(sid);
+                aggregate_copy(
+                    &mut self.lir,
                     id,
                     false,
                     true,
-                    self.vreg(place.id),
+                    src_vreg,
                     sret_ptr,
                     0,
                     0,
-                    self.struct_size(sid),
+                    size,
                 );
                 Term::Return(None)
             }
@@ -617,15 +604,18 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                self.copy(
+                let size = self.struct_size(*sid);
+                let dest_vreg = self.vreg(*vid);
+                aggregate_copy(
+                    &mut self.lir,
                     &entry,
                     true,
                     false,
                     ptr,
-                    self.vreg(*vid),
+                    dest_vreg,
                     0,
                     0,
-                    self.struct_size(*sid),
+                    size,
                 );
                 int_idx += 1;
                 continue;
@@ -727,44 +717,6 @@ impl<'f> Lower<'f> {
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
 
         dest
-    }
-
-    // FIXME: abstract this to generate the load/store ptr/reference
-    // with target as generic over the LIR so we don't have this many arguments and can
-    // use it for both
-    fn copy(
-        &mut self,
-        block: &BlockId,
-        is_src_ref: bool,
-        is_dest_ref: bool,
-        src: VReg,
-        dest: VReg,
-        src_base: i32,
-        dest_base: i32,
-        size: u32,
-    ) {
-        let is_float = false;
-
-        for (offset, bytes) in lir::aggregate_chunks(size) {
-            let scratch = self.lir.new_vreg(MachineType::Int { bytes });
-            let src_offset = src_base + offset;
-            let dest_offset = dest_base + offset;
-
-            #[rustfmt::skip]
-            let instr = match is_src_ref {
-                true => A64Instr::PtrLoad { dest: scratch, ptr: src, offset: src_offset, bytes, is_float },
-                false => A64Instr::FieldLoad { origin: src, dest: scratch, offset: src_offset, bytes },
-            };
-            self.lir.push_instr(block, instr);
-
-            let src = A64Operand::VReg(scratch);
-            #[rustfmt::skip]
-            let instr = match is_dest_ref {
-                true => A64Instr::PtrStore { ptr: dest, src, offset: dest_offset, bytes, is_float },
-                false => A64Instr::FieldStore { origin: dest, src, offset: dest_offset, bytes, is_float },
-            };
-            self.lir.push_instr(block, instr);
-        }
     }
 
     fn struct_size(&self, sid: crate::hir::StructId) -> u32 {

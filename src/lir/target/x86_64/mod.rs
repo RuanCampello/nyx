@@ -251,14 +251,19 @@ impl Target for X86_64 {
 
 #[rustfmt::skip]
 impl MemOps for X86_64 {
+    type Operand = X86Operand;
+
+    #[inline(always)]
+    fn vreg_operand(v: VReg) -> X86Operand { X86Operand::VReg(v) }
+
     #[inline(always)]
     fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
         X86Instr::FieldLoad { dest, origin, offset, bytes, is_float }
     }
 
     #[inline(always)]
-    fn field_store(origin: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
-        X86Instr::FieldStore { origin, src: X86Operand::VReg(src), offset, bytes, is_float }
+    fn field_store(origin: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::FieldStore { origin, src, offset, bytes, is_float }
     }
 
     #[inline(always)]
@@ -267,8 +272,8 @@ impl MemOps for X86_64 {
     }
 
     #[inline(always)]
-    fn ptr_store(ptr: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
-        X86Instr::PtrStore { ptr, src: X86Operand::VReg(src), offset, bytes, is_float }
+    fn ptr_store(ptr: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::PtrStore { ptr, src, offset, bytes, is_float }
     }
 }
 
