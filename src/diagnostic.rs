@@ -217,6 +217,13 @@ impl Diagnosticable for HirError<'_> {
                 Some(format!("rename one of the `{name}` functions")),
             ),
 
+            Kind::DuplicateMethod { struct_name, name } => (
+                format!("duplicate method `{name}` for `{struct_name}`"),
+                format!("`{name}` is already defined for `{struct_name}`"),
+                None,
+                Some(format!("remove or rename one of the `{name}` methods")),
+            ),
+
             Kind::UndeclaredIdentifier { name } => (
                 format!("use of undeclared identifier `{name}`"),
                 format!("`{name}` is not declared in this scope"),
@@ -231,6 +238,15 @@ impl Diagnosticable for HirError<'_> {
                 format!("`{name}` is not a known function"),
                 None,
                 Some(format!("declare `fn {name}(...)` before calling it")),
+            ),
+
+            Kind::UnknownMethod { struct_name, name } => (
+                format!("call to unknown method `{name}` on `{struct_name}`"),
+                format!("`{struct_name}` has no method named `{name}`"),
+                None,
+                Some(format!(
+                    "declare `impl {struct_name} {{ fn {name}(&self) {{ ... }} }}`"
+                )),
             ),
 
             Kind::UnknownType { name } => (
@@ -321,6 +337,20 @@ impl Diagnosticable for HirError<'_> {
                 Some(format!(
                     "add a type annotation: `let {name}: <type>;` or provide an initial value"
                 )),
+            ),
+
+            Kind::MissingReceiver { name } => (
+                format!("method `{name}` is missing a receiver"),
+                format!("`{name}` must declare `&self` or `&mut self`"),
+                None,
+                Some(format!("write `fn {name}(&self, ...)`")),
+            ),
+
+            Kind::ReceiverOutsideImpl => (
+                "`self` receiver outside `impl` block".to_string(),
+                "receivers are only valid in methods".to_string(),
+                None,
+                Some("move this function into an `impl Type { ... }` block".to_string()),
             ),
 
             Kind::TypeMismatch { expected, found } => (

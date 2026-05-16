@@ -68,6 +68,7 @@ pub enum Type {
     Str,
     String,
     Struct(StructId),
+    Ref { mutable: bool, to: StructId },
     Unit,
 }
 
@@ -105,6 +106,7 @@ pub struct Expression {
 pub struct Function {
     pub id: FunctionId,
     pub name: SymbolId,
+    pub method: Option<Method>,
     pub params: Vec<Parameter>,
     pub locals: Vec<Local>,
     pub return_type: Type,
@@ -112,6 +114,13 @@ pub struct Function {
     pub is_pub: bool,
     pub intrinsic: Option<Intrinsic>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Method {
+    pub(crate) receiver: StructId,
+    pub(crate) name: SymbolId,
+    pub(crate) mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +180,11 @@ pub enum ExpressionKind {
         fields: Vec<SymbolId>,
         value: Box<Expression>,
     },
+    MethodCall {
+        function: FunctionId,
+        receiver: Receiver,
+        args: Vec<Expression>,
+    },
     Struct {
         id: StructId,
         fields: Vec<(SymbolId, Expression)>,
@@ -183,6 +197,13 @@ pub enum ExpressionKind {
         intrinsic: Intrinsic,
         args: Vec<Expression>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Receiver {
+    pub(crate) local: LocalId,
+    pub(crate) fields: Vec<SymbolId>,
+    pub(crate) typ: Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,14 +231,36 @@ pub(crate) trait Offset {
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
     let (structs, structs_map) = functions::collect_structs(&statements, &mut symbols)?;
-    let (signatures, functions_map) =
+    let (signatures, functions_map, methods_map) =
         functions::collect_function_signatures(&statements, &mut symbols, &structs_map)?;
 
     let mut functions = Vec::new();
+    for function in functions::function_declarations(&statements) {
+        let function_id = functions::function_id_for(
+            &function,
+            &functions_map,
+            &methods_map,
+            &structs_map,
+            &mut symbols,
+        )?;
+        let function = FunctionBuilder::new(
+            &signatures,
+            &functions_map,
+            &methods_map,
+            &structs,
+            &structs_map,
+            &mut symbols,
+            function_id,
+            function,
+        );
+        functions.push(function.lower()?);
+    }
+
     for statement in statements {
-        let function = match statement {
-            statement::Statement::Fn(function) => function,
-            statement::Statement::Struct(_) => continue,
+        match statement {
+            statement::Statement::Fn(_)
+            | statement::Statement::Struct(_)
+            | statement::Statement::Impl(_) => continue,
             // 'use' declarations are valid at the top level but have no HIR representation
             // symbol resolution happens at the module loader level, not here
             statement::Statement::Use(_) => continue,
@@ -227,17 +270,7 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
                     span: other.span(),
                 });
             }
-        };
-
-        let function = FunctionBuilder::new(
-            &signatures,
-            &functions_map,
-            &structs,
-            &structs_map,
-            &mut symbols,
-            function,
-        );
-        functions.push(function.lower()?);
+        }
     }
 
     Ok(Hir {
@@ -254,6 +287,7 @@ impl From<&Function> for FunctionSignature {
             return_type: value.return_type,
             name: value.name,
             intrinsic: value.intrinsic,
+            method: value.method,
         }
     }
 }
@@ -300,6 +334,7 @@ impl Type {
             | Type::Uptr
             | Type::Str
             | Type::String
+            | Type::Ref { .. }
             | Type::F64 => (8, 8),
             Type::Unit => (0, 1),
 
@@ -313,11 +348,22 @@ impl Type {
     }
 }
 
+// FIXME: we probably don't need this offset thingy after
+// refactoring struct calculation
+// reavaliate it later future me :D
+
 impl Offset for Type {
     #[inline(always)]
     fn offset(&mut self, offset: u32) {
-        if let Type::Struct(id) = *self {
-            *self = Type::Struct(StructId(id.0 + offset))
+        match *self {
+            Type::Struct(id) => *self = Type::Struct(StructId(id.0 + offset)),
+            Type::Ref { mutable, to } => {
+                *self = Type::Ref {
+                    mutable,
+                    to: StructId(to.0 + offset),
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -353,6 +399,12 @@ impl Offset for Expression {
 
             ExpressionKind::Assign { value, .. } => value.offset(offset),
             ExpressionKind::FieldAssign { value, .. } => value.offset(offset),
+            ExpressionKind::MethodCall { receiver, args, .. } => {
+                receiver.typ.offset(offset);
+                for arg in args {
+                    arg.offset(offset);
+                }
+            }
             ExpressionKind::Struct { fields, id } => {
                 *id = StructId(id.0 + offset);
 
@@ -405,6 +457,9 @@ impl Offset for Block {
 impl Offset for Function {
     fn offset(&mut self, offset: u32) {
         self.return_type.offset(offset);
+        if let Some(method) = &mut self.method {
+            method.receiver = StructId(method.receiver.0 + offset);
+        }
 
         for param in &mut self.params {
             param.typ.offset(offset);
@@ -465,6 +520,10 @@ impl std::fmt::Display for Type {
             Type::Str => "&str",
             Type::String => "String",
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
+            Type::Ref { mutable, to } => match mutable {
+                true => return write!(f, "&mut struct#{}", to.0),
+                false => return write!(f, "&struct#{}", to.0),
+            },
             Type::Unit => "unit",
         };
 
@@ -1114,5 +1173,104 @@ mod tests {
         "#;
 
         assert!(super::lower(Parser::new(src).parse().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn impl_blocks_collect_methods_for_same_struct() {
+        let src = r#"
+            struct Counter { value: i32 }
+
+            impl Counter {
+                fn value(&self): i32 { self.value }
+            }
+
+            impl Counter {
+                fn add(&mut self, delta: i32) {
+                    self.value = self.value + delta;
+                }
+            }
+
+            fn main(): i32 {
+                let mut counter = Counter { value: 40 };
+                counter.add(2);
+                counter.value()
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        assert_eq!(hir.functions.len(), 3);
+        assert!(hir.functions.iter().any(|function| function.method.is_some()));
+    }
+
+    #[test]
+    fn duplicate_methods_across_impl_blocks_are_rejected() {
+        let src = r#"
+            struct Counter { value: i32 }
+
+            impl Counter {
+                fn value(&self): i32 { self.value }
+            }
+
+            impl Counter {
+                fn value(&self): i32 { self.value }
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateMethod {
+                struct_name: "Counter".to_string(),
+                name: "value".to_string(),
+            }
+        );
+        assert_eq!(err.span.start.column, 17);
+    }
+
+    #[test]
+    fn mut_self_method_requires_mutable_receiver() {
+        let src = r#"
+            struct Counter { value: i32 }
+
+            impl Counter {
+                fn add(&mut self, delta: i32) {
+                    self.value = self.value + delta;
+                }
+            }
+
+            fn main() {
+                let counter = Counter { value: 40 };
+                counter.add(2);
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::ImmutableBind {
+                name: "counter".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn shared_self_cannot_assign_fields() {
+        let src = r#"
+            struct Counter { value: i32 }
+
+            impl Counter {
+                fn set(&self, value: i32) {
+                    self.value = value;
+                }
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::ImmutableBind {
+                name: "self".to_string(),
+            }
+        );
     }
 }

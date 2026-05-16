@@ -215,7 +215,10 @@ impl<F: FileSystem> ModuleLoader<F> {
     fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
         for statement in &statements {
             match statement {
-                Statement::Fn(_) | Statement::Use(_) | Statement::Struct(_) => {}
+                Statement::Fn(_)
+                | Statement::Use(_)
+                | Statement::Struct(_)
+                | Statement::Impl(_) => {}
                 _ => {
                     return Err(ModuleError::TopLevelNonFunction {
                         path: path.into(),
@@ -238,10 +241,10 @@ impl<F: FileSystem> ModuleLoader<F> {
             functions.extend(module.functions.iter().cloned());
         }
 
-        let (mut signatures, mut map) = signatures_from_hir(&functions);
+        let (mut signatures, mut map, mut methods) = signatures_from_hir(&functions);
 
         let local_offset = signatures.len() as u32;
-        let (local_signatures, local_map) =
+        let (local_signatures, local_map, local_methods) =
             collect_function_signatures(&statements, &mut self.symbols, &struct_map)
                 .map_err(|e| Diagnostic::from(e))?;
 
@@ -273,23 +276,33 @@ impl<F: FileSystem> ModuleLoader<F> {
             map.insert(symbol, FunctionId(local_offset + local_id.0));
         }
 
+        for (&key, &local_id) in &local_methods {
+            methods.insert(key, FunctionId(local_offset + local_id.0));
+        }
+
         signatures.extend(local_signatures);
 
         let mut functions = Vec::new();
         let mut exports = HashMap::new();
 
-        for statement in statements {
-            let function = match statement {
-                Statement::Fn(f) => f,
-                _ => continue,
-            };
+        for function in crate::hir::functions::function_declarations(&statements) {
+            let function_id = crate::hir::functions::function_id_for(
+                &function,
+                &map,
+                &methods,
+                &struct_map,
+                &mut self.symbols,
+            )
+            .map_err(|e| Diagnostic::from(e))?;
 
             let builder = FunctionBuilder::new(
                 &signatures,
                 &map,
+                &methods,
                 &structs,
                 &struct_map,
                 &mut self.symbols,
+                function_id,
                 function,
             );
             let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
