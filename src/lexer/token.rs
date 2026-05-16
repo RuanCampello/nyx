@@ -47,6 +47,7 @@ pub enum Keyword {
     While,
     For,
     Struct,
+    Impl,
     Inline,
     Const,
     Pub,
@@ -144,6 +145,14 @@ impl<'src> Token<'src> {
     pub(crate) fn is_kind(&self, kind: impl Into<TokenKind<'src>>) -> bool {
         self.kind == kind.into()
     }
+
+    #[inline(always)]
+    pub(crate) fn is_fn_start(&self) -> bool {
+        self.is_kind(Keyword::Fn)
+            || self.is_kind(Keyword::Pub)
+            || self.is_kind(Keyword::Inline)
+            || self.is_kind(Keyword::Const)
+    }
 }
 
 impl Keyword {
@@ -158,6 +167,7 @@ impl Keyword {
             Self::While => "while",
             Self::For => "for",
             Self::Struct => "struct",
+            Self::Impl => "impl",
             Self::Inline => "inline",
             Self::Const => "const",
             Self::Use => "use",
@@ -180,6 +190,7 @@ impl std::str::FromStr for Keyword {
             "while" => Self::While,
             "for" => Self::For,
             "struct" => Self::Struct,
+            "impl" => Self::Impl,
             "inline" => Self::Inline,
             "const" => Self::Const,
             "pub" => Self::Pub,
