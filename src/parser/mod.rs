@@ -155,6 +155,13 @@ impl<'i> Parser<'i> {
             _ => Ok(false),
         }
     }
+
+    pub(crate) fn is_pub_struct(&self) -> bool {
+        matches!(
+            self.peek_nth(1),
+            Some(Ok(t)) if t.is_kind(Keyword::Struct)
+        )
+    }
 }
 
 #[cfg(test)]

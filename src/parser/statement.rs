@@ -72,6 +72,7 @@ pub struct Receiver {
 pub struct Struct<'i> {
     pub name: &'i str,
     pub fields: Vec<StructField<'i>>,
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -165,8 +166,8 @@ pub enum Type<'i> {
 
 impl<'i> Parsable<'i> for Statement<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let token = match parser.peek() {
-            Some(Ok(token)) => token,
+        let (kind, is_fn_start) = match parser.peek() {
+            Some(Ok(token)) => (token.kind, token.is_fn_start()),
             _ => {
                 return Err(ParserError::new(
                     ParseErrorKind::UnexpectedEof,
@@ -175,7 +176,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             }
         };
 
-        match token.kind {
+        match kind {
             TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
@@ -184,7 +185,10 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Struct) => Ok(Statement::Struct(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Impl) => Ok(Statement::Impl(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
-            TokenKind::Keyword(_) if token.is_fn_start() => Ok(Statement::Fn(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
+                Ok(Statement::Struct(parser.parse_node()?))
+            }
+            TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(
                 ParseErrorKind::UnexpectedEof,
                 Span::default(),
@@ -553,6 +557,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
 impl<'i> Parsable<'i> for Struct<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let is_pub = parser.consume_keyword(Keyword::Pub)?;
         let struct_token = parser.expect_token(Keyword::Struct)?;
         let (name, _) = parser.expect_identifier()?;
         parser.expect_token(Punct::OpenBrace)?;
@@ -565,7 +570,12 @@ impl<'i> Parsable<'i> for Struct<'i> {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     let span = struct_token.span + close.span;
 
-                    return Ok(Self { name, fields, span });
+                    return Ok(Self {
+                        name,
+                        fields,
+                        is_pub,
+                        span,
+                    });
                 }
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {

@@ -724,6 +724,96 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     kind,
                 })
             }
+
+            Expr::QualifiedCall {
+                qualifier,
+                name,
+                args,
+                span,
+            } => {
+                let mangled_name = format!("{qualifier}__{name}");
+                let mangled_symbol = self.symbols.insert(&mangled_name);
+
+                if let Some(&id) = self.functions.get(&mangled_symbol) {
+                    let signature = &self.signatures[id.0 as usize];
+
+                    if signature.params.len() != args.len() {
+                        return Err(HirError {
+                            kind: HirErrorKind::ArityMismatch {
+                                name: format!("{qualifier}::{name}"),
+                                expected: signature.params.len(),
+                                found: args.len(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let mut lowered_args = Vec::with_capacity(args.len());
+                    for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                        let expr = self.lower_expr(expr, Some(param_type))?;
+                        self.assert_type(param_type, expr.typ, expr.span)?;
+                        lowered_args.push(expr);
+                    }
+
+                    return Ok(Expression {
+                        typ: signature.return_type,
+                        span: *span,
+                        kind: ExpressionKind::Call {
+                            function: id,
+                            args: lowered_args,
+                        },
+                    });
+                }
+
+                if let Ok(intrinsic) = Intrinsic::from_str(name) {
+                    return self.lower_intrinsic(intrinsic, args, *span);
+                }
+
+                let symbol = self.symbols.insert(name);
+                let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownFunction {
+                        name: format!("{qualifier}::{name}"),
+                    },
+                    span: *span,
+                })?;
+                let signature = &self.signatures[id.0 as usize];
+
+                if signature.params.len() != args.len() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ArityMismatch {
+                            name: name.to_string(),
+                            expected: signature.params.len(),
+                            found: args.len(),
+                        },
+                        span: *span,
+                    });
+                }
+
+                let mut lowered_args = Vec::with_capacity(args.len());
+                for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                    let expr = self.lower_expr(expr, Some(param_type))?;
+                    self.assert_type(param_type, expr.typ, expr.span)?;
+                    lowered_args.push(expr);
+                }
+
+                let return_type = signature.return_type;
+                let kind = match signature.intrinsic {
+                    Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                        intrinsic,
+                        args: lowered_args,
+                    },
+                    _ => ExpressionKind::Call {
+                        function: id,
+                        args: lowered_args,
+                    },
+                };
+
+                Ok(Expression {
+                    typ: return_type,
+                    span: *span,
+                    kind,
+                })
+            }
         }
     }
 
@@ -1207,65 +1297,109 @@ pub fn collect_function_signatures<'h>(
                     })?;
 
                 for method in &implementation.methods {
-                    let receiver = method.receiver.ok_or(HirError {
-                        kind: HirErrorKind::MissingReceiver {
-                            name: method.name.to_string(),
-                        },
-                        span: method.span,
-                    })?;
                     let method_symbol = symbols.insert(method.name);
-                    if methods.contains_key(&(struct_id, method_symbol)) {
-                        return Err(HirError {
-                            kind: HirErrorKind::DuplicateMethod {
-                                struct_name: implementation.name.to_string(),
-                                name: method.name.to_string(),
-                            },
-                            span: method.span,
-                        });
-                    }
-
                     let mangled =
                         symbols.insert(&format!("{}__{}", implementation.name, method.name));
-                    let function_id = FunctionId(signatures.len() as u32);
-                    methods.insert((struct_id, method_symbol), function_id);
 
-                    let mut params = Vec::with_capacity(method.params.len() + 1);
-                    params.push(Type::Ref {
-                        mutable: receiver.mutable,
-                        to: struct_id,
-                    });
-                    params.extend(
-                        method
-                            .params
-                            .iter()
-                            .map(|p| {
-                                resolve_annotation(
-                                    symbols,
-                                    struct_map,
-                                    &p.typ.value(),
-                                    p.typ.span(),
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    );
-                    let return_type = method
-                        .return_type
-                        .as_ref()
-                        .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
-                        .transpose()?
-                        .unwrap_or(Type::Unit);
+                    match method.receiver {
+                        Some(receiver) => {
+                            if methods.contains_key(&(struct_id, method_symbol)) {
+                                return Err(HirError {
+                                    kind: HirErrorKind::DuplicateMethod {
+                                        struct_name: implementation.name.to_string(),
+                                        name: method.name.to_string(),
+                                    },
+                                    span: method.span,
+                                });
+                            }
 
-                    signatures.push(FunctionSignature {
-                        return_type,
-                        params,
-                        name: mangled,
-                        intrinsic: None,
-                        method: Some(Method {
-                            receiver: struct_id,
-                            name: method_symbol,
-                            mutable: receiver.mutable,
-                        }),
-                    });
+                            let function_id = FunctionId(signatures.len() as u32);
+                            methods.insert((struct_id, method_symbol), function_id);
+
+                            let mut params = Vec::with_capacity(method.params.len() + 1);
+                            params.push(Type::Ref {
+                                mutable: receiver.mutable,
+                                to: struct_id,
+                            });
+                            params.extend(
+                                method
+                                    .params
+                                    .iter()
+                                    .map(|p| {
+                                        resolve_annotation(
+                                            symbols,
+                                            struct_map,
+                                            &p.typ.value(),
+                                            p.typ.span(),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?,
+                            );
+                            let return_type = method
+                                .return_type
+                                .as_ref()
+                                .map(|s| {
+                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
+                                })
+                                .transpose()?
+                                .unwrap_or(Type::Unit);
+
+                            signatures.push(FunctionSignature {
+                                return_type,
+                                params,
+                                name: mangled,
+                                intrinsic: None,
+                                method: Some(Method {
+                                    receiver: struct_id,
+                                    name: method_symbol,
+                                    mutable: receiver.mutable,
+                                }),
+                            });
+                        }
+
+                        None => {
+                            if functions.contains_key(&mangled) {
+                                return Err(HirError {
+                                    kind: HirErrorKind::DuplicateFunction {
+                                        name: format!("{}::{}", implementation.name, method.name),
+                                    },
+                                    span: method.span,
+                                });
+                            }
+
+                            let function_id = FunctionId(signatures.len() as u32);
+                            functions.insert(mangled, function_id);
+
+                            let params = method
+                                .params
+                                .iter()
+                                .map(|p| {
+                                    resolve_annotation(
+                                        symbols,
+                                        struct_map,
+                                        &p.typ.value(),
+                                        p.typ.span(),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let return_type = method
+                                .return_type
+                                .as_ref()
+                                .map(|s| {
+                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
+                                })
+                                .transpose()?
+                                .unwrap_or(Type::Unit);
+
+                            signatures.push(FunctionSignature {
+                                return_type,
+                                params,
+                                name: mangled,
+                                intrinsic: None,
+                                method: None,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -1309,8 +1443,8 @@ pub(in crate::hir) fn function_id_for<'h>(
     struct_map: &Structs,
     symbols: &mut SymbolTable,
 ) -> Result<FunctionId, HirError<'h>> {
-    match function.receiver {
-        Some(_) => {
+    match (function.receiver, function.impl_type) {
+        (Some(_), _) => {
             let impl_type = function.impl_type.expect("method must know its impl owner");
             let struct_symbol = symbols.insert(impl_type);
             let struct_id = *struct_map.get(&struct_symbol).ok_or_else(|| HirError {
@@ -1328,7 +1462,16 @@ pub(in crate::hir) fn function_id_for<'h>(
                 span: function.span,
             })
         }
-        None => {
+        (None, Some(impl_type)) => {
+            let mangled = symbols.insert(&format!("{impl_type}__{}", function.name));
+            functions.get(&mangled).copied().ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: format!("{}::{}", impl_type, function.name),
+                },
+                span: function.span,
+            })
+        }
+        (None, None) => {
             let symbol = symbols.insert(function.name);
             functions.get(&symbol).copied().ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownFunction {

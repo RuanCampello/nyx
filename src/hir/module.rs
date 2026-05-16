@@ -9,7 +9,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Statement, UseItems},
+        statement::{self, Statement, UseItems},
     },
 };
 use std::{
@@ -284,6 +284,14 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         let mut functions = Vec::new();
         let mut exports = HashMap::new();
+
+        for statement in &statements {
+            if let statement::Statement::Struct(s) = statement {
+                if s.is_pub {
+                    exports.insert(s.name.to_string(), 0);
+                }
+            }
+        }
 
         for function in crate::hir::functions::function_declarations(&statements) {
             let function_id = crate::hir::functions::function_id_for(
