@@ -244,14 +244,19 @@ impl MachineType {
 }
 
 impl Type {
+    #[inline(always)]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
             Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
             Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
             Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
-            Type::I64 | Type::U64 | Type::Iptr | Type::Uptr | Type::Str | Type::String => {
-                MachineType::Int { bytes: 8 }
-            }
+            Type::I64
+            | Type::U64
+            | Type::Iptr
+            | Type::Uptr
+            | Type::Str
+            | Type::String
+            | Type::Ref { .. } => MachineType::Int { bytes: 8 },
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },
             Type::Struct(id) => {
@@ -259,6 +264,15 @@ impl Type {
                 MachineType::Struct { size, align }
             }
             Type::Unit => unreachable!("unit doesn't have a machine type"),
+        }
+    }
+
+    // FIXME: that's a very workaround so future me that's your problem
+    #[inline(always)]
+    pub(crate) const fn unwrap_unit(self) -> Self {
+        match self {
+            Self::Unit => Self::I32,
+            _ => self,
         }
     }
 }

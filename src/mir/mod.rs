@@ -85,6 +85,7 @@ pub struct Layout {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[rustfmt::skip]
 pub enum InstructionKind {
     /// `dest = operand` (copy or constant load)
     Assign(Operand),
@@ -101,14 +102,12 @@ pub enum InstructionKind {
     },
 
     /// load `typ` bytes from an aggregate place at byte `offset`
-    FieldLoad {
-        src: Operand,
-        offset: u32,
-        typ: Type,
-    },
+    FieldLoad { src: Operand, offset: u32, typ: Type },
 
     /// store `value` into the destination aggregate at byte `offset`
     FieldStore { value: Operand, offset: u32 },
+
+    AddressOf { src: Place, offset: u32 },
 
     Call {
         callee: FunctionId,

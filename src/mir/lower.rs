@@ -264,7 +264,7 @@ impl<'a> FunctionLower<'a> {
                 expr: inner,
             } => {
                 let rhs = self.lower_expr(inner)?;
-                let dest = self.fresh_temporary(expr.typ);
+                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
                 self.emit(
                     dest,
@@ -284,7 +284,7 @@ impl<'a> FunctionLower<'a> {
             } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
-                let dest = self.fresh_temporary(expr.typ);
+                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
                 self.emit(
                     dest,
@@ -319,8 +319,48 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let dest = self.fresh_temporary(expr.typ);
+                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
+                self.emit(
+                    dest,
+                    InstructionKind::Call {
+                        callee: *function,
+                        args: lowered_args,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
+            }
+
+            ExpressionKind::MethodCall {
+                function,
+                receiver,
+                args,
+            } => {
+                let origin = self.place_for_local(receiver.local, self.local_type(receiver.local));
+                let (offset, receiver_type) = match receiver.fields.is_empty() {
+                    true => (0, origin.typ),
+                    false => self.field_path_info(origin.typ, &receiver.fields),
+                };
+                debug_assert!(matches!(receiver_type, Type::Struct(_) | Type::Ref { .. }));
+
+                let receiver_place = self.fresh_temporary(receiver.typ);
+                self.emit(
+                    receiver_place,
+                    InstructionKind::AddressOf {
+                        src: origin,
+                        offset,
+                    },
+                );
+
+                let mut lowered_args = Vec::with_capacity(args.len() + 1);
+                lowered_args.push(Operand::Place(receiver_place));
+                for arg in args {
+                    let operand = self.lower_expr(arg)?;
+                    lowered_args.push(operand);
+                }
+
+                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
                 self.emit(
                     dest,
                     InstructionKind::Call {
@@ -441,7 +481,7 @@ impl<'a> FunctionLower<'a> {
 
         // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
         for &sym in fields {
-            let Type::Struct(sid) = current_type else {
+            let (Type::Struct(sid) | Type::Ref { to: sid, .. }) = current_type else {
                 unreachable!("field projection on non-struct");
             };
 
@@ -691,6 +731,12 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
             }
         }
         ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
+            for arg in args {
+                visit_expr_runtime_uses(arg, uses);
+            }
+        }
+        ExpressionKind::MethodCall { receiver, args, .. } => {
+            uses[receiver.local.0 as usize] = true;
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
