@@ -1,0 +1,64 @@
+pub struct Point {
+    x: i64,
+    y: i64,
+}
+
+pub struct Rectangle {
+    top_left: Point,
+    bottom_right: Point,
+}
+
+pub struct Circle {
+    center: Point,
+    radius: i64,
+}
+
+impl Rectangle {
+    pub fn width(&self): i64 {
+        self.bottom_right.x - self.top_left.x
+    }
+
+    pub fn height(&self): i64 {
+        self.top_left.y - self.bottom_right.y
+    }
+
+    pub fn area(&self): i64 {
+        self.width() * self.height()
+    }
+
+    pub fn perimeter(&self): i64 {
+        let w = self.width();
+        let h = self.height();
+        2 * w + 2 * h
+    }
+}
+
+impl Circle {
+    pub fn diameter(&self): i64 {
+        self.radius * 2
+    }
+}
+
+impl Point {
+    pub fn new(x: i64, y: i64): Point {
+        Point { x: x, y: y }
+    }
+}
+
+impl Rectangle {
+    pub fn new(x1: i64, y1: i64, x2: i64, y2: i64): Rectangle {
+        Rectangle {
+            top_left: Point { x: x1, y: y1 },
+            bottom_right: Point { x: x2, y: y2 },
+        }
+    }
+}
+
+impl Circle {
+    pub fn new(cx: i64, cy: i64, r: i64): Circle {
+        Circle {
+            center: Point { x: cx, y: cy },
+            radius: r,
+        }
+    }
+}

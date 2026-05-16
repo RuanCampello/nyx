@@ -7,11 +7,18 @@ struct Case<'c> {
     exit_code: i32,
 }
 
-const CASES: &[Case] = &[Case {
-    name: "simple",
-    entry: "tests/module/simple/main.nyx",
-    exit_code: 42,
-}];
+const CASES: &[Case] = &[
+    Case {
+        name: "simple",
+        entry: "tests/module/simple/main.nyx",
+        exit_code: 42,
+    },
+    Case {
+        name: "geometry",
+        entry: "tests/module/geometry/main.nyx",
+        exit_code: 42,
+    },
+];
 
 fn compile_and_run(entry: &Path, project_name: &str) -> Result<i32, String> {
     let asm = nyx::compile_project(entry, project_name).map_err(|e| e.to_string())?;
