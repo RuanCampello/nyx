@@ -1,5 +1,5 @@
 use crate::{
-    lir::{self, VReg, regalloc},
+    lir::{self, MachineType, VReg, regalloc},
     mir::{self, SyscallCode},
 };
 
@@ -8,12 +8,6 @@ mod x86_64;
 
 pub use aarch64::AArch64;
 pub use x86_64::X86_64;
-
-// FIXME: we are doing to much matching to generate the instructions of
-// copying over the stack and reference
-// this boilerplate is very repeated over the codebase and over the targets
-// we probably can find a better way of doing that in the agnostic level, so we can
-// generate the instructions for this without matching over to see if is stack or reference
 
 /// The trait that a target architecture must implement.
 ///
@@ -100,6 +94,51 @@ pub trait Instruction<T: Target> {
     }
 }
 
+/// Target-specific memory instruction factories
+#[rustfmt::skip]
+pub trait MemOps: Target {
+    /// Load `bytes` bytes from `origin + offset` (a stack slot) into `dest`
+    fn field_load( dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// Store `src` into `origin + offset` (a stack slot)
+    fn field_store( origin: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// Load `bytes` bytes through the pointer in `ptr` at `ptr + offset` into `dest`
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// Store `src` through the pointer in `ptr` at `ptr + offset`
+    fn ptr_store(ptr: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+
+    /// Emit a scalar load, choosing between a pointer dereference or a stack slot access based on `is_ref`
+    #[inline(always)]
+    fn scalar_load(
+        is_ref: bool,
+        dest: VReg,
+        origin: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    ) -> Self::Instruction {
+        match is_ref {
+            true => Self::ptr_load(dest, origin, offset, bytes, is_float),
+            false => Self::field_load(dest, origin, offset, bytes, is_float),
+        }
+    }
+
+    /// Emit a scalar store, choosing between a pointer dereference or a stack slot access based on `is_ref`
+    #[inline(always)]
+    fn scalar_store(
+        is_ref: bool,
+        origin: VReg,
+        src: VReg,
+        offset: i32,
+        bytes: u8,
+        is_float: bool,
+    ) -> Self::Instruction {
+        match is_ref {
+            true => Self::ptr_store(origin, src, offset, bytes, is_float),
+            false => Self::field_store(origin, src, offset, bytes, is_float),
+        }
+    }
+}
+
 /// High-level register class.
 ///
 /// Drives which physical register pool the allocator uses.
@@ -107,4 +146,27 @@ pub trait Instruction<T: Target> {
 pub enum RegClass {
     Int,
     Float,
+}
+
+/// copy an aggregate value between two memory locations, chunk by chunk
+pub fn aggregate_copy<T: MemOps>(
+    lir: &mut lir::Function<T>,
+    block: &lir::BlockId,
+    is_src_ref: bool,
+    is_dest_ref: bool,
+    src: VReg,
+    dest: VReg,
+    src_base: i32,
+    dest_base: i32,
+    size: u32,
+) {
+    for (offset, bytes) in lir::aggregate_chunks(size) {
+        let scratch = lir.new_vreg(MachineType::Int { bytes });
+
+        let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false);
+        lir.push_instr(block, load);
+
+        let store = T::scalar_store(is_dest_ref, dest, scratch, dest_base + offset, bytes, false);
+        lir.push_instr(block, store);
+    }
 }

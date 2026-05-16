@@ -1,7 +1,7 @@
 use crate::{
     lir::{
         MachineType, VReg,
-        target::{Instruction, PhysicalReg, RegClass, Target},
+        target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
     mir::SyscallCode,
     parser::expression::BinaryOperator,
@@ -246,6 +246,29 @@ impl Target for X86_64 {
             SyscallCode::Write => 1,
             SyscallCode::Exit => 60,
         }
+    }
+}
+
+#[rustfmt::skip]
+impl MemOps for X86_64 {
+    #[inline(always)]
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::FieldLoad { dest, origin, offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn field_store(origin: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::FieldStore { origin, src: X86Operand::VReg(src), offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::PtrLoad { dest, ptr, offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn ptr_store(ptr: VReg, src: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::PtrStore { ptr, src: X86Operand::VReg(src), offset, bytes, is_float }
     }
 }
 
