@@ -440,7 +440,12 @@ impl<'f> Lower<'f> {
 
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
-                self.lir.push_instr(id, A64Instr::StackAddr { dest, origin });
+                match src.typ {
+                    #[rustfmt::skip]
+                    Type::Ref { .. } => self.lir.push_instr( id, A64Instr::Mov { dest, src: origin, bytes: 8 }),
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest, origin }),
+                }
+
                 if *offset != 0 {
                     self.lir.push_instr(
                         id,

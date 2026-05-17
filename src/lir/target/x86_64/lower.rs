@@ -358,7 +358,12 @@ impl<'f> Lower<'f> {
 
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
-                self.lir.push_instr(id, X86Instr::StackAddr { dest, origin });
+                match src.typ {
+                    #[rustfmt::skip]
+                    Type::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
+                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
+                }
+
                 if *offset != 0 {
                     self.lir.push_instr(
                         id,
