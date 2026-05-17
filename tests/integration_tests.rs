@@ -101,6 +101,11 @@ const CASES: &[Case] = &[
         file: "tests/single/impl_methods.nyx",
         exit_code: Some(42),
     },
+    Case {
+        name: "interfaces",
+        file: "tests/single/interfaces.nyx",
+        exit_code: Some(0),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

@@ -1,0 +1,82 @@
+interface Shape {
+    fn area(&self): i64;
+    fn perimeter(&self): i64;
+    fn is_larger_than(&self, other_area: i64): bool;
+}
+
+struct Rectangle {
+    width: i64,
+    height: i64,
+}
+
+struct Circle {
+    // radius stored scaled by 1000 to avoid floats
+    // area = radius * radius * 3 (approx pi=3 for integer arithmetic)
+    radius: i64,
+}
+
+impl Rectangle with Shape {
+    fn area(&self): i64 {
+        self.width * self.height
+    }
+
+    fn perimeter(&self): i64 {
+        2 * self.width + 2 * self.height
+    }
+
+    fn is_larger_than(&self, other_area: i64): bool {
+        self.area() > other_area
+    }
+}
+
+impl Circle with Shape {
+    fn area(&self): i64 {
+        // pi approximated as 3 for integer arithmetic
+        self.radius * self.radius * 3
+    }
+
+    fn perimeter(&self): i64 {
+        // 2 * pi * r, pi approx 3
+        2 * self.radius * 3
+    }
+
+    fn is_larger_than(&self, other_area: i64): bool {
+        self.area() > other_area
+    }
+}
+
+fn main(): i64 {
+    let rect = Rectangle { width: 4, height: 5 };
+
+    // area = 4 * 5 = 20
+    if rect.area() != 20 return 1;
+
+    // perimeter = 2*4 + 2*5 = 18
+    if rect.perimeter() != 18 return 2;
+
+    // 20 > 15 = true
+    if !rect.is_larger_than(15) return 3;
+
+    // 20 > 25 = false
+    if rect.is_larger_than(25) return 4;
+
+    let circle = Circle { radius: 3 };
+
+    // area = 3 * 3 * 3 = 27
+    if circle.area() != 27 return 5;
+
+    // perimeter = 2 * 3 * 3 = 18
+    if circle.perimeter() != 18 return 6;
+
+    // 27 > 20 = true
+    if !circle.is_larger_than(20) return 7;
+
+    // 27 > 30 = false
+    if circle.is_larger_than(30) return 8;
+
+    // cross-check rect.area() < circle.area()
+    if rect.area() >= circle.area() return 9;
+
+    0
+}
+
