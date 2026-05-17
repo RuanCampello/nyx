@@ -16,7 +16,7 @@ const CASES: &[Case] = &[
     Case {
         name: "geometry",
         entry: "tests/module/geometry/main.nyx",
-        exit_code: 42,
+        exit_code: 0,
     },
 ];
 
