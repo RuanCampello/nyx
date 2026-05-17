@@ -1,7 +1,7 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Statement, Struct, StructField, StructId, SymbolId, Type,
+        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId, Method,
+        Parameter, Receiver, Statement, Struct, StructField, StructId, SymbolId, Type,
         error::{HirError, HirErrorKind},
         symbols::SymbolTable,
     },
@@ -23,17 +23,20 @@ pub(in crate::hir) struct FunctionSignature {
     pub params: Vec<Type>,
     pub return_type: Type,
     pub intrinsic: Option<Intrinsic>,
+    pub method: Option<Method>,
 }
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     signatures: &'s [FunctionSignature],
     functions: &'s Functions,
+    methods: &'s Methods,
     structs: &'s [Struct],
     struct_map: &'s Structs,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
     function: Option<statement::Function<'f>>,
+    function_id: FunctionId,
     next_local: u32,
     symbols: &'s mut SymbolTable,
 }
@@ -47,6 +50,7 @@ enum Visit {
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
+pub(in crate::hir) type Methods = HashMap<(StructId, SymbolId), FunctionId>;
 
 impl Default for FunctionSignature {
     fn default() -> Self {
@@ -57,6 +61,7 @@ impl Default for FunctionSignature {
             params: Vec::new(),
             return_type: Type::Unit,
             intrinsic: None,
+            method: None,
         }
     }
 }
@@ -65,19 +70,23 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     pub fn new(
         signatures: &'s [FunctionSignature],
         functions: &'s Functions,
+        methods: &'s Methods,
         structs: &'s [Struct],
         struct_map: &'s Structs,
         symbols: &'s mut SymbolTable,
+        function_id: FunctionId,
         function: statement::Function<'f>,
     ) -> Self {
         Self {
             functions,
+            methods,
             structs,
             struct_map,
             symbols,
             signatures,
             return_type: Type::Unit,
             function: Some(function),
+            function_id,
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
@@ -87,27 +96,44 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     #[inline(always)]
     pub fn lower(mut self) -> Result<Function, HirError<'f>> {
         let function = self.function.take().expect("function to be present");
-        let symbol = self.symbols.insert(function.name);
-        let id = *self.functions.get(&symbol).expect("function id present for this name");
+        let id = self.function_id;
         let signatures = &self.signatures[id.0 as usize];
+        let symbol = signatures.name;
         self.return_type = signatures.return_type;
 
-        let params = function
-            .params
-            .iter()
-            .zip(signatures.params.iter())
-            .map(|(parameter, &typ)| -> Result<_, HirError> {
-                let symbol = self.symbols.insert(parameter.name);
-                let id = self.declare_local(symbol, typ, parameter.mutable)?;
+        let mut params = Vec::with_capacity(signatures.params.len());
 
-                Ok(Parameter {
-                    typ,
-                    id,
-                    name: symbol,
-                    mutable: parameter.mutable,
+        if let Some(receiver) = function.receiver {
+            let typ = signatures.params[0];
+            let symbol = self.symbols.insert("self");
+            let id = self.declare_local(symbol, typ, receiver.mutable)?;
+            params.push(Parameter {
+                typ,
+                id,
+                name: symbol,
+                mutable: receiver.mutable,
+            });
+        }
+
+        let receiver_offset = usize::from(function.receiver.is_some());
+        params.extend(
+            function
+                .params
+                .iter()
+                .zip(signatures.params.iter().skip(receiver_offset))
+                .map(|(parameter, &typ)| -> Result<_, HirError> {
+                    let symbol = self.symbols.insert(parameter.name);
+                    let id = self.declare_local(symbol, typ, parameter.mutable)?;
+
+                    Ok(Parameter {
+                        typ,
+                        id,
+                        name: symbol,
+                        mutable: parameter.mutable,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()?,
+        );
 
         let (body, _) = self.lower_block(&function.body, true)?;
 
@@ -120,6 +146,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             is_const: function.is_const,
             is_pub: function.is_pub,
             intrinsic: signatures.intrinsic,
+            method: signatures.method,
             body,
         })
     }
@@ -244,6 +271,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
+            Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
         }
     }
 
@@ -537,6 +565,93 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     }
                 }
 
+                if let Expr::Field {
+                    expr: receiver,
+                    field: method_name,
+                    ..
+                } = callee.as_ref()
+                {
+                    let (local, fields, receiver_type) =
+                        self.resolve_receiver_chain(receiver, *span)?;
+                    let receiver_struct = match receiver_type {
+                        Type::Struct(id) => id,
+                        Type::Ref { to, .. } => to,
+                        found => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::Struct(StructId::default()),
+                                    found,
+                                },
+                                span: *span,
+                            });
+                        }
+                    };
+
+                    let method_symbol = self.symbols.insert(method_name);
+                    let function = *self
+                        .methods
+                        .get(&(receiver_struct, method_symbol))
+                        .ok_or_else(|| HirError {
+                            kind: HirErrorKind::UnknownMethod {
+                                struct_name: self
+                                    .symbols
+                                    .get(self[receiver_struct].name)
+                                    .to_string(),
+                                name: method_name.to_string(),
+                            },
+                            span: *span,
+                        })?;
+                    let signature = &self.signatures[function.0 as usize];
+                    let Type::Ref { mutable, .. } = signature.params[0] else {
+                        unreachable!("method signature must start with receiver reference");
+                    };
+
+                    if mutable && !self[local].mutable {
+                        return Err(HirError {
+                            kind: HirErrorKind::ImmutableBind {
+                                name: self.symbols.get(self[local].name).to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let explicit_params = &signature.params[1..];
+                    if explicit_params.len() != args.len() {
+                        return Err(HirError {
+                            kind: HirErrorKind::ArityMismatch {
+                                name: method_name.to_string(),
+                                expected: explicit_params.len(),
+                                found: args.len(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let lowered_args = args
+                        .iter()
+                        .zip(explicit_params.iter())
+                        .map(|(expr, &param_type)| -> Result<_, HirError> {
+                            let expr = self.lower_expr(expr, Some(param_type))?;
+                            self.assert_type(param_type, expr.typ, expr.span)?;
+                            Ok(expr)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    return Ok(Expression {
+                        typ: signature.return_type,
+                        span: *span,
+                        kind: ExpressionKind::MethodCall {
+                            function,
+                            receiver: Receiver {
+                                local,
+                                fields,
+                                typ: signature.params[0],
+                            },
+                            args: lowered_args,
+                        },
+                    });
+                }
+
                 let (function, signature) = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(name);
@@ -599,6 +714,96 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     },
                     _ => ExpressionKind::Call {
                         function,
+                        args: lowered_args,
+                    },
+                };
+
+                Ok(Expression {
+                    typ: return_type,
+                    span: *span,
+                    kind,
+                })
+            }
+
+            Expr::QualifiedCall {
+                qualifier,
+                name,
+                args,
+                span,
+            } => {
+                let mangled_name = format!("{qualifier}__{name}");
+                let mangled_symbol = self.symbols.insert(&mangled_name);
+
+                if let Some(&id) = self.functions.get(&mangled_symbol) {
+                    let signature = &self.signatures[id.0 as usize];
+
+                    if signature.params.len() != args.len() {
+                        return Err(HirError {
+                            kind: HirErrorKind::ArityMismatch {
+                                name: format!("{qualifier}::{name}"),
+                                expected: signature.params.len(),
+                                found: args.len(),
+                            },
+                            span: *span,
+                        });
+                    }
+
+                    let mut lowered_args = Vec::with_capacity(args.len());
+                    for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                        let expr = self.lower_expr(expr, Some(param_type))?;
+                        self.assert_type(param_type, expr.typ, expr.span)?;
+                        lowered_args.push(expr);
+                    }
+
+                    return Ok(Expression {
+                        typ: signature.return_type,
+                        span: *span,
+                        kind: ExpressionKind::Call {
+                            function: id,
+                            args: lowered_args,
+                        },
+                    });
+                }
+
+                if let Ok(intrinsic) = Intrinsic::from_str(name) {
+                    return self.lower_intrinsic(intrinsic, args, *span);
+                }
+
+                let symbol = self.symbols.insert(name);
+                let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownFunction {
+                        name: format!("{qualifier}::{name}"),
+                    },
+                    span: *span,
+                })?;
+                let signature = &self.signatures[id.0 as usize];
+
+                if signature.params.len() != args.len() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ArityMismatch {
+                            name: name.to_string(),
+                            expected: signature.params.len(),
+                            found: args.len(),
+                        },
+                        span: *span,
+                    });
+                }
+
+                let mut lowered_args = Vec::with_capacity(args.len());
+                for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                    let expr = self.lower_expr(expr, Some(param_type))?;
+                    self.assert_type(param_type, expr.typ, expr.span)?;
+                    lowered_args.push(expr);
+                }
+
+                let return_type = signature.return_type;
+                let kind = match signature.intrinsic {
+                    Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                        intrinsic,
+                        args: lowered_args,
+                    },
+                    _ => ExpressionKind::Call {
+                        function: id,
                         args: lowered_args,
                     },
                 };
@@ -882,7 +1087,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         let mut field_symbols = Vec::with_capacity(fields.len());
 
         for (idx, &field_name) in fields.iter().enumerate() {
-            let Type::Struct(id) = current_type else {
+            let (Type::Struct(id) | Type::Ref { to: id, .. }) = current_type else {
                 return Err(HirError {
                     kind: HirErrorKind::TypeMismatch {
                         expected: Type::Struct(StructId::default()),
@@ -911,7 +1116,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             let is_last = idx == fields.len() - 1;
             if !is_last {
-                if !matches!(current_type, Type::Struct(_)) {
+                if !matches!(current_type, Type::Struct(_) | Type::Ref { .. }) {
                     return Err(HirError {
                         kind: HirErrorKind::TypeMismatch {
                             expected: Type::Struct(StructId::default()),
@@ -924,6 +1129,30 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         }
 
         Ok((id, field_symbols, current_type))
+    }
+
+    #[inline(always)]
+    fn resolve_receiver_chain(
+        &mut self,
+        expr: &expression::Expression<'f>,
+        span: Span,
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+        use expression::Expression as Expr;
+
+        match expr {
+            Expr::Identifier(name, ident_span) => {
+                let symbol = self.symbols.insert(name);
+                let local = self.resolve_local(symbol, *ident_span)?;
+                Ok((local, Vec::new(), self[local].typ))
+            }
+
+            Expr::Field { expr, field, .. } => self.resolve_field_chain(expr, field, span),
+
+            _ => Err(HirError {
+                kind: HirErrorKind::InvalidFieldAccess,
+                span,
+            }),
+        }
     }
 
     #[inline(always)]
@@ -1005,13 +1234,175 @@ pub fn collect_function_signatures<'h>(
     statements: &[statement::Statement<'h>],
     symbols: &mut SymbolTable,
     struct_map: &Structs,
-) -> Result<(Vec<FunctionSignature>, Functions), HirError<'h>> {
+) -> Result<(Vec<FunctionSignature>, Functions, Methods), HirError<'h>> {
     let mut signatures = Vec::new();
     let mut functions = Functions::new();
+    let mut methods = Methods::new();
 
     for statement in statements {
-        let function = match statement {
-            statement::Statement::Fn(func) => func,
+        match statement {
+            statement::Statement::Fn(function) => {
+                if function.receiver.is_some() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ReceiverOutsideImpl,
+                        span: function.span,
+                    });
+                }
+
+                let symbol = symbols.insert(function.name);
+                if functions.contains_key(&symbol) {
+                    return Err(HirError {
+                        kind: HirErrorKind::DuplicateFunction {
+                            name: function.name.to_string(),
+                        },
+                        span: statement.span(),
+                    });
+                }
+
+                let function_id = FunctionId(signatures.len() as u32);
+                functions.insert(symbol, function_id);
+
+                let params = function
+                    .params
+                    .iter()
+                    .map(|p| resolve_annotation(symbols, struct_map, &p.typ.value(), p.typ.span()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let return_type = function
+                    .return_type
+                    .as_ref()
+                    .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
+                    .transpose()?
+                    .unwrap_or(Type::Unit);
+
+                let name_str = symbols.get(symbol);
+                let intrinsic = Intrinsic::from_str(name_str).ok();
+
+                signatures.push(FunctionSignature {
+                    return_type,
+                    params,
+                    name: symbol,
+                    intrinsic,
+                    method: None,
+                })
+            }
+
+            statement::Statement::Impl(implementation) => {
+                let struct_symbol = symbols.insert(implementation.name);
+                let struct_id =
+                    struct_map.get(&struct_symbol).copied().ok_or_else(|| HirError {
+                        kind: HirErrorKind::UnknownType {
+                            name: implementation.name.to_string(),
+                        },
+                        span: implementation.span,
+                    })?;
+
+                for method in &implementation.methods {
+                    let method_symbol = symbols.insert(method.name);
+                    let mangled =
+                        symbols.insert(&format!("{}__{}", implementation.name, method.name));
+
+                    match method.receiver {
+                        Some(receiver) => {
+                            if methods.contains_key(&(struct_id, method_symbol)) {
+                                return Err(HirError {
+                                    kind: HirErrorKind::DuplicateMethod {
+                                        struct_name: implementation.name.to_string(),
+                                        name: method.name.to_string(),
+                                    },
+                                    span: method.span,
+                                });
+                            }
+
+                            let function_id = FunctionId(signatures.len() as u32);
+                            methods.insert((struct_id, method_symbol), function_id);
+
+                            let mut params = Vec::with_capacity(method.params.len() + 1);
+                            params.push(Type::Ref {
+                                mutable: receiver.mutable,
+                                to: struct_id,
+                            });
+                            params.extend(
+                                method
+                                    .params
+                                    .iter()
+                                    .map(|p| {
+                                        resolve_annotation(
+                                            symbols,
+                                            struct_map,
+                                            &p.typ.value(),
+                                            p.typ.span(),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?,
+                            );
+                            let return_type = method
+                                .return_type
+                                .as_ref()
+                                .map(|s| {
+                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
+                                })
+                                .transpose()?
+                                .unwrap_or(Type::Unit);
+
+                            signatures.push(FunctionSignature {
+                                return_type,
+                                params,
+                                name: mangled,
+                                intrinsic: None,
+                                method: Some(Method {
+                                    receiver: struct_id,
+                                    name: method_symbol,
+                                    mutable: receiver.mutable,
+                                }),
+                            });
+                        }
+
+                        None => {
+                            if functions.contains_key(&mangled) {
+                                return Err(HirError {
+                                    kind: HirErrorKind::DuplicateFunction {
+                                        name: format!("{}::{}", implementation.name, method.name),
+                                    },
+                                    span: method.span,
+                                });
+                            }
+
+                            let function_id = FunctionId(signatures.len() as u32);
+                            functions.insert(mangled, function_id);
+
+                            let params = method
+                                .params
+                                .iter()
+                                .map(|p| {
+                                    resolve_annotation(
+                                        symbols,
+                                        struct_map,
+                                        &p.typ.value(),
+                                        p.typ.span(),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let return_type = method
+                                .return_type
+                                .as_ref()
+                                .map(|s| {
+                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
+                                })
+                                .transpose()?
+                                .unwrap_or(Type::Unit);
+
+                            signatures.push(FunctionSignature {
+                                return_type,
+                                params,
+                                name: mangled,
+                                intrinsic: None,
+                                method: None,
+                            });
+                        }
+                    }
+                }
+            }
+
             // 'use' declarations are valid at the top level but carry no signature information
             // they are resolved by the module loader before this function is called
             statement::Statement::Use(_) | statement::Statement::Struct(_) => continue,
@@ -1021,45 +1412,75 @@ pub fn collect_function_signatures<'h>(
                     span: statement.span(),
                 });
             }
-        };
-
-        let symbol = symbols.insert(function.name);
-        if functions.contains_key(&symbol) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateFunction {
-                    name: function.name.to_string(),
-                },
-                span: statement.span(),
-            });
         }
-
-        let function_id = FunctionId(signatures.len() as u32);
-        functions.insert(symbol, function_id);
-
-        let params = function
-            .params
-            .iter()
-            .map(|p| resolve_annotation(symbols, struct_map, &p.typ.value(), p.typ.span()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let return_type = function
-            .return_type
-            .as_ref()
-            .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
-            .transpose()?
-            .unwrap_or(Type::Unit);
-
-        let name_str = symbols.get(symbol);
-        let intrinsic = Intrinsic::from_str(name_str).ok();
-
-        signatures.push(FunctionSignature {
-            return_type,
-            params,
-            name: symbol,
-            intrinsic,
-        })
     }
 
-    Ok((signatures, functions))
+    Ok((signatures, functions, methods))
+}
+
+pub(in crate::hir) fn function_declarations<'h>(
+    statements: &[statement::Statement<'h>],
+) -> Vec<statement::Function<'h>> {
+    let mut functions = Vec::new();
+
+    for statement in statements {
+        match statement {
+            statement::Statement::Fn(function) => functions.push(function.clone()),
+            statement::Statement::Impl(implementation) => {
+                functions.extend(implementation.methods.iter().cloned());
+            }
+            _ => {}
+        }
+    }
+
+    functions
+}
+
+pub(in crate::hir) fn function_id_for<'h>(
+    function: &statement::Function<'h>,
+    functions: &Functions,
+    methods: &Methods,
+    struct_map: &Structs,
+    symbols: &mut SymbolTable,
+) -> Result<FunctionId, HirError<'h>> {
+    match (function.receiver, function.impl_type) {
+        (Some(_), _) => {
+            let impl_type = function.impl_type.expect("method must know its impl owner");
+            let struct_symbol = symbols.insert(impl_type);
+            let struct_id = *struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: impl_type.to_string(),
+                },
+                span: function.span,
+            })?;
+            let method_symbol = symbols.insert(function.name);
+
+            methods.get(&(struct_id, method_symbol)).copied().ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: function.name.to_string(),
+                },
+                span: function.span,
+            })
+        }
+        (None, Some(impl_type)) => {
+            let mangled = symbols.insert(&format!("{impl_type}__{}", function.name));
+            functions.get(&mangled).copied().ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: format!("{}::{}", impl_type, function.name),
+                },
+                span: function.span,
+            })
+        }
+        (None, None) => {
+            let symbol = symbols.insert(function.name);
+            functions.get(&symbol).copied().ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: function.name.to_string(),
+                },
+                span: function.span,
+            })
+        }
+    }
 }
 
 pub fn collect_structs<'h>(
@@ -1161,18 +1582,26 @@ const fn align_to(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }
 
-pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions) {
+pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions, Methods) {
     let mut signatures = Vec::with_capacity(functions.len());
     let mut map = Functions::new();
+    let mut methods = Methods::new();
 
     for (idx, function) in functions.iter().enumerate() {
         let id = FunctionId(idx as u32);
-        map.insert(function.name, id);
+        match function.method {
+            Some(method) => {
+                methods.insert((method.receiver, method.name), id);
+            }
+            None => {
+                map.insert(function.name, id);
+            }
+        }
 
         signatures.push(function.into());
     }
 
-    (signatures, map)
+    (signatures, map, methods)
 }
 
 impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {

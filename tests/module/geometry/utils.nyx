@@ -1,0 +1,16 @@
+pub fn abs(n: i64): i64 {
+    if n < 0 { -n } else { n }
+}
+
+pub fn max(a: i64, b: i64): i64 {
+    if a > b { a } else { b }
+}
+
+pub fn min(a: i64, b: i64): i64 {
+    if a < b { a } else { b }
+}
+
+pub fn clamp(value: i64, lo: i64, hi: i64): i64 {
+    min(max(value, lo), hi)
+}
+

@@ -21,30 +21,30 @@ default:
     - rustc --version
     - cargo --version
 
-test:x86_64:
+.test-base:
   stage: test
-  tags:
-    - saas-linux-small-amd64
   rules:
+    # 1. run for MRs to main, BUT ONLY if Rust files changed
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+      changes:
+        - "**/*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+    # 2. run for commits to main, BUT ONLY if Rust files changed
     - if: '$CI_COMMIT_BRANCH == "main"'
-    - changes:
+      changes:
         - "**/*.rs"
         - "Cargo.toml"
         - "Cargo.lock"
   script:
     - cargo test --workspace
 
+test:x86_64:
+  extends: .test-base
+  tags:
+    - saas-linux-small-amd64
+
 test:aarch64:
-  stage: test
+  extends: .test-base
   tags:
     - saas-linux-small-arm64
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - changes:
-        - "**/*.rs"
-        - "Cargo.toml"
-        - "Cargo.lock"
-  script:
-    - cargo test --workspace

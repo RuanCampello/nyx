@@ -87,6 +87,11 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
+    pub(crate) const fn last_span(&self) -> Option<Span> {
+        self.last
+    }
+
+    #[inline(always)]
     pub fn expect_token(
         &mut self,
         expected: impl Into<TokenKind<'i>>,
@@ -149,6 +154,13 @@ impl<'i> Parser<'i> {
             Some(Err(err)) => return Err(err.into()),
             _ => Ok(false),
         }
+    }
+
+    pub(crate) fn is_pub_struct(&self) -> bool {
+        matches!(
+            self.peek_nth(1),
+            Some(Ok(t)) if t.is_kind(Keyword::Struct)
+        )
     }
 }
 

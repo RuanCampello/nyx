@@ -1,0 +1,31 @@
+use geometry::shapes::{Rectangle, Circle};
+use geometry::utils::{abs, clamp};
+
+fn main(): i64 {
+    // 10x5 rectangle: area=50, perimeter=30
+    let rect = Rectangle::new(0, 10, 10, 5);
+
+    if rect.area() != 50 { return 1; }
+    if rect.width() != 10 { return 2; }
+    if rect.height() != 5 { return 3; }
+    if rect.perimeter() != 30 { return 4; }
+
+    // mutate and re-check
+    let mut r2 = Rectangle::new(0, 20, 4, 8);
+    if r2.width() != 4 { return 5; }
+    if r2.height() != 12 { return 6; }
+    if r2.area() != 48 { return 7; }
+
+    // circle with radius 7: diameter = 14
+    let c = Circle::new(0, 0, 7);
+    if c.diameter() != 14 { return 8; }
+
+    if abs(-42) != 42 { return 9; }
+    if abs(10) != 10 { return 10; }
+    if clamp(200, 0, 100) != 100 { return 11; }
+    if clamp(-5, 0, 100) != 0 { return 12; }
+    if clamp(50, 0, 100) != 50 { return 13; }
+
+    0
+}
+

@@ -1,0 +1,21 @@
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn value(&self): i32 {
+        self.value
+    }
+}
+
+impl Counter {
+    fn add(&mut self, delta: i32) {
+        self.value = self.value + delta;
+    }
+}
+
+fn main(): i32 {
+    let mut counter = Counter { value: 40 };
+    counter.add(2);
+    counter.value()
+}

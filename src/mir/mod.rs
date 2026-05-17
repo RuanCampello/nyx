@@ -78,13 +78,15 @@ pub struct Block {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+/// Fully resolved aggregate size and alignment, copied from HIR layout
 pub struct Layout {
-    /// Fully resolved aggregate size and alignment, copied from HIR layout.
     size: u32,
     align: u32,
+    contains_float: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[rustfmt::skip]
 pub enum InstructionKind {
     /// `dest = operand` (copy or constant load)
     Assign(Operand),
@@ -101,14 +103,12 @@ pub enum InstructionKind {
     },
 
     /// load `typ` bytes from an aggregate place at byte `offset`
-    FieldLoad {
-        src: Operand,
-        offset: u32,
-        typ: Type,
-    },
+    FieldLoad { src: Operand, offset: u32, typ: Type },
 
     /// store `value` into the destination aggregate at byte `offset`
     FieldStore { value: Operand, offset: u32 },
+
+    AddressOf { src: Place, offset: u32 },
 
     Call {
         callee: FunctionId,
@@ -188,7 +188,22 @@ impl From<&Struct> for Layout {
         Self {
             size: value.size,
             align: value.align,
+            contains_float: false,
         }
+    }
+}
+
+impl Layout {
+    pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
+        Self {
+            size,
+            align,
+            contains_float,
+        }
+    }
+
+    pub(crate) const fn contains_float(self) -> bool {
+        self.contains_float
     }
 }
 

@@ -40,6 +40,12 @@ pub enum Expression<'i> {
         args: Vec<Expression<'i>>,
         span: Span,
     },
+    QualifiedCall {
+        qualifier: &'i str,
+        name: &'i str,
+        args: Vec<Expression<'i>>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +97,8 @@ impl<'i> Expression<'i> {
             | Self::Assignment { span, .. }
             | Self::Struct { span, .. }
             | Self::Field { span, .. }
-            | Self::Call { span, .. } => *span,
+            | Self::Call { span, .. }
+            | Self::QualifiedCall { span, .. } => *span,
         }
     }
 
@@ -245,8 +252,57 @@ impl<'i> Expression<'i> {
                 })
             }
             TokenKind::Punct(Punct::ColonColon) => {
-                let (name, span) = parser.expect_identifier()?;
-                Ok(Expression::Identifier(name, span))
+                let (name, name_span) = parser.expect_identifier()?;
+
+                match parser.peek() {
+                    Some(Ok(t)) if t.is_kind(Punct::OpenParen) => {
+                        let Expression::Identifier(qualifier, _) = left else {
+                            return Err(ParserError::new(
+                                ParseErrorKind::ExpectedExpression { found: token.kind },
+                                token.span,
+                            ));
+                        };
+
+                        parser.expect_token(Punct::OpenParen)?;
+                        let mut args = Vec::new();
+                        let mut first = true;
+                        let end_span;
+
+                        loop {
+                            let peeked = match parser.peek() {
+                                Some(Ok(t)) => t,
+                                _ => {
+                                    return Err(ParserError::new(
+                                        ParseErrorKind::UnexpectedEof,
+                                        name_span,
+                                    ));
+                                }
+                            };
+
+                            if matches!(peeked.kind, TokenKind::Punct(Punct::CloseParen)) {
+                                end_span = parser.expect_token(Punct::CloseParen)?.span;
+                                break;
+                            }
+
+                            match first {
+                                true => first = false,
+                                _ => _ = parser.expect_token(Punct::Comma)?,
+                            }
+
+                            args.push(parser.parse_node::<Expression>()?);
+                        }
+
+                        let span = left.span() + end_span;
+                        Ok(Expression::QualifiedCall {
+                            qualifier,
+                            name,
+                            args,
+                            span,
+                        })
+                    }
+
+                    _ => Ok(Expression::Identifier(name, name_span)),
+                }
             }
             TokenKind::Punct(Punct::OpenParen) => {
                 let mut args = Vec::new();

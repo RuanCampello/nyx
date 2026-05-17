@@ -5,54 +5,56 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword nyxKeyword fn let mut if else return while for struct inline const pub use
+syn keyword nyxKeyword fn let mut if else return while for struct inline const pub use impl
 hi def link nyxKeyword Keyword
 
-" Types
+" Built-in Types
 syn keyword nyxType i8 u8 i16 u16 i32 i64 f32 f64 bool char String uptr iptr
 hi def link nyxType Type
+
+" Custom Types
+syn match nyxStruct "\<[A-Z][a-zA-Z0-9_]*\>"
+hi def link nyxStruct Type
 
 " Booleans
 syn keyword nyxBoolean true false
 hi def link nyxBoolean Boolean
 
-" Comments (Line and Block)
+" Numbers
+syn match nyxNumber "\<\d\+\>"
+hi def link nyxNumber Number
+
+" 'self' keyword 
+syn keyword nyxSelf self
+hi def link nyxSelf Constant
+
+" Operators
+syn match nyxOperator display "\%(+\|-\|/\|*\|=\|\^\|&\||\|!\|>\|<\|%\)=\?"
+syn match nyxOperator display "&&\|||"
+hi def link nyxOperator Operator
+
+" Function Definitions
+syn match nyxFuncDef "\%(fn\s\+\)\@<=\w\+"
+hi def link nyxFuncDef Function
+
+" Function / Method Calls
+syn match nyxFuncCall "\w\+\ze\s*("
+hi def link nyxFuncCall Function
+
+" Parameters and Struct Fields (Highlights words right before a colon)
+syn match nyxField "\w\+\ze\s*:"
+hi def link nyxField Identifier
+
+" Comments
 syn match nyxLineComment "\/\/.*$"
 syn region nyxBlockComment start="/\*" end="\*/"
 hi def link nyxLineComment Comment
 hi def link nyxBlockComment Comment
 
-" Strings
+" Strings and Interpolation
 syn match nyxInterpolation "{[a-zA-Z_][a-zA-Z0-9_]*}" contained
-hi def link nyxInterpolation Identifier
-
 syn region nyxString start='"' end='"' skip='\\"' contains=nyxInterpolation
+hi def link nyxInterpolation Identifier
 hi def link nyxString String
-
-" Numbers
-syn match nyxNumber "\v<\d+>"
-hi def link nyxNumber Number
-
-" Function declaration (word after 'fn')
-syn match nyxFunctionDecl "fn\s\+\zs\w\+"
-hi def link nyxFunctionDecl Function
-
-" Function Calls (any word followed by an opening parenthesis)
-syn match nyxFunctionCall "\w\+\ze\s*("
-hi def link nyxFunctionCall Function
-
-" Namespace separator ::
-syn match nyxNamespaceSep "::"
-hi def link nyxNamespaceSep Operator
-
-" Modules
-syn match nyxNamespace "\w\+\ze::"
-syn match nyxNamespace "\(::\)\@<=\w\+"
-hi def link nyxNamespace Type
-
-" Import items
-syn region nyxImportBraces start="::\s*{" end="}" transparent contains=nyxImportItem
-syn match nyxImportItem "\w\+" contained
-hi def link nyxImportItem Identifier
 
 let b:current_syntax = "nyx"

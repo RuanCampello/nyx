@@ -1,5 +1,5 @@
 use crate::{
-    lir::{self, VReg, regalloc},
+    lir::{self, MachineType, VReg, regalloc},
     mir::{self, SyscallCode},
 };
 
@@ -94,6 +94,41 @@ pub trait Instruction<T: Target> {
     }
 }
 
+/// Target-specific memory instruction factories
+#[rustfmt::skip]
+pub trait MemOps: Target {
+    type Operand;
+
+    fn vreg_operand(v: VReg) -> Self::Operand;
+
+    /// load `bytes` bytes from `origin + offset` (a stack slot) into `dest`
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// store `src` into `origin + offset` (a stack slot)
+    fn field_store(origin: VReg, src: Self::Operand, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// load `bytes` bytes through the pointer in `ptr` at `ptr + offset` into `dest`
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    /// store `src` through the pointer in `ptr` at `ptr + offset`
+    fn ptr_store(ptr: VReg, src: Self::Operand, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+
+    /// emit a scalar load, choosing between a pointer dereference or a stack slot access based on `is_ref`
+    #[inline(always)]
+    fn scalar_load(is_ref: bool, dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction {
+        match is_ref {
+            true  => Self::ptr_load(dest, origin, offset, bytes, is_float),
+            false => Self::field_load(dest, origin, offset, bytes, is_float),
+        }
+    }
+
+    /// emit a scalar store, choosing between a pointer dereference or a stack slot access based on `is_ref`
+    #[inline(always)]
+    fn scalar_store(is_ref: bool, origin: VReg, src: Self::Operand, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction {
+        match is_ref {
+            true  => Self::ptr_store(origin, src, offset, bytes, is_float),
+            false => Self::field_store(origin, src, offset, bytes, is_float),
+        }
+    }
+}
+
 /// High-level register class.
 ///
 /// Drives which physical register pool the allocator uses.
@@ -101,4 +136,34 @@ pub trait Instruction<T: Target> {
 pub enum RegClass {
     Int,
     Float,
+}
+
+/// Copy an aggregate value between two memory locations, chunk by chunk
+pub fn aggregate_copy<T: MemOps>(
+    lir: &mut lir::Function<T>,
+    block: &lir::BlockId,
+    is_src_ref: bool,
+    is_dest_ref: bool,
+    src: VReg,
+    dest: VReg,
+    src_base: i32,
+    dest_base: i32,
+    size: u32,
+) {
+    for (offset, bytes) in lir::aggregate_chunks(size) {
+        let scratch = lir.new_vreg(MachineType::Int { bytes });
+
+        let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false);
+        lir.push_instr(block, load);
+
+        let store = T::scalar_store(
+            is_dest_ref,
+            dest,
+            T::vreg_operand(scratch),
+            dest_base + offset,
+            bytes,
+            false,
+        );
+        lir.push_instr(block, store);
+    }
 }

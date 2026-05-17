@@ -3,13 +3,13 @@
 use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
-        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, SymbolTable,
-        functions::{collect_function_signatures, collect_structs, signatures_from_hir},
+        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, StructId, SymbolTable,
+        functions::{self, collect_function_signatures, collect_structs, signatures_from_hir},
     },
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Statement, UseItems},
+        statement::{self, Statement, UseItems},
     },
 };
 use std::{
@@ -125,21 +125,16 @@ impl<F: FileSystem> ModuleLoader<F> {
         let mut functions = Vec::with_capacity(1 << 8);
         let mut structs = Vec::with_capacity(1 << 8);
 
-        let mut offset = 0;
         for path in &dependencies {
             let module = Arc::clone(&self.cache[path]);
 
-            for mut struct_def in module.structs.iter().cloned() {
-                struct_def.offset(offset);
+            for struct_def in module.structs.iter().cloned() {
                 structs.push(struct_def);
             }
 
-            for mut function in module.functions.iter().cloned() {
-                function.offset(offset);
+            for function in module.functions.iter().cloned() {
                 functions.push(function);
             }
-
-            offset += module.structs.len() as u32;
         }
 
         Ok(Hir {
@@ -215,7 +210,10 @@ impl<F: FileSystem> ModuleLoader<F> {
     fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
         for statement in &statements {
             match statement {
-                Statement::Fn(_) | Statement::Use(_) | Statement::Struct(_) => {}
+                Statement::Fn(_)
+                | Statement::Use(_)
+                | Statement::Struct(_)
+                | Statement::Impl(_) => {}
                 _ => {
                     return Err(ModuleError::TopLevelNonFunction {
                         path: path.into(),
@@ -225,7 +223,7 @@ impl<F: FileSystem> ModuleLoader<F> {
             }
         }
 
-        let (structs, struct_map) =
+        let (mut structs, local_struct_map) =
             collect_structs(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
 
         // build a combined signature + id table that includes all already-lowered dependencies
@@ -233,15 +231,39 @@ impl<F: FileSystem> ModuleLoader<F> {
         dependencies.sort_unstable();
 
         let mut functions = Vec::new();
+        let mut dependency_structs = Vec::new();
+        let mut struct_map = functions::Structs::new();
+
         for dependency in dependencies {
             let module = &self.cache[dependency];
             functions.extend(module.functions.iter().cloned());
+
+            for struct_def in &module.structs {
+                let name = self.symbols.get(struct_def.name).to_string();
+                if module.exports.contains_key(&name) {
+                    struct_map.insert(struct_def.name, struct_def.id);
+                }
+
+                dependency_structs.push(struct_def.clone());
+            }
         }
 
-        let (mut signatures, mut map) = signatures_from_hir(&functions);
+        let (mut signatures, mut map, mut methods) = signatures_from_hir(&functions);
+        let struct_offset = dependency_structs.len() as u32;
+
+        for (&symbol, &id) in &local_struct_map {
+            struct_map.insert(symbol, StructId(id.0 + struct_offset));
+        }
+
+        for struct_def in &mut structs {
+            struct_def.offset(struct_offset);
+        }
+
+        let mut analysis_structs = dependency_structs;
+        analysis_structs.extend(structs.iter().cloned());
 
         let local_offset = signatures.len() as u32;
-        let (local_signatures, local_map) =
+        let (local_signatures, local_map, local_methods) =
             collect_function_signatures(&statements, &mut self.symbols, &struct_map)
                 .map_err(|e| Diagnostic::from(e))?;
 
@@ -273,23 +295,41 @@ impl<F: FileSystem> ModuleLoader<F> {
             map.insert(symbol, FunctionId(local_offset + local_id.0));
         }
 
+        for (&key, &local_id) in &local_methods {
+            methods.insert(key, FunctionId(local_offset + local_id.0));
+        }
+
         signatures.extend(local_signatures);
 
         let mut functions = Vec::new();
         let mut exports = HashMap::new();
 
-        for statement in statements {
-            let function = match statement {
-                Statement::Fn(f) => f,
-                _ => continue,
-            };
+        for statement in &statements {
+            if let statement::Statement::Struct(s) = statement {
+                if s.is_pub {
+                    exports.insert(s.name.to_string(), 0);
+                }
+            }
+        }
+
+        for function in crate::hir::functions::function_declarations(&statements) {
+            let function_id = crate::hir::functions::function_id_for(
+                &function,
+                &map,
+                &methods,
+                &struct_map,
+                &mut self.symbols,
+            )
+            .map_err(|e| Diagnostic::from(e))?;
 
             let builder = FunctionBuilder::new(
                 &signatures,
                 &map,
-                &structs,
+                &methods,
+                &analysis_structs,
                 &struct_map,
                 &mut self.symbols,
+                function_id,
                 function,
             );
             let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;

@@ -50,9 +50,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Composite data declaration (`struct`)
     - [x] Field access and instantiation
     - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
-    - [ ] Methods
-      - [ ] Reference (`&self`)
-      - [ ] Mutable reference (`&mut self`)
+    - [x] Methods
+      - [x] Reference (`&self`)
+      - [x] Mutable reference (`&mut self`)
   - [ ] Enumerables / Tag Union (`enum`)
 
 ### Expressions & Operators

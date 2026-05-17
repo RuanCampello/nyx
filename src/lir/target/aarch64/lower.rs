@@ -17,8 +17,9 @@ use crate::{
     lir::{
         self, BlockId, MachineType, Term, VReg,
         target::{
-            Lowerable, RegClass, Target,
+            Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
+            aggregate_copy,
         },
     },
     mir::{self, Const, Function, Layout, Operand, ValueId},
@@ -93,33 +94,22 @@ impl<'f> Lower<'f> {
 
         let dest = self.vreg(instruction.dest.id);
         let typ = instruction.dest.typ;
-        let bytes = typ.machine_type(self.layouts).bytes();
+        let bytes = match typ {
+            Type::Unit => 0,
+            _ => typ.machine_type(self.layouts).bytes(),
+        };
         let is_float = typ.is_float();
 
         match &instruction.kind {
             InstructionKind::Assign(operand) => {
                 if let Type::Struct(sid) = typ {
-                    let (size, _) = self.layouts[sid.0 as usize].into();
+                    let size = self.struct_size(sid);
                     let src = match operand {
                         Operand::Place(p) => self.vreg(p.id),
                         Operand::Const(_) => unreachable!("struct constant assign"),
                     };
 
-                    for (offset, chunk) in lir::aggregate_chunks(size) {
-                        let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
-                        #[rustfmt::skip]
-                        let load = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
-                        let store = A64Instr::FieldStore {
-                            origin: dest,
-                            src: A64Operand::VReg(scratch),
-                            offset,
-                            bytes: chunk,
-                            is_float: false,
-                        };
-                        self.lir.push_instr(id, load);
-                        self.lir.push_instr(id, store);
-                    }
-                    return;
+                    return aggregate_copy(&mut self.lir, id, false, false, src, dest, 0, 0, size);
                 }
 
                 match self.lower_operand(operand, id) {
@@ -287,11 +277,12 @@ impl<'f> Lower<'f> {
             }
 
             InstructionKind::Call { callee, args } => {
+                let callee_id = *callee;
                 let callee = self
                     .symbols
-                    .get(self.all_functions[callee.0 as usize].name_symbol)
+                    .get(self.all_functions[callee_id.0 as usize].name_symbol)
                     .map(|n| format!("nyx_{n}"))
-                    .unwrap_or_else(|| format!("nyx_func_{}", callee.0));
+                    .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());
                 let mut stack_args = Vec::new();
@@ -361,7 +352,9 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                let ret = (typ != Type::Unit && !matches!(typ, Type::Struct(_))).then_some(dest);
+                let return_type = self.all_functions[callee_id.0 as usize].return_type;
+                let ret = (return_type != Type::Unit && !matches!(return_type, Type::Struct(_)))
+                    .then_some(dest);
                 self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
             }
 
@@ -371,15 +364,19 @@ impl<'f> Lower<'f> {
                         Operand::Place(p) => self.vreg(p.id),
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
-                    self.copy_stack_to_stack(
+
+                    let size = self.struct_size(*sid);
+                    return aggregate_copy(
+                        &mut self.lir,
                         id,
+                        matches!(src.typ(), Type::Ref { .. }),
+                        false,
                         origin,
                         dest,
                         *offset as i32,
                         0,
-                        self.struct_size(*sid),
+                        size,
                     );
-                    return;
                 }
 
                 let bytes = typ.machine_type(self.layouts).bytes();
@@ -387,15 +384,15 @@ impl<'f> Lower<'f> {
                 match src {
                     Operand::Place(place) => {
                         let origin = self.vreg(place.id);
-                        self.lir.push_instr(
-                            id,
-                            A64Instr::FieldLoad {
-                                dest,
-                                origin,
-                                bytes,
-                                offset: *offset as i32,
-                            },
+                        let instruction = AArch64::scalar_load(
+                            matches!(place.typ, Type::Ref { .. }),
+                            dest,
+                            origin,
+                            *offset as i32,
+                            bytes,
+                            typ.is_float(),
                         );
+                        self.lir.push_instr(id, instruction);
                     }
 
                     Operand::Const(_) => unreachable!("struct constant in field access"),
@@ -403,35 +400,63 @@ impl<'f> Lower<'f> {
             }
 
             InstructionKind::FieldStore { value, offset } => {
+                let offset = *offset as i32;
+
                 if let Type::Struct(sid) = value.typ() {
                     let Operand::Place(src) = value else {
                         unreachable!("aggregate field store source must be a place");
                     };
-                    self.copy_stack_to_stack(
+
+                    let src_vreg = self.vreg(src.id);
+                    let size = self.struct_size(sid);
+                    return aggregate_copy(
+                        &mut self.lir,
                         id,
-                        self.vreg(src.id),
+                        matches!(src.typ, Type::Ref { .. }),
+                        matches!(typ, Type::Ref { .. }),
+                        src_vreg,
                         dest,
                         0,
-                        *offset as i32,
-                        self.struct_size(sid),
+                        offset,
+                        size,
                     );
-                    return;
                 }
 
+                let is_float = value.typ().is_float();
                 let mt = value.typ().machine_type(self.layouts);
                 let bytes = mt.bytes();
                 let src = self.lower_operand(value, id);
 
-                self.lir.push_instr(
-                    id,
-                    A64Instr::FieldStore {
-                        bytes,
-                        src,
-                        origin: dest,
-                        is_float: value.typ().is_float(),
-                        offset: *offset as i32,
-                    },
+                let instruction = AArch64::scalar_store(
+                    matches!(typ, Type::Ref { .. }),
+                    dest,
+                    src,
+                    offset,
+                    bytes,
+                    is_float,
                 );
+                self.lir.push_instr(id, instruction);
+            }
+
+            InstructionKind::AddressOf { src, offset } => {
+                let origin = self.vreg(src.id);
+                match src.typ {
+                    #[rustfmt::skip]
+                    Type::Ref { .. } => self.lir.push_instr( id, A64Instr::Mov { dest, src: origin, bytes: 8 }),
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest, origin }),
+                }
+
+                if *offset != 0 {
+                    self.lir.push_instr(
+                        id,
+                        A64Instr::Add {
+                            dest,
+                            lhs: dest,
+                            rhs: A64Operand::Imm(*offset as i64),
+                            bytes: 8,
+                        },
+                    );
+                }
             }
 
             InstructionKind::Syscall {
@@ -515,7 +540,19 @@ impl<'f> Lower<'f> {
                 };
                 let sret_ptr =
                     self.sret_ptr.expect("struct-returning function must have an sret pointer");
-                self.copy_stack_to_ptr(id, self.vreg(place.id), sret_ptr, 0, self.struct_size(sid));
+                let src_vreg = self.vreg(place.id);
+                let size = self.struct_size(sid);
+                aggregate_copy(
+                    &mut self.lir,
+                    id,
+                    false,
+                    true,
+                    src_vreg,
+                    sret_ptr,
+                    0,
+                    0,
+                    size,
+                );
                 Term::Return(None)
             }
             T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
@@ -572,7 +609,19 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                self.copy_ptr_to_stack(&entry, ptr, self.vreg(*vid), self.struct_size(*sid));
+                let size = self.struct_size(*sid);
+                let dest_vreg = self.vreg(*vid);
+                aggregate_copy(
+                    &mut self.lir,
+                    &entry,
+                    true,
+                    false,
+                    ptr,
+                    dest_vreg,
+                    0,
+                    0,
+                    size,
+                );
                 int_idx += 1;
                 continue;
             }
@@ -673,65 +722,6 @@ impl<'f> Lower<'f> {
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
 
         dest
-    }
-
-    fn copy_ptr_to_stack(&mut self, block: &BlockId, ptr: VReg, dest: VReg, size: u32) {
-        for (offset, chunk) in lir::aggregate_chunks(size) {
-            let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
-            #[rustfmt::skip]
-            let instr = A64Instr::PtrLoad { dest: scratch, ptr, offset, bytes: chunk, is_float: false };
-            self.lir.push_instr(block, instr);
-
-            let src = A64Operand::VReg(scratch);
-            #[rustfmt::skip]
-            let instr = A64Instr::FieldStore { origin: dest, src, offset, bytes: chunk, is_float: false };
-            self.lir.push_instr(block, instr);
-        }
-    }
-
-    fn copy_stack_to_ptr(
-        &mut self,
-        block: &BlockId,
-        src: VReg,
-        ptr: VReg,
-        src_base: i32,
-        size: u32,
-    ) {
-        for (offset, chunk) in lir::aggregate_chunks(size) {
-            let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
-            let offset = src_base + offset;
-            #[rustfmt::skip]
-            let instr = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
-            self.lir.push_instr(block, instr);
-
-            let src = A64Operand::VReg(scratch);
-            #[rustfmt::skip]
-            let instr = A64Instr::PtrStore { ptr, src, offset, bytes: chunk, is_float: false };
-            self.lir.push_instr(block, instr);
-        }
-    }
-
-    fn copy_stack_to_stack(
-        &mut self,
-        block: &BlockId,
-        src: VReg,
-        dest: VReg,
-        src_base: i32,
-        dest_base: i32,
-        size: u32,
-    ) {
-        for (offset, chunk) in lir::aggregate_chunks(size) {
-            let scratch = self.lir.new_vreg(MachineType::Int { bytes: chunk });
-            let offset = src_base + offset;
-            #[rustfmt::skip]
-            let instr = A64Instr::FieldLoad { dest: scratch, origin: src, offset, bytes: chunk };
-            self.lir.push_instr(block, instr);
-
-            let offset = dest_base + offset;
-            #[rustfmt::skip]
-            let instr = A64Instr::FieldStore { origin: dest, src: A64Operand::VReg(scratch), offset, bytes: chunk, is_float: false };
-            self.lir.push_instr(block, instr);
-        }
     }
 
     fn struct_size(&self, sid: crate::hir::StructId) -> u32 {

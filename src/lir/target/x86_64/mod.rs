@@ -1,7 +1,7 @@
 use crate::{
     lir::{
         MachineType, VReg,
-        target::{Instruction, PhysicalReg, RegClass, Target},
+        target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
     mir::SyscallCode,
     parser::expression::BinaryOperator,
@@ -116,6 +116,7 @@ pub enum X86Instr {
         /// all VRegs consumed by the call (union of `moves` and `stack_args`)
         uses: Vec<VReg>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
         /// stack based arguments in call order
         /// the emitter will push then in **reverse** order to match SysV ABI layout
         stack_args: Vec<(X86Operand, MachineType)>,
@@ -249,6 +250,34 @@ impl Target for X86_64 {
     }
 }
 
+#[rustfmt::skip]
+impl MemOps for X86_64 {
+    type Operand = X86Operand;
+
+    #[inline(always)]
+    fn vreg_operand(v: VReg) -> X86Operand { X86Operand::VReg(v) }
+
+    #[inline(always)]
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::FieldLoad { dest, origin, offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn field_store(origin: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::FieldStore { origin, src, offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::PtrLoad { dest, ptr, offset, bytes, is_float }
+    }
+
+    #[inline(always)]
+    fn ptr_store(ptr: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+        X86Instr::PtrStore { ptr, src, offset, bytes, is_float }
+    }
+}
+
 impl Instruction<X86_64> for X86Instr {
     fn defs(&self) -> &[VReg] {
         match self {
@@ -285,7 +314,12 @@ impl Instruction<X86_64> for X86Instr {
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
             }
-            Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
+            Self::Call {
+                aggregate_ret,
+                ret: None,
+                ..
+            } => aggregate_ret.as_slice(),
+            Self::Syscall { ret: None, .. } => &[],
         }
     }
 
@@ -385,6 +419,7 @@ impl X86Instr {
         moves: Vec<(VReg, X86Reg)>,
         stack_args: Vec<(X86Operand, MachineType)>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
     ) -> Self {
         let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
 
@@ -399,6 +434,7 @@ impl X86Instr {
             moves,
             uses,
             ret,
+            aggregate_ret,
             stack_args,
         }
     }
