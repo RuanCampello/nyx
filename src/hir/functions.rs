@@ -268,6 +268,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 Ok((Statement::Block(block), returns))
             }
 
+            Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
+
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
