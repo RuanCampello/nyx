@@ -528,12 +528,11 @@ impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let impl_token = parser.expect_token(Keyword::Impl)?;
         let (name, _) = parser.expect_identifier()?;
-        parser.expect_token(Punct::OpenBrace)?;
-
         let interface = match parser.consume_keyword(Keyword::With)? {
             true => Some(parser.expect_identifier()?.0),
             false => None,
         };
+        parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
 
@@ -683,7 +682,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                 }
 
                 Some(Ok(_)) => {
-                    if !params.is_empty() || receiver.is_none() {
+                    if !params.is_empty() || receiver.is_some() {
                         parser.expect_token(Punct::Comma)?;
                     }
 
