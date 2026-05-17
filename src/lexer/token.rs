@@ -52,6 +52,8 @@ pub enum Keyword {
     Const,
     Pub,
     Use,
+    Interface,
+    With,
 }
 
 /// Punctuators and operators.
@@ -172,6 +174,8 @@ impl Keyword {
             Self::Const => "const",
             Self::Use => "use",
             Self::Pub => "pub",
+            Self::Interface => "interface",
+            Self::With => "with",
         }
     }
 }
@@ -195,6 +199,8 @@ impl std::str::FromStr for Keyword {
             "const" => Self::Const,
             "pub" => Self::Pub,
             "use" => Self::Use,
+            "with" => Self::With,
+            "interface" => Self::Interface,
             _ => return Err(()),
         })
     }
