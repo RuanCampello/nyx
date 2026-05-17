@@ -102,10 +102,10 @@ pub struct Interface<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct InterfaceMethod<'i> {
-    name: &'i str,
-    receiver: Option<Receiver>,
-    params: Vec<Parameter<'i>>,
-    return_type: Option<Spanned<Type<'i>>>,
+    pub name: &'i str,
+    pub receiver: Option<Receiver>,
+    pub params: Vec<Parameter<'i>>,
+    pub return_type: Option<Spanned<Type<'i>>>,
     span: Span,
 }
 

@@ -375,6 +375,8 @@ impl Diagnosticable for HirError<'_> {
                     "mark `fn {name}` as `const fn {name}` if it qualifies"
                 )),
             ),
+
+            Kind::DuplicateInterface { .. } => todo!(),
         };
 
         Info {

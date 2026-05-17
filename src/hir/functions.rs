@@ -26,6 +26,21 @@ pub(in crate::hir) struct FunctionSignature {
     pub method: Option<Method>,
 }
 
+#[derive(Debug)]
+pub(in crate::hir) struct InterfaceSignature {
+    pub name: SymbolId,
+    pub methods: Vec<InterfaceMethodSignature>,
+}
+
+#[derive(Debug)]
+pub(in crate::hir) struct InterfaceMethodSignature {
+    pub name: SymbolId,
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    has_receiver: bool,
+    receiver_mut: bool,
+}
+
 pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     signatures: &'s [FunctionSignature],
     functions: &'s Functions,
@@ -51,6 +66,7 @@ enum Visit {
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 pub(in crate::hir) type Methods = HashMap<(StructId, SymbolId), FunctionId>;
+pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 
 impl Default for FunctionSignature {
     fn default() -> Self {
@@ -1418,6 +1434,68 @@ pub fn collect_function_signatures<'h>(
     }
 
     Ok((signatures, functions, methods))
+}
+
+pub(in crate::hir) fn collect_interfaces<'h>(
+    statements: &[statement::Statement<'h>],
+    symbols: &mut SymbolTable,
+) -> Result<Interfaces, HirError<'h>> {
+    let mut interfaces = Interfaces::new();
+
+    for statement in statements {
+        let statement::Statement::Interface(declaration) = statement else {
+            continue;
+        };
+
+        let name = symbols.insert(declaration.name);
+        if interfaces.contains_key(&name) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateInterface {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+
+        let methods = declaration
+            .methods
+            .iter()
+            .map(|method| {
+                let name = symbols.insert(method.name);
+                let has_receiver = method.receiver.is_some();
+                let receiver_mut =
+                    method.receiver.map(|receiver| receiver.mutable).unwrap_or(false);
+
+                let mut params = Vec::with_capacity(method.params.len());
+
+                if has_receiver {
+                    params.push(Type::Unit);
+                }
+
+                for param in &method.params {
+                    let typ = param.typ.value();
+                    params.push(Type::from(&typ));
+                }
+
+                let return_type = match &method.return_type {
+                    Some(typ) => Type::from(&typ.value()),
+                    _ => Type::Unit,
+                };
+
+                InterfaceMethodSignature {
+                    name,
+                    params,
+                    return_type,
+                    has_receiver,
+                    receiver_mut,
+                }
+            })
+            .collect();
+
+        interfaces.insert(name, InterfaceSignature { name, methods });
+    }
+
+    Ok(interfaces)
 }
 
 pub(in crate::hir) fn function_declarations<'h>(
