@@ -10,8 +10,8 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::Type;
-use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand};
+use crate::hir::{self, Type};
+use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg};
 use crate::lir::target::{Lowerable, MemOps, RegClass, Target, aggregate_copy};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
 use crate::mir::{self, Const, Function, Layout, Operand, ValueId};
@@ -389,7 +389,13 @@ impl<'f> Lower<'f> {
                 let mut int_idx = 0;
                 let mut float_idx = 0;
 
-                if let Type::Struct(_) = typ {
+                let return_type = self.all_functions[callee_id.0 as usize].return_type;
+                let aggregate_ret = match return_type {
+                    Type::Struct(sid) => self.small_integer_return(sid).unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+
+                if matches!(return_type, Type::Struct(_)) && aggregate_ret.is_empty() {
                     let ptr = self.stack_addr(id, dest);
                     let abi_reg = X86_64::param(int_idx, RegClass::Int)
                         .expect("sret pointer must fit in the first integer argument register");
@@ -452,10 +458,26 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                let return_type = self.all_functions[callee_id.0 as usize].return_type;
                 let ret = (return_type != Type::Unit && !matches!(return_type, Type::Struct(_)))
                     .then_some(dest);
-                self.lir.push_instr(id, X86Instr::call(callee, moves, stack_args, ret));
+                let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
+                for &(_, bytes, reg) in &aggregate_ret {
+                    let vreg = self.lir.new_vreg(MachineType::Int { bytes });
+                    self.lir.add_precolour(vreg, reg);
+                    ret_vregs.push(vreg);
+                }
+
+                self.lir.push_instr(
+                    id,
+                    X86Instr::call(callee, moves, stack_args, ret, ret_vregs.clone()),
+                );
+
+                for ((offset, bytes, _), src) in aggregate_ret.into_iter().zip(ret_vregs) {
+                    let src = X86Operand::VReg(src);
+                    #[rustfmt::skip]
+                    let instr = X86Instr::FieldStore { origin: dest, src, offset, bytes, is_float: false };
+                    self.lir.push_instr(id, instr);
+                }
             }
 
             InstructionKind::Syscall {
@@ -560,21 +582,31 @@ impl<'f> Lower<'f> {
                 let Operand::Place(place) = operand else {
                     unreachable!("aggregate return source must be a place");
                 };
-                let sret_ptr =
-                    self.sret_ptr.expect("struct-returning function must have an sret pointer");
+
                 let src_vreg = self.vreg(place.id);
-                let size = self.struct_size(sid);
-                aggregate_copy(
-                    &mut self.lir,
-                    id,
-                    false,
-                    true,
-                    src_vreg,
-                    sret_ptr,
-                    0,
-                    0,
-                    size,
-                );
+
+                match self.small_integer_return(sid) {
+                    Some(chunks) => {
+                        for (offset, bytes, reg) in chunks {
+                            let ret = self.lir.new_vreg(MachineType::Int { bytes });
+                            #[rustfmt::skip]
+                            let load = X86Instr::FieldLoad { dest: ret, origin: src_vreg, offset, bytes, is_float: false };
+                            self.lir.add_precolour(ret, reg);
+                            self.lir.push_instr(id, load);
+                        }
+                    }
+
+                    None => {
+                        let sret_ptr = self
+                            .sret_ptr
+                            .expect("struct-returning function must have an sret pointer");
+                        let size = self.struct_size(sid);
+
+                        #[rustfmt::skip]
+                        aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
+                    }
+                }
+
                 Term::Return(None)
             }
             T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
@@ -610,13 +642,17 @@ impl<'f> Lower<'f> {
         let mut int_stack_idx = 0;
         let mut float_stack_idx = 0;
 
-        if matches!(self.function.return_type, Type::Struct(_)) {
-            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
-            let reg = X86_64::param(int_idx, RegClass::Int)
-                .expect("sret pointer must fit in the first integer argument register");
-            self.lir.add_precolour(ptr, reg);
-            self.sret_ptr = Some(ptr);
-            int_idx += 1;
+        if let Type::Struct(sid) = self.function.return_type {
+            if self.small_integer_return(sid).is_some() {
+                // Small integer aggregates are returned directly in RAX/RDX.
+            } else {
+                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+                let reg = X86_64::param(int_idx, RegClass::Int)
+                    .expect("sret pointer must fit in the first integer argument register");
+                self.lir.add_precolour(ptr, reg);
+                self.sret_ptr = Some(ptr);
+                int_idx += 1;
+            }
         }
 
         for (vid, typ) in &self.function.params {
@@ -741,6 +777,22 @@ impl<'f> Lower<'f> {
         let dest = self.lir.new_vreg(MachineType::Int { bytes: 8 });
         self.lir.push_instr(block, X86Instr::StackAddr { dest, origin });
         dest
+    }
+
+    fn small_integer_return(&self, sid: hir::StructId) -> Option<Vec<(i32, u8, X86Reg)>> {
+        let layout = self.layouts[sid.0 as usize];
+        let (size, _) = layout.into();
+        if size == 0 || size > 16 || layout.contains_float() {
+            return None;
+        }
+
+        let regs = [X86Reg::Rax, X86Reg::Rdx];
+        Some(
+            lir::aggregate_chunks(size)
+                .zip(regs)
+                .map(|((offset, bytes), reg)| (offset, bytes, reg))
+                .collect(),
+        )
     }
 
     fn struct_size(&self, sid: crate::hir::StructId) -> u32 {

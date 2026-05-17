@@ -116,6 +116,7 @@ pub enum X86Instr {
         /// all VRegs consumed by the call (union of `moves` and `stack_args`)
         uses: Vec<VReg>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
         /// stack based arguments in call order
         /// the emitter will push then in **reverse** order to match SysV ABI layout
         stack_args: Vec<(X86Operand, MachineType)>,
@@ -313,7 +314,12 @@ impl Instruction<X86_64> for X86Instr {
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
             }
-            Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
+            Self::Call {
+                aggregate_ret,
+                ret: None,
+                ..
+            } => aggregate_ret.as_slice(),
+            Self::Syscall { ret: None, .. } => &[],
         }
     }
 
@@ -413,6 +419,7 @@ impl X86Instr {
         moves: Vec<(VReg, X86Reg)>,
         stack_args: Vec<(X86Operand, MachineType)>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
     ) -> Self {
         let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
 
@@ -427,6 +434,7 @@ impl X86Instr {
             moves,
             uses,
             ret,
+            aggregate_ret,
             stack_args,
         }
     }

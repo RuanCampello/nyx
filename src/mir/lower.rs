@@ -47,7 +47,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
-        struct_layouts: hir.structs.iter().map(From::from).collect(),
+        struct_layouts: struct_layouts(&hir.structs),
     })
 }
 
@@ -751,5 +751,30 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
         | ExpressionKind::Float(_)
         | ExpressionKind::String(_)
         | ExpressionKind::Bool(_) => {}
+    }
+}
+
+fn struct_layouts(structs: &[Struct]) -> Vec<mir::Layout> {
+    structs
+        .iter()
+        .map(|definition| {
+            mir::Layout::new(
+                definition.size,
+                definition.align,
+                definition.fields.iter().any(|field| type_contains_float(field.typ, structs)),
+            )
+        })
+        .collect()
+}
+
+#[inline]
+fn type_contains_float(typ: Type, structs: &[Struct]) -> bool {
+    match typ {
+        Type::F32 | Type::F64 => true,
+        Type::Struct(id) => structs[id.0 as usize]
+            .fields
+            .iter()
+            .any(|field| type_contains_float(field.typ, structs)),
+        _ => false,
     }
 }
