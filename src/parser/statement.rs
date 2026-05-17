@@ -465,37 +465,11 @@ impl<'i> Parsable<'i> for Function<'i> {
                         && receiver.is_none()
                         && parser.consume_punct(Punct::Ampersand)?
                     {
-                        let receiver_start = parser.last_span().unwrap_or(fn_token.span);
-                        let mutable = parser.consume_keyword(Keyword::Mut)?;
-                        let (name, name_span) = parser.expect_identifier()?;
-                        if name != "self" {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedIdentifier {
-                                    found: TokenKind::Identifier(name),
-                                },
-                                name_span,
-                            ));
-                        }
-
-                        receiver = Some(Receiver {
-                            mutable,
-                            span: receiver_start + name_span,
-                        });
-
+                        receiver = Some(parser.parse_node()?);
                         continue;
                     }
 
-                    let mutable = parser.consume_keyword(Keyword::Mut)?;
-                    let (param_name, param_span) = parser.expect_identifier()?;
-                    parser.expect_token(Punct::Colon)?;
-                    let typ = parser.parse_node()?;
-
-                    params.push(Parameter {
-                        name: param_name,
-                        typ,
-                        span: param_span + typ.span(),
-                        mutable,
-                    })
+                    params.push(parser.parse_node()?);
                 }
 
                 Err(err) => return Err(err.into()),
@@ -690,38 +664,11 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                         && receiver.is_none()
                         && parser.consume_punct(Punct::Ampersand)?
                     {
-                        let receiver_start = parser.last_span().unwrap_or(fn_token.span);
-                        let mutable = parser.consume_keyword(Keyword::Mut)?;
-                        let (receiver_name, receiver_span) = parser.expect_identifier()?;
-
-                        if receiver_name != "self" {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedIdentifier {
-                                    found: TokenKind::Identifier(receiver_name.into()),
-                                },
-                                receiver_span,
-                            ));
-                        }
-
-                        receiver = Some(Receiver {
-                            mutable,
-                            span: receiver_start + receiver_span,
-                        });
-
+                        receiver = Some(parser.parse_node()?);
                         continue;
                     }
 
-                    let mutable = parser.consume_keyword(Keyword::Mut)?;
-                    let (param_name, param_span) = parser.expect_identifier()?;
-                    parser.expect_token(Punct::Colon)?;
-                    let typ = parser.parse_node()?;
-
-                    params.push(Parameter {
-                        mutable,
-                        name: param_name,
-                        typ,
-                        span: param_span + typ.span(),
-                    })
+                    params.push(parser.parse_node()?);
                 }
 
                 Some(Err(err)) => return Err(err.into()),
@@ -851,6 +798,44 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
             path: UsePath { segments },
             items,
             span,
+        })
+    }
+}
+
+impl<'i> Parsable<'i> for Receiver {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let start = parser.last_span().unwrap_or_default();
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let (name, span) = parser.expect_identifier()?;
+
+        if name != "self" {
+            return Err(ParserError::new(
+                ParseErrorKind::ExpectedIdentifier {
+                    found: TokenKind::Identifier(name),
+                },
+                span,
+            ));
+        }
+
+        Ok(Self {
+            mutable,
+            span: start + span,
+        })
+    }
+}
+
+impl<'i> Parsable<'i> for Parameter<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let (name, span) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Colon)?;
+        let typ = parser.parse_node::<Spanned<Type>>()?;
+
+        Ok(Self {
+            mutable,
+            name,
+            typ,
+            span: span + typ.span(),
         })
     }
 }
