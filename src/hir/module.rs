@@ -4,7 +4,10 @@ use crate::{
     diagnostic::{self, Diagnostic},
     hir::{
         Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, StructId, SymbolTable,
-        functions::{self, collect_function_signatures, collect_structs, signatures_from_hir},
+        functions::{
+            self, collect_function_signatures, collect_interfaces, collect_structs,
+            signatures_from_hir, validate_interface_impls,
+        },
     },
     lexer::token::Span,
     parser::{
@@ -213,8 +216,10 @@ impl<F: FileSystem> ModuleLoader<F> {
                 Statement::Fn(_)
                 | Statement::Use(_)
                 | Statement::Struct(_)
-                | Statement::Impl(_) => {}
+                | Statement::Impl(_)
+                | Statement::Interface(_) => {}
                 _ => {
+                    println!("heres the statement: {statement:#?}");
                     return Err(ModuleError::TopLevelNonFunction {
                         path: path.into(),
                         span: statement.span(),
@@ -298,6 +303,18 @@ impl<F: FileSystem> ModuleLoader<F> {
         for (&key, &local_id) in &local_methods {
             methods.insert(key, FunctionId(local_offset + local_id.0));
         }
+
+        let local_interfaces =
+            collect_interfaces(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+
+        validate_interface_impls(
+            &statements,
+            &local_interfaces,
+            &methods,
+            &struct_map,
+            &mut self.symbols,
+        )
+        .map_err(|e| Diagnostic::from(e))?;
 
         signatures.extend(local_signatures);
 

@@ -50,7 +50,14 @@ pub enum HirErrorKind<'h> {
     },
     ImmutableBind { name: String },
     ConstFnViolation(ConstFnViolationKind),
+
     DuplicateInterface { name: String },
+    UnknownInterface { name: String },
+    MissingInterfaceMethod { 
+        struct_name: String,
+        interface_name: String,
+        method_name: String,
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

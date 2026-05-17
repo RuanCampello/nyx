@@ -376,6 +376,28 @@ impl Diagnosticable for HirError<'_> {
                 )),
             ),
 
+            Kind::UnknownInterface { name } => (
+                format!("unknown interface `{name}`"),
+                format!("`{name}` is not a known interface"),
+                None,
+                Some(format!(
+                    "declare `interface {name} {{ ... }}` before using it"
+                )),
+            ),
+
+            Kind::MissingInterfaceMethod {
+                struct_name,
+                interface_name,
+                method_name: method,
+            } => (
+                format!("missing method `{method}` required by interface `{interface_name}`"),
+                format!("`{struct_name}` does not implement `{method}`"),
+                Some(format!("`{interface_name}` requires `fn {method}(...)`")),
+                Some(format!(
+                    "add `fn {method}(...)` to `impl {struct_name} with {interface_name}`"
+                )),
+            ),
+
             Kind::DuplicateInterface { .. } => todo!(),
         };
 

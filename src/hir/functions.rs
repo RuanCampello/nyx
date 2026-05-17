@@ -1423,7 +1423,9 @@ pub fn collect_function_signatures<'h>(
 
             // 'use' declarations are valid at the top level but carry no signature information
             // they are resolved by the module loader before this function is called
-            statement::Statement::Use(_) | statement::Statement::Struct(_) => continue,
+            statement::Statement::Use(_)
+            | statement::Statement::Struct(_)
+            | statement::Statement::Interface(_) => continue,
             _ => {
                 return Err(HirError {
                     kind: HirErrorKind::TopLevelNonFunction,
@@ -1496,6 +1498,52 @@ pub(in crate::hir) fn collect_interfaces<'h>(
     }
 
     Ok(interfaces)
+}
+
+pub(in crate::hir) fn validate_interface_impls<'h>(
+    statements: &[statement::Statement<'h>],
+    interfaces: &Interfaces,
+    methods: &Methods,
+    struct_map: &Structs,
+    symbols: &mut SymbolTable,
+) -> Result<(), HirError<'h>> {
+    for statement in statements {
+        let statement::Statement::Impl(implementation) = statement else {
+            continue;
+        };
+
+        let Some(interface_name) = implementation.interface else {
+            continue;
+        };
+
+        let interface = symbols.insert(interface_name);
+        let interface = interfaces.get(&interface).ok_or_else(|| HirError {
+            kind: HirErrorKind::UnknownInterface {
+                name: interface_name.to_string(),
+            },
+            span: implementation.span,
+        })?;
+
+        let struct_symbol = symbols.insert(implementation.name);
+        let struct_id = *struct_map.get(&struct_symbol).expect("impl struct must exists");
+
+        for required_method in &interface.methods {
+            if !methods.contains_key(&(struct_id, required_method.name)) {
+                let method_name = symbols.get(required_method.name).to_string();
+
+                return Err(HirError {
+                    kind: HirErrorKind::MissingInterfaceMethod {
+                        struct_name: implementation.name.to_string(),
+                        interface_name: interface_name.to_string(),
+                        method_name,
+                    },
+                    span: implementation.span,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub(in crate::hir) fn function_declarations<'h>(

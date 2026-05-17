@@ -233,6 +233,15 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     let (structs, structs_map) = functions::collect_structs(&statements, &mut symbols)?;
     let (signatures, functions_map, methods_map) =
         functions::collect_function_signatures(&statements, &mut symbols, &structs_map)?;
+    let interfaces = functions::collect_interfaces(&statements, &mut symbols)?;
+
+    functions::validate_interface_impls(
+        &statements,
+        &interfaces,
+        &methods_map,
+        &structs_map,
+        &mut symbols,
+    )?;
 
     let mut functions = Vec::new();
     for function in functions::function_declarations(&statements) {
@@ -260,7 +269,8 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
         match statement {
             statement::Statement::Fn(_)
             | statement::Statement::Struct(_)
-            | statement::Statement::Impl(_) => continue,
+            | statement::Statement::Impl(_)
+            | statement::Statement::Interface(_) => continue,
             // 'use' declarations are valid at the top level but have no HIR representation
             // symbol resolution happens at the module loader level, not here
             statement::Statement::Use(_) => continue,
