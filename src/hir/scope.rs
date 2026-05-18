@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use crate::{
     hir::{
         Function, FunctionId, Intrinsic, Method, Struct, StructId, SymbolId, SymbolTable, Type,
@@ -99,7 +97,9 @@ impl Scope {
         declarations
             .functions()
             .map(|function| {
-                let id = self.function_id(function, symbols)?;
+                let id = self.function_id(function, symbols, None, |name| {
+                    HirErrorKind::UnknownFunction { name }
+                })?;
                 lower::FunctionBuilder::new(self, symbols, id, function).lower()
             })
             .collect()
@@ -166,8 +166,6 @@ impl Scope {
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'s>> {
-        use lower::resolve_annotation;
-
         for interface in &declarations.interfaces {
             let name = symbols.insert(interface.name);
             if self.interfaces.contains_key(&name) {
@@ -185,32 +183,24 @@ impl Scope {
             let methods = interface
                 .methods
                 .iter()
-                .map(|method| {
+                .map(|method| -> Result<InterfaceMethodSignature, HirError> {
                     let name = symbols.insert(method.name);
                     let has_receiver = method.receiver.is_some();
                     let receiver_mut = method.receiver.map(|r| r.mutable).unwrap_or(false);
-                    let mut params =
-                        Vec::with_capacity(method.params.len() + usize::from(has_receiver));
-                    if has_receiver {
-                        params.push(Type::Unit);
-                    }
 
-                    params.extend(method.params.iter().map(|param| Type::from(&param.typ.value())));
+                    let params = self.resolve_params(&method.params, symbols)?;
+                    let return_type =
+                        self.resolve_return_type(method.return_type.as_ref(), symbols)?;
 
-                    let return_type = method
-                        .return_type
-                        .as_ref()
-                        .map(|t| Type::from(&t.value()))
-                        .unwrap_or(Type::Unit);
-                    InterfaceMethodSignature {
+                    Ok(InterfaceMethodSignature {
                         name,
                         params,
                         return_type,
                         has_receiver,
                         receiver_mut,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             self.interfaces.insert(
                 name,
@@ -253,8 +243,6 @@ impl Scope {
         declarations: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'h>> {
-        use lower::resolve_annotation;
-
         for function in &declarations.functions {
             if function.receiver.is_some() {
                 return Err(HirError {
@@ -400,6 +388,9 @@ impl Scope {
                 .get(&struct_sym)
                 .expect("impl struct must exist in scope after extend_structs");
 
+            let impl_methods: HashMap<_, _> =
+                implementation.methods.iter().map(|method| (method.name, method)).collect();
+
             for required in &interface.superinterfaces {
                 if !self.interfaces.contains_key(required) {
                     return Err(HirError {
@@ -423,15 +414,47 @@ impl Scope {
             }
 
             for required in &interface.methods {
-                if !self.methods.contains_key(&(struct_id, required.name)) {
+                let method_name = symbols.get(required.name).to_string();
+                let Some(impl_method) = impl_methods.get(method_name.as_str()) else {
                     return Err(HirError {
                         kind: HirErrorKind::MissingInterfaceMethod {
                             struct_name: implementation.name.to_string(),
                             interface_name: interface_name.to_string(),
-                            method_name: symbols.get(required.name).to_string(),
+                            method_name: method_name,
                         },
                         span: implementation.span,
                     });
+                };
+
+                let impl_has_receiver = impl_method.receiver.is_some();
+                let function_id =
+                    self.function_id(impl_method, symbols, Some(implementation.name), |_| {
+                        HirErrorKind::MissingInterfaceMethod {
+                            struct_name: implementation.name.to_string(),
+                            interface_name: interface_name.to_string(),
+                            method_name: method_name.to_string(),
+                        }
+                    })?;
+
+                let signature = &self.signatures[function_id.0 as usize];
+
+                let (impl_receiver_mut, impl_explicit_params) = match impl_has_receiver {
+                    true => {
+                        let Type::Ref { mutable, .. } = signature.params[0] else {
+                            unreachable!("method signature must start with a receiver reference");
+                        };
+                        (mutable, &signature.params[1..])
+                    }
+                    _ => (false, signature.params.as_slice()),
+                };
+
+                let signature_ok = impl_has_receiver == required.has_receiver
+                    && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)
+                    && required.params == impl_explicit_params
+                    && required.return_type == signature.return_type;
+
+                if !signature_ok {
+                    panic!("invalid interface method signature");
                 }
             }
         }
@@ -443,11 +466,13 @@ impl Scope {
         &self,
         function: &statement::Function<'s>,
         symbols: &mut SymbolTable,
+        hint: Option<&str>,
+        error_kind: impl FnOnce(String) -> HirErrorKind<'s>,
     ) -> Result<FunctionId, HirError<'s>> {
-        match (function.receiver, function.impl_type) {
-            (Some(_), _) => {
-                let impl_type = function.impl_type.expect("method must know its impl type");
+        let impl_type = function.impl_type.or(hint);
 
+        match (function.receiver, impl_type) {
+            (Some(_), Some(impl_type)) => {
                 let struct_symbol = symbols.insert(impl_type);
                 let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownType {
@@ -458,28 +483,27 @@ impl Scope {
 
                 let method_symbol = symbols.insert(function.name);
                 self.methods.get(&(struct_id, method_symbol)).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownFunction {
-                        name: function.name.to_string(),
-                    },
+                    kind: error_kind(function.name.to_string()),
                     span: function.span,
                 })
             }
 
+            (Some(_), None) => Err(HirError {
+                kind: error_kind(function.name.to_string()),
+                span: function.span,
+            }),
+
             (None, Some(impl_type)) => {
                 let mangled = symbols.insert(&format!("{impl_type}__{}", function.name));
                 self.functions.get(&mangled).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownFunction {
-                        name: format!("{impl_type}::{}", function.name),
-                    },
+                    kind: error_kind(format!("{impl_type}::{}", function.name)),
                     span: function.span,
                 })
             }
             (None, None) => {
                 let sym = symbols.insert(function.name);
                 self.functions.get(&sym).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownFunction {
-                        name: function.name.to_string(),
-                    },
+                    kind: error_kind(function.name.to_string()),
                     span: function.span,
                 })
             }
