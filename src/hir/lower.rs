@@ -1193,7 +1193,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     Ok(())
 }
 
-fn resolve_annotation<'h>(
+pub(in crate::hir) fn resolve_annotation<'h>(
     symbols: &mut SymbolTable,
     struct_map: &Structs,
     typ: &statement::Type<'h>,

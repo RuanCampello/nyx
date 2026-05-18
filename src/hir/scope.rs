@@ -8,7 +8,7 @@ use crate::{
     },
     parser::statement,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 /// The single accumulated namespace for a compilation
 ///
@@ -75,6 +75,7 @@ impl Scope {
     ) -> Result<(), HirError<'s>> {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
+        self.extend_signatures(declarations, symbols)?;
 
         Ok(())
     }
@@ -198,6 +199,216 @@ impl Scope {
             self.interfaces.insert(name, InterfaceSignature { name, methods });
         }
 
+        Ok(())
+    }
+
+    fn extend_signatures<'h>(
+        &mut self,
+        declarations: &Declarations<'h>,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'h>> {
+        use lower::resolve_annotation;
+
+        for function in &declarations.functions {
+            if function.receiver.is_some() {
+                return Err(HirError {
+                    kind: HirErrorKind::ReceiverOutsideImpl,
+                    span: function.span,
+                });
+            }
+
+            let symbol = symbols.insert(function.name);
+            if self.functions.contains_key(&symbol) {
+                return Err(HirError {
+                    kind: HirErrorKind::DuplicateFunction {
+                        name: function.name.to_string(),
+                    },
+                    span: function.span,
+                });
+            }
+
+            let id = FunctionId(self.signatures.len() as u32);
+            self.functions.insert(symbol, id);
+
+            let params = function
+                .params
+                .iter()
+                .map(|p| {
+                    resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let return_type = function
+                .return_type
+                .as_ref()
+                .map(|s| resolve_annotation(symbols, &self.struct_map, &s.value(), s.span()))
+                .transpose()?
+                .unwrap_or(Type::Unit);
+            let intrinsic = Intrinsic::from_str(symbols.get(symbol)).ok();
+
+            self.signatures.push(FunctionSignature {
+                name: symbol,
+                params,
+                return_type,
+                intrinsic,
+                method: None,
+            });
+        }
+
+        for implementation in &declarations.impls {
+            let struct_symbol = symbols.insert(implementation.name);
+            let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: implementation.name.to_string(),
+                },
+                span: implementation.span,
+            })?;
+
+            for method in &implementation.methods {
+                let method_symbol = symbols.insert(method.name);
+                let mangled = symbols.insert(&format!("{}__{}", implementation.name, method.name));
+
+                match method.receiver {
+                    Some(receiver) => {
+                        if self.methods.contains_key(&(struct_id, method_symbol)) {
+                            return Err(HirError {
+                                kind: HirErrorKind::DuplicateMethod {
+                                    struct_name: implementation.name.to_string(),
+                                    name: method.name.to_string(),
+                                },
+                                span: method.span,
+                            });
+                        }
+
+                        let id = FunctionId(self.signatures.len() as u32);
+                        self.methods.insert((struct_id, method_symbol), id);
+
+                        let mut params = Vec::with_capacity(method.params.len() + 1);
+                        params.push(Type::Ref {
+                            mutable: receiver.mutable,
+                            to: struct_id,
+                        });
+                        params.extend(
+                            method
+                                .params
+                                .iter()
+                                .map(|p| {
+                                    resolve_annotation(
+                                        symbols,
+                                        &self.struct_map,
+                                        &p.typ.value(),
+                                        p.typ.span(),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        );
+                        let return_type = method
+                            .return_type
+                            .as_ref()
+                            .map(|s| {
+                                resolve_annotation(symbols, &self.struct_map, &s.value(), s.span())
+                            })
+                            .transpose()?
+                            .unwrap_or(Type::Unit);
+
+                        self.signatures.push(FunctionSignature {
+                            name: mangled,
+                            params,
+                            return_type,
+                            intrinsic: None,
+                            method: Some(Method {
+                                receiver: struct_id,
+                                name: method_symbol,
+                                mutable: receiver.mutable,
+                            }),
+                        });
+                    }
+
+                    None => {
+                        if self.functions.contains_key(&mangled) {
+                            return Err(HirError {
+                                kind: HirErrorKind::DuplicateFunction {
+                                    name: format!("{}::{}", implementation.name, method.name),
+                                },
+                                span: method.span,
+                            });
+                        }
+
+                        let id = FunctionId(self.signatures.len() as u32);
+                        self.functions.insert(mangled, id);
+
+                        let params = method
+                            .params
+                            .iter()
+                            .map(|p| {
+                                resolve_annotation(
+                                    symbols,
+                                    &self.struct_map,
+                                    &p.typ.value(),
+                                    p.typ.span(),
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let return_type = method
+                            .return_type
+                            .as_ref()
+                            .map(|s| {
+                                resolve_annotation(symbols, &self.struct_map, &s.value(), s.span())
+                            })
+                            .transpose()?
+                            .unwrap_or(Type::Unit);
+
+                        self.signatures.push(FunctionSignature {
+                            name: mangled,
+                            params,
+                            return_type,
+                            intrinsic: None,
+                            method: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_interfaces<'h>(
+        &self,
+        decls: &Declarations<'h>,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'h>> {
+        for implementation in &decls.impls {
+            let Some(interface_name) = implementation.interface else {
+                continue;
+            };
+
+            let interface_sym = symbols.insert(interface_name);
+            let interface = self.interfaces.get(&interface_sym).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownInterface {
+                    name: interface_name.to_string(),
+                },
+                span: implementation.span,
+            })?;
+
+            let struct_sym = symbols.insert(implementation.name);
+            let struct_id = *self
+                .struct_map
+                .get(&struct_sym)
+                .expect("impl struct must exist in scope after extend_structs");
+
+            for required in &interface.methods {
+                if !self.methods.contains_key(&(struct_id, required.name)) {
+                    return Err(HirError {
+                        kind: HirErrorKind::MissingInterfaceMethod {
+                            struct_name: implementation.name.to_string(),
+                            interface_name: interface_name.to_string(),
+                            method_name: symbols.get(required.name).to_string(),
+                        },
+                        span: implementation.span,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
