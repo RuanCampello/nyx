@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::{
     hir::{
         Function, FunctionId, Intrinsic, Method, Struct, StructId, SymbolId, SymbolTable, Type,
@@ -76,6 +78,7 @@ impl Scope {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols)?;
+        self.validate_interfaces(declarations, symbols)?;
 
         Ok(())
     }
@@ -374,10 +377,10 @@ impl Scope {
 
     fn validate_interfaces<'d, 'h>(
         &self,
-        decls: &Declarations<'d, 'h>,
+        declarations: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'h>> {
-        for implementation in &decls.impls {
+        for implementation in &declarations.impls {
             let Some(interface_name) = implementation.interface else {
                 continue;
             };
