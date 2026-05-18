@@ -1,9 +1,9 @@
 use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Receiver, Statement, Struct, StructId, SymbolId, SymbolTable, Type,
+        Parameter, Receiver, Statement, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
         error::{HirError, HirErrorKind},
-        scope::Scope,
+        scope::{Scope, Structs},
     },
     lexer::token::Span,
     parser::{
@@ -26,6 +26,13 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
     function_id: FunctionId,
     next_local: u32,
     symbols: &'s mut SymbolTable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::hir) enum Visit {
+    Unvisited,
+    Visiting,
+    Visited,
 }
 
 impl<'s, 'f> FunctionBuilder<'s, 'f> {
@@ -1120,6 +1127,127 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     fn pop_scope(&mut self) {
         self.scopes.pop();
     }
+}
+
+pub(in crate::hir) fn lower_struct<'h>(
+    id: usize,
+    declarations: &[(SymbolId, &statement::Struct<'h>)],
+    map: &Structs,
+    symbols: &mut SymbolTable,
+    lowered: &mut [Option<Struct>],
+    states: &mut [Visit],
+) -> Result<(), HirError<'h>> {
+    match states[id] {
+        Visit::Visited => return Ok(()),
+        Visit::Visiting => {
+            let (_, declaration) = declarations[id];
+            return Err(HirError {
+                kind: HirErrorKind::CircularStruct {
+                    name: declaration.name.to_string(),
+                },
+                span: declaration.span,
+            });
+        }
+        Visit::Unvisited => {}
+    }
+
+    states[id] = Visit::Visiting;
+    let (name, declaration) = declarations[id];
+    let mut seen = HashSet::new();
+    let mut fields = Vec::with_capacity(declaration.fields.len());
+
+    for (idx, field) in declaration.fields.iter().enumerate() {
+        let field_symbol = symbols.insert(field.name);
+        if !seen.insert(field_symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateField {
+                    name: field.name.to_string(),
+                },
+                span: field.span,
+            });
+        }
+
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        if let Type::Struct(dep) = typ {
+            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
+        }
+
+        fields.push(StructField {
+            name: field_symbol,
+            typ,
+            offset: 0,
+            declared_index: idx as u32,
+        });
+    }
+
+    let (fields, size, align) = layout_fields(fields, lowered);
+    lowered[id] = Some(Struct {
+        id: StructId(id as u32),
+        name,
+        fields,
+        size,
+        align,
+    });
+    states[id] = Visit::Visited;
+
+    Ok(())
+}
+
+fn resolve_annotation<'h>(
+    symbols: &mut SymbolTable,
+    struct_map: &Structs,
+    typ: &statement::Type<'h>,
+    span: Span,
+) -> Result<Type, HirError<'h>> {
+    match typ {
+        statement::Type::Named(name) => {
+            let symbol = symbols.insert(name);
+            struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: (*name).to_string(),
+                },
+                span,
+            })
+        }
+        typ => Ok(typ.into()),
+    }
+}
+
+fn layout_fields(
+    mut fields: Vec<StructField>,
+    structs: &[Option<Struct>],
+) -> (Vec<StructField>, u32, u32) {
+    // PERFORMANCE: field reordering is a small stable sort by layout class
+    fields.sort_by(|a, b| {
+        let (a_size, a_align) = &a.typ.layout(structs);
+        let (b_size, b_align) = &b.typ.layout(structs);
+
+        b_align
+            .cmp(&a_align)
+            .then_with(|| b_size.cmp(&a_size))
+            .then_with(|| a.declared_index.cmp(&b.declared_index))
+    });
+
+    let mut offset = 0;
+    let mut struct_align = 1;
+
+    for field in &mut fields {
+        let (size, align) = field.typ.layout(structs);
+
+        struct_align = struct_align.max(align);
+        offset = align_to(offset, align);
+        field.offset = offset;
+        offset += size;
+    }
+
+    let size = align_to(offset, struct_align);
+
+    (fields, size, struct_align)
+}
+
+#[inline(always)]
+const fn align_to(value: u32, align: u32) -> u32 {
+    (value + align - 1) & !(align - 1)
 }
 
 impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {
