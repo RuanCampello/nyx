@@ -57,7 +57,12 @@ pub enum HirErrorKind<'h> {
         struct_name: String,
         interface_name: String,
         method_name: String,
-    }
+    },
+    MissingSuperinterfaceImpl {
+        struct_name: String,
+        interface_name: String,
+        superinterface_name: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]

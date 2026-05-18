@@ -10,7 +10,10 @@ use crate::{
     },
     parser::statement,
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 /// The single accumulated namespace for a compilation
 ///
@@ -23,6 +26,7 @@ pub struct Scope {
     pub structs: Vec<Struct>,
     pub struct_map: Structs,
     pub interfaces: Interfaces,
+    pub interface_impls: InterfaceImpls,
 }
 
 #[derive(Debug)]
@@ -37,6 +41,7 @@ pub(in crate::hir) struct FunctionSignature {
 #[derive(Debug)]
 pub(in crate::hir) struct InterfaceSignature {
     pub name: SymbolId,
+    pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
 }
 
@@ -53,6 +58,7 @@ pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 pub(in crate::hir) type Methods = HashMap<(StructId, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
+pub(in crate::hir) type InterfaceImpls = HashSet<(StructId, SymbolId)>;
 
 impl Scope {
     pub fn new() -> Self {
@@ -63,6 +69,7 @@ impl Scope {
             structs: Vec::new(),
             struct_map: HashMap::new(),
             interfaces: HashMap::new(),
+            interface_impls: HashSet::new(),
         }
     }
 
@@ -79,6 +86,7 @@ impl Scope {
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols)?;
         self.validate_interfaces(declarations, symbols)?;
+        self.validate_interface_hierarchy(declarations, symbols)?;
 
         Ok(())
     }
@@ -169,6 +177,9 @@ impl Scope {
                 });
             }
 
+            let superinterfaces =
+                interface.superinterfaces.iter().map(|name| symbols.insert(name)).collect();
+
             let methods = interface
                 .methods
                 .iter()
@@ -199,7 +210,37 @@ impl Scope {
                 })
                 .collect();
 
-            self.interfaces.insert(name, InterfaceSignature { name, methods });
+            self.interfaces.insert(
+                name,
+                InterfaceSignature {
+                    name,
+                    superinterfaces,
+                    methods,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_interface_hierarchy<'d, 's>(
+        &self,
+        declarations: &Declarations<'d, 's>,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'s>> {
+        for interface in &declarations.interfaces {
+            for superinterface in &interface.superinterfaces {
+                let symbol = symbols.insert(superinterface);
+
+                if !self.interfaces.contains_key(&symbol) {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownInterface {
+                            name: superinterface.to_string(),
+                        },
+                        span: interface.span,
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -265,6 +306,11 @@ impl Scope {
                 },
                 span: implementation.span,
             })?;
+
+            if let Some(interface_name) = implementation.interface {
+                let interface = symbols.insert(interface_name);
+                self.interface_impls.insert((struct_id, interface));
+            }
 
             for method in &implementation.methods {
                 let method_symbol = symbols.insert(method.name);
@@ -398,6 +444,28 @@ impl Scope {
                 .struct_map
                 .get(&struct_sym)
                 .expect("impl struct must exist in scope after extend_structs");
+
+            for required in &interface.superinterfaces {
+                if !self.interfaces.contains_key(required) {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownInterface {
+                            name: symbols.get(*required).to_string(),
+                        },
+                        span: implementation.span,
+                    });
+                }
+
+                if !self.interface_impls.contains(&(struct_id, *required)) {
+                    return Err(HirError {
+                        kind: HirErrorKind::MissingSuperinterfaceImpl {
+                            struct_name: implementation.name.to_string(),
+                            interface_name: interface_name.to_string(),
+                            superinterface_name: symbols.get(*required).to_string(),
+                        },
+                        span: implementation.span,
+                    });
+                }
+            }
 
             for required in &interface.methods {
                 if !self.methods.contains_key(&(struct_id, required.name)) {

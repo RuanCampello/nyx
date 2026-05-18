@@ -226,6 +226,11 @@ impl<F: FileSystem> ModuleLoader<F> {
                 exports.insert(s.name.to_string(), 0);
             }
         }
+        for i in &decls.interfaces {
+            if i.is_pub {
+                exports.insert(i.name.to_string(), 0);
+            }
+        }
         for f in &functions {
             if f.is_pub {
                 exports.insert(self.symbols.get(f.name).to_string(), 0);
