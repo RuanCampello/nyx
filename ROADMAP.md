@@ -46,7 +46,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Mutable References (`&mut`)
 - [ ] Type definition
   - [ ] Polymorphism (`Interface`)
-    - [ ] Static dispatch
+    - [x] Static dispatch
+    - [ ] Dynamic dispatch
+    - [ ] Interface composition
   - [ ] Composite data declaration (`struct`)
     - [x] Field access and instantiation
     - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
