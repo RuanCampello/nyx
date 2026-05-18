@@ -4,16 +4,16 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(in crate::hir) struct Declarations<'d> {
-    pub uses: Vec<&'d UseDecl<'d>>,
-    pub structs: Vec<&'d Struct<'d>>,
-    pub functions: Vec<&'d Function<'d>>,
-    pub interfaces: Vec<&'d Interface<'d>>,
-    pub impls: Vec<&'d Impl<'d>>,
+pub(in crate::hir) struct Declarations<'d, 'src> {
+    pub uses: Vec<&'d UseDecl<'src>>,
+    pub structs: Vec<&'d Struct<'src>>,
+    pub functions: Vec<&'d Function<'src>>,
+    pub interfaces: Vec<&'d Interface<'src>>,
+    pub impls: Vec<&'d Impl<'src>>,
 }
 
-impl<'d> Declarations<'d> {
-    pub fn partition(statements: &'d [Statement<'d>]) -> Result<Self, HirError<'d>> {
+impl<'d, 'src> Declarations<'d, 'src> {
+    pub fn partition(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),
@@ -42,7 +42,7 @@ impl<'d> Declarations<'d> {
         Ok(declarations)
     }
 
-    pub fn functions(&self) -> impl Iterator<Item = &'d Function<'d>> + '_ {
+    pub fn functions(&self) -> impl Iterator<Item = &'d Function<'src>> + '_ {
         self.functions
             .iter()
             .copied()

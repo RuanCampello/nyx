@@ -68,9 +68,9 @@ impl Scope {
     ///
     /// Ids are assigned relative to what is already in the scope so this can be called
     /// once per module in dependency order
-    pub fn extend<'s>(
+    pub fn extend<'d, 's>(
         &mut self,
-        declarations: &Declarations<'s>,
+        declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'s>> {
         self.extend_structs(declarations, symbols)?;
@@ -80,9 +80,9 @@ impl Scope {
         Ok(())
     }
 
-    pub fn lower_functions<'s>(
+    pub fn lower_functions<'d, 's>(
         &self,
-        declarations: &Declarations<'s>,
+        declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<Vec<Function>, HirError<'s>> {
         declarations
@@ -94,9 +94,9 @@ impl Scope {
             .collect()
     }
 
-    fn extend_structs<'s>(
+    fn extend_structs<'d, 's>(
         &mut self,
-        declarations: &Declarations<'s>,
+        declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'s>> {
         let offset = self.structs.len() as u32;
@@ -150,9 +150,9 @@ impl Scope {
         Ok(())
     }
 
-    fn extend_interfaces<'s>(
+    fn extend_interfaces<'d, 's>(
         &mut self,
-        declarations: &Declarations<'s>,
+        declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'s>> {
         for interface in &declarations.interfaces {
@@ -202,9 +202,9 @@ impl Scope {
         Ok(())
     }
 
-    fn extend_signatures<'h>(
+    fn extend_signatures<'d, 'h>(
         &mut self,
-        declarations: &Declarations<'h>,
+        declarations: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'h>> {
         use lower::resolve_annotation;
@@ -372,9 +372,9 @@ impl Scope {
         Ok(())
     }
 
-    fn validate_interfaces<'h>(
+    fn validate_interfaces<'d, 'h>(
         &self,
-        decls: &Declarations<'h>,
+        decls: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'h>> {
         for implementation in &decls.impls {

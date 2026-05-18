@@ -17,12 +17,12 @@ use std::{
     str::FromStr,
 };
 
-pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
+pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     scope: &'s Scope,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
-    function: Option<&'f statement::Function<'f>>,
+    function: Option<&'f statement::Function<'src>>,
     function_id: FunctionId,
     next_local: u32,
     symbols: &'s mut SymbolTable,
@@ -35,12 +35,12 @@ pub(in crate::hir) enum Visit {
     Visited,
 }
 
-impl<'s, 'f> FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     pub fn new(
         scope: &'s Scope,
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
-        function: &'f statement::Function<'f>,
+        function: &'f statement::Function<'src>,
     ) -> Self {
         Self {
             scope,
@@ -55,7 +55,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    pub fn lower(mut self) -> Result<Function, HirError<'f>> {
+    pub fn lower(mut self) -> Result<Function, HirError<'src>> {
         let function = self.function.take().expect("function to be present");
         let id = self.function_id;
         let signatures = &self.scope.signatures[id.0 as usize];
@@ -114,9 +114,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_block(
         &mut self,
-        block: &statement::Block<'f>,
+        block: &statement::Block<'src>,
         is_tail: bool,
-    ) -> Result<(Block, bool), HirError<'f>> {
+    ) -> Result<(Block, bool), HirError<'src>> {
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
@@ -144,9 +144,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_statement(
         &mut self,
-        statement: &statement::Statement<'f>,
+        statement: &statement::Statement<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'f>> {
+    ) -> Result<(Statement, bool), HirError<'src>> {
         use statement::Statement as Stmt;
 
         match statement {
@@ -246,9 +246,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// When the hint is `None`, literals default to `i32` and `f64` respectively
     fn lower_expr(
         &mut self,
-        expr: &expression::Expression<'f>,
+        expr: &expression::Expression<'src>,
         hint: Option<Type>,
-    ) -> Result<Expression, HirError<'f>> {
+    ) -> Result<Expression, HirError<'src>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -782,9 +782,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_if(
         &mut self,
-        if_stmt: &statement::If<'f>,
+        if_stmt: &statement::If<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'f>> {
+    ) -> Result<(Statement, bool), HirError<'src>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::Bool, condition.typ, condition.span)?;
 
@@ -850,9 +850,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     fn lower_intrinsic(
         &mut self,
         intrinsic: Intrinsic,
-        args: &[expression::Expression<'f>],
+        args: &[expression::Expression<'src>],
         span: Span,
-    ) -> Result<Expression, HirError<'f>> {
+    ) -> Result<Expression, HirError<'src>> {
         let args = args
             .iter()
             .map(|arg| self.lower_expr(arg, None))
@@ -871,7 +871,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         left: Type,
         right: Type,
         span: Span,
-    ) -> Result<Type, HirError<'f>> {
+    ) -> Result<Type, HirError<'src>> {
         match operator {
             BinaryOperator::Add
             | BinaryOperator::Sub
@@ -922,7 +922,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression<'f>) -> Result<Type, HirError<'f>> {
+    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'src>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
@@ -930,9 +930,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     #[inline(always)]
     fn resolve_type(
         &mut self,
-        typ: &statement::Type<'f>,
+        typ: &statement::Type<'src>,
         span: Span,
-    ) -> Result<Type, HirError<'f>> {
+    ) -> Result<Type, HirError<'src>> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
@@ -952,7 +952,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     #[inline(always)]
     #[must_use]
-    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'f>> {
+    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
         match expected == found {
             true => Ok(()),
             false => Err(HirError {
@@ -967,7 +967,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         name: SymbolId,
         typ: Type,
         mutable: bool,
-    ) -> Result<LocalId, HirError<'f>> {
+    ) -> Result<LocalId, HirError<'src>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
@@ -994,7 +994,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'f>> {
+    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'src>> {
         self.scopes
             .iter()
             .rev()
@@ -1013,10 +1013,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// returns the origin `LocalId`, the full path as symbols and the final field's `Type`
     fn resolve_field_chain(
         &mut self,
-        mut expr: &expression::Expression,
-        last: &'f str,
+        mut expr: &expression::Expression<'src>,
+        last: &'src str,
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
         use expression::Expression as Expr;
 
         let mut fields = vec![last];
@@ -1097,9 +1097,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     #[inline(always)]
     fn resolve_receiver_chain(
         &mut self,
-        expr: &expression::Expression<'f>,
+        expr: &expression::Expression<'src>,
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -1250,14 +1250,14 @@ const fn align_to(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }
 
-impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'src> {
     type Output = Local;
     fn index(&self, index: LocalId) -> &Self::Output {
         &self.locals[index.0 as usize]
     }
 }
 
-impl<'s, 'f> Index<StructId> for FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> Index<StructId> for FunctionBuilder<'s, 'f, 'src> {
     type Output = Struct;
     fn index(&self, index: StructId) -> &Self::Output {
         &self.scope.structs[index.0 as usize]
