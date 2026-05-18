@@ -18,6 +18,7 @@ use crate::{
 use lasso::{Key, Spur};
 use std::str::FromStr;
 
+mod declarations;
 pub mod error;
 mod functions;
 pub(crate) mod module;
