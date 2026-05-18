@@ -1112,7 +1112,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "known bug"]
     fn wrong_interface_parameters_impl() {
         let src = r#"
         interface StorageEngine {
@@ -1131,5 +1130,16 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap()).err().expect("known bug");
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::InterfaceSignatureMismatch {
+                struct_name,
+                interface_name,
+                method_name,
+                ..
+            } if struct_name == "BTreeStorage"
+                && interface_name == "StorageEngine"
+                && method_name == "read_page"
+        ));
     }
 }

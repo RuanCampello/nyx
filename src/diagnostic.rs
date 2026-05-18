@@ -417,6 +417,21 @@ impl Diagnosticable for HirError<'_> {
                 )),
             ),
 
+            Kind::InterfaceSignatureMismatch {
+                struct_name,
+                interface_name,
+                method_name: method,
+                expected,
+                found,
+            } => (
+                format!("method `{method}` does not match interface `{interface_name}`"),
+                format!("`{struct_name}` implements `{method}` with an incompatible signature"),
+                Some(format!("expected: {expected}\nfound: {found}")),
+                Some(format!(
+                    "update `{method}` in `impl {struct_name} with {interface_name}` to match the interface"
+                )),
+            ),
+
             Kind::DuplicateInterface { .. } => todo!(),
         };
 

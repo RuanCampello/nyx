@@ -63,6 +63,13 @@ pub enum HirErrorKind<'h> {
         interface_name: String,
         superinterface_name: String,
     },
+    InterfaceSignatureMismatch {
+        struct_name: String,
+        interface_name: String,
+        method_name: String,
+        expected: String,
+        found: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
