@@ -4,10 +4,10 @@ use crate::{
     hir::{
         Function, FunctionId, Intrinsic, Method, Struct, StructId, SymbolId, SymbolTable, Type,
         declarations::Declarations,
-        error::HirError,
-        error::HirErrorKind,
+        error::{HirError, HirErrorKind},
         lower::{self},
     },
+    lexer::Spanned,
     parser::statement,
 };
 use std::{
@@ -166,6 +166,8 @@ impl Scope {
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'s>> {
+        use lower::resolve_annotation;
+
         for interface in &declarations.interfaces {
             let name = symbols.insert(interface.name);
             if self.interfaces.contains_key(&name) {
@@ -192,9 +194,9 @@ impl Scope {
                     if has_receiver {
                         params.push(Type::Unit);
                     }
-                    for param in &method.params {
-                        params.push(Type::from(&param.typ.value()));
-                    }
+
+                    params.extend(method.params.iter().map(|param| Type::from(&param.typ.value())));
+
                     let return_type = method
                         .return_type
                         .as_ref()
@@ -274,19 +276,8 @@ impl Scope {
             let id = FunctionId(self.signatures.len() as u32);
             self.functions.insert(symbol, id);
 
-            let params = function
-                .params
-                .iter()
-                .map(|p| {
-                    resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let return_type = function
-                .return_type
-                .as_ref()
-                .map(|s| resolve_annotation(symbols, &self.struct_map, &s.value(), s.span()))
-                .transpose()?
-                .unwrap_or(Type::Unit);
+            let params = self.resolve_params(&function.params, symbols)?;
+            let return_type = self.resolve_return_type(function.return_type.as_ref(), symbols)?;
             let intrinsic = Intrinsic::from_str(symbols.get(symbol)).ok();
 
             self.signatures.push(FunctionSignature {
@@ -336,28 +327,9 @@ impl Scope {
                             mutable: receiver.mutable,
                             to: struct_id,
                         });
-                        params.extend(
-                            method
-                                .params
-                                .iter()
-                                .map(|p| {
-                                    resolve_annotation(
-                                        symbols,
-                                        &self.struct_map,
-                                        &p.typ.value(),
-                                        p.typ.span(),
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
-                        );
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map(|s| {
-                                resolve_annotation(symbols, &self.struct_map, &s.value(), s.span())
-                            })
-                            .transpose()?
-                            .unwrap_or(Type::Unit);
+                        params.extend(self.resolve_params(&method.params, symbols)?);
+                        let return_type =
+                            self.resolve_return_type(method.return_type.as_ref(), symbols)?;
 
                         self.signatures.push(FunctionSignature {
                             name: mangled,
@@ -385,26 +357,9 @@ impl Scope {
                         let id = FunctionId(self.signatures.len() as u32);
                         self.functions.insert(mangled, id);
 
-                        let params = method
-                            .params
-                            .iter()
-                            .map(|p| {
-                                resolve_annotation(
-                                    symbols,
-                                    &self.struct_map,
-                                    &p.typ.value(),
-                                    p.typ.span(),
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map(|s| {
-                                resolve_annotation(symbols, &self.struct_map, &s.value(), s.span())
-                            })
-                            .transpose()?
-                            .unwrap_or(Type::Unit);
+                        let params = self.resolve_params(&method.params, symbols)?;
+                        let return_type =
+                            self.resolve_return_type(method.return_type.as_ref(), symbols)?;
 
                         self.signatures.push(FunctionSignature {
                             name: mangled,
@@ -529,5 +484,31 @@ impl Scope {
                 })
             }
         }
+    }
+
+    #[inline]
+    fn resolve_return_type<'h>(
+        &self,
+        return_type: Option<&Spanned<statement::Type<'h>>>,
+        symbols: &mut SymbolTable,
+    ) -> Result<Type, HirError<'h>> {
+        return_type
+            .map(|s| lower::resolve_annotation(symbols, &self.struct_map, &s.value(), s.span()))
+            .transpose()
+            .map(|opt| opt.unwrap_or_default())
+    }
+
+    #[inline]
+    fn resolve_params<'h>(
+        &self,
+        params: &[statement::Parameter<'h>],
+        symbols: &mut SymbolTable,
+    ) -> Result<Vec<Type>, HirError<'h>> {
+        params
+            .iter()
+            .map(|p| {
+                lower::resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
+            })
+            .collect()
     }
 }

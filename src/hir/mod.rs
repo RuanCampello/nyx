@@ -51,9 +51,11 @@ pub struct StructField {
     declared_index: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Type {
+    #[default]
+    Unit,
     I8,
     U8,
     I16,
@@ -71,8 +73,10 @@ pub enum Type {
     Str,
     String,
     Struct(StructId),
-    Ref { mutable: bool, to: StructId },
-    Unit,
+    Ref {
+        mutable: bool,
+        to: StructId,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
