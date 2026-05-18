@@ -42,7 +42,7 @@ impl<'d> Declarations<'d> {
         Ok(declarations)
     }
 
-    pub fn functions(&self) -> impl Iterator<Item = &Function<'d>> + '_ {
+    pub fn functions(&self) -> impl Iterator<Item = &'d Function<'d>> + '_ {
         self.functions
             .iter()
             .copied()

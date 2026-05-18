@@ -2,17 +2,11 @@
 
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{
-        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, StructId, SymbolTable,
-        functions::{
-            self, collect_function_signatures, collect_interfaces, collect_structs,
-            signatures_from_hir, validate_interface_impls,
-        },
-    },
+    hir::{Declarations, Function, Hir, Struct, SymbolTable, scope::Scope},
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{self, Statement, UseItems},
+        statement::{Statement, UseItems},
     },
 };
 use std::{
@@ -30,6 +24,7 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     root: PathBuf,
     /// standard library root
     std: PathBuf,
+    scope: Scope,
     cache: HashMap<PathBuf, Arc<Module>>,
     /// modules currently being loaded
     /// used for cycle detection
@@ -97,6 +92,7 @@ impl<F: FileSystem> ModuleLoader<F> {
             root,
             fs,
             std,
+            scope: Scope::new(),
             cache: HashMap::new(),
             in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
@@ -210,154 +206,30 @@ impl<F: FileSystem> ModuleLoader<F> {
         Ok(())
     }
 
-    fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
-        for statement in &statements {
-            match statement {
-                Statement::Fn(_)
-                | Statement::Use(_)
-                | Statement::Struct(_)
-                | Statement::Impl(_)
-                | Statement::Interface(_) => {}
-                _ => {
-                    println!("heres the statement: {statement:#?}");
-                    return Err(ModuleError::TopLevelNonFunction {
-                        path: path.into(),
-                        span: statement.span(),
-                    });
-                }
-            }
-        }
+    fn analyse(&mut self, _path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
+        let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
 
-        let (mut structs, local_struct_map) =
-            collect_structs(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+        let struct_offset = self.scope.structs.len();
 
-        // build a combined signature + id table that includes all already-lowered dependencies
-        let mut dependencies: Vec<_> = self.cache.keys().collect();
-        dependencies.sort_unstable();
+        self.scope.extend(&decls, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
 
-        let mut functions = Vec::new();
-        let mut dependency_structs = Vec::new();
-        let mut struct_map = functions::Structs::new();
-
-        for dependency in dependencies {
-            let module = &self.cache[dependency];
-            functions.extend(module.functions.iter().cloned());
-
-            for struct_def in &module.structs {
-                let name = self.symbols.get(struct_def.name).to_string();
-                if module.exports.contains_key(&name) {
-                    struct_map.insert(struct_def.name, struct_def.id);
-                }
-
-                dependency_structs.push(struct_def.clone());
-            }
-        }
-
-        let (mut signatures, mut map, mut methods) = signatures_from_hir(&functions);
-        let struct_offset = dependency_structs.len() as u32;
-
-        for (&symbol, &id) in &local_struct_map {
-            struct_map.insert(symbol, StructId(id.0 + struct_offset));
-        }
-
-        for struct_def in &mut structs {
-            struct_def.offset(struct_offset);
-        }
-
-        let mut analysis_structs = dependency_structs;
-        analysis_structs.extend(structs.iter().cloned());
-
-        let local_offset = signatures.len() as u32;
-        let (local_signatures, local_map, local_methods) =
-            collect_function_signatures(&statements, &mut self.symbols, &struct_map)
-                .map_err(|e| Diagnostic::from(e))?;
-
-        // merge local signatures into combined table
-        for (&symbol, &local_id) in &local_map {
-            // check for duplicated function names between local and imported
-            if map.contains_key(&symbol) {
-                use crate::hir::error::{HirError, HirErrorKind};
-
-                let name = self.symbols.get(symbol).to_string();
-
-                let span = statements
-                    .iter()
-                    .find_map(|stmt| match stmt {
-                        Statement::Fn(func) if func.name == name.as_str() => Some(func.span),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-
-                return Err(ModuleError::Diagnostic(
-                    HirError {
-                        kind: HirErrorKind::DuplicateFunction { name },
-                        span,
-                    }
-                    .into(),
-                ));
-            }
-
-            map.insert(symbol, FunctionId(local_offset + local_id.0));
-        }
-
-        for (&key, &local_id) in &local_methods {
-            methods.insert(key, FunctionId(local_offset + local_id.0));
-        }
-
-        let local_interfaces =
-            collect_interfaces(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
-
-        validate_interface_impls(
-            &statements,
-            &local_interfaces,
-            &methods,
-            &struct_map,
-            &mut self.symbols,
-        )
-        .map_err(|e| Diagnostic::from(e))?;
-
-        signatures.extend(local_signatures);
-
-        let mut functions = Vec::new();
-        let mut exports = HashMap::new();
-
-        for statement in &statements {
-            if let statement::Statement::Struct(s) = statement {
-                if s.is_pub {
-                    exports.insert(s.name.to_string(), 0);
-                }
-            }
-        }
-
-        for function in crate::hir::functions::function_declarations(&statements) {
-            let function_id = crate::hir::functions::function_id_for(
-                &function,
-                &map,
-                &methods,
-                &struct_map,
-                &mut self.symbols,
-            )
+        let functions = self
+            .scope
+            .lower_functions(&decls, &mut self.symbols)
             .map_err(|e| Diagnostic::from(e))?;
 
-            let builder = FunctionBuilder::new(
-                &signatures,
-                &map,
-                &methods,
-                &analysis_structs,
-                &struct_map,
-                &mut self.symbols,
-                function_id,
-                function,
-            );
-            let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
+        let structs = self.scope.structs[struct_offset..].to_vec();
 
-            hir.id = FunctionId(local_offset + functions.len() as u32);
-
-            if hir.is_pub {
-                exports.insert(self.symbols.get(hir.name).to_string(), functions.len());
+        let mut exports = HashMap::new();
+        for s in &decls.structs {
+            if s.is_pub {
+                exports.insert(s.name.to_string(), 0);
             }
-
-            functions.push(hir);
+        }
+        for f in &functions {
+            if f.is_pub {
+                exports.insert(self.symbols.get(f.name).to_string(), 0);
+            }
         }
 
         Ok(Module {

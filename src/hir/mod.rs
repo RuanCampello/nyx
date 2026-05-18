@@ -5,8 +5,9 @@
 
 use crate::{
     hir::{
-        error::{HirError, HirErrorKind},
-        functions::{FunctionBuilder, FunctionSignature},
+        declarations::Declarations,
+        error::HirError,
+        scope::{FunctionSignature, Scope},
         symbols::SymbolTable,
     },
     lexer::token::Span,
@@ -20,8 +21,9 @@ use std::str::FromStr;
 
 mod declarations;
 pub mod error;
-mod functions;
+mod lower;
 pub(crate) mod module;
+mod scope;
 mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,62 +233,16 @@ pub(crate) trait Offset {
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
-    let (structs, structs_map) = functions::collect_structs(&statements, &mut symbols)?;
-    let (signatures, functions_map, methods_map) =
-        functions::collect_function_signatures(&statements, &mut symbols, &structs_map)?;
-    let interfaces = functions::collect_interfaces(&statements, &mut symbols)?;
+    let declarations = Declarations::partition(&statements)?;
 
-    functions::validate_interface_impls(
-        &statements,
-        &interfaces,
-        &methods_map,
-        &structs_map,
-        &mut symbols,
-    )?;
+    let mut scope = Scope::new();
+    scope.extend(&declarations, &mut symbols)?;
 
-    let mut functions = Vec::new();
-    for function in functions::function_declarations(&statements) {
-        let function_id = functions::function_id_for(
-            &function,
-            &functions_map,
-            &methods_map,
-            &structs_map,
-            &mut symbols,
-        )?;
-        let function = FunctionBuilder::new(
-            &signatures,
-            &functions_map,
-            &methods_map,
-            &structs,
-            &structs_map,
-            &mut symbols,
-            function_id,
-            function,
-        );
-        functions.push(function.lower()?);
-    }
-
-    for statement in statements {
-        match statement {
-            statement::Statement::Fn(_)
-            | statement::Statement::Struct(_)
-            | statement::Statement::Impl(_)
-            | statement::Statement::Interface(_) => continue,
-            // 'use' declarations are valid at the top level but have no HIR representation
-            // symbol resolution happens at the module loader level, not here
-            statement::Statement::Use(_) => continue,
-            other => {
-                return Err(HirError {
-                    kind: HirErrorKind::TopLevelNonFunction,
-                    span: other.span(),
-                });
-            }
-        }
-    }
+    let functions = scope.lower_functions(&declarations, &mut symbols)?;
 
     Ok(Hir {
         symbols: symbols.into_symbols(),
-        structs,
+        structs: scope.structs,
         functions,
     })
 }
@@ -565,7 +521,7 @@ impl std::fmt::Debug for SymbolId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::Parser;
+    use crate::{hir::error::HirErrorKind, parser::Parser};
     use lasso::Key;
 
     #[test]
