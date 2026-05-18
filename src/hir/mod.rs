@@ -1110,4 +1110,26 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    #[should_panic = "known bug"]
+    fn wrong_interface_parameters_impl() {
+        let src = r#"
+        interface StorageEngine {
+            fn flush(&self): bool;
+            fn read_page(&self): i64;
+        }
+
+        struct BTreeStorage {
+            page_size: i64,
+        }
+
+        impl BTreeStorage with StorageEngine {
+            fn flush(&self): bool { true }
+            fn read_page(&self, page_id: i64): i64 { self.page_size }
+        }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).err().expect("known bug");
+    }
 }
