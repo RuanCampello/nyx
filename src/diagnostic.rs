@@ -253,223 +253,218 @@ impl Diagnosticable for HirError<'_> {
     fn info(&self) -> Info {
         use crate::hir::error::HirErrorKind as Kind;
 
-        let (message, label, note, help) = match &self.kind {
+        match &self.kind {
             Kind::Parser(_) => unreachable!(),
 
-            Kind::TopLevelNonFunction => (
-                "only function declarations are allowed at the top level".to_string(),
-                "this is not a function declaration".to_string(),
-                Some("move this into a function body, or wrap it in `fn main()`".to_string()),
-                None,
-            ),
+            Kind::TopLevelNonFunction => Info::primary(
+                "only function declarations are allowed at the top level",
+                "this is not a function declaration",
+                self.span,
+            )
+            .with_help("move this into a function body, or wrap it in `fn main()`"),
 
-            Kind::DuplicateFunction { name } => (
+            Kind::DuplicateFunction { name } => Info::primary(
                 format!("duplicate function `{name}`"),
                 format!("`{name}` is defined here again"),
-                None,
-                Some(format!("rename one of the `{name}` functions")),
-            ),
+                self.span,
+            )
+            .with_help(format!("rename one of the `{name}` functions")),
 
-            Kind::DuplicateMethod { struct_name, name } => (
+            Kind::DuplicateMethod { struct_name, name } => Info::primary(
                 format!("duplicate method `{name}` for `{struct_name}`"),
                 format!("`{name}` is already defined for `{struct_name}`"),
-                None,
-                Some(format!("remove or rename one of the `{name}` methods")),
-            ),
+                self.span,
+            )
+            .with_help(format!("remove or rename one of the `{name}` methods")),
 
-            Kind::UndeclaredIdentifier { name } => (
+            Kind::UndeclaredIdentifier { name } => Info::primary(
                 format!("use of undeclared identifier `{name}`"),
                 format!("`{name}` is not declared in this scope"),
-                None,
-                Some(format!(
-                    "declare `{name}` with `let {name} = ...` before using it"
-                )),
-            ),
+                self.span,
+            )
+            .with_help(format!(
+                "declare `{name}` with `let {name} = ...` before using it"
+            )),
 
-            Kind::UnknownFunction { name } => (
+            Kind::UnknownFunction { name } => Info::primary(
                 format!("call to unknown function `{name}`"),
                 format!("`{name}` is not a known function"),
-                None,
-                Some(format!("declare `fn {name}(...)` before calling it")),
-            ),
+                self.span,
+            )
+            .with_help(format!("declare `fn {name}(...)` before calling it")),
 
-            Kind::UnknownMethod { struct_name, name } => (
+            Kind::UnknownMethod { struct_name, name } => Info::primary(
                 format!("call to unknown method `{name}` on `{struct_name}`"),
                 format!("`{struct_name}` has no method named `{name}`"),
-                None,
-                Some(format!(
-                    "declare `impl {struct_name} {{ fn {name}(&self) {{ ... }} }}`"
-                )),
-            ),
+                self.span,
+            )
+            .with_help("declare `impl {struct_name} {{ fn {name}(&self) {{ ... }} }}`"),
 
-            Kind::UnknownType { name } => (
+            Kind::UnknownType { name } => Info::primary(
                 format!("unknown type `{name}`"),
                 format!("`{name}` is not a known type"),
-                None,
-                Some(format!("declare `struct {name} {{ ... }}` before using it")),
-            ),
+                self.span,
+            )
+            .with_help(format!("declare `struct {name} {{ ... }}` before using it")),
 
-            Kind::DuplicateStruct { name } => (
+            Kind::DuplicateStruct { name } => Info::primary(
                 format!("duplicate struct `{name}`"),
                 format!("`{name}` is defined here again"),
-                None,
-                Some(format!("rename one of the `{name}` structs")),
-            ),
+                self.span,
+            )
+            .with_help(format!("rename one of the `{name}` structs")),
 
-            Kind::DuplicateField { name } => (
+            Kind::DuplicateField { name } => Info::primary(
                 format!("duplicate field `{name}`"),
                 format!("`{name}` is already declared"),
-                Some("struct field names must be unique".to_string()),
-                None,
-            ),
+                self.span,
+            )
+            .with_note("struct field names must be unique"),
 
-            Kind::UnknownField { struct_name, field } => (
+            Kind::UnknownField { struct_name, field } => Info::primary(
                 format!("unknown field `{field}` for struct `{struct_name}`"),
                 format!("`{struct_name}` has no field named `{field}`"),
-                None,
-                None,
+                self.span,
             ),
 
-            Kind::MissingField { struct_name, field } => (
+            Kind::MissingField { struct_name, field } => Info::primary(
                 format!("missing field `{field}` for struct `{struct_name}`"),
                 format!("`{field}` must be initialised"),
-                Some(format!("all fields of `{struct_name}` must be provided")),
-                None,
-            ),
+                self.span,
+            )
+            .with_help(format!("all fields of `{struct_name}` must be provided")),
 
-            Kind::CircularStruct { name } => (
+            Kind::CircularStruct { name } => Info::primary(
                 format!("circular struct definition involving `{name}`"),
                 format!("`{name}` is part of a by-value struct cycle"),
-                Some("Nyx does not support self-referential or circular structs yet".to_string()),
-                Some(
-                    "break the cycle; an eventual pointer/box type will be needed for this"
-                        .to_string(),
-                ),
+                self.span,
+            )
+            .with_help("Nyx does not support self-referential or circular structs yet")
+            .with_note("break the cycle; an eventual pointer/box type will be needed for this"),
+
+            Kind::InvalidFieldAccess => Info::primary(
+                "invalid field access",
+                "field access is only supported on local bindings",
+                self.span,
             ),
 
-            Kind::InvalidFieldAccess => (
-                "invalid field access".to_string(),
-                "field access is only supported on local bindings".to_string(),
-                None,
-                None,
-            ),
-
-            Kind::InvalidAssignmentTarget => (
-                "invalid assignment target".to_string(),
-                "the left-hand side of an assignment must be an identifier or a field access"
-                    .to_string(),
-                None,
-                Some("use `name = value` or `name.field = value`".to_string()),
-            ),
+            Kind::InvalidAssignmentTarget => Info::primary(
+                "invalid assignment target",
+                "the left-hand side of an assignment must be an identifier or a field access",
+                self.span,
+            )
+            .with_note("use `name = value` or `name.field = value`"),
 
             Kind::ArityMismatch {
                 name,
                 expected,
                 found,
-            } => (
+            } => Info::primary(
                 format!("wrong number of arguments to `{name}`"),
                 format!(
                     "{found} argument{} provided, but `{name}` expects {expected}",
-                    if *found == 1 { "" } else { "s" }
+                    if *found == 1 { "" } else { "s" },
                 ),
-                None,
-                None,
+                self.span,
             ),
 
-            Kind::DuplicateBind { name } => (
+            Kind::DuplicateBind { name } => Info::primary(
                 format!("duplicate binding `{name}`"),
                 format!("`{name}` is already bound in this scope"),
-                Some("re-declaring the same name in the same scope is not allowed".to_string()),
-                Some("use a different name, or shadow it in a nested block".to_string()),
-            ),
+                self.span,
+            )
+            .with_note("re-declaring the same name in the same scope is not allowed")
+            .with_help("use a different name, or shadow it in a nested block"),
 
-            Kind::MissingInitialiser { name } => (
+            Kind::MissingInitialiser { name } => Info::primary(
                 format!("missing initialiser for `{name}`"),
                 format!("`{name}` has no initialiser and no type annotation"),
-                Some("Nyx cannot infer the type without a value to check against".to_string()),
-                Some(format!(
-                    "add a type annotation: `let {name}: <type>;` or provide an initial value"
-                )),
-            ),
+                self.span,
+            )
+            .with_note("Nyx cannot infer the type without a value to check against")
+            .with_help("add a type annotation: `let {name}: <type>;` or provide an initial value"),
 
-            Kind::MissingReceiver { name } => (
+            Kind::MissingReceiver { name } => Info::primary(
                 format!("method `{name}` is missing a receiver"),
                 format!("`{name}` must declare `&self` or `&mut self`"),
-                None,
-                Some(format!("write `fn {name}(&self, ...)`")),
-            ),
+                self.span,
+            )
+            .with_help(format!("write `fn {name}(&self, ...)`")),
 
-            Kind::ReceiverOutsideImpl => (
-                "`self` receiver outside `impl` block".to_string(),
-                "receivers are only valid in methods".to_string(),
-                None,
-                Some("move this function into an `impl Type { ... }` block".to_string()),
-            ),
+            Kind::ReceiverOutsideImpl => Info::primary(
+                "`self` receiver outside `impl` block",
+                "receivers are only valid in methods",
+                self.span,
+            )
+            .with_help("move this function into an `impl Type { ... }` block"),
 
-            Kind::TypeMismatch { expected, found } => (
+            Kind::TypeMismatch { expected, found } => Info::primary(
                 format!("type mismatch: expected `{expected}`, found `{found}`"),
                 format!("this has type `{found}`"),
-                None,
-                Some(format!("expected `{expected}` here")),
-            ),
+                self.span,
+            )
+            .with_help("expected `{expected}` here"),
 
-            Kind::ImmutableBind { name } => (
+            Kind::ImmutableBind { name } => Info::primary(
                 format!("cannot assign to immutable binding `{name}`"),
                 format!("`{name}` is immutable and cannot be reassigned"),
-                Some("bindings are immutable by default".to_string()),
-                Some(format!("declare it as mutable: `let mut {name} = ...`")),
-            ),
+                self.span,
+            )
+            .with_note("bindings are immutable by default")
+            .with_help(format!("declare it as mutable: `let mut {name} = ...`")),
 
-            Kind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => (
+            Kind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => Info::primary(
                 format!("cannot call non-const function `{name}` in a const context"),
                 format!("`{name}` is not declared `const`"),
-                Some("const functions may only call other const functions".to_string()),
-                Some(format!(
-                    "mark `fn {name}` as `const fn {name}` if it qualifies"
-                )),
-            ),
+                self.span,
+            )
+            .with_note("const functions may only call other const functions")
+            .with_help(format!(
+                "mark `fn {name}` as `const fn {name}` if it qualifies"
+            )),
 
-            Kind::UnknownInterface { name } => (
+            Kind::UnknownInterface { name } => Info::primary(
                 format!("unknown interface `{name}`"),
                 format!("`{name}` is not a known interface"),
-                None,
-                Some(format!(
-                    "declare `interface {name} {{ ... }}` before using it"
-                )),
-            ),
+                self.span,
+            )
+            .with_help(format!(
+                "declare `interface {name} {{ ... }}` before using it"
+            )),
 
             Kind::MissingInterfaceMethod {
                 struct_name,
                 interface_name,
                 method_name: method,
-            } => (
+            } => Info::primary(
                 format!("missing method `{method}` required by interface `{interface_name}`"),
                 format!("`{struct_name}` does not implement `{method}`"),
-                Some(format!("`{interface_name}` requires `fn {method}(...)`")),
-                Some(format!(
-                    "add `fn {method}(...)` to `impl {struct_name} with {interface_name}`"
-                )),
-            ),
+                self.span,
+            )
+            .with_note(format!("`{interface_name}` requires `fn {method}(...)`"))
+            .with_help(format!(
+                "add `fn {method}(...)` to `impl {struct_name} with {interface_name}`"
+            )),
 
             Kind::MissingSuperinterfaceImpl {
                 struct_name,
                 interface_name,
                 superinterface_name,
-            } => (
+            } => Info::primary(
                 format!(
-                    "missing`{}` implementation required by `{interface_name}`",
-                    superinterface_name.fg(Colour::Fixed(155))
+                    "missing`{superinterface_name}` implementation required by `{interface_name}`",
                 ),
                 format!(
                     "`{struct_name}` implements `{interface_name}` without `{superinterface_name}`"
                 ),
-                Some(format!(
-                    "`{interface_name}` extends `{superinterface_name}`"
-                )),
-                Some(format!(
-                    "add `impl {struct_name} with {superinterface_name} {{ ... }}`"
-                )),
-            ),
+                self.span,
+            )
+            .with_note(format!(
+                "`{interface_name}` extends `{superinterface_name}`"
+            ))
+            .with_help(format!(
+                "add `impl {struct_name} with {superinterface_name} {{ ... }}`"
+            )),
 
             Kind::InterfaceSignatureMismatch {
                 struct_name,
@@ -477,27 +472,17 @@ impl Diagnosticable for HirError<'_> {
                 method_name: method,
                 expected,
                 found,
-            } => (
+            } => Info::primary(
                 format!(
                     "method `{}` does not match interface `{interface_name}`",
                     method.fg(Colour::Fixed(115))
                 ),
                 format!("`{struct_name}` implements `{method}` with an incompatible signature"),
-                Some(format!("expected: {expected}\nfound: {found}")),
-                Some(format!(
+                        self.span).with_note(format!("expected: {expected}\nfound: {found}")).with_help(format!(
                     "update `{method}` in `impl {struct_name} with {interface_name}` to match the interface"
                 )),
-            ),
 
-            Kind::DuplicateInterface { .. } => todo!(),
-        };
-
-        Info {
-            span: self.span(),
-            message,
-            label,
-            help,
-            note,
+            Kind::DuplicateInterface { name } => Info::primary(format!("duplicate interface `{name}`"), format!("`{name}` is defined here again"), self.span).with_help(format!("rename one of the `{name}` interfaces")),
         }
     }
 }
