@@ -1,0 +1,22 @@
+pub interface DeviceIdentity {
+    fn device_id(&self): i64;
+    fn site_id(&self): i64;
+}
+
+pub interface TelemetryReading: DeviceIdentity {
+    fn sample_tick(&self): i64;
+    fn health_score(&self): i64;
+}
+
+pub interface ThresholdReading: TelemetryReading {
+    fn limit(&self): i64;
+    fn is_over_limit(&self): bool;
+}
+
+pub interface Ackable {
+    fn ack_code(&self): i64;
+}
+
+pub interface DispatchableAlert: ThresholdReading + Ackable {
+    fn priority(&self): i64;
+}
