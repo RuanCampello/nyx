@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::{
     hir::{
         Function, FunctionId, Intrinsic, Method, Struct, StructId, SymbolId, SymbolTable, Type,
@@ -454,7 +456,46 @@ impl Scope {
                     && required.return_type == signature.return_type;
 
                 if !signature_ok {
-                    panic!("invalid interface method signature");
+                    fn format(
+                        name: &str,
+                        has_receiver: bool,
+                        receiver_mut: bool,
+                        params: &[Type],
+                        return_type: Type,
+                    ) -> String {
+                        let mut parameters = match has_receiver {
+                            true => Vec::from([match receiver_mut {
+                                true => "&mut self".to_string(),
+                                _ => "&self".to_string(),
+                            }]),
+                            _ => Vec::new(),
+                        };
+
+                        parameters.extend(params.iter().map(|t| t.to_string()));
+                        format!("fn {name}({}): {return_type}", parameters.join(", "))
+                    }
+
+                    #[rustfmt::skip]
+                    let expected = format(
+                        method_name.as_str(), required.has_receiver, required.receiver_mut,
+                        &required.params, required.return_type,
+                    );
+                    #[rustfmt::skip]
+                    let found = format(
+                        method_name.as_str(), impl_has_receiver, impl_receiver_mut,
+                        impl_explicit_params, signature.return_type,
+                    );
+
+                    return Err(HirError {
+                        kind: HirErrorKind::InterfaceSignatureMismatch {
+                            struct_name: implementation.name.to_string(),
+                            interface_name: interface_name.to_string(),
+                            method_name: method_name.to_string(),
+                            expected,
+                            found,
+                        },
+                        span: impl_method.span,
+                    });
                 }
             }
         }
