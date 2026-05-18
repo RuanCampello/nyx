@@ -318,6 +318,39 @@ mod tests {
     }
 
     #[test]
+    fn unary_binds_after_method_call() {
+        let statements = Parser::new("!rect.is_larger_than(15);").parse().unwrap();
+
+        let [
+            Statement::Expr(
+                Expression::Unary {
+                    operator: UnaryOperator::Not,
+                    expr,
+                    ..
+                },
+                _,
+            ),
+        ] = statements.as_slice()
+        else {
+            panic!("expected unary expression statement, got {statements:?}");
+        };
+
+        let Expression::Call { callee, args, .. } = expr.as_ref() else {
+            panic!("expected unary operand to be a method call, got {expr:?}");
+        };
+
+        assert!(matches!(
+            callee.as_ref(),
+            Expression::Field {
+                expr,
+                field: "is_larger_than",
+                ..
+            } if matches!(expr.as_ref(), Expression::Identifier("rect", _))
+        ));
+        assert!(matches!(args.as_slice(), [Expression::Integer(15, _)]));
+    }
+
+    #[test]
     fn parse_add_function_file() {
         let source = include_str!("../../tests/single/add.nyx");
         let statements = Parser::new(source).parse().unwrap();

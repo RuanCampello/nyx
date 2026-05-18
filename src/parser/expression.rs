@@ -142,7 +142,7 @@ impl<'i> Expression<'i> {
                     }
                 };
 
-                let expr = Self::parse_expr(parser, 10)?;
+                let expr = Self::parse_expr(parser, 7)?;
                 let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
