@@ -6,7 +6,7 @@ use crate::lexer::token::Span;
 use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
 use crate::{NyxError, hir::error::HirError};
-use ariadne::{Color as Colour, Label, Report, ReportKind, Source};
+use ariadne::{Color as Colour, Fmt, Label, Report, ReportKind, Source};
 use std::cell::RefCell;
 
 #[derive(Debug)]
@@ -14,14 +14,19 @@ pub struct Diagnostic {
     pub(crate) rendered: String,
 }
 
-#[derive(Debug)]
 pub struct Info {
     message: String,
-    label: String,
+
+    primary: LabelInfo,
+    secondary: Option<LabelInfo>,
 
     note: Option<String>,
     help: Option<String>,
+}
 
+struct LabelInfo {
+    text: String,
+    colour: Colour,
     span: Span,
 }
 
@@ -33,7 +38,13 @@ thread_local! {
     static SOURCE: RefCell<(String, String)> = RefCell::new((String::new(), String::new()));
 }
 
-const RED: Colour = Colour::Fixed(203);
+const RED: Colour = Colour::Fixed(210);
+const PEACH: Colour = Colour::Fixed(216);
+const GREEN: Colour = Colour::Fixed(114);
+const BLUE: Colour = Colour::Fixed(111);
+const MAUVE: Colour = Colour::Fixed(183);
+const YELLOW: Colour = Colour::Fixed(229);
+const TEAL: Colour = Colour::Fixed(116);
 
 pub fn initialise(src: &str, filename: &str) {
     SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
@@ -45,14 +56,28 @@ impl Diagnostic {
     }
 
     fn from_info(info: Info) -> Self {
-        let span: std::ops::Range<usize> = info.span.into();
+        let span: std::ops::Range<usize> = info.primary.span.into();
 
         let rendered = SOURCE.with_borrow(|(src, filename)| {
             let id = filename.as_str();
 
             let mut builder = Report::build(ReportKind::Error, (id, span.start..span.start))
                 .with_message(&info.message)
-                .with_label(Label::new((id, span)).with_message(&info.label).with_color(RED));
+                .with_label(
+                    Label::new((id, span))
+                        .with_message(&info.primary.text)
+                        .with_color(info.primary.colour),
+                );
+
+            if let Some(secondary) = info.secondary {
+                let range: std::ops::Range<usize> = secondary.span.into();
+
+                builder = builder.with_label(
+                    Label::new((id, range))
+                        .with_message(&secondary.text)
+                        .with_color(secondary.colour),
+                );
+            }
 
             if let Some(note) = &info.note {
                 builder = builder.with_note(note);
@@ -66,6 +91,42 @@ impl Diagnostic {
         });
 
         Self { rendered }
+    }
+}
+
+impl Info {
+    fn primary(message: impl Into<String>, label: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            primary: LabelInfo {
+                span,
+                text: label.into(),
+                colour: RED,
+            },
+            secondary: None,
+            note: None,
+            help: None,
+        }
+    }
+
+    fn with_secondary(mut self, label: impl Into<String>, colour: Colour, span: Span) -> Self {
+        self.secondary = Some(LabelInfo {
+            text: label.into(),
+            span,
+            colour,
+        });
+
+        self
+    }
+
+    fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
     }
 }
 
@@ -86,35 +147,40 @@ impl Diagnosticable for LexError {
     fn info(&self) -> Info {
         use crate::lexer::error::LexErrorKind as Kind;
 
-        let (message, label) = match &self.kind {
-            Kind::UnexpectedChar(c) => (
+        let info = match &self.kind {
+            Kind::UnexpectedChar(c) => Info::primary(
                 format!("unexpected character `{c}`"),
-                format!("this character is not valid here"),
+                "not valid here",
+                self.span,
             ),
-            Kind::UnterminatedString => (
-                "unterminated string literal".to_string(),
-                "string opened here but never closed".to_string(),
-            ),
-            Kind::UnterminatedComment => (
-                "unterminated block comment".to_string(),
-                "block comment opened here but never closed".to_string(),
-            ),
-            Kind::InvalidEscape(c) => (
+            Kind::UnterminatedString => Info::primary(
+                "unterminated string literal",
+                "string opened here but never closed",
+                self.span,
+            )
+            .with_help("add a closing '\"' at the end of the string"),
+            Kind::UnterminatedComment => Info::primary(
+                "unterminated block comment",
+                "block comment opened here but never closed",
+                self.span,
+            )
+            .with_help("add a closing '*/'"),
+            Kind::InvalidEscape(c) => Info::primary(
                 format!("invalid escape sequence `\\{c}`"),
                 format!("`\\{c}` is not a recognised escape"),
-            ),
-            Kind::InvalidNumber(detail) => (
+                self.span,
+            )
+            .with_help("valid escapes: `\\\\`, `\\\"`, `\\n`, `\\t`, `\\r`, `\\0`"),
+            Kind::InvalidNumber(detail) => Info::primary(
                 format!("invalid number literal: {detail}"),
-                "could not parse this as a number".to_string(),
+                "could not parse this as a number",
+                self.span,
             ),
         };
 
-        Info {
-            message,
-            label,
-            span: self.span,
-            help: self.help.clone(),
-            note: None,
+        match self.help {
+            Some(ref help) if info.help.is_none() => info.with_help(help),
+            _ => info,
         }
     }
 }
@@ -123,75 +189,62 @@ impl Diagnosticable for ParserError<'_> {
     fn info(&self) -> Info {
         use crate::parser::error::ParseErrorKind as Kind;
 
-        let (message, label, note, help) = match &self.kind {
+        match &self.kind {
             Kind::Lexical(lex) => return lex.info(),
 
-            Kind::Expected { expected, found } => (
+            Kind::Expected { expected, found } => Info::primary(
                 format!("expected `{expected}`, found `{found}`"),
                 format!("expected `{expected}` here"),
-                None,
-                Some(format!("add a `{expected}` token here")),
-            ),
+                self.span,
+            )
+            .with_help(format!("add a `{expected}` token here")),
 
-            Kind::ExpectedIdentifier { found } => (
+            Kind::ExpectedIdentifier { found } => Info::primary(
                 format!("expected identifier, found `{found}`"),
-                "an identifier was expected here".to_string(),
-                None,
-                None,
+                "an identifier was expected here",
+                self.span,
             ),
 
-            Kind::UnexpectedIdentifier => (
-                "invalid assignment target".to_string(),
-                "only identifiers can be assigned to".to_string(),
-                Some("assignment targets must be simple identifiers, not expressions".to_string()),
-                None,
+            Kind::UnexpectedIdentifier => Info::primary(
+                "invalid assignment target",
+                "only identifiers can be assigned to",
+                self.span,
             ),
 
-            Kind::InvalidBinaryOperator { found } => (
+            Kind::InvalidBinaryOperator { found } => Info::primary(
                 format!("unexpected token `{found}` in expression"),
                 format!("`{found}` cannot be used as a binary operator here"),
-                None,
-                None,
-            ),
+                self.span,
+            )
+            .with_note("valid unary operators are `-` (negation) and `!` (logical not)"),
 
-            Kind::InvalidUnaryOperator { found } => (
+            Kind::InvalidUnaryOperator { found } => Info::primary(
                 format!("unexpected token `{found}` in unary expression"),
                 format!("`{found}` cannot be used as a unary operator"),
-                Some("valid unary operators are `-` (negation) and `!` (logical not)".to_string()),
-                None,
+                self.span,
             ),
 
-            Kind::ExpectedExpression { found } => (
+            Kind::ExpectedExpression { found } => Info::primary(
                 format!("expected expression, found `{found}`"),
-                "an expression was expected here".to_string(),
-                None,
-                None,
+                "an expression was expected here",
+                self.span,
             ),
 
-            Kind::ExpectedTypeIdentifier { found } => (
+            Kind::ExpectedTypeIdentifier { found } => Info::primary(
                 format!("unknown type `{found}`"),
                 format!("`{found}` is not a known type"),
-                Some(
-                    "valid types: i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char, &str, String, iptr, uptr"
-                        .to_string(),
-                ),
-                None,
+                self.span,
+            )
+            .with_note(
+                "valid types: i8, u8, i16, u16, i32, u32, i64, u64, \
+                 f32, f64, bool, char, &str, String, iptr, uptr",
             ),
 
-            Kind::UnexpectedEof => (
-                "unexpected end of file".to_string(),
-                "the file ended here unexpectedly".to_string(),
-                None,
-                None,
+            Kind::UnexpectedEof => Info::primary(
+                "unexpected end of file",
+                "the file ended here unexpectedly",
+                self.span,
             ),
-        };
-
-        Info {
-            span: self.span,
-            message,
-            help,
-            label,
-            note,
         }
     }
 }
@@ -404,7 +457,8 @@ impl Diagnosticable for HirError<'_> {
                 superinterface_name,
             } => (
                 format!(
-                    "missing`{superinterface_name}` implementation required by `{interface_name}`"
+                    "missing`{}` implementation required by `{interface_name}`",
+                    superinterface_name.fg(Colour::Fixed(155))
                 ),
                 format!(
                     "`{struct_name}` implements `{interface_name}` without `{superinterface_name}`"
@@ -424,7 +478,10 @@ impl Diagnosticable for HirError<'_> {
                 expected,
                 found,
             } => (
-                format!("method `{method}` does not match interface `{interface_name}`"),
+                format!(
+                    "method `{}` does not match interface `{interface_name}`",
+                    method.fg(Colour::Fixed(115))
+                ),
                 format!("`{struct_name}` implements `{method}` with an incompatible signature"),
                 Some(format!("expected: {expected}\nfound: {found}")),
                 Some(format!(
@@ -441,6 +498,65 @@ impl Diagnosticable for HirError<'_> {
             label,
             help,
             note,
+        }
+    }
+}
+
+impl From<ModuleError> for Diagnostic {
+    fn from(value: ModuleError) -> Self {
+        match value {
+            ModuleError::Diagnostic(diagnostic) => diagnostic,
+            ModuleError::FileNotFound { path, span } => Self::from_info(Info {
+                message: format!("module file not found: `{}`", path.display()),
+                label: "imported here".to_string(),
+                span: span.unwrap_or_default(),
+                help: Some(format!("make sure the file `{}` exists", path.display())),
+                note: None,
+            }),
+            ModuleError::CircularImport { path, span } => Self::from_info(Info {
+                message: format!(
+                    "circular import: `{}` is already being loaded",
+                    path.display()
+                ),
+                label: "this import creates a cycle".to_string(),
+                span,
+                help: Some("remove the circular dependency between modules".to_string()),
+                note: None,
+            }),
+            ModuleError::EmptyPath => Self::from_info(Info {
+                message: "empty import path".to_string(),
+                label: "this path has no segments".to_string(),
+                span: Span::default(),
+                help: Some("use paths like `use project::module;`".to_string()),
+                note: None,
+            }),
+            ModuleError::UnknownRoot { name, span } => Self::from_info(Info {
+                message: format!("unknown module root `{name}`"),
+                label: format!("`{name}` is not a known module root"),
+                span,
+                help: Some("the root must match the project name".to_string()),
+                note: None,
+            }),
+            ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {
+                message: format!(
+                    "module `{}` has no exported symbol `{name}`",
+                    path.display()
+                ),
+                label: format!("`{name}` is not exported from this module"),
+                span,
+                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
+                note: None,
+            }),
+            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(Info {
+                message: format!(
+                    "only function declarations are allowed at top level in `{}`",
+                    path.display()
+                ),
+                label: "this is not a function declaration".to_string(),
+                span,
+                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
+                note: None,
+            }),
         }
     }
 }
@@ -509,65 +625,6 @@ impl<T: Diagnosticable> From<T> for Diagnostic {
 impl<T: Into<Diagnostic>> From<T> for NyxError {
     fn from(value: T) -> Self {
         Self::Compile(value.into())
-    }
-}
-
-impl From<ModuleError> for Diagnostic {
-    fn from(value: ModuleError) -> Self {
-        match value {
-            ModuleError::Diagnostic(diagnostic) => diagnostic,
-            ModuleError::FileNotFound { path, span } => Self::from_info(Info {
-                message: format!("module file not found: `{}`", path.display()),
-                label: "imported here".to_string(),
-                span: span.unwrap_or_default(),
-                help: Some(format!("make sure the file `{}` exists", path.display())),
-                note: None,
-            }),
-            ModuleError::CircularImport { path, span } => Self::from_info(Info {
-                message: format!(
-                    "circular import: `{}` is already being loaded",
-                    path.display()
-                ),
-                label: "this import creates a cycle".to_string(),
-                span,
-                help: Some("remove the circular dependency between modules".to_string()),
-                note: None,
-            }),
-            ModuleError::EmptyPath => Self::from_info(Info {
-                message: "empty import path".to_string(),
-                label: "this path has no segments".to_string(),
-                span: Span::default(),
-                help: Some("use paths like `use project::module;`".to_string()),
-                note: None,
-            }),
-            ModuleError::UnknownRoot { name, span } => Self::from_info(Info {
-                message: format!("unknown module root `{name}`"),
-                label: format!("`{name}` is not a known module root"),
-                span,
-                help: Some("the root must match the project name".to_string()),
-                note: None,
-            }),
-            ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {
-                message: format!(
-                    "module `{}` has no exported symbol `{name}`",
-                    path.display()
-                ),
-                label: format!("`{name}` is not exported from this module"),
-                span,
-                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
-                note: None,
-            }),
-            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(Info {
-                message: format!(
-                    "only function declarations are allowed at top level in `{}`",
-                    path.display()
-                ),
-                label: "this is not a function declaration".to_string(),
-                span,
-                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
-                note: None,
-            }),
-        }
     }
 }
 
