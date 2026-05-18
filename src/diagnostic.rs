@@ -473,16 +473,21 @@ impl Diagnosticable for HirError<'_> {
                 expected,
                 found,
             } => Info::primary(
-                format!(
-                    "method `{}` does not match interface `{interface_name}`",
-                    method.fg(Colour::Fixed(115))
-                ),
+                format!("method `{method}` does not match interface `{interface_name}`"),
                 format!("`{struct_name}` implements `{method}` with an incompatible signature"),
-                        self.span).with_note(format!("expected: {expected}\nfound: {found}")).with_help(format!(
+                        self.span
+                )
+                .with_secondary(format!("interface requires `{expected}`"), BLUE, self.span)
+                .with_note(format!("expected: {expected}\nfound: {found}"))
+                .with_help(format!(
                     "update `{method}` in `impl {struct_name} with {interface_name}` to match the interface"
                 )),
 
-            Kind::DuplicateInterface { name } => Info::primary(format!("duplicate interface `{name}`"), format!("`{name}` is defined here again"), self.span).with_help(format!("rename one of the `{name}` interfaces")),
+            Kind::DuplicateInterface { name } => Info::primary(
+                format!("duplicate interface `{name}`"), 
+                format!("`{name}` is defined here again"), self.span)
+                .with_help(format!("rename one of the `{name}` interfaces")
+            ),
         }
     }
 }
@@ -490,58 +495,70 @@ impl Diagnosticable for HirError<'_> {
 impl From<ModuleError> for Diagnostic {
     fn from(value: ModuleError) -> Self {
         match value {
-            ModuleError::Diagnostic(diagnostic) => diagnostic,
-            ModuleError::FileNotFound { path, span } => Self::from_info(Info {
-                message: format!("module file not found: `{}`", path.display()),
-                label: "imported here".to_string(),
-                span: span.unwrap_or_default(),
-                help: Some(format!("make sure the file `{}` exists", path.display())),
-                note: None,
-            }),
-            ModuleError::CircularImport { path, span } => Self::from_info(Info {
-                message: format!(
-                    "circular import: `{}` is already being loaded",
-                    path.display()
-                ),
-                label: "this import creates a cycle".to_string(),
-                span,
-                help: Some("remove the circular dependency between modules".to_string()),
-                note: None,
-            }),
-            ModuleError::EmptyPath => Self::from_info(Info {
-                message: "empty import path".to_string(),
-                label: "this path has no segments".to_string(),
-                span: Span::default(),
-                help: Some("use paths like `use project::module;`".to_string()),
-                note: None,
-            }),
-            ModuleError::UnknownRoot { name, span } => Self::from_info(Info {
-                message: format!("unknown module root `{name}`"),
-                label: format!("`{name}` is not a known module root"),
-                span,
-                help: Some("the root must match the project name".to_string()),
-                note: None,
-            }),
-            ModuleError::UnknownExport { path, name, span } => Self::from_info(Info {
-                message: format!(
-                    "module `{}` has no exported symbol `{name}`",
-                    path.display()
-                ),
-                label: format!("`{name}` is not exported from this module"),
-                span,
-                help: Some(format!("add `pub` to `fn {name}` in `{}`", path.display())),
-                note: None,
-            }),
-            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(Info {
-                message: format!(
-                    "only function declarations are allowed at top level in `{}`",
-                    path.display()
-                ),
-                label: "this is not a function declaration".to_string(),
-                span,
-                help: Some("move this into a function body, or wrap it in `fn main()`".to_string()),
-                note: None,
-            }),
+            ModuleError::Diagnostic(d) => d,
+
+            ModuleError::FileNotFound { path, span } => Self::from_info(
+                Info::primary(
+                    format!("module file not found: `{}`", path.display()),
+                    "imported here",
+                    span.unwrap_or_default(),
+                )
+                .with_help(format!("make sure the file `{}` exists", path.display())),
+            ),
+
+            ModuleError::CircularImport { path, span } => Self::from_info(
+                Info::primary(
+                    format!(
+                        "circular import: `{}` is already being loaded",
+                        path.display()
+                    ),
+                    "this import creates a cycle",
+                    span,
+                )
+                .with_help("remove the circular dependency between modules"),
+            ),
+
+            ModuleError::EmptyPath => Self::from_info(
+                Info::primary(
+                    "empty import path",
+                    "this path has no segments",
+                    Span::default(),
+                )
+                .with_help("use paths like `use project::module;`"),
+            ),
+
+            ModuleError::UnknownRoot { name, span } => Self::from_info(
+                Info::primary(
+                    format!("unknown module root `{name}`"),
+                    format!("`{name}` is not a known module root"),
+                    span,
+                )
+                .with_help("the root must match the project name"),
+            ),
+
+            ModuleError::UnknownExport { path, name, span } => Self::from_info(
+                Info::primary(
+                    format!(
+                        "module `{}` has no exported symbol `{name}`",
+                        path.display()
+                    ),
+                    format!("`{name}` is not exported from this module"),
+                    span,
+                )
+                .with_help(format!("add `pub` to `fn {name}` in `{}`", path.display())),
+            ),
+
+            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(
+                Info::primary(
+                    format!(
+                        "only function declarations are allowed at top level in `{}`",
+                        path.display()
+                    ),
+                    "this is not a function declaration",
+                    span,
+                )
+                .with_help("move this into a function body, or wrap it in `fn main()`"),
+            ),
         }
     }
 }
