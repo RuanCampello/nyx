@@ -162,6 +162,13 @@ impl<'i> Parser<'i> {
             Some(Ok(t)) if t.is_kind(Keyword::Struct)
         )
     }
+
+    pub(crate) fn is_pub_interface(&self) -> bool {
+        matches!(
+            self.peek_nth(1),
+            Some(Ok(t)) if t.is_kind(Keyword::Interface)
+        )
+    }
 }
 
 #[cfg(test)]

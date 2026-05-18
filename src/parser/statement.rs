@@ -95,6 +95,7 @@ pub struct Impl<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Interface<'i> {
     pub name: &'i str,
+    pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
     pub is_pub: bool,
     pub span: Span,
@@ -209,6 +210,9 @@ impl<'i> Parsable<'i> for Statement<'i> {
             }
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
                 Ok(Statement::Struct(parser.parse_node()?))
+            }
+            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_interface() => {
+                Ok(Statement::Interface(parser.parse_node()?))
             }
             TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(
@@ -617,6 +621,18 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let is_pub = parser.consume_keyword(Keyword::Pub)?;
         let interface_token = parser.expect_token(Keyword::Interface)?;
         let (name, _) = parser.expect_identifier()?;
+        let mut superinterfaces = Vec::new();
+
+        if parser.consume_punct(Punct::Colon)? {
+            loop {
+                superinterfaces.push(parser.expect_identifier()?.0);
+
+                if !parser.consume_punct(Punct::Plus)? {
+                    break;
+                }
+            }
+        }
+
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
@@ -627,6 +643,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     return Ok(Self {
                         name,
+                        superinterfaces,
                         span: interface_token.span + close.span,
                         methods,
                         is_pub,

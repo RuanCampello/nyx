@@ -398,6 +398,25 @@ impl Diagnosticable for HirError<'_> {
                 )),
             ),
 
+            Kind::MissingSuperinterfaceImpl {
+                struct_name,
+                interface_name,
+                superinterface_name,
+            } => (
+                format!(
+                    "missing`{superinterface_name}` implementation required by `{interface_name}`"
+                ),
+                format!(
+                    "`{struct_name}` implements `{interface_name}` without `{superinterface_name}`"
+                ),
+                Some(format!(
+                    "`{interface_name}` extends `{superinterface_name}`"
+                )),
+                Some(format!(
+                    "add `impl {struct_name} with {superinterface_name} {{ ... }}`"
+                )),
+            ),
+
             Kind::DuplicateInterface { .. } => todo!(),
         };
 
