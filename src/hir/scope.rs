@@ -36,6 +36,7 @@ pub(in crate::hir) struct FunctionSignature {
     pub return_type: Type,
     pub intrinsic: Option<Intrinsic>,
     pub method: Option<Method>,
+    pub is_const: bool,
 }
 
 #[derive(Debug)]
@@ -276,6 +277,7 @@ impl Scope {
                 return_type,
                 intrinsic,
                 method: None,
+                is_const: function.is_const,
             });
         }
 
@@ -326,6 +328,7 @@ impl Scope {
                             params,
                             return_type,
                             intrinsic: None,
+                            is_const: method.is_const,
                             method: Some(Method {
                                 receiver: struct_id,
                                 name: method_symbol,
@@ -355,6 +358,7 @@ impl Scope {
                             name: mangled,
                             params,
                             return_type,
+                            is_const: method.is_const,
                             intrinsic: None,
                             method: None,
                         });

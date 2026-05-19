@@ -2,7 +2,7 @@ use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
         Parameter, Receiver, Statement, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
-        error::{HirError, HirErrorKind},
+        error::{ConstFnViolationKind, HirError, HirErrorKind},
         scope::{Scope, Structs},
     },
     lexer::token::Span,
@@ -26,6 +26,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     function_id: FunctionId,
     next_local: u32,
     symbols: &'s mut SymbolTable,
+    is_const: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         Self {
             scope,
             symbols,
+            is_const: function.is_const,
             return_type: Type::Unit,
             function: Some(function),
             function_id,
@@ -639,6 +641,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     }
                 };
 
+                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                            name: self.symbols.get(signature.name).to_string(),
+                        }),
+                        span: *span,
+                    });
+                }
+
                 if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                     return Err(HirError {
                         kind: HirErrorKind::ArityMismatch {
@@ -700,6 +711,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
                     let signature = &self.scope.signatures[id.0 as usize];
 
+                    if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                        return Err(HirError {
+                            kind: HirErrorKind::ConstFnViolation(
+                                ConstFnViolationKind::NonConstCall {
+                                    name: self.symbols.get(signature.name).to_string(),
+                                },
+                            ),
+                            span: *span,
+                        });
+                    }
+
                     if signature.params.len() != args.len() {
                         return Err(HirError {
                             kind: HirErrorKind::ArityMismatch {
@@ -740,6 +762,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     span: *span,
                 })?;
                 let signature = &self.scope.signatures[id.0 as usize];
+
+                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                            name: self.symbols.get(signature.name).to_string(),
+                        }),
+                        span: *span,
+                    });
+                }
 
                 if signature.params.len() != args.len() {
                     return Err(HirError {

@@ -254,6 +254,7 @@ impl From<&Function> for FunctionSignature {
             name: value.name,
             intrinsic: value.intrinsic,
             method: value.method,
+            is_const: value.is_const,
         }
     }
 }
