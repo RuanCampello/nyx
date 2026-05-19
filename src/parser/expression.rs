@@ -7,6 +7,7 @@ pub enum Expression<'i> {
     Integer(i64, Span),
     Float(f64, Span),
     String(&'i str, Span),
+    Char(char, Span),
     Bool(bool, Span),
     Identifier(&'i str, Span),
     Unary {
@@ -59,6 +60,7 @@ pub struct StructField<'i> {
 pub enum UnaryOperator {
     Neg,
     Not,
+    Deref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +92,7 @@ impl<'i> Expression<'i> {
             Self::Integer(_, span)
             | Self::Float(_, span)
             | Self::String(_, span)
+            | Self::Char(_, span)
             | Self::Bool(_, span)
             | Self::Identifier(_, span)
             | Self::Unary { span, .. }
@@ -124,15 +127,17 @@ impl<'i> Expression<'i> {
             TokenKind::Integer(n) => Ok(Expression::Integer(n, token.span)),
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
+            TokenKind::Char(c) => Ok(Expression::Char(c, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
             TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
                 true => Self::parse_struct(parser, ident, token.span),
                 false => Ok(Expression::Identifier(ident, token.span)),
             },
-            TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
+            TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) | TokenKind::Punct(Punct::Star) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
+                    TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
 
                     _ => {
                         return Err(ParserError::new(
