@@ -164,13 +164,28 @@ impl Diagnosticable for LexError {
 
             K::InvalidNumber(detail) => Builder::new(format!("invalid number literal: {detail}"))
                 .primary(self.span, "could not parse this as a number"),
+
+            K::UnterminatedChar => Builder::new("unterminated character literal")
+                .primary(self.span, "opened here, but never closed")
+                .help(format!(
+                    "add a closing {} at the end of the character literal",
+                    "'".fg(SECONDARY)
+                )),
+
+            K::EmptyChar => Builder::new("empty character literal")
+                .primary(self.span, "character literals cannot be empty")
+                .help("provide a character inside the single quotes"),
+
+            K::OverlongChar => Builder::new("character literal is too long")
+                .primary(self.span, "character literals must contain exactly one character")
+                .help("use double quotes for string literals instead"),
         };
 
         let b = match self.help {
             Some(ref h)
                 if !matches!(
                     &self.kind,
-                    K::UnterminatedString | K::UnterminatedComment | K::InvalidEscape(_)
+                    K::UnterminatedString | K::UnterminatedComment | K::InvalidEscape(_) | K::UnterminatedChar | K::EmptyChar | K::OverlongChar
                 ) =>
             {
                 b.help(h.clone())
