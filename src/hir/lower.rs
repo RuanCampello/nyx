@@ -1,7 +1,8 @@
 use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Receiver, Statement, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
+        Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId, SymbolId,
+        SymbolTable, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         scope::{Scope, Structs},
     },
@@ -288,6 +289,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span: *span,
             }),
 
+            Expr::Char(value, span) => Ok(Expression {
+                kind: ExpressionKind::Char(*value),
+                typ: Type::Char,
+                span: *span,
+            }),
+
             Expr::Bool(value, span) => Ok(Expression {
                 kind: ExpressionKind::Bool(*value),
                 typ: Type::Bool,
@@ -314,6 +321,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => Some(Type::Bool),
+                    UnaryOperator::Deref => hint.map(|h| Type::Ref {
+                        mutable: false,
+                        to: match h {
+                            Type::Struct(id) => RefTarget::Struct(id),
+                            Type::Char => RefTarget::Char,
+                            Type::Ref { to, .. } => to,
+                            _ => RefTarget::Char,
+                        },
+                    }),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
 
@@ -332,12 +348,29 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         }
                     },
                     UnaryOperator::Not => Type::Bool,
+                    UnaryOperator::Deref => match expr.typ {
+                        Type::Ref { to, .. } => to.into(),
+                        _ => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::Ref {
+                                        mutable: false,
+                                        to: RefTarget::Char,
+                                    },
+                                    found: expr.typ,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    },
                 };
 
-                self.assert_type(expected, expr.typ, expr.span)?;
+                if *operator != UnaryOperator::Deref {
+                    self.assert_type(expected, expr.typ, expr.span)?;
+                }
 
                 Ok(Expression {
-                    typ: expr.typ,
+                    typ: expected,
                     span: *span,
                     kind: ExpressionKind::Unary {
                         operator: *operator,
@@ -537,48 +570,50 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     ..
                 } = callee.as_ref()
                 {
-                    let (local, fields, receiver_type) =
-                        self.resolve_receiver_chain(receiver, *span)?;
-                    let receiver_struct = match receiver_type {
-                        Type::Struct(id) => id,
-                        Type::Ref { to, .. } => to,
-                        found => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::Struct(StructId::default()),
-                                    found,
-                                },
-                                span: *span,
-                            });
-                        }
-                    };
+                    let (local, fields, receiver_expr, receiver_type) =
+                        match self.try_resolve_receiver_chain(receiver, *span) {
+                            Ok((loc, flds, typ)) => (Some(loc), flds, None, typ),
+                            _ => {
+                                let lowered = self.lower_expr(receiver, None)?;
+                                let typ = lowered.typ;
+                                (None, Vec::new(), Some(Box::new(lowered)), typ)
+                            }
+                        };
 
+                    let receiver_base_type = receiver_type.strip_reference();
                     let method_symbol = self.symbols.insert(method_name);
+                    let struct_name = match receiver_base_type {
+                        Type::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                        other => other.to_string(),
+                    };
                     let function =
-                        *self.scope.methods.get(&(receiver_struct, method_symbol)).ok_or_else(
+                        *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
                             || HirError {
                                 kind: HirErrorKind::UnknownMethod {
-                                    struct_name: self
-                                        .symbols
-                                        .get(self[receiver_struct].name)
-                                        .to_string(),
+                                    struct_name,
                                     name: method_name.to_string(),
                                 },
                                 span: *span,
                             },
                         )?;
+
                     let signature = &self.scope.signatures[function.0 as usize];
                     let Type::Ref { mutable, .. } = signature.params[0] else {
                         unreachable!("method signature must start with receiver reference");
                     };
 
-                    if mutable && !self[local].mutable {
-                        return Err(HirError {
-                            kind: HirErrorKind::ImmutableBind {
-                                name: self.symbols.get(self[local].name).to_string(),
-                            },
-                            span: *span,
-                        });
+                    if mutable {
+                        if local.filter(|&id| self[id].mutable).is_none() {
+                            let name = match local {
+                                Some(id) => self.symbols.get(self[id].name).to_string(),
+                                None => "temporary".to_string(),
+                            };
+
+                            return Err(HirError {
+                                kind: HirErrorKind::ImmutableBind { name },
+                                span: *span,
+                            });
+                        }
                     }
 
                     let explicit_params = &signature.params[1..];
@@ -611,6 +646,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             receiver: Receiver {
                                 local,
                                 fields,
+                                value: receiver_expr,
                                 typ: signature.params[0],
                             },
                             args: lowered_args,
@@ -932,7 +968,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() {
+                match left.is_number() || left == Type::Char {
                     true => Ok(Type::Bool),
                     _ => Err(HirError {
                         kind: HirErrorKind::TypeMismatch {
@@ -1082,18 +1118,25 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let mut field_symbols = Vec::with_capacity(fields.len());
 
         for (idx, &field_name) in fields.iter().enumerate() {
-            let (Type::Struct(id) | Type::Ref { to: id, .. }) = current_type else {
-                return Err(HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: current_type,
-                    },
-                    span,
-                });
+            let struct_id = match current_type {
+                Type::Struct(id) => id,
+                Type::Ref {
+                    to: RefTarget::Struct(id),
+                    ..
+                } => id,
+                found => {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId::default()),
+                            found,
+                        },
+                        span,
+                    });
+                }
             };
 
             let field = self.symbols.insert(field_name);
-            let struct_def = &self[id];
+            let struct_def = &self[struct_id];
             let name = self.symbols.get(struct_def.name);
 
             let field_def = {
@@ -1110,16 +1153,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             field_symbols.push(field);
 
             let is_last = idx == fields.len() - 1;
-            if !is_last {
-                if !matches!(current_type, Type::Struct(_) | Type::Ref { .. }) {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found: current_type,
-                        },
-                        span,
-                    });
-                }
+            #[rustfmt::skip]
+            let is_struct_to_struct = matches!(current_type, Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. });
+            if !is_last && !is_struct_to_struct {
+                return Err(HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: current_type,
+                    },
+                    span,
+                });
             }
         }
 
@@ -1127,7 +1170,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 
     #[inline(always)]
-    fn resolve_receiver_chain(
+    fn try_resolve_receiver_chain(
         &mut self,
         expr: &expression::Expression<'src>,
         span: Span,
