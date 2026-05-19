@@ -60,13 +60,7 @@ impl Interference {
     }
 
     pub fn neighbours(&self, vreg: &VReg) -> &BTreeSet<VReg> {
-        use std::sync::OnceLock;
-
-        static EMPTY: OnceLock<BTreeSet<VReg>> = OnceLock::new();
-
-        self.edges
-            .get(vreg.0 as usize)
-            .unwrap_or_else(|| EMPTY.get_or_init(BTreeSet::new))
+        &self.edges[vreg.0 as usize]
     }
 
     pub fn degree(&self, vreg: &VReg) -> usize {

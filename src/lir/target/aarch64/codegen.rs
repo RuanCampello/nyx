@@ -148,7 +148,7 @@ impl Function<AArch64> {
                 fp_offset,
                 bytes,
             } => {
-                let suffix = ldr_suffix(bytes);
+                let suffix = mem_suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 match is_mem(&dest) {
                     true => {
@@ -204,7 +204,7 @@ impl Function<AArch64> {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let dest = alloc.location(dest, bytes);
-                let suffix = ldr_suffix(bytes);
+                let suffix = mem_suffix(bytes);
 
                 match is_mem(&dest) {
                     true => {
@@ -251,7 +251,7 @@ impl Function<AArch64> {
                 let ptr = alloc.location(ptr, &8);
                 let dest = alloc.location(dest, bytes);
                 let addr = load_ptr_addr(out, &ptr);
-                let suffix = ldr_suffix(bytes);
+                let suffix = mem_suffix(bytes);
                 let scratch = match (*is_float, is_mem(&dest)) {
                     (true, true) => A64Reg::D16.name(*bytes),
                     (false, true) => A64Reg::X16.name(*bytes),
@@ -404,13 +404,13 @@ impl Function<AArch64> {
                             }
                             A64Operand::VReg(vreg) => {
                                 let src = alloc.location(vreg, &bytes);
-                                let suffix = str_suffix(&bytes);
+                                let suffix = mem_suffix(&bytes);
                                 emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
                             }
                             A64Operand::Label(label) => match mt {
                                 MachineType::Float { .. } => {
                                     let scratch = A64Reg::D16.name(bytes);
-                                    let suffix = str_suffix(&bytes);
+                                    let suffix = mem_suffix(&bytes);
                                     emit!(out, "adrp    x16, {label}");
                                     emit!(out, "ldr     {scratch}, [x16, :lo12:{label}]");
                                     emit!(out, "str{suffix}    {scratch}, [sp, #{offset}]");
@@ -435,7 +435,7 @@ impl Function<AArch64> {
                     for (idx, (vreg, _)) in moves.iter().enumerate() {
                         let bytes = self.reg_bytes(vreg);
                         let src = alloc.location(vreg, &bytes);
-                        let suffix = str_suffix(&bytes);
+                        let suffix = mem_suffix(&bytes);
                         let offset = idx * 8;
                         emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
                     }
@@ -443,7 +443,7 @@ impl Function<AArch64> {
                     for (idx, (vreg, reg)) in moves.iter().enumerate() {
                         let bytes = self.reg_bytes(vreg);
                         let dest = reg.name(bytes);
-                        let suffix = ldr_suffix(&bytes);
+                        let suffix = mem_suffix(&bytes);
                         let offset = idx * 8;
                         emit!(out, "ldr{suffix}    {dest}, [sp, #{offset}]");
                     }
@@ -676,12 +676,12 @@ fn emit_move(out: &mut String, dest: &str, src: &str, bytes: u8, is_float: bool)
 }
 
 fn emit_load(out: &mut String, dest: &str, src: &str, bytes: u8) {
-    let suffix = ldr_suffix(&bytes);
+    let suffix = mem_suffix(&bytes);
     emit!(out, "ldr{suffix}    {dest}, {src}");
 }
 
 fn emit_store(out: &mut String, src: &str, dest: &str, bytes: u8) {
-    let suffix = str_suffix(&bytes);
+    let suffix = mem_suffix(&bytes);
     emit!(out, "str{suffix}    {src}, {dest}");
 }
 
@@ -791,16 +791,7 @@ const fn align_pair(bytes: u32) -> u32 {
 }
 
 #[inline(always)]
-const fn ldr_suffix(bytes: &u8) -> &'static str {
-    match bytes {
-        1 => "b",
-        2 => "h",
-        _ => "",
-    }
-}
-
-#[inline(always)]
-const fn str_suffix(bytes: &u8) -> &'static str {
+const fn mem_suffix<'s>(bytes: &u8) -> &'s str {
     match bytes {
         1 => "b",
         2 => "h",

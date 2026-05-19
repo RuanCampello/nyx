@@ -302,7 +302,7 @@ mod tests {
             Punct::And,
             Punct::Or,
         ]
-        .map(|p| TokenKind::Punct(p))
+        .map(TokenKind::Punct)
         .to_vec();
 
         assert_eq!(ks, expected);
@@ -314,7 +314,7 @@ mod tests {
 
         assert_eq!(
             [Punct::Ampersand, Punct::And, Punct::And, Punct::Ampersand]
-                .map(|p| TokenKind::Punct(p))
+                .map(TokenKind::Punct)
                 .to_vec(),
             ks
         )
@@ -351,6 +351,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn number_literals() {
         assert_eq!(
             kinds("42 3.14 0 1_000"),
