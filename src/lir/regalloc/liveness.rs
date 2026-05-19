@@ -20,6 +20,12 @@ impl Liveness {
         let mut blocks = vec![BlockLiveness::default(); n];
         let mut changed = true;
 
+        let block_uses_and_defs: Vec<_> = function
+            .blocks
+            .iter()
+            .map(|block| block.uses_and_defs::<T>())
+            .collect();
+
         while changed {
             changed = false;
 
@@ -31,7 +37,7 @@ impl Liveness {
                     new_out.extend(blocks[successor.0 as usize].live_in.iter().copied());
                 });
 
-                let (uses, defs) = block.uses_and_defs();
+                let (uses, defs) = &block_uses_and_defs[idx];
 
                 let mut new_in = new_out
                     .iter()
@@ -39,7 +45,7 @@ impl Liveness {
                     .copied()
                     .collect::<BTreeSet<_>>();
 
-                for vreg in uses {
+                for &vreg in uses {
                     new_in.insert(vreg);
                 }
 

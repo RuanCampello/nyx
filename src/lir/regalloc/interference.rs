@@ -15,11 +15,10 @@ pub(in crate::lir::regalloc) struct Interference {
 
 impl Interference {
     pub fn build<T: Target>(function: &Function<T>, liveness: &Liveness) -> Self {
-        let mut graph = Self::default();
-
-        for (idx, _) in function.vreg_types.iter().enumerate() {
-            graph.add_node(VReg(idx as u32));
-        }
+        let mut graph = Self {
+            edges: vec![BTreeSet::new(); function.vreg_types.len()],
+            call_crossed: BTreeSet::new(),
+        };
 
         for (idx, block) in function.blocks.iter().enumerate() {
             let mut live = liveness.blocks[idx].live_out.clone();
@@ -48,10 +47,6 @@ impl Interference {
 
                 for (vreg, _) in instruction.precoloured_uses() {
                     live.insert(*vreg);
-                }
-
-                for &def in instruction.defs() {
-                    graph.add_node(def);
                 }
             }
         }
@@ -98,20 +93,9 @@ impl Interference {
     }
 
     pub fn add_edge(&mut self, a: VReg, b: VReg) {
-        if a == b {
-            return;
-        }
-        self.add_node(a);
-        self.add_node(b);
-
-        self.edges[a.0 as usize].insert(b);
-        self.edges[b.0 as usize].insert(a);
-    }
-
-    pub fn add_node(&mut self, v: VReg) {
-        let len = v.0 as usize + 1;
-        if self.edges.len() < len {
-            self.edges.resize_with(len, BTreeSet::new);
+        if a != b {
+            self.edges[a.0 as usize].insert(b);
+            self.edges[b.0 as usize].insert(a);
         }
     }
 }

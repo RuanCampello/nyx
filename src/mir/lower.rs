@@ -47,7 +47,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 
     for function in &hir.functions {
         functions.push(FunctionLower::run(
-            function.clone(),
+            function,
             &symbols,
             &hir.structs,
             &mut strings,
@@ -66,7 +66,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 
 impl<'a> FunctionLower<'a> {
     fn run(
-        function: hir::Function,
+        function: &hir::Function,
         symbols: &'a [String],
         structs: &'a [Struct],
         strings: &'a mut Vec<String>,
