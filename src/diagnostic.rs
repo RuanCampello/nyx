@@ -805,3 +805,689 @@ impl std::fmt::Display for NyxError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::diagnostic;
+    use crate::hir::{
+        self, Type,
+        error::{ConstFnViolationKind, HirErrorKind},
+    };
+    use crate::lexer::{self, Lexer, error::LexErrorKind};
+    use crate::parser::{self, Parser, error::ParseErrorKind};
+
+    fn hir_err(src: &str) -> hir::error::HirError<'static> {
+        diagnostic::initialise(src, "<test>");
+        let statements = Parser::new(src).parse().expect("parse must succeed for hir tests");
+        hir::lower(statements)
+            .map_err(|e| unsafe {
+                std::mem::transmute::<hir::error::HirError<'_>, hir::error::HirError<'static>>(e)
+            })
+            .unwrap_err()
+    }
+
+    fn parse_err(src: &str) -> parser::error::ParserError<'static> {
+        diagnostic::initialise(src, "<test>");
+        let result = Parser::new(src).parse();
+        let err = result.unwrap_err();
+        unsafe {
+            std::mem::transmute::<parser::error::ParserError<'_>, parser::error::ParserError<'static>>(
+                err,
+            )
+        }
+    }
+
+    fn lex_err(src: &str) -> lexer::error::LexError {
+        diagnostic::initialise(src, "<test>");
+        Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap_err()
+    }
+
+    macro_rules! hir_check {
+        ($src:expr) => {{
+            let err = hir_err($src);
+            let diag = diagnostic::Diagnostic::from(err.clone());
+            println!("{}", diag);
+            err.kind
+        }};
+    }
+
+    macro_rules! parse_check {
+        ($src:expr) => {{
+            let err = parse_err($src);
+            let diag = diagnostic::Diagnostic::from(err.clone());
+            println!("{}", diag);
+            err.kind
+        }};
+    }
+
+    macro_rules! lex_check {
+        ($src:expr) => {{
+            let err = lex_err($src);
+            let diag = diagnostic::Diagnostic::from(err.clone());
+            println!("{}", diag);
+            err.kind
+        }};
+    }
+
+    #[test]
+    fn lex_unexpected_char() {
+        let kind = lex_check!("let x = @;");
+        assert_eq!(kind, LexErrorKind::UnexpectedChar('@'));
+    }
+
+    #[test]
+    fn lex_unexpected_char_pipe() {
+        let kind = lex_check!("let x = a | b;");
+        assert_eq!(kind, LexErrorKind::UnexpectedChar('|'));
+    }
+
+    #[test]
+    fn lex_unterminated_string() {
+        let kind = lex_check!(r#"let x = "hello;"#);
+        assert_eq!(kind, LexErrorKind::UnterminatedString);
+    }
+
+    #[test]
+    fn lex_unterminated_string_newline() {
+        let kind = lex_check!("let x = \"hello\nworld\";");
+        assert_eq!(kind, LexErrorKind::UnterminatedString);
+    }
+
+    #[test]
+    fn lex_unterminated_block_comment() {
+        let kind = lex_check!("let x = 1; /* never closed");
+        assert_eq!(kind, LexErrorKind::UnterminatedComment);
+    }
+
+    #[test]
+    fn lex_invalid_escape() {
+        let kind = lex_check!(r#"let x = "hello\qworld";"#);
+        assert_eq!(kind, LexErrorKind::InvalidEscape('q'));
+    }
+
+    #[test]
+    fn lex_invalid_escape_various() {
+        for (src, ch) in [(r#""\p""#, 'p'), (r#""\x""#, 'x'), (r#""\z""#, 'z')] {
+            let kind = lex_check!(src);
+            assert_eq!(kind, LexErrorKind::InvalidEscape(ch), "source: {src}");
+        }
+    }
+
+    #[test]
+    fn parse_expected_token() {
+        let kind = parse_check!("let x = 1");
+        assert!(
+            matches!(kind, ParseErrorKind::Expected { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_expected_identifier() {
+        let kind = parse_check!("let 42: i32 = 1;");
+        assert!(
+            matches!(kind, ParseErrorKind::ExpectedIdentifier { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_unexpected_identifier_bad_assignment() {
+        let kind = parse_check!("fn main() { (a + b) = 1; }");
+        assert!(
+            matches!(kind, ParseErrorKind::UnexpectedIdentifier),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_invalid_binary_operator() {
+        let kind = parse_check!("fn main() { let x = 1 % 2; }");
+        assert!(
+            matches!(kind, ParseErrorKind::InvalidBinaryOperator { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_invalid_unary_operator() {
+        let kind = parse_check!("fn main() { let x = +1; }");
+        assert!(
+            matches!(kind, ParseErrorKind::InvalidUnaryOperator { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_expected_expression() {
+        let kind = parse_check!("fn main() { let x = ; }");
+        assert!(
+            matches!(kind, ParseErrorKind::ExpectedExpression { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_expected_type_identifier() {
+        let kind = parse_check!("fn main() { let x: &unknown = 1; }");
+        assert!(
+            matches!(kind, ParseErrorKind::ExpectedTypeIdentifier { .. }),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_unexpected_eof() {
+        let kind = parse_check!("fn main() {");
+        assert!(
+            matches!(kind, ParseErrorKind::UnexpectedEof),
+            "got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn parse_lexical_error_surfaced() {
+        // A lex error that surfaces through the parser path
+        let kind = parse_check!(r#"fn main() { let x = "\q"; }"#);
+        assert!(matches!(kind, ParseErrorKind::Lexical(_)), "got {kind:?}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // HIR ERRORS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn hir_top_level_non_function() {
+        let kind = hir_check!("let x: i32 = 1;");
+        assert_eq!(kind, HirErrorKind::TopLevelNonFunction);
+    }
+
+    #[test]
+    fn hir_duplicate_function() {
+        let kind = hir_check!(
+            "fn foo(): i32 { 1 }
+         fn foo(): i32 { 2 }"
+        );
+        assert_eq!(kind, HirErrorKind::DuplicateFunction { name: "foo".into() });
+    }
+
+    #[test]
+    fn hir_duplicate_method() {
+        let kind = hir_check!(
+            "struct Counter { value: i32 }
+         impl Counter { fn get(&self): i32 { self.value } }
+         impl Counter { fn get(&self): i32 { self.value } }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::DuplicateMethod {
+                struct_name: "Counter".into(),
+                name: "get".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_undeclared_identifier() {
+        let kind = hir_check!("fn main() { x + 1; }");
+        assert_eq!(
+            kind,
+            HirErrorKind::UndeclaredIdentifier { name: "x".into() }
+        );
+    }
+
+    #[test]
+    fn hir_unknown_function() {
+        let kind = hir_check!("fn main() { foo(); }");
+        assert_eq!(kind, HirErrorKind::UnknownFunction { name: "foo".into() });
+    }
+
+    #[test]
+    fn hir_unknown_method() {
+        let kind = hir_check!(
+            "struct Point { x: i32 }
+         fn main() { let p = Point { x: 1 }; p.frobnicate(); }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownMethod {
+                struct_name: "Point".into(),
+                name: "frobnicate".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_unknown_type_in_let() {
+        let kind = hir_check!("fn main() { let x: Phantom = 1; }");
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownType {
+                name: "Phantom".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_unknown_type_in_param() {
+        let kind = hir_check!("fn foo(x: Ghost): i32 { 0 }");
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownType {
+                name: "Ghost".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_duplicate_struct() {
+        let kind = hir_check!(
+            "struct Foo { x: i32 }
+         struct Foo { y: i32 }"
+        );
+        assert_eq!(kind, HirErrorKind::DuplicateStruct { name: "Foo".into() });
+    }
+
+    #[test]
+    fn hir_duplicate_field_in_struct() {
+        let kind = hir_check!("struct Bad { x: i32, x: i64 }");
+        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x".into() });
+    }
+
+    #[test]
+    fn hir_duplicate_field_in_literal() {
+        let kind = hir_check!(
+            "struct Point { x: i32, y: i32 }
+         fn main() { let p = Point { x: 1, x: 2 }; }"
+        );
+        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x".into() });
+    }
+
+    #[test]
+    fn hir_invalid_field_access() {
+        // field access on a non-identifier expression
+        let kind = hir_check!(
+            "struct Point { x: i32 }
+         fn make(): Point { Point { x: 1 } }
+         fn main(): i32 { make().x }"
+        );
+        assert_eq!(kind, HirErrorKind::InvalidFieldAccess);
+    }
+
+    #[test]
+    fn hir_invalid_assignment_target() {
+        let kind = hir_check!("fn main() { (1 + 2) = 3; }");
+        assert_eq!(kind, HirErrorKind::InvalidAssignmentTarget);
+    }
+
+    #[test]
+    fn hir_unknown_field() {
+        let kind = hir_check!(
+            "struct Point { x: i32 }
+         fn main() { let p = Point { x: 1 }; let _ = p.z; }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownField {
+                struct_name: "Point".into(),
+                field: "z".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_missing_field_in_literal() {
+        let kind = hir_check!(
+            "struct Point { x: i32, y: i32 }
+         fn main() { let p = Point { x: 1 }; }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::MissingField {
+                struct_name: "Point".into(),
+                field: "y".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_circular_struct() {
+        let kind = hir_check!(
+            "struct A { b: B }
+         struct B { a: A }"
+        );
+        assert_eq!(kind, HirErrorKind::CircularStruct { name: "A".into() });
+    }
+
+    #[test]
+    fn hir_arity_mismatch_too_many() {
+        let kind = hir_check!(
+            "fn add(a: i32, b: i32): i32 { a + b }
+         fn main() { add(1, 2, 3); }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::ArityMismatch {
+                name: "add".into(),
+                expected: 2,
+                found: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_arity_mismatch_too_few() {
+        let kind = hir_check!(
+            "fn add(a: i32, b: i32): i32 { a + b }
+         fn main() { add(1); }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::ArityMismatch {
+                name: "add".into(),
+                expected: 2,
+                found: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_arity_mismatch_method() {
+        let kind = hir_check!(
+            "struct Counter { value: i32 }
+         impl Counter { fn add(&mut self, delta: i32) { self.value = self.value + delta; } }
+         fn main() { let mut c = Counter { value: 0 }; c.add(1, 2); }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::ArityMismatch {
+                name: "add".into(),
+                expected: 1,
+                found: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_duplicate_bind() {
+        let kind = hir_check!(
+            "fn main() {
+             let x: i32 = 1;
+             let x: i32 = 2;
+         }"
+        );
+        assert_eq!(kind, HirErrorKind::DuplicateBind { name: "x".into() });
+    }
+
+    #[test]
+    fn hir_missing_initialiser() {
+        let kind = hir_check!("fn main() { let x; }");
+        assert_eq!(kind, HirErrorKind::MissingInitialiser { name: "x".into() });
+    }
+
+    #[test]
+    fn hir_receiver_outside_impl() {
+        let kind = hir_check!("fn foo(&self): i32 { 0 }");
+        assert_eq!(kind, HirErrorKind::ReceiverOutsideImpl);
+    }
+
+    #[test]
+    fn hir_type_mismatch_let_annotation() {
+        let kind = hir_check!(
+            "fn main() {
+             let x: i32 = true;
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::I32,
+                found: Type::Bool,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_type_mismatch_return_type() {
+        let kind = hir_check!("fn foo(): i32 { true }");
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::I32,
+                found: Type::Bool,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_type_mismatch_if_condition() {
+        let kind = hir_check!(
+            "fn main() {
+             if 42 { }
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Bool,
+                found: Type::I32,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_type_mismatch_while_condition() {
+        let kind = hir_check!(
+            "fn main() {
+             while 1 { }
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::Bool,
+                found: Type::I32,
+            }
+        );
+    }
+
+    #[test]
+    fn hir_immutable_bind_variable() {
+        let kind = hir_check!(
+            "fn main() {
+             let x: i32 = 1;
+             x = 2;
+         }"
+        );
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "x".into() });
+    }
+
+    #[test]
+    fn hir_immutable_bind_field_via_shared_self() {
+        let kind = hir_check!(
+            "struct Counter { value: i32 }
+         impl Counter {
+             fn bad(&self) { self.value = 1; }
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::ImmutableBind {
+                name: "self".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_immutable_bind_mut_method_on_immutable_var() {
+        let kind = hir_check!(
+            "struct Counter { value: i32 }
+         impl Counter {
+             fn inc(&mut self) { self.value = self.value + 1; }
+         }
+         fn main() {
+             let c = Counter { value: 0 };
+             c.inc();
+         }"
+        );
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "c".into() });
+    }
+
+    #[test]
+    fn hir_const_fn_violation() {
+        let kind = hir_check!(
+            "fn helper(): i32 { 42 }
+         const fn bad(): i32 { helper() }"
+        );
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall { .. })
+            ),
+            "got {kind:?}"
+        );
+        if let HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) = kind {
+            assert_eq!(name, "helper");
+        }
+    }
+
+    #[test]
+    fn hir_duplicate_interface() {
+        let kind = hir_check!(
+            "interface Greet { fn hello(&self); }
+         interface Greet { fn bye(&self); }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::DuplicateInterface {
+                name: "Greet".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_unknown_interface_in_impl() {
+        let kind = hir_check!(
+            "struct Foo { x: i32 }
+         impl Foo with Ghost { fn hello(&self) { } }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownInterface {
+                name: "Ghost".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_unknown_interface_in_superinterface() {
+        let kind = hir_check!("interface Child: NonExistent { fn method(&self); }");
+        assert_eq!(
+            kind,
+            HirErrorKind::UnknownInterface {
+                name: "NonExistent".into()
+            }
+        );
+    }
+
+    #[test]
+    fn hir_missing_interface_method() {
+        let kind = hir_check!(
+            "interface Greet {
+             fn hello(&self): i32;
+             fn bye(&self): i32;
+         }
+         struct Foo { x: i32 }
+         impl Foo with Greet {
+             fn hello(&self): i32 { 1 }
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::MissingInterfaceMethod {
+                struct_name: "Foo".into(),
+                interface_name: "Greet".into(),
+                method_name: "bye".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_missing_superinterface_impl() {
+        let kind = hir_check!(
+            "interface Base { fn base(&self): i32; }
+         interface Derived: Base { fn derived(&self): i32; }
+         struct Foo { x: i32 }
+         impl Foo with Derived {
+             fn derived(&self): i32 { 1 }
+         }"
+        );
+        assert_eq!(
+            kind,
+            HirErrorKind::MissingSuperinterfaceImpl {
+                struct_name: "Foo".into(),
+                interface_name: "Derived".into(),
+                superinterface_name: "Base".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hir_interface_signature_mismatch_return_type() {
+        let kind = hir_check!(
+            "interface Shape { fn area(&self): i64; }
+         struct Rect { w: i32, h: i32 }
+         impl Rect with Shape {
+             fn area(&self): i32 { self.w * self.h }
+         }"
+        );
+        assert!(
+            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
+            "got {kind:?}"
+        );
+        if let HirErrorKind::InterfaceSignatureMismatch {
+            struct_name,
+            interface_name,
+            method_name,
+            ..
+        } = &kind
+        {
+            assert_eq!(struct_name, "Rect");
+            assert_eq!(interface_name, "Shape");
+            assert_eq!(method_name, "area");
+        }
+    }
+
+    #[test]
+    fn hir_interface_signature_mismatch_extra_param() {
+        let kind = hir_check!(
+            "interface Namer { fn name(&self): i32; }
+         struct Foo { x: i32 }
+         impl Foo with Namer {
+             fn name(&self, extra: i32): i32 { extra }
+         }"
+        );
+        assert!(
+            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
+            "got {kind:?}"
+        );
+        if let HirErrorKind::InterfaceSignatureMismatch { method_name, .. } = &kind {
+            assert_eq!(method_name, "name");
+        }
+    }
+
+    #[test]
+    fn hir_interface_signature_mismatch_wrong_receiver_mutability() {
+        let kind = hir_check!(
+            "interface Mutator { fn mutate(&mut self); }
+         struct Foo { x: i32 }
+         impl Foo with Mutator {
+             fn mutate(&self) { }
+         }"
+        );
+        assert!(
+            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
+            "got {kind:?}"
+        );
+    }
+}
