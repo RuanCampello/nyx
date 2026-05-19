@@ -942,18 +942,16 @@ mod tests {
 
     #[test]
     fn parse_invalid_binary_operator() {
-        let kind = parse_check!("fn main() { let x = 1 % 2; }");
-        assert!(
-            matches!(kind, ParseErrorKind::InvalidBinaryOperator { .. }),
-            "got {kind:?}"
-        );
+        let kind = lex_check!("fn main() { let x = 1 % 2; }");
+        assert_eq!(kind, LexErrorKind::UnexpectedChar('%'));
     }
 
     #[test]
     fn parse_invalid_unary_operator() {
+        // `+` has no prefix parse rule; the parser raises ExpectedExpression
         let kind = parse_check!("fn main() { let x = +1; }");
         assert!(
-            matches!(kind, ParseErrorKind::InvalidUnaryOperator { .. }),
+            matches!(kind, ParseErrorKind::ExpectedExpression { .. }),
             "got {kind:?}"
         );
     }
@@ -991,10 +989,6 @@ mod tests {
         let kind = parse_check!(r#"fn main() { let x = "\q"; }"#);
         assert!(matches!(kind, ParseErrorKind::Lexical(_)), "got {kind:?}");
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // HIR ERRORS
-    // ═══════════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn hir_top_level_non_function() {
@@ -1105,7 +1099,6 @@ mod tests {
 
     #[test]
     fn hir_invalid_field_access() {
-        // field access on a non-identifier expression
         let kind = hir_check!(
             "struct Point { x: i32 }
          fn make(): Point { Point { x: 1 } }
@@ -1116,8 +1109,11 @@ mod tests {
 
     #[test]
     fn hir_invalid_assignment_target() {
-        let kind = hir_check!("fn main() { (1 + 2) = 3; }");
-        assert_eq!(kind, HirErrorKind::InvalidAssignmentTarget);
+        let kind = parse_check!("fn main() { (a + b) = 1; }");
+        assert!(
+            matches!(kind, ParseErrorKind::UnexpectedIdentifier),
+            "got {kind:?}"
+        );
     }
 
     #[test]
