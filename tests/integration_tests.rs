@@ -102,6 +102,21 @@ const CASES: &[Case] = &[
         exit_code: Some(42),
     },
     Case {
+        name: "inlined_add",
+        file: "tests/single/inlined_add.nyx",
+        exit_code: Some(3),
+    },
+    Case {
+        name: "inline_complex",
+        file: "tests/single/inline_complex.nyx",
+        exit_code: Some(38),
+    },
+    Case {
+        name: "inline_methods",
+        file: "tests/single/inline_methods.nyx",
+        exit_code: Some(30),
+    },
+    Case {
         name: "interfaces",
         file: "tests/single/interfaces.nyx",
         exit_code: Some(0),
