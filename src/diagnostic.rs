@@ -26,6 +26,10 @@ pub fn initialise(src: &str, filename: &str) {
     SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
 }
 
+pub fn current_source() -> (String, String) {
+    SOURCE.with_borrow(|s| s.clone())
+}
+
 #[derive(Debug)]
 pub struct Diagnostic {
     pub(crate) rendered: String,
@@ -44,6 +48,7 @@ impl std::fmt::Display for Diagnostic {
 }
 
 struct Builder {
+    source: (String, String),
     message: String,
     labels: Vec<(Span, String, Color)>,
     note: Option<String>,
@@ -53,6 +58,7 @@ struct Builder {
 impl Builder {
     fn new(message: impl Into<String>) -> Self {
         Self {
+            source: current_source(),
             message: message.into(),
             labels: Vec::new(),
             note: None,
@@ -81,33 +87,32 @@ impl Builder {
     }
 
     fn build(self) -> Diagnostic {
-        let rendered = SOURCE.with_borrow(|(src, filename)| {
-            let id = filename.as_str();
+        let (src, filename) = &self.source;
+        let id = filename.as_str();
 
-            let anchor = self.labels.first().map(|(s, _, _)| s.start.offset()).unwrap_or(0);
+        let anchor = self.labels.first().map(|(s, _, _)| s.start.offset()).unwrap_or(0);
 
-            let mut builder = Report::build(ReportKind::Error, (id, anchor..anchor))
-                .with_config(Config::default().with_compact(false))
-                .with_message(&self.message);
+        let mut builder = Report::build(ReportKind::Error, (id, anchor..anchor))
+            .with_config(Config::default().with_compact(false))
+            .with_message(&self.message);
 
-            for (span, text, color) in self.labels {
-                let range: std::ops::Range<usize> = span.into();
-                builder = builder
-                    .with_label(Label::new((id, range)).with_message(text).with_color(color));
-            }
+        for (span, text, color) in self.labels {
+            let range: std::ops::Range<usize> = span.into();
+            builder =
+                builder.with_label(Label::new((id, range)).with_message(text).with_color(color));
+        }
 
-            if let Some(note) = &self.note {
-                builder = builder.with_note(note);
-            }
-            if let Some(help) = &self.help {
-                builder = builder.with_help(help);
-            }
+        if let Some(note) = &self.note {
+            builder = builder.with_note(note);
+        }
+        if let Some(help) = &self.help {
+            builder = builder.with_help(help);
+        }
 
-            let mut buf: Vec<u8> = Vec::new();
-            builder.finish().write((id, Source::from(src.as_str())), &mut buf).ok();
-            // SAFETY: ariadne only writes valid UTF-8
-            unsafe { String::from_utf8_unchecked(buf) }
-        });
+        let mut buf: Vec<u8> = Vec::new();
+        builder.finish().write((id, Source::from(src.as_str())), &mut buf).ok();
+        // SAFETY: ariadne only writes valid UTF-8
+        let rendered = unsafe { String::from_utf8_unchecked(buf) };
 
         Diagnostic { rendered }
     }

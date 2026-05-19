@@ -200,18 +200,23 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         self.in_flight.remove(canonical);
 
-        let module = self.analyse(canonical, statements)?;
+        let module = self.analyse(canonical, &source, statements)?;
         self.cache.insert(canonical.to_path_buf(), Arc::new(module));
 
         Ok(())
     }
 
-    fn analyse(&mut self, _path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
+    fn analyse(
+        &mut self,
+        path: &Path,
+        source: &str,
+        statements: Vec<Statement>,
+    ) -> Result<Module, ModuleError> {
         let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
-
         let struct_offset = self.scope.structs.len();
-
         self.scope.extend(&decls, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+
+        diagnostic::initialise(source, path.to_str().unwrap_or("<unknown>"));
 
         let functions = self
             .scope
