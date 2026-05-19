@@ -108,6 +108,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             return_type: signatures.return_type,
             is_const: function.is_const,
             is_pub: function.is_pub,
+            inline: function.inline,
             intrinsic: signatures.intrinsic,
             method: signatures.method,
             body,

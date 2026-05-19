@@ -119,6 +119,7 @@ pub struct Function {
     pub return_type: Type,
     pub is_const: bool,
     pub is_pub: bool,
+    pub inline: bool,
     pub intrinsic: Option<Intrinsic>,
     pub body: Block,
 }
@@ -255,6 +256,7 @@ impl From<&Function> for FunctionSignature {
             intrinsic: value.intrinsic,
             method: value.method,
             is_const: value.is_const,
+            inline: value.inline,
         }
     }
 }
