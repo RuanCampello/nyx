@@ -2,7 +2,7 @@
 
 use crate::{
     hir::{
-        Function, FunctionId, Intrinsic, Method, Struct, StructId, SymbolId, SymbolTable, Type,
+        Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId, SymbolTable, Type,
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
@@ -58,7 +58,7 @@ pub(in crate::hir) struct InterfaceMethodSignature {
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
-pub(in crate::hir) type Methods = HashMap<(StructId, SymbolId), FunctionId>;
+pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(StructId, SymbolId)>;
 
@@ -284,15 +284,30 @@ impl Scope {
         }
 
         for implementation in &declarations.impls {
-            let struct_symbol = symbols.insert(implementation.name);
-            let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType {
-                    name: implementation.name.to_string(),
-                },
-                span: implementation.span,
-            })?;
+            let receiver_type = match implementation.name {
+                "char" => Type::Char,
+                name => {
+                    let struct_symbol = symbols.insert(name);
+                    let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                        kind: HirErrorKind::UnknownType {
+                            name: name.to_string(),
+                        },
+                        span: implementation.span,
+                    })?;
+                    Type::Struct(struct_id)
+                }
+            };
 
             if let Some(interface_name) = implementation.interface {
+                let Type::Struct(struct_id) = receiver_type else {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId::default()),
+                            found: receiver_type,
+                        },
+                        span: implementation.span,
+                    });
+                };
                 let interface = symbols.insert(interface_name);
                 self.interface_impls.insert((struct_id, interface));
             }
@@ -303,7 +318,7 @@ impl Scope {
 
                 match method.receiver {
                     Some(receiver) => {
-                        if self.methods.contains_key(&(struct_id, method_symbol)) {
+                        if self.methods.contains_key(&(receiver_type, method_symbol)) {
                             return Err(HirError {
                                 kind: HirErrorKind::DuplicateMethod {
                                     struct_name: implementation.name.to_string(),
@@ -314,13 +329,21 @@ impl Scope {
                         }
 
                         let id = FunctionId(self.signatures.len() as u32);
-                        self.methods.insert((struct_id, method_symbol), id);
+                        self.methods.insert((receiver_type, method_symbol), id);
 
                         let mut params = Vec::with_capacity(method.params.len() + 1);
-                        params.push(Type::Ref {
-                            mutable: receiver.mutable,
-                            to: struct_id,
-                        });
+                        let first_param = match receiver_type {
+                            Type::Struct(struct_id) => Type::Ref {
+                                mutable: receiver.mutable,
+                                to: RefTarget::Struct(struct_id),
+                            },
+                            Type::Char => Type::Ref {
+                                mutable: receiver.mutable,
+                                to: RefTarget::Char,
+                            },
+                            _ => unreachable!(),
+                        };
+                        params.push(first_param);
                         params.extend(self.resolve_params(&method.params, symbols)?);
                         let return_type =
                             self.resolve_return_type(method.return_type.as_ref(), symbols)?;
@@ -333,7 +356,7 @@ impl Scope {
                             is_const: method.is_const,
                             inline: method.inline,
                             method: Some(Method {
-                                receiver: struct_id,
+                                receiver: receiver_type,
                                 name: method_symbol,
                                 mutable: receiver.mutable,
                             }),
@@ -523,16 +546,22 @@ impl Scope {
 
         match (function.receiver, impl_type) {
             (Some(_), Some(impl_type)) => {
-                let struct_symbol = symbols.insert(impl_type);
-                let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType {
-                        name: impl_type.to_string(),
-                    },
-                    span: function.span,
-                })?;
+                let receiver_type = match impl_type {
+                    "char" => Type::Char,
+                    _ => {
+                        let struct_symbol = symbols.insert(impl_type);
+                        let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                            kind: HirErrorKind::UnknownType {
+                                name: impl_type.to_string(),
+                            },
+                            span: function.span,
+                        })?;
+                        Type::Struct(struct_id)
+                    }
+                };
 
                 let method_symbol = symbols.insert(function.name);
-                self.methods.get(&(struct_id, method_symbol)).copied().ok_or_else(|| HirError {
+                self.methods.get(&(receiver_type, method_symbol)).copied().ok_or_else(|| HirError {
                     kind: error_kind(function.name.to_string()),
                     span: function.span,
                 })

@@ -51,7 +51,13 @@ pub struct StructField {
     declared_index: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefTarget {
+    Struct(StructId),
+    Char,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Type {
     #[default]
@@ -75,7 +81,7 @@ pub enum Type {
     Struct(StructId),
     Ref {
         mutable: bool,
-        to: StructId,
+        to: RefTarget,
     },
 }
 
@@ -126,7 +132,7 @@ pub struct Function {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
-    pub(crate) receiver: StructId,
+    pub(crate) receiver: Type,
     pub(crate) name: SymbolId,
     pub(crate) mutable: bool,
 }
@@ -160,6 +166,7 @@ pub enum ExpressionKind {
     Integer(i64),
     Float(f64),
     String(String),
+    Char(char),
     Bool(bool),
     Local(LocalId),
     Unary {
@@ -209,8 +216,9 @@ pub enum ExpressionKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Receiver {
-    pub(crate) local: LocalId,
+    pub(crate) local: Option<LocalId>,
     pub(crate) fields: Vec<SymbolId>,
+    pub(crate) value: Option<Box<Expression>>,
     pub(crate) typ: Type,
 }
 
@@ -262,6 +270,17 @@ impl From<&Function> for FunctionSignature {
 }
 
 impl Type {
+    #[inline]
+    pub(in crate::hir) const fn strip_reference(self) -> Self {
+        match self {
+            Self::Ref { to, .. } => match to {
+                RefTarget::Struct(id) => Self::Struct(id),
+                RefTarget::Char => Self::Char,
+            },
+            other => other,
+        }
+    }
+
     pub(in crate::hir) const fn is_number(&self) -> bool {
         self.is_integer() || self.is_float()
     }
@@ -294,9 +313,9 @@ impl Type {
     /// returns (size, alignment) of the type
     const fn layout(&self, structs: &[Option<Struct>]) -> (u32, u32) {
         match self {
-            Type::I8 | Type::U8 | Type::Bool | Type::Char => (1, 1),
+            Type::I8 | Type::U8 | Type::Bool => (1, 1),
             Type::I16 | Type::U16 => (2, 2),
-            Type::I32 | Type::U32 | Type::F32 => (4, 4),
+            Type::I32 | Type::U32 | Type::F32 | Type::Char => (4, 4),
             Type::I64
             | Type::U64
             | Type::Iptr
@@ -313,6 +332,15 @@ impl Type {
 
                 (definition.size, definition.align)
             }
+        }
+    }
+}
+
+impl From<RefTarget> for Type {
+    fn from(value: RefTarget) -> Self {
+        match value {
+            RefTarget::Struct(id) => Type::Struct(id),
+            RefTarget::Char => Type::Char,
         }
     }
 }
@@ -364,10 +392,18 @@ impl std::fmt::Display for Type {
             Type::Str => "&str",
             Type::String => "String",
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
-            Type::Ref { mutable, to } => match mutable {
-                true => return write!(f, "&mut struct#{}", to.0),
-                false => return write!(f, "&struct#{}", to.0),
-            },
+            Type::Ref { mutable, to } => {
+                return match to {
+                    RefTarget::Struct(id) => match mutable {
+                        true => write!(f, "&mut struct#{}", id.0),
+                        false => write!(f, "&struct#{}", id.0),
+                    },
+                    RefTarget::Char => match mutable {
+                        true => write!(f, "&mut char"),
+                        false => write!(f, "&char"),
+                    },
+                };
+            }
             Type::Unit => "unit",
         };
 
