@@ -1,0 +1,29 @@
+impl char {
+    pub fn is_digit(&self): bool {
+        *self >= '0' && *self <= '9'
+    }
+
+    pub fn is_alphabetic(&self): bool {
+        (*self >= 'a' && *self <= 'z') || (*self >= 'A' && *self <= 'Z')
+    }
+
+    pub fn is_lowercase(&self): bool {
+        *self >= 'a' && *self <= 'z'
+    }
+
+    pub fn is_uppercase(&self): bool {
+        *self >= 'A' && *self <= 'Z'
+    }
+
+    pub fn is_whitespace(&self): bool {
+        *self == ' ' || *self == '\t' || *self == '\n' || *self == '\r'
+    }
+
+    pub fn is_alphanumeric(&self): bool {
+        self.is_alphabetic() || self.is_digit()
+    }
+
+    pub fn is_ascii(&self): bool {
+        *self <= '\u{7f}'
+    }
+}
