@@ -493,6 +493,7 @@ impl Scope {
                             method_name: method_name.to_string(),
                             expected,
                             found,
+                            impl_span: implementation.span,
                         },
                         span: impl_method.span,
                     });

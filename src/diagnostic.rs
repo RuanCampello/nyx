@@ -6,488 +6,628 @@ use crate::lexer::token::Span;
 use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
 use crate::{NyxError, hir::error::HirError};
-use ariadne::{Color as Colour, Fmt, Label, Report, ReportKind, Source};
+use ariadne::{Color, Config, Fmt, Label, Report, ReportKind, Source};
 use std::cell::RefCell;
 
-#[derive(Debug)]
-pub struct Diagnostic {
-    pub(crate) rendered: String,
-}
+const PRIMARY: Color = Color::Rgb(243, 139, 168);
+const SECONDARY: Color = Color::Rgb(180, 190, 254);
+const HIGHLIGHT: Color = Color::Rgb(137, 180, 250);
 
-pub struct Info {
-    message: String,
-
-    primary: LabelInfo,
-    secondary: Option<LabelInfo>,
-
-    note: Option<String>,
-    help: Option<String>,
-}
-
-struct LabelInfo {
-    text: String,
-    colour: Colour,
-    span: Span,
-}
-
-pub trait Diagnosticable {
-    fn info(&self) -> Info;
+#[inline(always)]
+fn hi(s: impl std::fmt::Display) -> impl std::fmt::Display {
+    s.fg(HIGHLIGHT)
 }
 
 thread_local! {
     static SOURCE: RefCell<(String, String)> = RefCell::new((String::new(), String::new()));
 }
 
-const RED: Colour = Colour::Fixed(210);
-const PEACH: Colour = Colour::Fixed(216);
-const GREEN: Colour = Colour::Fixed(114);
-const BLUE: Colour = Colour::Fixed(111);
-const MAUVE: Colour = Colour::Fixed(183);
-const YELLOW: Colour = Colour::Fixed(229);
-const TEAL: Colour = Colour::Fixed(116);
-
 pub fn initialise(src: &str, filename: &str) {
     SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
+}
+
+#[derive(Debug)]
+pub struct Diagnostic {
+    pub(crate) rendered: String,
 }
 
 impl Diagnostic {
     pub fn display(self) -> String {
         self.rendered
     }
+}
 
-    fn from_info(info: Info) -> Self {
-        let span: std::ops::Range<usize> = info.primary.span.into();
-
-        let rendered = SOURCE.with_borrow(|(src, filename)| {
-            let id = filename.as_str();
-
-            let mut builder = Report::build(ReportKind::Error, (id, span.start..span.start))
-                .with_message(&info.message)
-                .with_label(
-                    Label::new((id, span))
-                        .with_message(&info.primary.text)
-                        .with_color(info.primary.colour),
-                );
-
-            if let Some(secondary) = info.secondary {
-                let range: std::ops::Range<usize> = secondary.span.into();
-
-                builder = builder.with_label(
-                    Label::new((id, range))
-                        .with_message(&secondary.text)
-                        .with_color(secondary.colour),
-                );
-            }
-
-            if let Some(note) = &info.note {
-                builder = builder.with_note(note);
-            }
-
-            if let Some(help) = &info.help {
-                builder = builder.with_help(help);
-            }
-
-            render(src, filename, builder.finish())
-        });
-
-        Self { rendered }
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rendered)
     }
 }
 
-impl Info {
-    fn primary(message: impl Into<String>, label: impl Into<String>, span: Span) -> Self {
+struct Builder {
+    message: String,
+    labels: Vec<(Span, String, Color)>,
+    note: Option<String>,
+    help: Option<String>,
+}
+
+impl Builder {
+    fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            primary: LabelInfo {
-                span,
-                text: label.into(),
-                colour: RED,
-            },
-            secondary: None,
+            labels: Vec::new(),
             note: None,
             help: None,
         }
     }
 
-    fn with_secondary(mut self, label: impl Into<String>, colour: Colour, span: Span) -> Self {
-        self.secondary = Some(LabelInfo {
-            text: label.into(),
-            span,
-            colour,
+    fn primary(mut self, span: Span, text: impl Into<String>) -> Self {
+        self.labels.insert(0, (span, text.into(), PRIMARY));
+        self
+    }
+
+    fn secondary(mut self, span: Span, text: impl Into<String>) -> Self {
+        self.labels.push((span, text.into(), Color::Primary));
+        self
+    }
+
+    fn note(mut self, text: impl Into<String>) -> Self {
+        self.note = Some(text.into());
+        self
+    }
+
+    fn help(mut self, text: impl Into<String>) -> Self {
+        self.help = Some(text.into());
+        self
+    }
+
+    fn build(self) -> Diagnostic {
+        let rendered = SOURCE.with_borrow(|(src, filename)| {
+            let id = filename.as_str();
+
+            let anchor = self.labels.first().map(|(s, _, _)| s.start.offset()).unwrap_or(0);
+
+            let mut builder = Report::build(ReportKind::Error, (id, anchor..anchor))
+                .with_config(Config::default().with_compact(false))
+                .with_message(&self.message);
+
+            for (span, text, color) in self.labels {
+                let range: std::ops::Range<usize> = span.into();
+                builder = builder
+                    .with_label(Label::new((id, range)).with_message(text).with_color(color));
+            }
+
+            if let Some(note) = &self.note {
+                builder = builder.with_note(note);
+            }
+            if let Some(help) = &self.help {
+                builder = builder.with_help(help);
+            }
+
+            let mut buf: Vec<u8> = Vec::new();
+            builder.finish().write((id, Source::from(src.as_str())), &mut buf).ok();
+            // SAFETY: ariadne only writes valid UTF-8
+            unsafe { String::from_utf8_unchecked(buf) }
         });
 
-        self
-    }
-
-    fn with_note(mut self, note: impl Into<String>) -> Self {
-        self.note = Some(note.into());
-        self
-    }
-
-    fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help = Some(help.into());
-        self
+        Diagnostic { rendered }
     }
 }
 
-#[inline(always)]
-fn render<'s>(
-    src: &'s str,
-    filename: &str,
-    report: Report<'_, (&str, std::ops::Range<usize>)>,
-) -> String {
-    let mut buf = Vec::with_capacity(src.len());
-    report.write((filename, Source::from(src)), &mut buf).ok();
-
-    // SAFETY: we know that the string is a valid utf8 cause it's from another valid str buffer
-    unsafe { String::from_utf8_unchecked(buf) }
+pub trait Diagnosticable {
+    fn into_diagnostic(self) -> Diagnostic;
 }
 
 impl Diagnosticable for LexError {
-    fn info(&self) -> Info {
-        use crate::lexer::error::LexErrorKind as Kind;
+    fn into_diagnostic(self) -> Diagnostic {
+        use crate::lexer::error::LexErrorKind as K;
 
-        let info = match &self.kind {
-            Kind::UnexpectedChar(c) => Info::primary(
-                format!("unexpected character `{c}`"),
-                "not valid here",
+        let b = match &self.kind {
+            K::UnexpectedChar(c) => Builder::new(format!("unexpected character {}", c.fg(PRIMARY)))
+                .primary(self.span, "not valid here"),
+
+            K::UnterminatedString => Builder::new("unterminated string literal")
+                .primary(self.span, "opened here, but never closed")
+                .help(format!(
+                    "add a closing {} at the end of the string",
+                    "\"".fg(SECONDARY)
+                )),
+
+            K::UnterminatedComment => Builder::new("unterminated block comment")
+                .primary(self.span, "block comment opened here, but never closed")
+                .help(format!("add a closing {}", "*/".fg(SECONDARY))),
+
+            K::InvalidEscape(c) => Builder::new(format!(
+                "invalid escape sequence {}",
+                format!("\\{c}").fg(PRIMARY)
+            ))
+            .primary(
                 self.span,
-            ),
-            Kind::UnterminatedString => Info::primary(
-                "unterminated string literal",
-                "string opened here but never closed",
-                self.span,
+                format!(
+                    "{} is not a recognised escape",
+                    format!("\\{c}").fg(PRIMARY)
+                ),
             )
-            .with_help("add a closing '\"' at the end of the string"),
-            Kind::UnterminatedComment => Info::primary(
-                "unterminated block comment",
-                "block comment opened here but never closed",
-                self.span,
-            )
-            .with_help("add a closing '*/'"),
-            Kind::InvalidEscape(c) => Info::primary(
-                format!("invalid escape sequence `\\{c}`"),
-                format!("`\\{c}` is not a recognised escape"),
-                self.span,
-            )
-            .with_help("valid escapes: `\\\\`, `\\\"`, `\\n`, `\\t`, `\\r`, `\\0`"),
-            Kind::InvalidNumber(detail) => Info::primary(
-                format!("invalid number literal: {detail}"),
-                "could not parse this as a number",
-                self.span,
-            ),
-        };
-
-        match self.help {
-            Some(ref help) if info.help.is_none() => info.with_help(help),
-            _ => info,
-        }
-    }
-}
-
-impl Diagnosticable for ParserError<'_> {
-    fn info(&self) -> Info {
-        use crate::parser::error::ParseErrorKind as Kind;
-
-        match &self.kind {
-            Kind::Lexical(lex) => return lex.info(),
-
-            Kind::Expected { expected, found } => Info::primary(
-                format!("expected `{expected}`, found `{found}`"),
-                format!("expected `{expected}` here"),
-                self.span,
-            )
-            .with_help(format!("add a `{expected}` token here")),
-
-            Kind::ExpectedIdentifier { found } => Info::primary(
-                format!("expected identifier, found `{found}`"),
-                "an identifier was expected here",
-                self.span,
-            ),
-
-            Kind::UnexpectedIdentifier => Info::primary(
-                "invalid assignment target",
-                "only identifiers can be assigned to",
-                self.span,
-            ),
-
-            Kind::InvalidBinaryOperator { found } => Info::primary(
-                format!("unexpected token `{found}` in expression"),
-                format!("`{found}` cannot be used as a binary operator here"),
-                self.span,
-            )
-            .with_note("valid unary operators are `-` (negation) and `!` (logical not)"),
-
-            Kind::InvalidUnaryOperator { found } => Info::primary(
-                format!("unexpected token `{found}` in unary expression"),
-                format!("`{found}` cannot be used as a unary operator"),
-                self.span,
-            ),
-
-            Kind::ExpectedExpression { found } => Info::primary(
-                format!("expected expression, found `{found}`"),
-                "an expression was expected here",
-                self.span,
-            ),
-
-            Kind::ExpectedTypeIdentifier { found } => Info::primary(
-                format!("unknown type `{found}`"),
-                format!("`{found}` is not a known type"),
-                self.span,
-            )
-            .with_note(
-                "valid types: i8, u8, i16, u16, i32, u32, i64, u64, \
-                 f32, f64, bool, char, &str, String, iptr, uptr",
-            ),
-
-            Kind::UnexpectedEof => Info::primary(
-                "unexpected end of file",
-                "the file ended here unexpectedly",
-                self.span,
-            ),
-        }
-    }
-}
-
-impl Diagnosticable for HirError<'_> {
-    fn info(&self) -> Info {
-        use crate::hir::error::HirErrorKind as Kind;
-
-        match &self.kind {
-            Kind::Parser(_) => unreachable!(),
-
-            Kind::TopLevelNonFunction => Info::primary(
-                "only function declarations are allowed at the top level",
-                "this is not a function declaration",
-                self.span,
-            )
-            .with_help("move this into a function body, or wrap it in `fn main()`"),
-
-            Kind::DuplicateFunction { name } => Info::primary(
-                format!("duplicate function `{name}`"),
-                format!("`{name}` is defined here again"),
-                self.span,
-            )
-            .with_help(format!("rename one of the `{name}` functions")),
-
-            Kind::DuplicateMethod { struct_name, name } => Info::primary(
-                format!("duplicate method `{name}` for `{struct_name}`"),
-                format!("`{name}` is already defined for `{struct_name}`"),
-                self.span,
-            )
-            .with_help(format!("remove or rename one of the `{name}` methods")),
-
-            Kind::UndeclaredIdentifier { name } => Info::primary(
-                format!("use of undeclared identifier `{name}`"),
-                format!("`{name}` is not declared in this scope"),
-                self.span,
-            )
-            .with_help(format!(
-                "declare `{name}` with `let {name} = ...` before using it"
+            .help(format!(
+                "valid escapes: {}  {}  {}  {}  {}  {}",
+                "\\\\".fg(SECONDARY),
+                "\\\"".fg(SECONDARY),
+                "\\n".fg(SECONDARY),
+                "\\t".fg(SECONDARY),
+                "\\r".fg(SECONDARY),
+                "\\0".fg(SECONDARY),
             )),
 
-            Kind::UnknownFunction { name } => Info::primary(
-                format!("call to unknown function `{name}`"),
-                format!("`{name}` is not a known function"),
+            K::InvalidNumber(detail) => Builder::new(format!("invalid number literal: {detail}"))
+                .primary(self.span, "could not parse this as a number"),
+        };
+
+        let b = match self.help {
+            Some(ref h)
+                if !matches!(
+                    &self.kind,
+                    K::UnterminatedString | K::UnterminatedComment | K::InvalidEscape(_)
+                ) =>
+            {
+                b.help(h.clone())
+            }
+            _ => b,
+        };
+
+        b.build()
+    }
+}
+
+impl<'i> Diagnosticable for ParserError<'i> {
+    fn into_diagnostic(self) -> Diagnostic {
+        use crate::parser::error::ParseErrorKind as K;
+
+        match &self.kind {
+            K::Lexical(lex) => lex.clone().into_diagnostic(),
+
+            K::Expected { expected, found } => Builder::new(format!(
+                "expected {}, found {}",
+                expected.fg(SECONDARY),
+                found.fg(PRIMARY)
+            ))
+            .primary(self.span, format!("expected {} here", expected.fg(SECONDARY)))
+            .help(format!("add a {} token here", expected.fg(SECONDARY)))
+            .build(),
+
+            K::ExpectedIdentifier { found } => Builder::new(format!(
+                "expected identifier, found {}",
+                found.fg(PRIMARY)
+            ))
+            .primary(self.span, "an identifier was expected here")
+            .build(),
+
+            K::UnexpectedIdentifier => Builder::new("invalid assignment target")
+                .primary(self.span, "only identifiers and field paths can be assigned to")
+                .build(),
+
+            K::InvalidBinaryOperator { found } => Builder::new(format!(
+                "unexpected token {} in expression",
+                found.fg(PRIMARY)
+            ))
+            .primary(
                 self.span,
+                format!("{} cannot be used as a binary operator here", found.fg(PRIMARY)),
             )
-            .with_help(format!("declare `fn {name}(...)` before calling it")),
+            .note(format!(
+                "valid unary operators are {} (negation) and {} (logical not)",
+                "-".fg(SECONDARY),
+                "!".fg(SECONDARY)
+            ))
+            .build(),
 
-            Kind::UnknownMethod { struct_name, name } => Info::primary(
-                format!("call to unknown method `{name}` on `{struct_name}`"),
-                format!("`{struct_name}` has no method named `{name}`"),
+            K::InvalidUnaryOperator { found } => Builder::new(format!(
+                "unexpected token {} in unary expression",
+                found.fg(PRIMARY)
+            ))
+            .primary(
                 self.span,
+                format!("{} cannot be used as a unary operator", found.fg(PRIMARY)),
             )
-            .with_help("declare `impl {struct_name} {{ fn {name}(&self) {{ ... }} }}`"),
+            .build(),
 
-            Kind::UnknownType { name } => Info::primary(
-                format!("unknown type `{name}`"),
-                format!("`{name}` is not a known type"),
+            K::ExpectedExpression { found } => Builder::new(format!(
+                "expected expression, found {}",
+                found.fg(PRIMARY)
+            ))
+            .primary(self.span, "an expression was expected here")
+            .build(),
+
+            K::ExpectedTypeIdentifier { found } => Builder::new(format!(
+                "unknown type {}",
+                found.fg(PRIMARY)
+            ))
+            .primary(self.span, format!("{} is not a known type", found.fg(PRIMARY)))
+            .note(format!(
+                "valid types: {}",
+                "i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char, &str, String, iptr, uptr".fg(HIGHLIGHT)
+            ))
+            .build(),
+
+            K::UnexpectedEof => Builder::new("unexpected end of file")
+                .primary(self.span, "the file ended here unexpectedly")
+                .build(),
+        }
+    }
+}
+
+impl<'h> Diagnosticable for HirError<'h> {
+    fn into_diagnostic(self) -> Diagnostic {
+        use crate::hir::error::HirErrorKind as K;
+
+        match &self.kind {
+            K::Parser(p) => p.clone().into_diagnostic(),
+
+            K::TopLevelNonFunction => {
+                Builder::new("only function declarations are allowed at the top level")
+                    .primary(self.span, "this is not a function declaration")
+                    .help(format!(
+                        "move this into a function body, or wrap it in {}",
+                        "fn main()".fg(SECONDARY)
+                    ))
+                    .build()
+            }
+
+            K::DuplicateFunction { name } => {
+                Builder::new(format!("duplicate function {}", hi(name)))
+                    .primary(self.span, format!("{} is defined here again", hi(name)))
+                    .help(format!("rename one of the {} functions", hi(name)))
+                    .build()
+            }
+
+            K::DuplicateMethod { struct_name, name } => Builder::new(format!(
+                "duplicate method {} for {}",
+                hi(name),
+                hi(struct_name)
+            ))
+            .primary(
                 self.span,
+                format!("{} is already defined for {}", hi(name), hi(struct_name)),
             )
-            .with_help(format!("declare `struct {name} {{ ... }}` before using it")),
+            .help(format!("remove or rename one of the {} methods", hi(name)))
+            .build(),
 
-            Kind::DuplicateStruct { name } => Info::primary(
-                format!("duplicate struct `{name}`"),
-                format!("`{name}` is defined here again"),
+            K::UndeclaredIdentifier { name } => {
+                Builder::new(format!("use of undeclared identifier {}", hi(name)))
+                    .primary(
+                        self.span,
+                        format!("{} is not declared in this scope", hi(name)),
+                    )
+                    .help(format!(
+                        "declare {} with {} before using it",
+                        hi(name),
+                        format!("let {name} = …").fg(SECONDARY)
+                    ))
+                    .build()
+            }
+
+            K::UnknownFunction { name } => {
+                Builder::new(format!("call to unknown function {}", hi(name)))
+                    .primary(self.span, format!("{} is not a known function", hi(name)))
+                    .help(format!(
+                        "declare {} before calling it",
+                        format!("fn {name}(…)").fg(SECONDARY)
+                    ))
+                    .build()
+            }
+
+            K::UnknownMethod { struct_name, name } => Builder::new(format!(
+                "call to unknown method {} on {}",
+                hi(name),
+                hi(struct_name)
+            ))
+            .primary(
                 self.span,
+                format!("{} has no method named {}", hi(struct_name), hi(name)),
             )
-            .with_help(format!("rename one of the `{name}` structs")),
+            .help(format!(
+                "add {} to an impl block for {}",
+                format!("fn {name}(&self)").fg(SECONDARY),
+                hi(struct_name)
+            ))
+            .build(),
 
-            Kind::DuplicateField { name } => Info::primary(
-                format!("duplicate field `{name}`"),
-                format!("`{name}` is already declared"),
+            K::UnknownType { name } => Builder::new(format!("unknown type {}", hi(name)))
+                .primary(self.span, format!("{} is not a known type", hi(name)))
+                .help(format!(
+                    "declare {} before using it",
+                    format!("struct {name} {{ … }}").fg(SECONDARY)
+                ))
+                .build(),
+
+            K::DuplicateStruct { name } => Builder::new(format!("duplicate struct {}", hi(name)))
+                .primary(self.span, format!("{} is defined here again", hi(name)))
+                .help(format!("rename one of the {} structs", hi(name)))
+                .build(),
+
+            K::DuplicateField { name } => Builder::new(format!("duplicate field {}", hi(name)))
+                .primary(self.span, format!("{} is already declared", hi(name)))
+                .note("struct field names must be unique")
+                .build(),
+
+            K::UnknownField { struct_name, field } => Builder::new(format!(
+                "unknown field {} on {}",
+                hi(field),
+                hi(struct_name)
+            ))
+            .primary(
                 self.span,
+                format!("{} has no field named {}", hi(struct_name), hi(field)),
             )
-            .with_note("struct field names must be unique"),
+            .build(),
 
-            Kind::UnknownField { struct_name, field } => Info::primary(
-                format!("unknown field `{field}` for struct `{struct_name}`"),
-                format!("`{struct_name}` has no field named `{field}`"),
-                self.span,
-            ),
+            K::MissingField { struct_name, field } => Builder::new(format!(
+                "missing field {} in {} literal",
+                hi(field),
+                hi(struct_name)
+            ))
+            .primary(self.span, format!("{} must be initialised here", hi(field)))
+            .help(format!(
+                "all fields of {} must be provided in the struct literal",
+                hi(struct_name)
+            ))
+            .build(),
 
-            Kind::MissingField { struct_name, field } => Info::primary(
-                format!("missing field `{field}` for struct `{struct_name}`"),
-                format!("`{field}` must be initialised"),
+            K::CircularStruct { name } => Builder::new(format!(
+                "circular struct definition involving {}",
+                hi(name)
+            ))
+            .primary(
                 self.span,
+                format!("{} is part of a by-value struct cycle", hi(name)),
             )
-            .with_help(format!("all fields of `{struct_name}` must be provided")),
+            .note("break the cycle; a pointer or box type will be needed for recursive structs")
+            .help("Nyx does not support self-referential or circular structs yet")
+            .build(),
 
-            Kind::CircularStruct { name } => Info::primary(
-                format!("circular struct definition involving `{name}`"),
-                format!("`{name}` is part of a by-value struct cycle"),
-                self.span,
-            )
-            .with_help("Nyx does not support self-referential or circular structs yet")
-            .with_note("break the cycle; an eventual pointer/box type will be needed for this"),
+            K::InvalidFieldAccess => Builder::new("invalid field access")
+                .primary(
+                    self.span,
+                    "field access is only supported on local variable bindings",
+                )
+                .build(),
 
-            Kind::InvalidFieldAccess => Info::primary(
-                "invalid field access",
-                "field access is only supported on local bindings",
-                self.span,
-            ),
+            K::InvalidAssignmentTarget => Builder::new("invalid assignment target")
+                .primary(
+                    self.span,
+                    "the left-hand side must be an identifier or a field path",
+                )
+                .note(format!(
+                    "use {} or {}",
+                    "name = value".fg(SECONDARY),
+                    "name.field = value".fg(SECONDARY)
+                ))
+                .build(),
 
-            Kind::InvalidAssignmentTarget => Info::primary(
-                "invalid assignment target",
-                "the left-hand side of an assignment must be an identifier or a field access",
-                self.span,
-            )
-            .with_note("use `name = value` or `name.field = value`"),
-
-            Kind::ArityMismatch {
+            K::ArityMismatch {
                 name,
                 expected,
                 found,
-            } => Info::primary(
-                format!("wrong number of arguments to `{name}`"),
-                format!(
-                    "{found} argument{} provided, but `{name}` expects {expected}",
-                    if *found == 1 { "" } else { "s" },
-                ),
-                self.span,
-            ),
+            } => {
+                let arg_word = |n: usize| if n == 1 { "argument" } else { "arguments" };
+                Builder::new(format!("wrong number of arguments to {}", hi(name)))
+                    .primary(
+                        self.span,
+                        format!(
+                            "{} {} provided, but {} expects {}",
+                            found.fg(PRIMARY),
+                            arg_word(*found),
+                            hi(name),
+                            expected.fg(SECONDARY),
+                        ),
+                    )
+                    .build()
+            }
 
-            Kind::DuplicateBind { name } => Info::primary(
-                format!("duplicate binding `{name}`"),
-                format!("`{name}` is already bound in this scope"),
-                self.span,
-            )
-            .with_note("re-declaring the same name in the same scope is not allowed")
-            .with_help("use a different name, or shadow it in a nested block"),
+            K::DuplicateBind { name } => Builder::new(format!("duplicate binding {}", hi(name)))
+                .primary(
+                    self.span,
+                    format!("{} is already bound in this scope", hi(name)),
+                )
+                .note("re-declaring the same name in the same scope is not allowed")
+                .help("use a different name, or shadow it in a nested block")
+                .build(),
 
-            Kind::MissingInitialiser { name } => Info::primary(
-                format!("missing initialiser for `{name}`"),
-                format!("`{name}` has no initialiser and no type annotation"),
-                self.span,
-            )
-            .with_note("Nyx cannot infer the type without a value to check against")
-            .with_help("add a type annotation: `let {name}: <type>;` or provide an initial value"),
+            K::MissingInitialiser { name } => {
+                Builder::new(format!("missing initialiser for {}", hi(name)))
+                    .primary(
+                        self.span,
+                        format!("{} has no value and no type annotation", hi(name)),
+                    )
+                    .note("Nyx cannot infer the type without an initial value to check against")
+                    .help(format!(
+                        "add a type annotation {} or provide an initial value",
+                        format!("let {name}: <type>;").fg(SECONDARY)
+                    ))
+                    .build()
+            }
 
-            Kind::MissingReceiver { name } => Info::primary(
-                format!("method `{name}` is missing a receiver"),
-                format!("`{name}` must declare `&self` or `&mut self`"),
-                self.span,
-            )
-            .with_help(format!("write `fn {name}(&self, ...)`")),
+            K::MissingReceiver { name } => {
+                Builder::new(format!("method {} is missing a receiver", hi(name)))
+                    .primary(
+                        self.span,
+                        format!(
+                            "{} must declare {} or {}",
+                            hi(name),
+                            "&self".fg(SECONDARY),
+                            "&mut self".fg(SECONDARY)
+                        ),
+                    )
+                    .help(format!(
+                        "write {}",
+                        format!("fn {name}(&self, …)").fg(SECONDARY)
+                    ))
+                    .build()
+            }
 
-            Kind::ReceiverOutsideImpl => Info::primary(
-                "`self` receiver outside `impl` block",
-                "receivers are only valid in methods",
-                self.span,
-            )
-            .with_help("move this function into an `impl Type { ... }` block"),
+            K::ReceiverOutsideImpl => Builder::new("self receiver outside impl block")
+                .primary(
+                    self.span,
+                    "receivers are only valid inside method definitions",
+                )
+                .help(format!(
+                    "move this function into {}",
+                    "impl Type { … }".fg(SECONDARY)
+                ))
+                .build(),
 
-            Kind::TypeMismatch { expected, found } => Info::primary(
-                format!("type mismatch: expected `{expected}`, found `{found}`"),
-                format!("this has type `{found}`"),
-                self.span,
-            )
-            .with_help("expected `{expected}` here"),
+            K::TypeMismatch { expected, found } => Builder::new(format!(
+                "type mismatch: expected {}, found {}",
+                hi(expected),
+                hi(found)
+            ))
+            .primary(self.span, format!("this is of type {}", hi(found)))
+            .secondary(self.span, format!("expected {} here", hi(expected)))
+            .build(),
 
-            Kind::ImmutableBind { name } => Info::primary(
-                format!("cannot assign to immutable binding `{name}`"),
-                format!("`{name}` is immutable and cannot be reassigned"),
-                self.span,
-            )
-            .with_note("bindings are immutable by default")
-            .with_help(format!("declare it as mutable: `let mut {name} = ...`")),
+            K::ImmutableBind { name } => {
+                Builder::new(format!("cannot assign to immutable binding {}", hi(name)))
+                    .primary(
+                        self.span,
+                        format!("{} is immutable and cannot be reassigned", hi(name)),
+                    )
+                    .note("bindings are immutable by default")
+                    .help(format!(
+                        "declare it as mutable: {}",
+                        format!("let mut {name} = …").fg(SECONDARY)
+                    ))
+                    .build()
+            }
 
-            Kind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => Info::primary(
-                format!("cannot call non-const function `{name}` in a const context"),
-                format!("`{name}` is not declared `const`"),
-                self.span,
-            )
-            .with_note("const functions may only call other const functions")
-            .with_help(format!(
-                "mark `fn {name}` as `const fn {name}` if it qualifies"
-            )),
+            K::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => {
+                Builder::new(format!(
+                    "cannot call non-const function {} in a const context",
+                    hi(name)
+                ))
+                .primary(
+                    self.span,
+                    format!("{} is not declared {}", hi(name), hi("const")),
+                )
+                .note(format!(
+                    "{} functions may only call other {} functions",
+                    hi("const"),
+                    hi("const")
+                ))
+                .help(format!(
+                    "mark {} as {} if it qualifies",
+                    format!("fn {name}").fg(SECONDARY),
+                    format!("const fn {name}").fg(SECONDARY)
+                ))
+                .build()
+            }
 
-            Kind::UnknownInterface { name } => Info::primary(
-                format!("unknown interface `{name}`"),
-                format!("`{name}` is not a known interface"),
-                self.span,
-            )
-            .with_help(format!(
-                "declare `interface {name} {{ ... }}` before using it"
-            )),
+            K::DuplicateInterface { name } => {
+                Builder::new(format!("duplicate interface {}", hi(name)))
+                    .primary(self.span, format!("{} is defined here again", hi(name)))
+                    .help(format!("rename one of the {} interfaces", hi(name)))
+                    .build()
+            }
 
-            Kind::MissingInterfaceMethod {
+            K::UnknownInterface { name } => Builder::new(format!("unknown interface {}", hi(name)))
+                .primary(self.span, format!("{} is not a known interface", hi(name)))
+                .help(format!(
+                    "declare {} before using it",
+                    format!("interface {name} {{ … }}").fg(SECONDARY)
+                ))
+                .build(),
+
+            K::MissingInterfaceMethod {
                 struct_name,
                 interface_name,
-                method_name: method,
-            } => Info::primary(
-                format!("missing method `{method}` required by interface `{interface_name}`"),
-                format!("`{struct_name}` does not implement `{method}`"),
+                method_name,
+            } => Builder::new(format!(
+                "missing method {} required by interface {}",
+                hi(method_name),
+                hi(interface_name)
+            ))
+            .primary(
                 self.span,
+                format!("{} does not implement {}", hi(struct_name), hi(method_name)),
             )
-            .with_note(format!("`{interface_name}` requires `fn {method}(...)`"))
-            .with_help(format!(
-                "add `fn {method}(...)` to `impl {struct_name} with {interface_name}`"
-            )),
+            .note(format!(
+                "{} requires {}",
+                hi(interface_name),
+                format!("fn {method_name}(…)").fg(SECONDARY)
+            ))
+            .help(format!(
+                "add {} to {}",
+                format!("fn {method_name}(…)").fg(SECONDARY),
+                format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
+            ))
+            .build(),
 
-            Kind::MissingSuperinterfaceImpl {
+            K::MissingSuperinterfaceImpl {
                 struct_name,
                 interface_name,
                 superinterface_name,
-            } => Info::primary(
-                format!(
-                    "missing`{superinterface_name}` implementation required by `{interface_name}`",
-                ),
-                format!(
-                    "`{struct_name}` implements `{interface_name}` without `{superinterface_name}`"
-                ),
-                self.span,
-            )
-            .with_note(format!(
-                "`{interface_name}` extends `{superinterface_name}`"
+            } => Builder::new(format!(
+                "missing {} implementation required by {}",
+                hi(superinterface_name),
+                hi(interface_name)
             ))
-            .with_help(format!(
-                "add `impl {struct_name} with {superinterface_name} {{ ... }}`"
-            )),
+            .primary(
+                self.span,
+                format!(
+                    "{} implements {} without {}",
+                    hi(struct_name),
+                    hi(interface_name),
+                    hi(superinterface_name)
+                ),
+            )
+            .note(format!(
+                "{} extends {}",
+                hi(interface_name),
+                hi(superinterface_name)
+            ))
+            .help(format!(
+                "add {}",
+                format!("impl {struct_name} with {superinterface_name} {{ … }}").fg(SECONDARY)
+            ))
+            .build(),
 
-            Kind::InterfaceSignatureMismatch {
+            K::InterfaceSignatureMismatch {
                 struct_name,
                 interface_name,
-                method_name: method,
+                method_name,
                 expected,
                 found,
-            } => Info::primary(
-                format!("method `{method}` does not match interface `{interface_name}`"),
-                format!("`{struct_name}` implements `{method}` with an incompatible signature"),
-                        self.span
-                )
-                .with_secondary(format!("interface requires `{expected}`"), BLUE, self.span)
-                .with_note(format!("expected: {expected}\nfound: {found}"))
-                .with_help(format!(
-                    "update `{method}` in `impl {struct_name} with {interface_name}` to match the interface"
-                )),
+                impl_span,
+            } => Builder::new(format!(
+                "method {} does not match interface {}",
+                hi(method_name),
+                hi(interface_name)
+            ))
+            .primary(self.span, format!("found: {}", found.fg(PRIMARY)))
+            .secondary(
+                *impl_span,
+                format!(
+                    "{} requires: {}",
+                    hi(interface_name),
+                    expected.fg(SECONDARY)
+                ),
+            )
+            .note(format!(
+                "expected: {}\n  found: {}",
+                expected.fg(SECONDARY),
+                found.fg(PRIMARY)
+            ))
+            .help(format!(
+                "update {} in {} to match the interface",
+                hi(method_name),
+                format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
+            ))
+            .build(),
+        }
+    }
+}
 
-            Kind::DuplicateInterface { name } => Info::primary(
-                format!("duplicate interface `{name}`"), 
-                format!("`{name}` is defined here again"), self.span)
-                .with_help(format!("rename one of the `{name}` interfaces")
-            ),
+impl Diagnosticable for MirError {
+    fn into_diagnostic(self) -> Diagnostic {
+        match self.kind {
+            MirErrorKind::Hir(e) => e.into_diagnostic(),
         }
     }
 }
@@ -497,76 +637,74 @@ impl From<ModuleError> for Diagnostic {
         match value {
             ModuleError::Diagnostic(d) => d,
 
-            ModuleError::FileNotFound { path, span } => Self::from_info(
-                Info::primary(
-                    format!("module file not found: `{}`", path.display()),
-                    "imported here",
-                    span.unwrap_or_default(),
-                )
-                .with_help(format!("make sure the file `{}` exists", path.display())),
-            ),
+            ModuleError::FileNotFound { path, span } => Builder::new(format!(
+                "module file not found: {}",
+                path.display().fg(PRIMARY)
+            ))
+            .primary(span.unwrap_or_default(), "imported here")
+            .help(format!(
+                "make sure the file {} exists",
+                path.display().fg(HIGHLIGHT)
+            ))
+            .build(),
 
-            ModuleError::CircularImport { path, span } => Self::from_info(
-                Info::primary(
-                    format!(
-                        "circular import: `{}` is already being loaded",
-                        path.display()
-                    ),
-                    "this import creates a cycle",
-                    span,
-                )
-                .with_help("remove the circular dependency between modules"),
-            ),
+            ModuleError::CircularImport { path, span } => Builder::new(format!(
+                "circular import: {} is already being loaded",
+                path.display().fg(PRIMARY)
+            ))
+            .primary(span, "this import creates a cycle")
+            .help("remove the circular dependency between modules")
+            .build(),
 
-            ModuleError::EmptyPath => Self::from_info(
-                Info::primary(
-                    "empty import path",
-                    "this path has no segments",
-                    Span::default(),
-                )
-                .with_help("use paths like `use project::module;`"),
-            ),
+            ModuleError::EmptyPath => Builder::new("empty import path")
+                .primary(Span::default(), "this path has no segments")
+                .help(format!(
+                    "use paths like {}",
+                    "use project::module;".fg(SECONDARY)
+                ))
+                .build(),
 
-            ModuleError::UnknownRoot { name, span } => Self::from_info(
-                Info::primary(
-                    format!("unknown module root `{name}`"),
-                    format!("`{name}` is not a known module root"),
-                    span,
-                )
-                .with_help("the root must match the project name"),
-            ),
+            ModuleError::UnknownRoot { name, span } => {
+                Builder::new(format!("unknown module root {}", hi(&name)))
+                    .primary(span, format!("{} is not a known module root", hi(&name)))
+                    .help("the root segment must match your project name")
+                    .build()
+            }
 
-            ModuleError::UnknownExport { path, name, span } => Self::from_info(
-                Info::primary(
-                    format!(
-                        "module `{}` has no exported symbol `{name}`",
-                        path.display()
-                    ),
-                    format!("`{name}` is not exported from this module"),
-                    span,
-                )
-                .with_help(format!("add `pub` to `fn {name}` in `{}`", path.display())),
-            ),
+            ModuleError::UnknownExport { path, name, span } => Builder::new(format!(
+                "module {} has no exported symbol {}",
+                path.display().fg(HIGHLIGHT),
+                hi(&name)
+            ))
+            .primary(
+                span,
+                format!("{} is not exported from this module", hi(&name)),
+            )
+            .help(format!(
+                "add {} to {} to export it",
+                hi("pub"),
+                format!("fn {name}").fg(SECONDARY)
+            ))
+            .build(),
 
-            ModuleError::TopLevelNonFunction { path, span } => Self::from_info(
-                Info::primary(
-                    format!(
-                        "only function declarations are allowed at top level in `{}`",
-                        path.display()
-                    ),
-                    "this is not a function declaration",
-                    span,
-                )
-                .with_help("move this into a function body, or wrap it in `fn main()`"),
-            ),
+            ModuleError::TopLevelNonFunction { path: _, span } => {
+                Builder::new("only function declarations are allowed at the top level")
+                    .primary(span, "this is not a function declaration")
+                    .help(format!(
+                        "move this into a function body, or wrap it in {}",
+                        "fn main()".fg(SECONDARY)
+                    ))
+                    .build()
+            }
         }
     }
 }
 
-impl Diagnosticable for MirError {
-    fn info(&self) -> Info {
-        match &self.kind {
-            MirErrorKind::Hir(error) => error.info(),
+impl From<Span> for std::ops::Range<usize> {
+    fn from(value: Span) -> Self {
+        Self {
+            start: value.start.offset(),
+            end: value.end.offset(),
         }
     }
 }
@@ -589,12 +727,63 @@ impl<'h> HasSpan for HirError<'h> {
     }
 }
 
-impl From<Span> for std::ops::Range<usize> {
-    fn from(value: Span) -> Self {
-        Self {
-            start: value.start.offset(),
-            end: value.end.offset(),
-        }
+impl From<LexError> for Diagnostic {
+    fn from(e: LexError) -> Self {
+        e.into_diagnostic()
+    }
+}
+
+impl<'i> From<ParserError<'i>> for Diagnostic {
+    fn from(e: ParserError<'i>) -> Self {
+        e.into_diagnostic()
+    }
+}
+
+impl<'h> From<HirError<'h>> for Diagnostic {
+    fn from(e: HirError<'h>) -> Self {
+        e.into_diagnostic()
+    }
+}
+
+impl From<MirError> for Diagnostic {
+    fn from(e: MirError) -> Self {
+        e.into_diagnostic()
+    }
+}
+
+impl From<Diagnostic> for NyxError {
+    fn from(d: Diagnostic) -> Self {
+        Self::Compile(d)
+    }
+}
+
+impl<'h> From<HirError<'h>> for NyxError {
+    fn from(e: HirError<'h>) -> Self {
+        Self::Compile(e.into())
+    }
+}
+
+impl From<MirError> for NyxError {
+    fn from(e: MirError) -> Self {
+        Self::Compile(e.into())
+    }
+}
+
+impl<'i> From<ParserError<'i>> for NyxError {
+    fn from(e: ParserError<'i>) -> Self {
+        Self::Compile(e.into())
+    }
+}
+
+impl From<std::io::Error> for NyxError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<ModuleError> for NyxError {
+    fn from(value: ModuleError) -> Self {
+        Self::Compile(value.into())
     }
 }
 
@@ -609,29 +798,5 @@ impl std::fmt::Display for NyxError {
                 writeln!(f, "tool not found — is binutils installed? ({msg})")
             }
         }
-    }
-}
-
-impl std::fmt::Display for Diagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.rendered)
-    }
-}
-
-impl<T: Diagnosticable> From<T> for Diagnostic {
-    fn from(value: T) -> Self {
-        Self::from_info(value.info())
-    }
-}
-
-impl<T: Into<Diagnostic>> From<T> for NyxError {
-    fn from(value: T) -> Self {
-        Self::Compile(value.into())
-    }
-}
-
-impl From<std::io::Error> for NyxError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
     }
 }

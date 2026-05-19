@@ -69,6 +69,7 @@ pub enum HirErrorKind<'h> {
         method_name: String,
         expected: String,
         found: String,
+        impl_span: Span,
     },
 }
 
