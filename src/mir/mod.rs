@@ -318,6 +318,38 @@ mod tests {
     }
 
     #[test]
+    fn inline_call_does_not_produce_call_instruction() {
+        let mir = parse_and_lower(
+            r#"
+            inline fn add(a: i32, b: i32): i32 { a + b }
+            fn main() { add(1, 2); }
+        "#,
+        );
+
+        let main = &mir.functions[1];
+        let has_call = main.blocks[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
+
+        assert!(
+            !has_call,
+            "expected no call instruction in main since add is inlined"
+        );
+
+        let has_add = main.blocks[0].instructions.iter().any(|i| {
+            matches!(
+                i.kind,
+                InstructionKind::Binary {
+                    operation: BinaryOperator::Add,
+                    ..
+                }
+            )
+        });
+        assert!(has_add, "expected inlined binary(add) instruction in main");
+    }
+
+    #[test]
     fn binary_expression_lowers_to_instructions() {
         let mir = parse_and_lower("fn add(a: i32, b: i32): i32 { a + b }");
         let f = &mir.functions[0];

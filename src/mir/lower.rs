@@ -1,13 +1,14 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, SymbolId, Type},
+    hir::{self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Struct, SymbolId, Type},
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
     },
 };
 use lasso::Key;
+use std::collections::HashMap;
 
 struct PartialBlock {
     id: BlockId,
@@ -27,6 +28,8 @@ struct FunctionLower<'a> {
     local_symbols: Vec<usize>,
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
+    functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+    inlined_return_target: Option<(BlockId, Option<Place>)>,
 }
 
 pub fn lower(hir: Hir) -> Result<Mir, MirError> {
@@ -34,12 +37,15 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let mut strings = Vec::new();
     let symbols = hir.symbols;
 
-    for function in hir.functions {
+    let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
+
+    for function in &hir.functions {
         functions.push(FunctionLower::run(
-            function,
+            function.clone(),
             &symbols,
             &hir.structs,
             &mut strings,
+            &functions_map,
         )?);
     }
 
@@ -57,6 +63,7 @@ impl<'a> FunctionLower<'a> {
         symbols: &'a [String],
         structs: &'a [Struct],
         strings: &'a mut Vec<String>,
+        functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
         let intrinsic = function.intrinsic;
@@ -96,6 +103,8 @@ impl<'a> FunctionLower<'a> {
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
             runtime_local_uses: collect_runtime_local_uses(&function),
+            functions_map,
+            inlined_return_target: None,
         };
 
         builder.new_block();
@@ -167,7 +176,14 @@ impl<'a> FunctionLower<'a> {
 
             Stmt::Return(value) => {
                 let operand = value.as_ref().map(|e| self.lower_expr(e)).transpose()?;
-                self.terminate(Terminator::Return(operand));
+                if let Some((exit_block_id, ret_place)) = self.inlined_return_target {
+                    if let (Some(op), Some(dest)) = (operand, ret_place) {
+                        self.emit(dest, InstructionKind::Assign(op));
+                    }
+                    self.terminate(Terminator::Jump(exit_block_id));
+                } else {
+                    self.terminate(Terminator::Return(operand));
+                }
             }
 
             Stmt::If {
@@ -319,17 +335,23 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
+                let callee = self.functions_map.get(function).expect("callee must exist");
+                match callee.inline {
+                    true => self.inline_call(*function, lowered_args),
+                    _ => {
+                        let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: *function,
-                        args: lowered_args,
-                    },
-                );
+                        self.emit(
+                            dest,
+                            InstructionKind::Call {
+                                callee: *function,
+                                args: lowered_args,
+                            },
+                        );
 
-                Ok(Operand::Place(dest))
+                        Ok(Operand::Place(dest))
+                    }
+                }
             }
 
             ExpressionKind::MethodCall {
@@ -360,16 +382,22 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: *function,
-                        args: lowered_args,
-                    },
-                );
+                let callee = self.functions_map.get(function).expect("callee must exist");
+                match callee.inline {
+                    true => self.inline_call(*function, lowered_args),
+                    _ => {
+                        let dest = self.fresh_temporary(expr.typ.unwrap_unit());
+                        self.emit(
+                            dest,
+                            InstructionKind::Call {
+                                callee: *function,
+                                args: lowered_args,
+                            },
+                        );
 
-                Ok(Operand::Place(dest))
+                        Ok(Operand::Place(dest))
+                    }
+                }
             }
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
@@ -647,6 +675,77 @@ impl<'a> FunctionLower<'a> {
         let id = self.strings.len();
         self.strings.push(value);
         id
+    }
+
+    fn inline_call(
+        &mut self,
+        callee_id: FunctionId,
+        lowered_args: Vec<Operand>,
+    ) -> Result<Operand, MirError> {
+        use std::mem::replace;
+
+        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+
+        let inline_ret_place = match callee.return_type != Type::Unit {
+            true => Some(self.fresh_temporary(callee.return_type)),
+            _ => None,
+        };
+        let exit_block_id = self.new_block();
+
+        let callee_n_locals = callee.locals.len();
+        let mut callee_local_map = vec![ValueId(0); callee_n_locals];
+        for idx in 0..callee_n_locals {
+            let local = &callee.locals[idx];
+            let place = self.fresh_temporary(local.typ);
+            callee_local_map[idx] = place.id;
+        }
+
+        // emit assignment of arguments to callee parameters
+        for (param, arg_operand) in callee.params.iter().zip(lowered_args) {
+            let dest_val_id = callee_local_map[param.id.0 as usize];
+            let dest_place = Place {
+                id: dest_val_id,
+                typ: param.typ,
+            };
+            self.emit(dest_place, InstructionKind::Assign(arg_operand));
+        }
+
+        // push the new context for lowering the callee
+        let old_local_map = replace(&mut self.local_map, callee_local_map);
+        let old_constant_locals = replace(&mut self.constant_locals, vec![None; callee_n_locals]);
+        let old_runtime_local_uses = replace(
+            &mut self.runtime_local_uses,
+            collect_runtime_local_uses(callee),
+        );
+        let old_local_symbols = replace(
+            &mut self.local_symbols,
+            callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
+        );
+        let old_inlined_return_target = replace(
+            &mut self.inlined_return_target,
+            Some((exit_block_id, inline_ret_place)),
+        );
+
+        self.lower_block(&callee.body)?;
+
+        if !self.is_terminated() {
+            self.terminate(Terminator::Jump(exit_block_id));
+        }
+
+        // restore the old context
+        self.local_map = old_local_map;
+        self.constant_locals = old_constant_locals;
+        self.runtime_local_uses = old_runtime_local_uses;
+        self.local_symbols = old_local_symbols;
+        self.inlined_return_target = old_inlined_return_target;
+
+        self.switch_to(exit_block_id);
+
+        let result = match inline_ret_place {
+            Some(place) => Operand::Place(place),
+            None => Operand::Const(Const::Unit),
+        };
+        Ok(result)
     }
 
     #[inline(always)]
