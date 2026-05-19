@@ -17,8 +17,10 @@ pub mod token;
 mod comment;
 mod identifier;
 mod number;
+mod char;
 mod string;
 
+use char::CharLiteral;
 use comment::{BlockComment, LineComment};
 use cursor::Cursor;
 use error::LexError;
@@ -76,6 +78,7 @@ impl<'src> Lexer<'src> {
             'a'..='z' | 'A'..='Z' | '_' => Identifier.lex(&mut self.cursor, start)?,
             '0'..='9' => NumberLiteral.lex(&mut self.cursor, start)?,
             '"' => StringLiteral.lex(&mut self.cursor, start)?,
+            '\'' => CharLiteral.lex(&mut self.cursor, start)?,
 
             '(' => self.single_punct(Punct::OpenParen),
             ')' => self.single_punct(Punct::CloseParen),
