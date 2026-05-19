@@ -29,6 +29,7 @@ struct FunctionLower<'a> {
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
     functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+    runtime_uses_map: &'a HashMap<FunctionId, Vec<bool>>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
 }
 
@@ -39,6 +40,11 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 
     let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
 
+    let mut runtime_uses_map = HashMap::new();
+    for f in &hir.functions {
+        runtime_uses_map.insert(f.id, collect_runtime_local_uses(f));
+    }
+
     for function in &hir.functions {
         functions.push(FunctionLower::run(
             function.clone(),
@@ -46,6 +52,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
             &hir.structs,
             &mut strings,
             &functions_map,
+            &runtime_uses_map,
         )?);
     }
 
@@ -64,6 +71,7 @@ impl<'a> FunctionLower<'a> {
         structs: &'a [Struct],
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+        runtime_uses_map: &'a HashMap<FunctionId, Vec<bool>>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
         let intrinsic = function.intrinsic;
@@ -102,8 +110,9 @@ impl<'a> FunctionLower<'a> {
             structs,
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
-            runtime_local_uses: collect_runtime_local_uses(&function),
+            runtime_local_uses: runtime_uses_map.get(&id).cloned().unwrap(),
             functions_map,
+            runtime_uses_map,
             inlined_return_target: None,
         };
 
@@ -335,23 +344,7 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let callee = self.functions_map.get(function).expect("callee must exist");
-                match callee.inline {
-                    true => self.inline_call(*function, lowered_args),
-                    _ => {
-                        let dest = self.fresh_temporary(expr.typ.unwrap_unit());
-
-                        self.emit(
-                            dest,
-                            InstructionKind::Call {
-                                callee: *function,
-                                args: lowered_args,
-                            },
-                        );
-
-                        Ok(Operand::Place(dest))
-                    }
-                }
+                self.emit_call(*function, lowered_args, expr.typ)
             }
 
             ExpressionKind::MethodCall {
@@ -382,22 +375,7 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let callee = self.functions_map.get(function).expect("callee must exist");
-                match callee.inline {
-                    true => self.inline_call(*function, lowered_args),
-                    _ => {
-                        let dest = self.fresh_temporary(expr.typ.unwrap_unit());
-                        self.emit(
-                            dest,
-                            InstructionKind::Call {
-                                callee: *function,
-                                args: lowered_args,
-                            },
-                        );
-
-                        Ok(Operand::Place(dest))
-                    }
-                }
+                self.emit_call(*function, lowered_args, expr.typ)
             }
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
@@ -677,6 +655,31 @@ impl<'a> FunctionLower<'a> {
         id
     }
 
+    fn emit_call(
+        &mut self,
+        callee_id: FunctionId,
+        lowered_args: Vec<Operand>,
+        return_type: Type,
+    ) -> Result<Operand, MirError> {
+        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+        match callee.inline {
+            true => self.inline_call(callee_id, lowered_args),
+            _ => {
+                let dest = self.fresh_temporary(return_type.unwrap_unit());
+
+                self.emit(
+                    dest,
+                    InstructionKind::Call {
+                        callee: callee_id,
+                        args: lowered_args,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
+            }
+        }
+    }
+
     fn inline_call(
         &mut self,
         callee_id: FunctionId,
@@ -715,7 +718,7 @@ impl<'a> FunctionLower<'a> {
         let old_constant_locals = replace(&mut self.constant_locals, vec![None; callee_n_locals]);
         let old_runtime_local_uses = replace(
             &mut self.runtime_local_uses,
-            collect_runtime_local_uses(callee),
+            self.runtime_uses_map.get(&callee_id).cloned().unwrap(),
         );
         let old_local_symbols = replace(
             &mut self.local_symbols,
