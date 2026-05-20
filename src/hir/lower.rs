@@ -845,6 +845,55 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     kind,
                 })
             }
+
+            Expr::TypeIntrinsic {
+                kind,
+                qualifier,
+                typ,
+                span,
+            } => {
+                let name = kind.into();
+                let lookup_symbol = match qualifier {
+                    Some(q) => {
+                        let mangled = self.symbols.insert(&format!("{q}__{name}"));
+                        match self.scope.functions.contains_key(&mangled) {
+                            true => mangled,
+                            _ => self.symbols.insert(name),
+                        }
+                    }
+                    None => self.symbols.insert(name),
+                };
+
+                if !self.scope.functions.contains_key(&lookup_symbol) {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownFunction {
+                            name: match qualifier {
+                                Some(q) => format!("{q}::{name}"),
+                                None => name.to_string(),
+                            },
+                        },
+                        span: *span,
+                    });
+                }
+
+                #[rustfmt::skip]
+                let typ = resolve_annotation(self.symbols, &self.scope.struct_map, &typ.value(), typ.span())?;
+
+                let structs: Vec<Option<Struct>> =
+                    self.scope.structs.iter().map(|s| Some(s.clone())).collect();
+                let (size, align) = typ.layout(&structs);
+
+                let value = match kind {
+                    expression::TypeIntrinsicKind::SizeOf => size as i64,
+                    expression::TypeIntrinsicKind::AlignOf => align as i64,
+                };
+
+                Ok(Expression {
+                    kind: ExpressionKind::Integer(value),
+                    typ: Type::Uptr,
+                    span: *span,
+                })
+            }
         }
     }
 

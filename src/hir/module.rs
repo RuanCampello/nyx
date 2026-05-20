@@ -215,7 +215,9 @@ impl<F: FileSystem> ModuleLoader<F> {
         let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
         let struct_offset = self.scope.structs.len();
         let in_std = path.starts_with(&self.std);
-        self.scope.extend(&decls, &mut self.symbols, in_std).map_err(|e| Diagnostic::from(e))?;
+        self.scope
+            .extend(&decls, &mut self.symbols, in_std)
+            .map_err(|e| Diagnostic::from(e))?;
 
         diagnostic::initialise(source, path.to_str().unwrap_or("<unknown>"));
 
@@ -320,7 +322,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::Type;
+    use crate::hir::{ExpressionKind, Statement, Type};
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
@@ -332,20 +334,45 @@ mod tests {
 
     impl FileSystem for VirtualFS {
         fn read(&self, path: &Path) -> Result<String, io::Error> {
-            self.files
-                .get(path)
-                .cloned()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+            if let Some(content) = self.files.get(path) {
+                return Ok(content.clone());
+            }
+
+            if path.starts_with(STD) {
+                let filename = path.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, path.display().to_string())
+                })?;
+                let real_path = resolve_std_root().join(filename);
+                if let Ok(content) = std::fs::read_to_string(&real_path) {
+                    return Ok(content);
+                }
+            }
+
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                path.display().to_string(),
+            ))
         }
 
         fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
-            match self.files.contains_key(path) {
-                true => Ok(path.to_path_buf()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    path.display().to_string(),
-                )),
+            if self.files.contains_key(path) {
+                return Ok(path.to_path_buf());
             }
+
+            if path.starts_with(STD) {
+                let filename = path.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, path.display().to_string())
+                })?;
+                let real_path = resolve_std_root().join(filename);
+                if real_path.exists() {
+                    return Ok(path.to_path_buf());
+                }
+            }
+
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                path.display().to_string(),
+            ))
         }
     }
 
@@ -702,10 +729,7 @@ mod tests {
     #[test]
     fn struct_orphan_rule_rejected() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/types.nyx",
-                "pub struct Point { x: i32, y: i32 }",
-            )
+            .add("/project/types.nyx", "pub struct Point { x: i32, y: i32 }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -719,5 +743,104 @@ mod tests {
 
         let err = vloader(fs).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_primitives() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+                fn main(): uptr {
+                    let a = mem::size_of(i32);
+                    let b = mem::align_of(i64);
+                    a + b
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        let a_init = match &main_fn.body.statements[0] {
+            Statement::Let {
+                init: Some(expr), ..
+            } => expr,
+            _ => panic!("expected let statement"),
+        };
+        assert_eq!(a_init.kind, ExpressionKind::Integer(4));
+        assert_eq!(a_init.typ, Type::Uptr);
+
+        let b_init = match &main_fn.body.statements[1] {
+            Statement::Let {
+                init: Some(expr), ..
+            } => expr,
+            _ => panic!("expected let statement"),
+        };
+        assert_eq!(b_init.kind, ExpressionKind::Integer(8));
+        assert_eq!(b_init.typ, Type::Uptr);
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_structs() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+                struct Foo {
+                    a: i8,
+                    b: i64,
+                    c: i32,
+                }
+                fn main(): uptr {
+                    mem::size_of(Foo)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+        assert_eq!(body_expr.kind, ExpressionKind::Integer(16));
+        assert_eq!(body_expr.typ, Type::Uptr);
+    }
+
+    #[test]
+    fn test_size_of_without_qualifier() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem::{size_of};
+                fn main(): uptr {
+                    size_of(i8)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+        assert_eq!(body_expr.kind, ExpressionKind::Integer(1));
     }
 }
