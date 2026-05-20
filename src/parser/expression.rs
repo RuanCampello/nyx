@@ -1,5 +1,7 @@
+use crate::lexer::Spanned;
 use crate::lexer::token::{Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
+use crate::parser::statement::Type as StatementType;
 use crate::parser::{Parsable, Parser};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +49,21 @@ pub enum Expression<'i> {
         args: Vec<Expression<'i>>,
         span: Span,
     },
+    /// Special compiler intrinsics that accept a type annotation as an argument
+    /// these must be handled at the expression parser level because types are not value-level expressions,
+    /// so standard function/intrinsic call parsing would fail on them
+    TypeIntrinsic {
+        kind: TypeIntrinsicKind,
+        qualifier: Option<&'i str>,
+        typ: Spanned<StatementType<'i>>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeIntrinsicKind {
+    SizeOf,
+    AlignOf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +118,8 @@ impl<'i> Expression<'i> {
             | Self::Struct { span, .. }
             | Self::Field { span, .. }
             | Self::Call { span, .. }
-            | Self::QualifiedCall { span, .. } => *span,
+            | Self::QualifiedCall { span, .. }
+            | Self::TypeIntrinsic { span, .. } => *span,
         }
     }
 
@@ -133,7 +151,9 @@ impl<'i> Expression<'i> {
                 true => Self::parse_struct(parser, ident, token.span),
                 false => Ok(Expression::Identifier(ident, token.span)),
             },
-            TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) | TokenKind::Punct(Punct::Star) => {
+            TokenKind::Punct(Punct::Minus)
+            | TokenKind::Punct(Punct::Bang)
+            | TokenKind::Punct(Punct::Star) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
@@ -268,6 +288,26 @@ impl<'i> Expression<'i> {
                             ));
                         };
 
+                        // FIXME: this is a very nasty way of doing this, better refactor later
+                        if name == "size_of" || name == "align_of" {
+                            parser.expect_token(Punct::OpenParen)?;
+                            let typ = Spanned::<StatementType>::parse(parser)?;
+                            let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                            let span = left.span() + end_span;
+
+                            let kind = match name == "size_of" {
+                                true => TypeIntrinsicKind::SizeOf,
+                                _ => TypeIntrinsicKind::AlignOf,
+                            };
+
+                            return Ok(Expression::TypeIntrinsic {
+                                kind,
+                                qualifier: Some(qualifier),
+                                typ,
+                                span,
+                            });
+                        }
+
                         parser.expect_token(Punct::OpenParen)?;
                         let mut args = Vec::new();
                         let mut first = true;
@@ -310,6 +350,27 @@ impl<'i> Expression<'i> {
                 }
             }
             TokenKind::Punct(Punct::OpenParen) => {
+                if let Expression::Identifier(name, _) = &left {
+                    if *name == "size_of" || *name == "align_of" {
+                        let typ = Spanned::<StatementType>::parse(parser)?;
+                        let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                        let span = left.span() + end_span;
+
+                        let kind = if *name == "size_of" {
+                            TypeIntrinsicKind::SizeOf
+                        } else {
+                            TypeIntrinsicKind::AlignOf
+                        };
+
+                        return Ok(Expression::TypeIntrinsic {
+                            kind,
+                            qualifier: None,
+                            typ,
+                            span,
+                        });
+                    }
+                }
+
                 let mut args = Vec::new();
                 let end_position;
                 let mut first = true;
@@ -409,5 +470,14 @@ impl<'i> Expression<'i> {
         matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
             && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
             && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
+    }
+}
+
+impl From<&TypeIntrinsicKind> for &str {
+    fn from(value: &TypeIntrinsicKind) -> Self {
+        match value {
+            TypeIntrinsicKind::SizeOf => "size_of",
+            TypeIntrinsicKind::AlignOf => "align_of",
+        }
     }
 }
