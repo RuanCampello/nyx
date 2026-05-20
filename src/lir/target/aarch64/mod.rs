@@ -533,9 +533,17 @@ impl A64Instr {
 }
 
 impl PhysicalReg for A64Reg {
+    #[inline(always)]
+    #[rustfmt::skip]
     fn class(self) -> RegClass {
         match self {
-            r if r >= Self::D0 && r <= Self::D31 => RegClass::Float,
+            Self::D0 | Self::D1 | Self::D2 | Self::D3 | Self::D4
+            | Self::D5 | Self::D6 | Self::D7 | Self::D8 | Self::D9
+            | Self::D10 | Self::D11 | Self::D12 | Self::D13 | Self::D14
+            | Self::D15 | Self::D16 | Self::D17 | Self::D18 | Self::D19
+            | Self::D20 | Self::D21 | Self::D22 | Self::D23 | Self::D24
+            | Self::D25 | Self::D26 | Self::D27 | Self::D28 | Self::D29
+            | Self::D30 | Self::D31 => RegClass::Float,
             _ => RegClass::Int,
         }
     }
