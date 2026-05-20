@@ -177,7 +177,10 @@ impl Diagnosticable for LexError {
                 .help("provide a character inside the single quotes"),
 
             K::OverlongChar => Builder::new("character literal is too long")
-                .primary(self.span, "character literals must contain exactly one character")
+                .primary(
+                    self.span,
+                    "character literals must contain exactly one character",
+                )
                 .help("use double quotes for string literals instead"),
         };
 
@@ -185,7 +188,12 @@ impl Diagnosticable for LexError {
             Some(ref h)
                 if !matches!(
                     &self.kind,
-                    K::UnterminatedString | K::UnterminatedComment | K::InvalidEscape(_) | K::UnterminatedChar | K::EmptyChar | K::OverlongChar
+                    K::UnterminatedString
+                        | K::UnterminatedComment
+                        | K::InvalidEscape(_)
+                        | K::UnterminatedChar
+                        | K::EmptyChar
+                        | K::OverlongChar
                 ) =>
             {
                 b.help(h.clone())
@@ -357,6 +365,20 @@ impl<'h> Diagnosticable for HirError<'h> {
                     format!("struct {name} {{ … }}").fg(SECONDARY)
                 ))
                 .build(),
+
+            K::OrphanImpl { name } => {
+                #[rustfmt::skip]
+                let msg = match ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64", "bool", "char", "uptr", "iptr", "str", "string", "unit"].contains(&name.as_str()) {
+                    true => format!("cannot define impl block for primitive type {} outside of std", hi(name)),
+                    _ => format!("cannot define impl block for struct {} defined in another module", hi(name)),
+                };
+                Builder::new(msg)
+                    .primary(
+                        self.span,
+                        "impl blocks can only be defined in the type's defining module",
+                    )
+                    .build()
+            }
 
             K::DuplicateStruct { name } => Builder::new(format!("duplicate struct {}", hi(name)))
                 .primary(self.span, format!("{} is defined here again", hi(name)))
