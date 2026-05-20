@@ -20,11 +20,8 @@ impl Liveness {
         let mut blocks = vec![BlockLiveness::default(); n];
         let mut changed = true;
 
-        let block_uses_and_defs: Vec<_> = function
-            .blocks
-            .iter()
-            .map(|block| block.uses_and_defs::<T>())
-            .collect();
+        let block_uses_and_defs: Vec<_> =
+            function.blocks.iter().map(|block| block.uses_and_defs::<T>()).collect();
 
         while changed {
             changed = false;

@@ -26,6 +26,8 @@ impl Interference {
             let mut live = liveness.blocks[idx].live_out.clone();
             let mut uses = Vec::new();
 
+            live.extend(block.term.uses_of().iter().copied());
+
             for instruction in block.instructions.iter().rev() {
                 if !instruction.clobbers().is_empty() {
                     graph.call_crossed.extend(live.iter().copied());
