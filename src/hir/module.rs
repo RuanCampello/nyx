@@ -672,9 +672,9 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions.len(), 2);
 
-        let main = &hir.functions[0];
+        let main = &hir.functions[1];
         let has_exit_call = main.body.statements.iter().any(|stmt| {
             matches!(
                 stmt,
