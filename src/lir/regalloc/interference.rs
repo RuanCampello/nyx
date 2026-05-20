@@ -11,6 +11,7 @@ pub(in crate::lir::regalloc) struct Interference {
     /// VRegs whose live range crosses at least one call (or instruction with clobbers)
     /// These must not be placed in caller-saved registers
     pub call_crossed: BTreeSet<VReg>,
+    pub stack_forced: BTreeSet<VReg>,
 }
 
 impl Interference {
@@ -18,6 +19,7 @@ impl Interference {
         let mut graph = Self {
             edges: vec![BTreeSet::new(); function.vreg_types.len()],
             call_crossed: BTreeSet::new(),
+            stack_forced: BTreeSet::new(),
         };
 
         for (idx, block) in function.blocks.iter().enumerate() {
@@ -48,6 +50,8 @@ impl Interference {
                 for (vreg, _) in instruction.precoloured_uses() {
                     live.insert(*vreg);
                 }
+
+                graph.stack_forced.extend(instruction.stack_forced().iter().copied());
             }
         }
 

@@ -28,11 +28,13 @@ impl Interference {
         let mut locations = vec![None; vreg_types.len()];
         let mut spill_offset = 0;
 
-        // aggregate values are stack-only >:(
+        // aggregate values and address-taken values are stack-only >:(
         // scalar registers may still point at them
         for vreg in &all {
             let idx = vreg.0 as usize;
-            if matches!(vreg_types[idx], MachineType::Struct { .. }) {
+            let is_address_taken = self.stack_forced.contains(vreg);
+
+            if matches!(vreg_types[idx], MachineType::Struct { .. }) || is_address_taken {
                 let mt = vreg_types[idx];
                 let size = mt.stack_size();
                 let align = mt.stack_align();
