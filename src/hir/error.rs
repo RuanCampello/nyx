@@ -22,6 +22,7 @@ pub enum HirErrorKind<'h> {
     UnknownFunction { name: String },
     UnknownMethod { struct_name: String, name: String },
     UnknownType { name: String },
+    OrphanImpl { name: String },
     DuplicateStruct { name: String },
     DuplicateField { name: String },
     InvalidFieldAccess,

@@ -2,7 +2,8 @@
 
 use crate::{
     hir::{
-        Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId, SymbolTable, Type,
+        Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId,
+        SymbolTable, Type,
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
@@ -83,10 +84,11 @@ impl Scope {
         &mut self,
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
+        in_std: bool,
     ) -> Result<(), HirError<'s>> {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
-        self.extend_signatures(declarations, symbols)?;
+        self.extend_signatures(declarations, symbols, in_std)?;
         self.validate_interfaces(declarations, symbols)?;
         self.validate_interface_hierarchy(declarations, symbols)?;
 
@@ -246,6 +248,7 @@ impl Scope {
         &mut self,
         declarations: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
+        in_std: bool,
     ) -> Result<(), HirError<'h>> {
         for function in &declarations.functions {
             if function.receiver.is_some() {
@@ -284,16 +287,47 @@ impl Scope {
         }
 
         for implementation in &declarations.impls {
-            let receiver_type = match implementation.name {
-                "char" => Type::Char,
-                name => {
-                    let struct_symbol = symbols.insert(name);
-                    let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                        kind: HirErrorKind::UnknownType {
-                            name: name.to_string(),
+            let receiver_type = match resolve_primitive_type(implementation.name) {
+                Some(primitive) if in_std => primitive,
+                Some(primitive) => {
+                    return Err(HirError {
+                        kind: HirErrorKind::OrphanImpl {
+                            name: implementation.name.to_string(),
                         },
                         span: implementation.span,
-                    })?;
+                    });
+                }
+
+                _ => {
+                    let is_local =
+                        declarations.structs.iter().any(|s| s.name == implementation.name);
+                    if !is_local {
+                        let struct_symbol = symbols.insert(implementation.name);
+                        return match self.struct_map.contains_key(&struct_symbol) {
+                            true => Err(HirError {
+                                kind: HirErrorKind::OrphanImpl {
+                                    name: implementation.name.to_string(),
+                                },
+                                span: implementation.span,
+                            }),
+
+                            _ => Err(HirError {
+                                kind: HirErrorKind::UnknownType {
+                                    name: implementation.name.to_string(),
+                                },
+                                span: implementation.span,
+                            }),
+                        };
+                    }
+
+                    let struct_symbol = symbols.insert(implementation.name);
+                    let struct_id =
+                        *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                            kind: HirErrorKind::UnknownType {
+                                name: implementation.name.to_string(),
+                            },
+                            span: implementation.span,
+                        })?;
                     Type::Struct(struct_id)
                 }
             };
@@ -332,16 +366,10 @@ impl Scope {
                         self.methods.insert((receiver_type, method_symbol), id);
 
                         let mut params = Vec::with_capacity(method.params.len() + 1);
-                        let first_param = match receiver_type {
-                            Type::Struct(struct_id) => Type::Ref {
-                                mutable: receiver.mutable,
-                                to: RefTarget::Struct(struct_id),
-                            },
-                            Type::Char => Type::Ref {
-                                mutable: receiver.mutable,
-                                to: RefTarget::Char,
-                            },
-                            _ => unreachable!(),
+                        let first_param = Type::Ref {
+                            mutable: receiver.mutable,
+                            to: RefTarget::try_from(receiver_type)
+                                .expect("receiver must be a reference target"),
                         };
                         params.push(first_param);
                         params.extend(self.resolve_params(&method.params, symbols)?);
@@ -546,25 +574,29 @@ impl Scope {
 
         match (function.receiver, impl_type) {
             (Some(_), Some(impl_type)) => {
-                let receiver_type = match impl_type {
-                    "char" => Type::Char,
+                let receiver_type = match resolve_primitive_type(impl_type) {
+                    Some(primitive) => primitive,
                     _ => {
                         let struct_symbol = symbols.insert(impl_type);
-                        let struct_id = *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownType {
-                                name: impl_type.to_string(),
-                            },
-                            span: function.span,
-                        })?;
+                        let struct_id =
+                            *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
+                                kind: HirErrorKind::UnknownType {
+                                    name: impl_type.to_string(),
+                                },
+                                span: function.span,
+                            })?;
                         Type::Struct(struct_id)
                     }
                 };
 
                 let method_symbol = symbols.insert(function.name);
-                self.methods.get(&(receiver_type, method_symbol)).copied().ok_or_else(|| HirError {
-                    kind: error_kind(function.name.to_string()),
-                    span: function.span,
-                })
+                self.methods
+                    .get(&(receiver_type, method_symbol))
+                    .copied()
+                    .ok_or_else(|| HirError {
+                        kind: error_kind(function.name.to_string()),
+                        span: function.span,
+                    })
             }
 
             (Some(_), None) => Err(HirError {
@@ -613,5 +645,29 @@ impl Scope {
                 lower::resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
             })
             .collect()
+    }
+}
+
+#[inline]
+fn resolve_primitive_type(name: &str) -> Option<Type> {
+    match name {
+        "i8" => Some(Type::I8),
+        "u8" => Some(Type::U8),
+        "i16" => Some(Type::I16),
+        "u16" => Some(Type::U16),
+        "i32" => Some(Type::I32),
+        "u32" => Some(Type::U32),
+        "i64" => Some(Type::I64),
+        "u64" => Some(Type::U64),
+        "f32" => Some(Type::F32),
+        "f64" => Some(Type::F64),
+        "bool" => Some(Type::Bool),
+        "uptr" => Some(Type::Uptr),
+        "iptr" => Some(Type::Iptr),
+        "char" => Some(Type::Char),
+        "str" => Some(Type::Str),
+        "string" => Some(Type::String),
+        "unit" => Some(Type::Unit),
+        _ => None,
     }
 }

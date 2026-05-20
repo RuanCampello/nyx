@@ -51,10 +51,32 @@ pub struct StructField {
     declared_index: u32,
 }
 
+/// The target of a reference type (`Type::Ref`)
+///
+/// Since `Type` is designed to be a flat, recursive-free, and `Copy` enum,
+/// we cannot represent references recursively as `&'t Type`. `RefTarget` represents
+/// all valid non-reference types that can be referenced in Nyx, preventing
+/// invalid type states like nested references (e.g. `&&i64`) by construction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefTarget {
     Struct(StructId),
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Uptr,
+    Iptr,
     Char,
+    Str,
+    String,
+    Unit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -244,7 +266,7 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     let declarations = Declarations::partition(&statements)?;
 
     let mut scope = Scope::new();
-    scope.extend(&declarations, &mut symbols)?;
+    scope.extend(&declarations, &mut symbols, false)?;
 
     let functions = scope.lower_functions(&declarations, &mut symbols)?;
 
@@ -271,12 +293,9 @@ impl From<&Function> for FunctionSignature {
 
 impl Type {
     #[inline]
-    pub(in crate::hir) const fn strip_reference(self) -> Self {
+    pub(in crate::hir) fn strip_reference(self) -> Self {
         match self {
-            Self::Ref { to, .. } => match to {
-                RefTarget::Struct(id) => Self::Struct(id),
-                RefTarget::Char => Self::Char,
-            },
+            Self::Ref { to, .. } => Self::from(to),
             other => other,
         }
     }
@@ -339,8 +358,52 @@ impl Type {
 impl From<RefTarget> for Type {
     fn from(value: RefTarget) -> Self {
         match value {
-            RefTarget::Struct(id) => Type::Struct(id),
+            RefTarget::Unit => Type::Unit,
+            RefTarget::I8 => Type::I8,
+            RefTarget::U8 => Type::U8,
+            RefTarget::I16 => Type::I16,
+            RefTarget::U16 => Type::U16,
+            RefTarget::I32 => Type::I32,
+            RefTarget::U32 => Type::U32,
+            RefTarget::I64 => Type::I64,
+            RefTarget::U64 => Type::U64,
+            RefTarget::F32 => Type::F32,
+            RefTarget::F64 => Type::F64,
+            RefTarget::Bool => Type::Bool,
+            RefTarget::Uptr => Type::Uptr,
+            RefTarget::Iptr => Type::Iptr,
             RefTarget::Char => Type::Char,
+            RefTarget::Str => Type::Str,
+            RefTarget::String => Type::String,
+            RefTarget::Struct(id) => Type::Struct(id),
+        }
+    }
+}
+
+impl TryFrom<Type> for RefTarget {
+    type Error = ();
+
+    fn try_from(typ: Type) -> Result<Self, Self::Error> {
+        match typ {
+            Type::Unit => Ok(Self::Unit),
+            Type::I8 => Ok(Self::I8),
+            Type::U8 => Ok(Self::U8),
+            Type::I16 => Ok(Self::I16),
+            Type::U16 => Ok(Self::U16),
+            Type::I32 => Ok(Self::I32),
+            Type::U32 => Ok(Self::U32),
+            Type::I64 => Ok(Self::I64),
+            Type::U64 => Ok(Self::U64),
+            Type::F32 => Ok(Self::F32),
+            Type::F64 => Ok(Self::F64),
+            Type::Bool => Ok(Self::Bool),
+            Type::Uptr => Ok(Self::Uptr),
+            Type::Iptr => Ok(Self::Iptr),
+            Type::Char => Ok(Self::Char),
+            Type::Str => Ok(Self::Str),
+            Type::String => Ok(Self::String),
+            Type::Struct(id) => Ok(Self::Struct(id)),
+            Type::Ref { .. } => Err(()),
         }
     }
 }
@@ -393,15 +456,11 @@ impl std::fmt::Display for Type {
             Type::String => "String",
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
             Type::Ref { mutable, to } => {
+                let prefix = if *mutable { "&mut " } else { "&" };
+                f.write_str(prefix)?;
                 return match to {
-                    RefTarget::Struct(id) => match mutable {
-                        true => write!(f, "&mut struct#{}", id.0),
-                        false => write!(f, "&struct#{}", id.0),
-                    },
-                    RefTarget::Char => match mutable {
-                        true => write!(f, "&mut char"),
-                        false => write!(f, "&char"),
-                    },
+                    RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
+                    other => write!(f, "{}", Type::from(*other)),
                 };
             }
             Type::Unit => "unit",
@@ -1184,5 +1243,22 @@ mod tests {
                 && interface_name == "StorageEngine"
                 && method_name == "read_page"
         ));
+    }
+
+    #[test]
+    fn primitive_orphan_rule_is_enforced() {
+        let src = r#"
+            impl i64 {
+                fn val(&self): i64 { *self }
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::OrphanImpl {
+                name: "i64".to_string(),
+            }
+        );
     }
 }

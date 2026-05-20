@@ -214,7 +214,8 @@ impl<F: FileSystem> ModuleLoader<F> {
     ) -> Result<Module, ModuleError> {
         let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
         let struct_offset = self.scope.structs.len();
-        self.scope.extend(&decls, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
+        let in_std = path.starts_with(&self.std);
+        self.scope.extend(&decls, &mut self.symbols, in_std).map_err(|e| Diagnostic::from(e))?;
 
         diagnostic::initialise(source, path.to_str().unwrap_or("<unknown>"));
 
@@ -696,5 +697,27 @@ mod tests {
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.structs.len(), 1);
+    }
+
+    #[test]
+    fn struct_orphan_rule_rejected() {
+        let fs = VirtualFS::default()
+            .add(
+                "/project/types.nyx",
+                "pub struct Point { x: i32, y: i32 }",
+            )
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::types::{Point};
+            impl Point {
+                fn sum(&self): i32 { self.x + self.y }
+            }
+            fn main(): i32 { 0 }
+            "#,
+            );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 }
