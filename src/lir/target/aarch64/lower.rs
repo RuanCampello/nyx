@@ -153,6 +153,7 @@ impl<'f> Lower<'f> {
                         let instr = A64Instr::Eor { dest, lhs: src, rhs: A64Operand::Imm(1), bytes: 4 };
                         self.lir.push_instr(id, instr);
                     }
+                    U::Deref => unreachable!(),
                 }
             }
 
@@ -253,7 +254,7 @@ impl<'f> Lower<'f> {
                                         dest,
                                         lhs,
                                         rhs,
-                                        bytes: 4,
+                                        bytes,
                                     },
                                 );
                             }
@@ -265,7 +266,7 @@ impl<'f> Lower<'f> {
                                         dest,
                                         lhs,
                                         rhs,
-                                        bytes: 4,
+                                        bytes,
                                     },
                                 );
                             }

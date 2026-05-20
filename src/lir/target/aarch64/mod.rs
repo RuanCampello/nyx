@@ -495,6 +495,16 @@ impl Instruction<AArch64> for A64Instr {
             _ => &[],
         }
     }
+
+    #[inline(always)]
+    fn stack_forced(&self) -> &[VReg] {
+        match self {
+            Self::StackAddr { origin, .. }
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore { origin, .. } => std::slice::from_ref(origin),
+            _ => &[],
+        }
+    }
 }
 
 impl A64Instr {

@@ -569,9 +569,23 @@ impl Function<X86_64> {
                 then_block,
                 else_block,
             } => {
-                let condition = alloc.location(cond, &4);
+                let bytes = self.reg_bytes(cond);
+                let condition = alloc.location(cond, &bytes);
+                let suffix = suffix(&bytes);
 
-                emit!(out, "testl       {condition}, {condition}");
+                match condition.contains("(%rbp)") {
+                    true => {
+                        let scratch = match bytes {
+                            8 => "%r11",
+                            4 => "%r11d",
+                            2 => "%r11w",
+                            _ => "%r11b",
+                        };
+                        emit!(out, "mov{suffix}    {condition}, {scratch}");
+                        emit!(out, "test{suffix}    {scratch}, {scratch}");
+                    }
+                    _ => emit!(out, "test{suffix}    {condition}, {condition}"),
+                }
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
             }

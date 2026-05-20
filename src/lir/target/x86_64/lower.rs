@@ -146,6 +146,7 @@ impl<'f> Lower<'f> {
                             bytes: 4,
                         },
                     ),
+                    U::Deref => unreachable!(),
                 }
             }
 
@@ -262,12 +263,12 @@ impl<'f> Lower<'f> {
                             B::And => X86Instr::And {
                                 dest,
                                 src: rhs,
-                                bytes: 4,
+                                bytes,
                             },
                             B::Or => X86Instr::Or {
                                 dest,
                                 src: rhs,
-                                bytes: 4,
+                                bytes,
                             },
 
                             _ => unsafe { std::hint::unreachable_unchecked() },

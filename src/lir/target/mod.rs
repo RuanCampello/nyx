@@ -92,6 +92,10 @@ pub trait Instruction<T: Target> {
     fn precoloured_uses(&self) -> &[(VReg, T::Reg)] {
         &[]
     }
+
+    fn stack_forced(&self) -> &[VReg] {
+        &[]
+    }
 }
 
 /// Target-specific memory instruction factories

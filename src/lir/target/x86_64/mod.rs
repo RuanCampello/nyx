@@ -411,6 +411,16 @@ impl Instruction<X86_64> for X86Instr {
             _ => &[],
         }
     }
+
+    #[inline(always)]
+    fn stack_forced(&self) -> &[VReg] {
+        match self {
+            Self::StackAddr { origin, .. }
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore { origin, .. } => std::slice::from_ref(origin),
+            _ => &[],
+        }
+    }
 }
 
 impl X86Instr {
