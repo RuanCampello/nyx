@@ -247,9 +247,9 @@ impl Type {
     #[inline(always)]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
-            Type::I8 | Type::U8 | Type::Bool | Type::Char => MachineType::Int { bytes: 1 },
+            Type::I8 | Type::U8 | Type::Bool => MachineType::Int { bytes: 1 },
             Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
-            Type::I32 | Type::U32 => MachineType::Int { bytes: 4 },
+            Type::I32 | Type::U32 | Type::Char => MachineType::Int { bytes: 4 },
             Type::I64
             | Type::U64
             | Type::Iptr
