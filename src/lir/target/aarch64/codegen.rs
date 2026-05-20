@@ -323,11 +323,14 @@ impl Function<AArch64> {
                 }
             }
 
+            #[rustfmt::skip]
             A64Instr::Cmp { lhs, rhs, bytes }
             | A64Instr::Cmn { lhs, rhs, bytes }
             | A64Instr::Tst { lhs, rhs, bytes } => {
                 let lhs = alloc.location(lhs, bytes);
+                let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, false, A64Reg::X16, A64Reg::D16);
                 let rhs = self.operand(alloc, rhs, bytes);
+                let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, false, A64Reg::X17, A64Reg::D17);
 
                 match instruction {
                     A64Instr::Cmp { .. } => emit!(out, "cmp     {lhs}, {rhs}"),
@@ -342,9 +345,12 @@ impl Function<AArch64> {
                 emit!(out, "cset    {dest}, {}", cond.as_str());
             }
 
+            #[rustfmt::skip]
             A64Instr::FCmp { lhs, rhs, bytes } => {
                 let lhs = alloc.location(lhs, bytes);
+                let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, true, A64Reg::X16, A64Reg::D16);
                 let rhs = alloc.location(rhs, bytes);
+                let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, true, A64Reg::X17, A64Reg::D17);
 
                 emit!(out, "fcmp    {lhs}, {rhs}");
             }
@@ -695,18 +701,36 @@ fn load_ptr_addr<'s>(out: &mut String, ptr: &'s str) -> &'s str {
     }
 }
 
-fn load_src_if_mem<'s>(out: &mut String, src: &'s str, bytes: u8, is_float: bool) -> &'s str {
+#[inline(always)]
+fn load_src_if_mem_with_scratch<'s>(
+    out: &mut String,
+    src: &'s str,
+    bytes: u8,
+    is_float: bool,
+    scratch_gpr: A64Reg,
+    scratch_fpr: A64Reg,
+) -> &'s str {
     match is_mem(src) {
         true => {
             let scratch = match is_float {
-                true => A64Reg::D16.name(bytes),
-                false => A64Reg::X16.name(bytes),
+                true => scratch_fpr.name(bytes),
+                false => scratch_gpr.name(bytes),
             };
             emit_load(out, scratch, src, bytes);
             scratch
         }
         false => src,
     }
+}
+
+#[inline(always)]
+fn load_src_if_mem<'s>(out: &mut String, src: &'s str, bytes: u8, is_float: bool) -> &'s str {
+    load_src_if_mem_with_scratch(out, src, bytes, is_float, A64Reg::X16, A64Reg::D16)
+}
+
+#[inline(always)]
+fn is_mem(location: &str) -> bool {
+    location.starts_with('[')
 }
 
 fn emit_store_operand(
@@ -733,11 +757,6 @@ fn emit_store_operand(
             emit_store(out, "x16", dest, bytes);
         }
     }
-}
-
-#[inline(always)]
-fn is_mem(location: &str) -> bool {
-    location.starts_with('[')
 }
 
 #[inline(always)]
