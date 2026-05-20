@@ -1,0 +1,13 @@
+fn div_i8(a: i8, b: i8): i8 { a / b }
+fn div_i16(a: i16, b: i16): i16 { a / b }
+fn div_i32(a: i32, b: i32): i32 { a / b }
+fn div_i64(a: i64, b: i64): i64 { a / b }
+
+fn main(): i32 {
+    if div_i8(-9, 2) != -4 return 1;
+    if div_i16(-300, 7) != -42 return 2;
+    if div_i32(-123456, 1000) != -123 return 3;
+    if div_i64(-9000000000, 2000000000) != -4 return 4;
+
+    0
+}
