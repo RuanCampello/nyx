@@ -14,10 +14,10 @@ pub mod cursor;
 pub mod error;
 pub mod token;
 
+mod char;
 mod comment;
 mod identifier;
 mod number;
-mod char;
 mod string;
 
 use char::CharLiteral;

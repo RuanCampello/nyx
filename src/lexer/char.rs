@@ -59,20 +59,32 @@ impl<'src> Tokenize<'src> for CharLiteral {
                     }
                     Some('x') => {
                         cursor.advance(); // consume 'x'
-                        let h1 = cursor.advance();
-                        let h2 = cursor.advance();
-                        match (h1, h2) {
-                            (Some(c1), Some(c2))
-                                if c1.is_ascii_hexdigit() && c2.is_ascii_hexdigit() =>
-                            {
-                                let hex = format!("{}{}", c1, c2);
-                                let val = u32::from_str_radix(&hex, 16).unwrap();
-                                char::from_u32(val).unwrap()
+                        let mut hex = String::with_capacity(2);
+
+                        for _ in 0..2 {
+                            match cursor.peek() {
+                                Some(c) if c.is_ascii_hexdigit() => {
+                                    hex.push(c);
+                                    cursor.advance();
+                                }
+                                _ => {
+                                    let span = Span::new(esc_pos, cursor.position());
+                                    return Err(LexError::new(
+                                        LexErrorKind::InvalidEscape('x'),
+                                        span,
+                                    )
+                                    .with_help("invalid hex escape: \\x must be followed by two hex digits"));
+                                }
                             }
-                            _ => {
+                        }
+
+                        let val = u32::from_str_radix(&hex, 16).unwrap();
+                        match char::from_u32(val) {
+                            Some(ch) => ch,
+                            None => {
                                 let span = Span::new(esc_pos, cursor.position());
                                 return Err(LexError::new(LexErrorKind::InvalidEscape('x'), span)
-                                    .with_help("invalid hex escape: \\x must be followed by two hex digits"));
+                                    .with_help("invalid hex escape scalar value"));
                             }
                         }
                     }
@@ -163,5 +175,35 @@ impl<'src> Tokenize<'src> for CharLiteral {
                     .with_help("character literals must contain exactly one character"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tok(src: &str) -> Result<Token<'_>, LexError> {
+        let mut cursor = Cursor::new(src);
+        let start = cursor.position();
+        CharLiteral.lex(&mut cursor, start)
+    }
+
+    #[test]
+    fn hex_escape() {
+        let token = tok(r"'\x7f'").unwrap();
+        assert_eq!(token.kind, TokenKind::Char('\x7f'));
+    }
+
+    #[test]
+    fn invalid_hex_escape_does_not_consume_literal_boundary() {
+        let mut cursor = Cursor::new(r"'\x' + 1");
+        let start = cursor.position();
+
+        let err = CharLiteral.lex(&mut cursor, start).unwrap_err();
+
+        assert_eq!(err.kind, LexErrorKind::InvalidEscape('x'));
+        assert_eq!(err.span.start.column, 2);
+        assert_eq!(err.span.end.column, 4);
+        assert_eq!(cursor.peek(), Some('\''));
     }
 }
