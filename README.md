@@ -37,7 +37,7 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 - A complete standard library with collections, I/O, and higher-level utilities like `HTTP`.
 - An ownership and borrowing memory model, adapted to stay as simple as possible in practice.
-- Structs with method implementations and some form of interface-based polymorphism.
+- Interface-based polymorphism via dynamic dispatch (static dispatch and interface composition are already implemented).
 - C ABI compatibility, so interoperating with C code stays practical.
 
 **What we're not building:**
