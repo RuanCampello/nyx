@@ -51,7 +51,7 @@ pub struct Instruction {
 
 #[derive(Debug, PartialEq)]
 pub struct Function {
-    id: FunctionId,
+    pub(crate) id: FunctionId,
     pub(crate) intrinsic: Option<Intrinsic>,
     /// index into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: usize,

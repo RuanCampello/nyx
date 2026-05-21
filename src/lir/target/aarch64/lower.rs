@@ -279,9 +279,14 @@ impl<'f> Lower<'f> {
 
             InstructionKind::Call { callee, args } => {
                 let callee_id = *callee;
+                let callee_fn = self
+                    .all_functions
+                    .iter()
+                    .find(|f| f.id == callee_id)
+                    .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
                 let callee = self
                     .symbols
-                    .get(self.all_functions[callee_id.0 as usize].name_symbol)
+                    .get(callee_fn.name_symbol)
                     .map(|n| format!("nyx_{n}"))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
@@ -353,7 +358,7 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                let return_type = self.all_functions[callee_id.0 as usize].return_type;
+                let return_type = callee_fn.return_type;
                 let ret = (return_type != Type::Unit && !matches!(return_type, Type::Struct(_)))
                     .then_some(dest);
                 self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
