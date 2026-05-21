@@ -301,8 +301,10 @@ impl<'f> Lower<'f> {
                     );
                 }
 
-                let bytes = typ.machine_type(self.layouts).bytes();
+                let mt = typ.machine_type(self.layouts);
+                let bytes = mt.bytes();
                 let is_float = typ.is_float();
+                let signed = mt.is_signed();
                 match src {
                     Operand::Place(place) => {
                         let origin = self.vreg(place.id);
@@ -313,6 +315,7 @@ impl<'f> Lower<'f> {
                             *offset as i32,
                             bytes,
                             is_float,
+                            signed,
                         );
                         self.lir.push_instr(id, instruction);
                     }
@@ -419,7 +422,7 @@ impl<'f> Lower<'f> {
                         match X86_64::param(int_idx, RegClass::Int) {
                             Some(abi_reg) => moves.push((ptr, abi_reg)),
                             None => stack_args
-                                .push((X86Operand::VReg(ptr), MachineType::Int { bytes: 8 })),
+                                .push((X86Operand::VReg(ptr), MachineType::Int { bytes: 8, signed: false })),
                         }
 
                         int_idx += 1;
@@ -468,7 +471,7 @@ impl<'f> Lower<'f> {
                     .then_some(dest);
                 let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
                 for &(_, bytes, reg) in &aggregate_ret {
-                    let vreg = self.lir.new_vreg(MachineType::Int { bytes });
+                    let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
                     self.lir.add_precolour(vreg, reg);
                     ret_vregs.push(vreg);
                 }
@@ -531,7 +534,7 @@ impl<'f> Lower<'f> {
         condition: Condition,
     ) {
         // 1-byte result of setcc, then zero-extended into dest
-        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1 });
+        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
 
         match is_float {
             true => {
@@ -545,7 +548,7 @@ impl<'f> Lower<'f> {
                 let lhs = match lhs {
                     X86Operand::VReg(reg) => reg,
                     _ => {
-                        let dest = self.lir.new_vreg(MachineType::Int { bytes });
+                        let dest = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
                         self.lir.push_instr(
                             id,
                             X86Instr::Mov {
@@ -573,7 +576,7 @@ impl<'f> Lower<'f> {
         self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
 
         // movzx widens 1-byte setcc result to i32, so we need to update dest's type
-        self.lir.set_vreg_type(dest, MachineType::Int { bytes: 4 });
+        self.lir.set_vreg_type(dest, MachineType::Int { bytes: 4, signed: false });
     }
 
     fn lower_terminator(&mut self, id: &BlockId, terminator: mir::Terminator) {
@@ -594,7 +597,7 @@ impl<'f> Lower<'f> {
                 match self.small_integer_return(sid) {
                     Some(chunks) => {
                         for (offset, bytes, reg) in chunks {
-                            let ret = self.lir.new_vreg(MachineType::Int { bytes });
+                            let ret = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
                             #[rustfmt::skip]
                             let load = X86Instr::FieldLoad { dest: ret, origin: src_vreg, offset, bytes, is_float: false };
                             self.lir.add_precolour(ret, reg);
@@ -652,7 +655,7 @@ impl<'f> Lower<'f> {
             if self.small_integer_return(sid).is_some() {
                 // Small integer aggregates are returned directly in RAX/RDX.
             } else {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
                 let reg = X86_64::param(int_idx, RegClass::Int)
                     .expect("sret pointer must fit in the first integer argument register");
                 self.lir.add_precolour(ptr, reg);
@@ -663,7 +666,7 @@ impl<'f> Lower<'f> {
 
         for (vid, typ) in &self.function.params {
             if let Type::Struct(sid) = typ {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
 
                 match X86_64::param(int_idx, RegClass::Int) {
                     Some(reg) => self.lir.add_precolour(ptr, reg),
@@ -780,7 +783,7 @@ impl<'f> Lower<'f> {
     }
 
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
         self.lir.push_instr(block, X86Instr::StackAddr { dest, origin });
         dest
     }

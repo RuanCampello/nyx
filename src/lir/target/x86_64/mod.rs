@@ -258,7 +258,7 @@ impl MemOps for X86_64 {
     fn vreg_operand(v: VReg) -> X86Operand { X86Operand::VReg(v) }
 
     #[inline(always)]
-    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool, _signed: bool) -> X86Instr {
         X86Instr::FieldLoad { dest, origin, offset, bytes, is_float }
     }
 
@@ -268,7 +268,7 @@ impl MemOps for X86_64 {
     }
 
     #[inline(always)]
-    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool, _signed: bool) -> X86Instr {
         X86Instr::PtrLoad { dest, ptr, offset, bytes, is_float }
     }
 

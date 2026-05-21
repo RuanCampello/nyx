@@ -75,7 +75,7 @@ pub struct BlockId(u32);
 /// We don't need much info here, only byte widths matter at this layer.
 #[derive(Debug, Clone, Copy)]
 pub enum MachineType {
-    Int { bytes: u8 },
+    Int { bytes: u8, signed: bool },
     Float { bytes: u8 },
     Struct { size: u32, align: u32 },
 }
@@ -213,7 +213,7 @@ impl MachineType {
     #[inline(always)]
     pub const fn bytes(self) -> u8 {
         match self {
-            Self::Int { bytes } | Self::Float { bytes } => bytes,
+            Self::Int { bytes, .. } | Self::Float { bytes } => bytes,
             Self::Struct { .. } => 8,
         }
     }
@@ -221,7 +221,7 @@ impl MachineType {
     #[inline(always)]
     pub const fn stack_size(self) -> i32 {
         match self {
-            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Int { bytes, .. } | Self::Float { bytes } => bytes as i32,
             Self::Struct { size, .. } => size as i32,
         }
     }
@@ -229,7 +229,7 @@ impl MachineType {
     #[inline(always)]
     pub const fn stack_align(self) -> i32 {
         match self {
-            Self::Int { bytes } | Self::Float { bytes } => bytes as i32,
+            Self::Int { bytes, .. } | Self::Float { bytes } => bytes as i32,
             Self::Struct { align, .. } => align as i32,
         }
     }
@@ -241,22 +241,33 @@ impl MachineType {
             Self::Float { .. } => RegClass::Float,
         }
     }
+
+    #[inline(always)]
+    pub const fn is_signed(self) -> bool {
+        match self {
+            Self::Int { signed, .. } => signed,
+            _ => false,
+        }
+    }
 }
 
 impl Type {
     #[inline(always)]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
-            Type::I8 | Type::U8 | Type::Bool => MachineType::Int { bytes: 1 },
-            Type::I16 | Type::U16 => MachineType::Int { bytes: 2 },
-            Type::I32 | Type::U32 | Type::Char => MachineType::Int { bytes: 4 },
+            Type::I8 => MachineType::Int { bytes: 1, signed: true },
+            Type::U8 | Type::Bool => MachineType::Int { bytes: 1, signed: false },
+            Type::I16 => MachineType::Int { bytes: 2, signed: true },
+            Type::U16 => MachineType::Int { bytes: 2, signed: false },
+            Type::I32 => MachineType::Int { bytes: 4, signed: true },
+            Type::U32 | Type::Char => MachineType::Int { bytes: 4, signed: false },
             Type::I64
-            | Type::U64
-            | Type::Iptr
+            | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
+            Type::U64
             | Type::Uptr
             | Type::Str
             | Type::String
-            | Type::Ref { .. } => MachineType::Int { bytes: 8 },
+            | Type::Ref { .. } => MachineType::Int { bytes: 8, signed: false },
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },
             Type::Struct(id) => {

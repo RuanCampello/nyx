@@ -107,20 +107,20 @@ pub trait MemOps: Target {
     fn vreg_operand(v: VReg) -> Self::Operand;
 
     /// load `bytes` bytes from `origin + offset` (a stack slot) into `dest`
-    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool, signed: bool) -> Self::Instruction;
     /// store `src` into `origin + offset` (a stack slot)
     fn field_store(origin: VReg, src: Self::Operand, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
     /// load `bytes` bytes through the pointer in `ptr` at `ptr + offset` into `dest`
-    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool, signed: bool) -> Self::Instruction;
     /// store `src` through the pointer in `ptr` at `ptr + offset`
     fn ptr_store(ptr: VReg, src: Self::Operand, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction;
 
     /// emit a scalar load, choosing between a pointer dereference or a stack slot access based on `is_ref`
     #[inline(always)]
-    fn scalar_load(is_ref: bool, dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> Self::Instruction {
+    fn scalar_load(is_ref: bool, dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool, signed: bool) -> Self::Instruction {
         match is_ref {
-            true  => Self::ptr_load(dest, origin, offset, bytes, is_float),
-            false => Self::field_load(dest, origin, offset, bytes, is_float),
+            true  => Self::ptr_load(dest, origin, offset, bytes, is_float, signed),
+            false => Self::field_load(dest, origin, offset, bytes, is_float, signed),
         }
     }
 
@@ -156,9 +156,9 @@ pub fn aggregate_copy<T: MemOps>(
     size: u32,
 ) {
     for (offset, bytes) in lir::aggregate_chunks(size) {
-        let scratch = lir.new_vreg(MachineType::Int { bytes });
+        let scratch = lir.new_vreg(MachineType::Int { bytes, signed: false });
 
-        let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false);
+        let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false, false);
         lir.push_instr(block, load);
 
         let store = T::scalar_store(
