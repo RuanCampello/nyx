@@ -313,7 +313,7 @@ impl<'f> Lower<'f> {
                         match AArch64::param(int_idx, RegClass::Int) {
                             Some(abi_reg) => moves.push((ptr, abi_reg)),
                             None => stack_args
-                                .push((A64Operand::VReg(ptr), MachineType::Int { bytes: 8 })),
+                                .push((A64Operand::VReg(ptr), MachineType::Int { bytes: 8, signed: false })),
                         }
 
                         int_idx += 1;
@@ -385,7 +385,9 @@ impl<'f> Lower<'f> {
                     );
                 }
 
-                let bytes = typ.machine_type(self.layouts).bytes();
+                let mt = typ.machine_type(self.layouts);
+                let bytes = mt.bytes();
+                let signed = mt.is_signed();
 
                 match src {
                     Operand::Place(place) => {
@@ -397,6 +399,7 @@ impl<'f> Lower<'f> {
                             *offset as i32,
                             bytes,
                             typ.is_float(),
+                            signed,
                         );
                         self.lir.push_instr(id, instruction);
                     }
@@ -586,7 +589,7 @@ impl<'f> Lower<'f> {
         let mut float_stack_idx = 0;
 
         if matches!(self.function.return_type, Type::Struct(_)) {
-            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
             let reg = AArch64::param(int_idx, RegClass::Int)
                 .expect("sret pointer must fit in the first integer argument register");
             self.lir.add_precolour(ptr, reg);
@@ -596,7 +599,7 @@ impl<'f> Lower<'f> {
 
         for (vid, typ) in &self.function.params {
             if let Type::Struct(sid) = typ {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
 
                 match AArch64::param(int_idx, RegClass::Int) {
                     Some(reg) => self.lir.add_precolour(ptr, reg),
@@ -609,6 +612,7 @@ impl<'f> Lower<'f> {
                                 dest: ptr,
                                 fp_offset: offset,
                                 bytes: 8,
+                                signed: false,
                             },
                         );
                         int_stack_idx += 1;
@@ -660,12 +664,14 @@ impl<'f> Lower<'f> {
                                 );
 
                             let dest = self.vreg(*vid);
+                            let signed = mt.is_signed();
                             self.lir.push_instr(
                                 &entry,
                                 A64Instr::LdrParam {
                                     dest,
                                     fp_offset: offset,
                                     bytes: mt.bytes(),
+                                    signed,
                                 },
                             );
                             int_stack_idx += 1;
@@ -706,6 +712,7 @@ impl<'f> Lower<'f> {
                                     dest,
                                     fp_offset: offset,
                                     bytes: mt.bytes(),
+                                    signed: false,
                                 },
                             );
                             float_stack_idx += 1;
@@ -724,7 +731,7 @@ impl<'f> Lower<'f> {
     }
 
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8 });
+        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
 
         dest

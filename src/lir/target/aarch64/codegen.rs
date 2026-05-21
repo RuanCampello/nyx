@@ -134,10 +134,12 @@ impl Function<AArch64> {
 
             A64Instr::MovImm { dest, imm, bytes } => {
                 let dest_loc = alloc.location(dest, bytes);
+
                 match is_mem(&dest_loc) {
                     true => {
-                        emit_wide_immediate(out, "x16", *imm, *bytes);
-                        emit_store(out, "x16", &dest_loc, *bytes);
+                        let scratch = A64Reg::X16.name(*bytes);
+                        emit_wide_immediate(out, scratch, *imm, *bytes);
+                        emit_store(out, scratch, &dest_loc, *bytes);
                     }
                     false => emit_wide_immediate(out, &dest_loc, *imm, *bytes),
                 }
@@ -147,15 +149,18 @@ impl Function<AArch64> {
                 dest,
                 fp_offset,
                 bytes,
+                signed,
             } => {
-                let suffix = mem_suffix(bytes);
                 let dest = alloc.location(dest, bytes);
+                let src_addr = format!("[x29, #{fp_offset}]");
+
                 match is_mem(&dest) {
                     true => {
-                        emit!(out, "ldr{suffix}    x16, [x29, #{fp_offset}]");
-                        emit_store(out, "x16", &dest, *bytes);
+                        let scratch = A64Reg::X16.name(*bytes);
+                        emit_load_reg(out, scratch, &src_addr, *bytes, *signed, false);
+                        emit_store(out, scratch, &dest, *bytes);
                     }
-                    false => emit!(out, "ldr{suffix}    {dest}, [x29, #{fp_offset}]"),
+                    false => emit_load_reg(out, dest.as_str(), &src_addr, *bytes, *signed, false),
                 }
             }
 
@@ -200,18 +205,20 @@ impl Function<AArch64> {
                 origin,
                 offset,
                 bytes,
+                signed,
             } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let dest = alloc.location(dest, bytes);
-                let suffix = mem_suffix(bytes);
+                let src = format!("[x29, #{offset}]");
 
                 match is_mem(&dest) {
                     true => {
-                        emit!(out, "ldr{suffix}    x16, [x29, #{offset}]");
-                        emit_store(out, "x16", &dest, *bytes);
+                        let scratch = A64Reg::X16.name(*bytes);
+                        emit_load_reg(out, scratch, &src, *bytes, *signed, false);
+                        emit_store(out, scratch, &dest, *bytes);
                     }
-                    false => emit!(out, "ldr{suffix}    {dest}, [x29, #{offset}]"),
+                    false => emit_load_reg(out, dest.as_str(), &src, *bytes, *signed, false),
                 }
             }
 
@@ -247,18 +254,24 @@ impl Function<AArch64> {
                 offset,
                 bytes,
                 is_float,
+                signed,
             } => {
                 let ptr = alloc.location(ptr, &8);
                 let dest = alloc.location(dest, bytes);
                 let addr = load_ptr_addr(out, &ptr);
-                let suffix = mem_suffix(bytes);
+
                 let scratch = match (*is_float, is_mem(&dest)) {
                     (true, true) => A64Reg::D16.name(*bytes),
                     (false, true) => A64Reg::X16.name(*bytes),
                     _ => dest.as_str(),
                 };
 
-                emit!(out, "ldr{suffix}    {scratch}, [{addr}, #{offset}]");
+                let src_addr = match *offset == 0 {
+                    true => format!("[{addr}]"),
+                    _ => format!("[{addr}, #{offset}]"),
+                };
+
+                emit_load_reg(out, scratch, &src_addr, *bytes, *signed, *is_float);
                 if is_mem(&dest) {
                     emit_store(out, scratch, &dest, *bytes);
                 }
@@ -402,29 +415,36 @@ impl Function<AArch64> {
                     for (i, (operand, mt)) in stack_args.iter().enumerate() {
                         let bytes = mt.bytes();
                         let offset = i * 8;
+                        let stack_arg_addr = format!("[sp, #{offset}]");
 
                         match operand {
                             A64Operand::Imm(n) => {
-                                emit!(out, "mov     x16, #{n}");
-                                emit!(out, "str     x16, [sp, #{offset}]");
+                                let scratch = A64Reg::X16.name(bytes);
+                                emit!(out, "mov     {scratch}, #{n}");
+                                emit_store(out, scratch, &stack_arg_addr, bytes);
                             }
                             A64Operand::VReg(vreg) => {
                                 let src = alloc.location(vreg, &bytes);
-                                let suffix = mem_suffix(&bytes);
-                                emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
+                                let src = load_src_if_mem(
+                                    out,
+                                    &src,
+                                    bytes,
+                                    matches!(mt, MachineType::Float { .. }),
+                                );
+                                emit_store(out, &src, &stack_arg_addr, bytes);
                             }
                             A64Operand::Label(label) => match mt {
                                 MachineType::Float { .. } => {
                                     let scratch = A64Reg::D16.name(bytes);
-                                    let suffix = mem_suffix(&bytes);
                                     emit!(out, "adrp    x16, {label}");
                                     emit!(out, "ldr     {scratch}, [x16, :lo12:{label}]");
-                                    emit!(out, "str{suffix}    {scratch}, [sp, #{offset}]");
+                                    emit_store(out, scratch, &stack_arg_addr, bytes);
                                 }
-                                MachineType::Int { .. } => {
+                                MachineType::Int { bytes: b, .. } => {
+                                    let scratch = A64Reg::X16.name(*b);
                                     emit!(out, "adrp    x16, {label}");
                                     emit!(out, "add     x16, x16, :lo12:{label}");
-                                    emit!(out, "str     x16, [sp, #{offset}]");
+                                    emit_store(out, scratch, &stack_arg_addr, *b);
                                 }
                                 _ => unimplemented!(),
                             },
@@ -441,17 +461,23 @@ impl Function<AArch64> {
                     for (idx, (vreg, _)) in moves.iter().enumerate() {
                         let bytes = self.reg_bytes(vreg);
                         let src = alloc.location(vreg, &bytes);
-                        let suffix = mem_suffix(&bytes);
+                        let src = load_src_if_mem(out, &src, bytes, self.is_float(vreg));
                         let offset = idx * 8;
-                        emit!(out, "str{suffix}    {src}, [sp, #{offset}]");
+                        emit_store(out, &src, &format!("[sp, #{offset}]"), bytes);
                     }
 
                     for (idx, (vreg, reg)) in moves.iter().enumerate() {
                         let bytes = self.reg_bytes(vreg);
                         let dest = reg.name(bytes);
-                        let suffix = mem_suffix(&bytes);
                         let offset = idx * 8;
-                        emit!(out, "ldr{suffix}    {dest}, [sp, #{offset}]");
+                        emit_load_reg(
+                            out,
+                            dest,
+                            &format!("[sp, #{offset}]"),
+                            bytes,
+                            self.is_signed(vreg),
+                            self.is_float(vreg),
+                        );
                     }
 
                     emit!(out, "add     sp, sp, #{aligned}");
@@ -589,6 +615,11 @@ impl Function<AArch64> {
     }
 
     #[inline(always)]
+    fn is_signed(&self, vreg: &VReg) -> bool {
+        self.vreg_types.get(vreg.0 as usize).map(|typ| typ.is_signed()).unwrap_or(false)
+    }
+
+    #[inline(always)]
     fn operand<'s>(
         &self,
         alloc: &Allocation<AArch64>,
@@ -691,6 +722,26 @@ fn emit_store(out: &mut String, src: &str, dest: &str, bytes: u8) {
     emit!(out, "str{suffix}    {src}, {dest}");
 }
 
+#[inline]
+fn emit_load_reg(
+    out: &mut String,
+    dest_reg: &str,
+    src_addr: &str,
+    bytes: u8,
+    signed: bool,
+    is_float: bool,
+) {
+    match is_float {
+        true => emit!(out, "ldr     {dest_reg}, {src_addr}"),
+        #[rustfmt::skip]
+        _ => match bytes {
+            1 => emit!(out, "{}    {dest_reg}, {src_addr}", if signed { "ldrsb" } else { "ldrb" }),
+            2 => emit!(out, "{}    {dest_reg}, {src_addr}", if signed { "ldrsh" } else { "ldrh" }),
+            _ => emit!(out, "ldr     {dest_reg}, {src_addr}"),
+        },
+    }
+}
+
 fn load_ptr_addr<'s>(out: &mut String, ptr: &'s str) -> &'s str {
     match is_mem(ptr) {
         true => {
@@ -733,6 +784,7 @@ fn is_mem(location: &str) -> bool {
     location.starts_with('[')
 }
 
+#[inline]
 fn emit_store_operand(
     out: &mut String,
     alloc: &Allocation<AArch64>,
@@ -748,13 +800,16 @@ fn emit_store_operand(
             emit_store(out, &src, dest, bytes);
         }
         A64Operand::Imm(n) => {
-            emit!(out, "mov     x16, #{n}");
-            emit_store(out, "x16", dest, bytes);
+            let scratch = A64Reg::X16.name(bytes);
+            emit!(out, "mov     {scratch}, #{n}");
+            emit_store(out, scratch, dest, bytes);
         }
         A64Operand::Label(label) => {
+            let scratch = A64Reg::X16.name(bytes);
             emit!(out, "adrp    x16, {label}");
-            emit!(out, "ldr     x16, [x16, :lo12:{label}]");
-            emit_store(out, "x16", dest, bytes);
+            let suffix = mem_suffix(&bytes);
+            emit!(out, "ldr{suffix}    {scratch}, [x16, :lo12:{label}]");
+            emit_store(out, scratch, dest, bytes);
         }
     }
 }
