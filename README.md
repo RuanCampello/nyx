@@ -1,6 +1,6 @@
 # Nyx 🌑
 
-A modern, strict, compiled programming language.
+A modern, strict, and compiled programming language.
 
 ## Overview
 
@@ -63,21 +63,27 @@ For a detailed breakdown of completed features and active development goals, ple
 
 ## References
 
-### x64
+### x64 / ARM64 Codegen & ABI
 
-- <https://www.felixcloutier.com/x86/>
-- <https://exercism.org/tracks/x86-64-assembly/concepts/floating-point-numbers>
-- <https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf>
-- <https://filippo.io/linux-syscall-table/>
+Resources for native code generation, register usage, and platform calling conventions.
 
-### other compilers & backends
+- [x86/x64 Instruction Reference](https://www.felixcloutier.com/x86/) - Complete, searchable reference for x86 and x64 instructions
+- [Exercism: x86-64 Floating Point Numbers](https://exercism.org/tracks/x86-64-assembly/concepts/floating-point-numbers) - Tutorial on floating-point concepts, registers, and SSE instructions
+- [System V Application Binary Interface (AMD64)](https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf) - Official ABI specification for x86_64 Linux, defining calling conventions, stack layout, and register classification
+- [Linux Syscall Table (x86_64)](https://filippo.io/linux-syscall-table/) - Quick reference list of x86_64 system call numbers and register arguments
 
-- <https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html>
-- <https://harelang.org/>
+### Compiler Design & Language Reference
 
-### algorithms
+Inspiration and architectural references for the Nyx compiler and standard library
 
-- <https://dl.acm.org/doi/epdf/10.1145/872726.806984>
+- [GCC Optimisation Options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) - Documentation on optimisation levels and flags used in modern compilers
+- [The Hare Programming Language](https://harelang.org/) - A clean, simple, and statically-typed systems language that served design inspiration
+
+### Algorithms
+
+Foundational papers for compiler implemented or used as research in Nyx
+
+- [Register Allocation and Spilling via Graph Coloring](https://dl.acm.org/doi/epdf/10.1145/872726.806984) - Gregory J. Chaitin's seminal 1982 paper detailing the graph-colouring approach to register allocation and spilling
 
 ## License
 
