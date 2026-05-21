@@ -230,6 +230,10 @@ pub enum ExpressionKind {
         function: FunctionId,
         args: Vec<Expression>,
     },
+    Syscall {
+        code: SyscallCode,
+        args: Vec<Expression>,
+    },
     IntrinsicCall {
         intrinsic: Intrinsic,
         args: Vec<Expression>,
@@ -248,6 +252,12 @@ pub struct Receiver {
 pub enum Intrinsic {
     PrintLn,
     Print,
+    Syscall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallCode {
+    Write,
     Exit,
 }
 
@@ -268,7 +278,7 @@ pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirEr
     let mut scope = Scope::new();
     scope.extend(&declarations, &mut symbols, false)?;
 
-    let functions = scope.lower_functions(&declarations, &mut symbols)?;
+    let functions = scope.lower_functions(&declarations, &mut symbols, false)?;
 
     Ok(Hir {
         symbols: symbols.into_symbols(),
@@ -477,7 +487,20 @@ impl FromStr for Intrinsic {
         Ok(match str {
             "println" => Self::PrintLn,
             "print" => Self::Print,
-            "exit" => Self::Exit,
+            "syscall" => Self::Syscall,
+
+            _ => return Err(()),
+        })
+    }
+}
+
+impl FromStr for SyscallCode {
+    type Err = ();
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        Ok(match str {
+            "SYS_WRITE" => Self::Write,
+            "SYS_EXIT" => Self::Exit,
 
             _ => return Err(()),
         })

@@ -1,6 +1,7 @@
 use crate::{
+    hir::SyscallCode,
     lir::{self, MachineType, VReg, regalloc},
-    mir::{self, SyscallCode},
+    mir,
 };
 
 mod aarch64;

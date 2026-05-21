@@ -1,11 +1,8 @@
-use crate::parser::expression::BinaryOperator;
-use crate::{
-    lir::{
-        MachineType, VReg,
-        target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
-    },
-    mir::SyscallCode,
+use crate::lir::{
+    MachineType, VReg,
+    target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
 };
+use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
 
 mod codegen;
 mod lower;

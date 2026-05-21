@@ -223,7 +223,7 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         let functions = self
             .scope
-            .lower_functions(&decls, &mut self.symbols)
+            .lower_functions(&decls, &mut self.symbols, in_std)
             .map_err(|e| Diagnostic::from(e))?;
 
         let structs = self.scope.structs[struct_offset..].to_vec();
@@ -672,15 +672,18 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert_eq!(hir.functions.len(), 3);
 
-        let main = &hir.functions[1];
+        let main = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
             matches!(
                 stmt,
                 hir::Statement::Expr(hir::Expression {
-                    kind: hir::ExpressionKind::IntrinsicCall {
-                        intrinsic: hir::Intrinsic::Exit,
+                    kind: hir::ExpressionKind::Call {
                         args,
                         ..
                     },
@@ -698,6 +701,76 @@ mod tests {
         });
 
         assert!(has_exit_call);
+
+        let exit = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "exit")
+            .unwrap();
+        let emits_exit_syscall = exit.body.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                hir::Statement::Expr(hir::Expression {
+                    kind: hir::ExpressionKind::Syscall {
+                        code: hir::SyscallCode::Exit,
+                        args,
+                    },
+                    ..
+                })
+                if args.len() == 1
+            )
+        });
+
+        assert!(emits_exit_syscall);
+    }
+
+    #[test]
+    fn syscall_primitive_is_std_only() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            use std::process;
+            fn main() {
+                syscall(SYS_EXIT, 0);
+            }
+            "#,
+        );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn qualified_std_intrinsics_keep_call_arguments() {
+        use crate::hir;
+
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            use std::io;
+            fn main() {
+                io::println("ok");
+            }
+            "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        assert!(matches!(
+            &main.body.statements[0],
+            hir::Statement::Expr(hir::Expression {
+                kind: hir::ExpressionKind::IntrinsicCall {
+                    intrinsic: hir::Intrinsic::PrintLn,
+                    args,
+                },
+                ..
+            }) if args.len() == 1
+        ));
     }
 
     #[test]

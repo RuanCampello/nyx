@@ -405,11 +405,8 @@ impl<'a> FunctionLower<'a> {
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
                 use crate::hir::Intrinsic;
-                use crate::mir::SyscallCode;
 
                 // the return value is ignored for those functions
-                let dest = self.fresh_temporary(Type::I32);
-
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::Print => {
                         let mut output = String::new();
@@ -428,24 +425,27 @@ impl<'a> FunctionLower<'a> {
                         Ok(Operand::Const(Const::Unit))
                     }
 
-                    Intrinsic::Exit => {
-                        let lowered_args = args
-                            .iter()
-                            .map(|a| self.lower_expr(a))
-                            .collect::<Result<Vec<_>, _>>()?;
-
-                        self.emit(
-                            dest,
-                            InstructionKind::Syscall {
-                                code: SyscallCode::Exit,
-                                args: lowered_args,
-                                returns: false,
-                            },
-                        );
-
-                        Ok(Operand::Const(Const::Unit))
+                    Intrinsic::Syscall => {
+                        unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     }
                 }
+            }
+
+            ExpressionKind::Syscall { code, args } => {
+                let lowered_args =
+                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let dest = self.fresh_temporary(expr.typ);
+
+                self.emit(
+                    dest,
+                    InstructionKind::Syscall {
+                        code: *code,
+                        args: lowered_args,
+                        returns: true,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
             }
 
             ExpressionKind::Struct { id, fields } => {
@@ -583,7 +583,7 @@ impl<'a> FunctionLower<'a> {
         self.emit(
             dest,
             InstructionKind::Syscall {
-                code: mir::SyscallCode::Write,
+                code: crate::hir::SyscallCode::Write,
                 args: vec![
                     Operand::Const(Const::Int(1, Type::I32)),
                     Operand::Const(Const::Str { id, len }),
@@ -863,7 +863,9 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
                 visit_expr_runtime_uses(value, uses);
             }
         }
-        ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
+        ExpressionKind::Call { args, .. }
+        | ExpressionKind::IntrinsicCall { args, .. }
+        | ExpressionKind::Syscall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }

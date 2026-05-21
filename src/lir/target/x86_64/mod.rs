@@ -1,9 +1,9 @@
 use crate::{
+    hir::SyscallCode,
     lir::{
         MachineType, VReg,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
-    mir::SyscallCode,
     parser::expression::BinaryOperator,
 };
 

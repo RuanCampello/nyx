@@ -2,7 +2,7 @@ use crate::{
     hir::{
         Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
         Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId, SymbolId,
-        SymbolTable, Type,
+        SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         scope::{Scope, Structs},
     },
@@ -28,6 +28,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     next_local: u32,
     symbols: &'s mut SymbolTable,
     is_const: bool,
+    in_std: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,11 +44,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
+        in_std: bool,
     ) -> Self {
         Self {
             scope,
             symbols,
             is_const: function.is_const,
+            in_std,
             return_type: Type::Unit,
             function: Some(function),
             function_id,
@@ -558,12 +561,6 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             }
 
             Expr::Call { callee, args, span } => {
-                if let Expr::Identifier(name, _) = callee.as_ref() {
-                    if let Ok(intrinsic) = Intrinsic::from_str(name) {
-                        return self.lower_intrinsic(intrinsic, args, *span);
-                    }
-                }
-
                 if let Expr::Field {
                     expr: receiver,
                     field: method_name,
@@ -698,6 +695,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
+                if signature.intrinsic == Some(Intrinsic::Syscall) {
+                    return self.lower_syscall(args, signature.return_type, *span);
+                }
+
                 let mut lowered_args = Vec::with_capacity(args.len());
 
                 match signature.intrinsic {
@@ -759,7 +760,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         });
                     }
 
-                    if signature.params.len() != args.len() {
+                    if signature.intrinsic == Some(Intrinsic::Syscall) {
+                        return self.lower_syscall(args, signature.return_type, *span);
+                    }
+
+                    if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                         return Err(HirError {
                             kind: HirErrorKind::ArityMismatch {
                                 name: format!("{qualifier}::{name}"),
@@ -771,24 +776,39 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     }
 
                     let mut lowered_args = Vec::with_capacity(args.len());
-                    for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                        let expr = self.lower_expr(expr, Some(param_type))?;
-                        self.assert_type(param_type, expr.typ, expr.span)?;
-                        lowered_args.push(expr);
+                    match signature.intrinsic {
+                        Some(_) => {
+                            for arg in args.iter() {
+                                let lowered = self.lower_expr(arg, None)?;
+                                lowered_args.push(lowered);
+                            }
+                        }
+
+                        _ => {
+                            for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                                let expr = self.lower_expr(expr, Some(param_type))?;
+                                self.assert_type(param_type, expr.typ, expr.span)?;
+                                lowered_args.push(expr);
+                            }
+                        }
                     }
+
+                    let kind = match signature.intrinsic {
+                        Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                            intrinsic,
+                            args: lowered_args,
+                        },
+                        _ => ExpressionKind::Call {
+                            function: id,
+                            args: lowered_args,
+                        },
+                    };
 
                     return Ok(Expression {
                         typ: signature.return_type,
                         span: *span,
-                        kind: ExpressionKind::Call {
-                            function: id,
-                            args: lowered_args,
-                        },
+                        kind,
                     });
-                }
-
-                if let Ok(intrinsic) = Intrinsic::from_str(name) {
-                    return self.lower_intrinsic(intrinsic, args, *span);
                 }
 
                 let symbol = self.symbols.insert(name);
@@ -809,7 +829,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                if signature.params.len() != args.len() {
+                if signature.intrinsic == Some(Intrinsic::Syscall) {
+                    return self.lower_syscall(args, signature.return_type, *span);
+                }
+
+                if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                     return Err(HirError {
                         kind: HirErrorKind::ArityMismatch {
                             name: name.to_string(),
@@ -821,10 +845,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let mut lowered_args = Vec::with_capacity(args.len());
-                for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                    let expr = self.lower_expr(expr, Some(param_type))?;
-                    self.assert_type(param_type, expr.typ, expr.span)?;
-                    lowered_args.push(expr);
+                match signature.intrinsic {
+                    Some(_) => {
+                        for arg in args.iter() {
+                            let lowered = self.lower_expr(arg, None)?;
+                            lowered_args.push(lowered);
+                        }
+                    }
+
+                    _ => {
+                        for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                            let expr = self.lower_expr(expr, Some(param_type))?;
+                            self.assert_type(param_type, expr.typ, expr.span)?;
+                            lowered_args.push(expr);
+                        }
+                    }
                 }
 
                 let return_type = signature.return_type;
@@ -964,21 +999,68 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         ))
     }
 
-    fn lower_intrinsic(
+    fn lower_syscall(
         &mut self,
-        intrinsic: Intrinsic,
         args: &[expression::Expression<'src>],
+        return_type: Type,
         span: Span,
     ) -> Result<Expression, HirError<'src>> {
-        let args = args
+        if !self.in_std {
+            return Err(HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: "syscall".to_string(),
+                },
+                span,
+            });
+        }
+
+        let Some((code_arg, value_args)) = args.split_first() else {
+            return Err(HirError {
+                kind: HirErrorKind::ArityMismatch {
+                    name: "syscall".to_string(),
+                    expected: 1,
+                    found: 0,
+                },
+                span,
+            });
+        };
+
+        if value_args.len() > 6 {
+            return Err(HirError {
+                kind: HirErrorKind::ArityMismatch {
+                    name: "syscall".to_string(),
+                    expected: 7,
+                    found: args.len(),
+                },
+                span,
+            });
+        }
+
+        let expression::Expression::Identifier(name, code_span) = code_arg else {
+            return Err(HirError {
+                kind: HirErrorKind::UndeclaredIdentifier {
+                    name: format!("{code_arg:?}"),
+                },
+                span: code_arg.span(),
+            });
+        };
+
+        let code = SyscallCode::from_str(name).map_err(|_| HirError {
+            kind: HirErrorKind::UndeclaredIdentifier {
+                name: name.to_string(),
+            },
+            span: *code_span,
+        })?;
+
+        let args = value_args
             .iter()
             .map(|arg| self.lower_expr(arg, None))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Expression {
-            typ: Type::Unit,
+            typ: return_type,
             span,
-            kind: ExpressionKind::IntrinsicCall { intrinsic, args },
+            kind: ExpressionKind::Syscall { code, args },
         })
     }
 

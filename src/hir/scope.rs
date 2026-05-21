@@ -99,6 +99,7 @@ impl Scope {
         &self,
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
+        in_std: bool,
     ) -> Result<Vec<Function>, HirError<'s>> {
         declarations
             .functions()
@@ -106,7 +107,7 @@ impl Scope {
                 let id = self.function_id(function, symbols, None, |name| {
                     HirErrorKind::UnknownFunction { name }
                 })?;
-                lower::FunctionBuilder::new(self, symbols, id, function).lower()
+                lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower()
             })
             .collect()
     }
@@ -273,7 +274,10 @@ impl Scope {
 
             let params = self.resolve_params(&function.params, symbols)?;
             let return_type = self.resolve_return_type(function.return_type.as_ref(), symbols)?;
-            let intrinsic = Intrinsic::from_str(symbols.get(symbol)).ok();
+            let intrinsic = match in_std {
+                true => Intrinsic::from_str(symbols.get(symbol)).ok(),
+                false => None,
+            };
 
             self.signatures.push(FunctionSignature {
                 name: symbol,

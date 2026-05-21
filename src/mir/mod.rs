@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, Struct, Type},
+    hir::{FunctionId, Intrinsic, Struct, SyscallCode, Type},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
@@ -120,12 +120,6 @@ pub enum InstructionKind {
         args: Vec<Operand>,
         returns: bool,
     },
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SyscallCode {
-    Write,
-    Exit,
 }
 
 /// This is a *input* of a instruction.
