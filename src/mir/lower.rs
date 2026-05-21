@@ -1,13 +1,17 @@
 //! HIR -> MIR lowering
 
 use crate::{
-    hir::{self, Expression, ExpressionKind, Hir, LocalId, Struct, SymbolId, Type},
+    hir::{
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTarget, Struct, SymbolId,
+        Type,
+    },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
     },
 };
 use lasso::Key;
+use std::collections::HashMap;
 
 struct PartialBlock {
     id: BlockId,
@@ -27,6 +31,9 @@ struct FunctionLower<'a> {
     local_symbols: Vec<usize>,
     constant_locals: Vec<Option<String>>,
     runtime_local_uses: Vec<bool>,
+    functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+    runtime_uses_map: &'a HashMap<FunctionId, Vec<bool>>,
+    inlined_return_target: Option<(BlockId, Option<Place>)>,
 }
 
 pub fn lower(hir: Hir) -> Result<Mir, MirError> {
@@ -34,12 +41,21 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     let mut strings = Vec::new();
     let symbols = hir.symbols;
 
-    for function in hir.functions {
+    let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
+
+    let mut runtime_uses_map = HashMap::new();
+    for f in &hir.functions {
+        runtime_uses_map.insert(f.id, collect_runtime_local_uses(f));
+    }
+
+    for function in &hir.functions {
         functions.push(FunctionLower::run(
             function,
             &symbols,
             &hir.structs,
             &mut strings,
+            &functions_map,
+            &runtime_uses_map,
         )?);
     }
 
@@ -53,10 +69,12 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 
 impl<'a> FunctionLower<'a> {
     fn run(
-        function: hir::Function,
+        function: &hir::Function,
         symbols: &'a [String],
         structs: &'a [Struct],
         strings: &'a mut Vec<String>,
+        functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+        runtime_uses_map: &'a HashMap<FunctionId, Vec<bool>>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
         let intrinsic = function.intrinsic;
@@ -95,7 +113,10 @@ impl<'a> FunctionLower<'a> {
             structs,
             local_symbols,
             constant_locals: vec![None; n_hir_locals],
-            runtime_local_uses: collect_runtime_local_uses(&function),
+            runtime_local_uses: runtime_uses_map.get(&id).cloned().unwrap(),
+            functions_map,
+            runtime_uses_map,
+            inlined_return_target: None,
         };
 
         builder.new_block();
@@ -167,7 +188,14 @@ impl<'a> FunctionLower<'a> {
 
             Stmt::Return(value) => {
                 let operand = value.as_ref().map(|e| self.lower_expr(e)).transpose()?;
-                self.terminate(Terminator::Return(operand));
+                if let Some((exit_block_id, ret_place)) = self.inlined_return_target {
+                    if let (Some(op), Some(dest)) = (operand, ret_place) {
+                        self.emit(dest, InstructionKind::Assign(op));
+                    }
+                    self.terminate(Terminator::Jump(exit_block_id));
+                } else {
+                    self.terminate(Terminator::Return(operand));
+                }
             }
 
             Stmt::If {
@@ -249,6 +277,7 @@ impl<'a> FunctionLower<'a> {
             ExpressionKind::Integer(n) => Ok(Operand::Const(Const::Int(*n, expr.typ))),
             ExpressionKind::Float(f) => Ok(Operand::Const(Const::Float(*f, expr.typ))),
             ExpressionKind::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
+            ExpressionKind::Char(c) => Ok(Operand::Const(Const::Int(*c as i64, expr.typ))),
             ExpressionKind::String(s) => {
                 let id = self.intern_string(s);
                 let len = s.len();
@@ -263,16 +292,16 @@ impl<'a> FunctionLower<'a> {
                 operator,
                 expr: inner,
             } => {
+                use crate::parser::expression::UnaryOperator;
+
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Unary {
-                        operation: *operator,
-                        rhs,
-                    },
-                );
+                #[rustfmt::skip]
+                match *operator == UnaryOperator::Deref {
+                    true => self.emit(dest, InstructionKind::FieldLoad { src: rhs, offset: 0, typ: expr.typ }),
+                    _ => self.emit(dest, InstructionKind::Unary { operation: *operator, rhs }),
+                };
 
                 Ok(Operand::Place(dest))
             }
@@ -319,17 +348,7 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
-
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: *function,
-                        args: lowered_args,
-                    },
-                );
-
-                Ok(Operand::Place(dest))
+                self.emit_call(*function, lowered_args, expr.typ)
             }
 
             ExpressionKind::MethodCall {
@@ -337,21 +356,42 @@ impl<'a> FunctionLower<'a> {
                 receiver,
                 args,
             } => {
-                let origin = self.place_for_local(receiver.local, self.local_type(receiver.local));
-                let (offset, receiver_type) = match receiver.fields.is_empty() {
-                    true => (0, origin.typ),
-                    false => self.field_path_info(origin.typ, &receiver.fields),
-                };
-                debug_assert!(matches!(receiver_type, Type::Struct(_) | Type::Ref { .. }));
-
                 let receiver_place = self.fresh_temporary(receiver.typ);
-                self.emit(
-                    receiver_place,
-                    InstructionKind::AddressOf {
-                        src: origin,
-                        offset,
-                    },
-                );
+
+                if let Some(local_id) = receiver.local {
+                    let origin = self.place_for_local(local_id, self.local_type(local_id));
+                    let (offset, receiver_type) = match receiver.fields.is_empty() {
+                        true => (0, origin.typ),
+                        false => self.field_path_info(origin.typ, &receiver.fields),
+                    };
+                    debug_assert!(matches!(
+                        receiver_type,
+                        Type::Struct(_) | Type::Ref { .. } | Type::Char
+                    ));
+
+                    match matches!(receiver_type, Type::Ref { .. }) {
+                        #[rustfmt::skip]
+                        true => self.emit(receiver_place, InstructionKind::Assign(Operand::Place(origin))),
+                        #[rustfmt::skip]
+                        _ => self.emit(receiver_place, InstructionKind::AddressOf { src: origin, offset, }),
+                    }
+                } else {
+                    let lowered_receiver = self.lower_expr(receiver.value.as_ref().unwrap())?;
+                    let val_type = receiver.value.as_ref().unwrap().typ;
+
+                    match matches!(val_type, Type::Ref { .. }) {
+                        true => {
+                            self.emit(receiver_place, InstructionKind::Assign(lowered_receiver))
+                        }
+                        _ => {
+                            let receiver_val_place = self.fresh_temporary(val_type);
+                            #[rustfmt::skip]
+                            self.emit(receiver_val_place, InstructionKind::Assign(lowered_receiver));
+                            #[rustfmt::skip]
+                            self.emit( receiver_place, InstructionKind::AddressOf { src: receiver_val_place, offset: 0 });
+                        }
+                    }
+                }
 
                 let mut lowered_args = Vec::with_capacity(args.len() + 1);
                 lowered_args.push(Operand::Place(receiver_place));
@@ -360,25 +400,13 @@ impl<'a> FunctionLower<'a> {
                     lowered_args.push(operand);
                 }
 
-                let dest = self.fresh_temporary(expr.typ.unwrap_unit());
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: *function,
-                        args: lowered_args,
-                    },
-                );
-
-                Ok(Operand::Place(dest))
+                self.emit_call(*function, lowered_args, expr.typ)
             }
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
                 use crate::hir::Intrinsic;
-                use crate::mir::SyscallCode;
 
                 // the return value is ignored for those functions
-                let dest = self.fresh_temporary(Type::I32);
-
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::Print => {
                         let mut output = String::new();
@@ -397,24 +425,27 @@ impl<'a> FunctionLower<'a> {
                         Ok(Operand::Const(Const::Unit))
                     }
 
-                    Intrinsic::Exit => {
-                        let lowered_args = args
-                            .iter()
-                            .map(|a| self.lower_expr(a))
-                            .collect::<Result<Vec<_>, _>>()?;
-
-                        self.emit(
-                            dest,
-                            InstructionKind::Syscall {
-                                code: SyscallCode::Exit,
-                                args: lowered_args,
-                                returns: false,
-                            },
-                        );
-
-                        Ok(Operand::Const(Const::Unit))
+                    Intrinsic::Syscall => {
+                        unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     }
                 }
+            }
+
+            ExpressionKind::Syscall { code, args } => {
+                let lowered_args =
+                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+                let dest = self.fresh_temporary(expr.typ);
+
+                self.emit(
+                    dest,
+                    InstructionKind::Syscall {
+                        code: *code,
+                        args: lowered_args,
+                        returns: true,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
             }
 
             ExpressionKind::Struct { id, fields } => {
@@ -481,8 +512,13 @@ impl<'a> FunctionLower<'a> {
 
         // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
         for &sym in fields {
-            let (Type::Struct(sid) | Type::Ref { to: sid, .. }) = current_type else {
-                unreachable!("field projection on non-struct");
+            let sid = match current_type {
+                Type::Struct(sid) => sid,
+                Type::Ref {
+                    to: RefTarget::Struct(sid),
+                    ..
+                } => sid,
+                _ => unreachable!("field projection on non-struct"),
             };
 
             let (offset, typ) = self.structs[sid.0 as usize]
@@ -547,7 +583,7 @@ impl<'a> FunctionLower<'a> {
         self.emit(
             dest,
             InstructionKind::Syscall {
-                code: mir::SyscallCode::Write,
+                code: crate::hir::SyscallCode::Write,
                 args: vec![
                     Operand::Const(Const::Int(1, Type::I32)),
                     Operand::Const(Const::Str { id, len }),
@@ -574,6 +610,7 @@ impl<'a> FunctionLower<'a> {
             ExpressionKind::Integer(value) => Some(value.to_string()),
             ExpressionKind::Float(value) => Some(value.to_string()),
             ExpressionKind::Bool(value) => Some(value.to_string()),
+            ExpressionKind::Char(value) => Some(value.to_string()),
             ExpressionKind::String(value) => Some(value.clone()),
             ExpressionKind::Local(id) => self.constant_locals[id.0 as usize].clone(),
             _ => None,
@@ -647,6 +684,102 @@ impl<'a> FunctionLower<'a> {
         let id = self.strings.len();
         self.strings.push(value);
         id
+    }
+
+    fn emit_call(
+        &mut self,
+        callee_id: FunctionId,
+        lowered_args: Vec<Operand>,
+        return_type: Type,
+    ) -> Result<Operand, MirError> {
+        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+        match callee.inline {
+            true => self.inline_call(callee_id, lowered_args),
+            _ => {
+                let dest = self.fresh_temporary(return_type.unwrap_unit());
+
+                self.emit(
+                    dest,
+                    InstructionKind::Call {
+                        callee: callee_id,
+                        args: lowered_args,
+                    },
+                );
+
+                Ok(Operand::Place(dest))
+            }
+        }
+    }
+
+    fn inline_call(
+        &mut self,
+        callee_id: FunctionId,
+        lowered_args: Vec<Operand>,
+    ) -> Result<Operand, MirError> {
+        use std::mem::replace;
+
+        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+
+        let inline_ret_place = match callee.return_type != Type::Unit {
+            true => Some(self.fresh_temporary(callee.return_type)),
+            _ => None,
+        };
+        let exit_block_id = self.new_block();
+
+        let callee_n_locals = callee.locals.len();
+        let mut callee_local_map = vec![ValueId(0); callee_n_locals];
+        for idx in 0..callee_n_locals {
+            let local = &callee.locals[idx];
+            let place = self.fresh_temporary(local.typ);
+            callee_local_map[idx] = place.id;
+        }
+
+        // emit assignment of arguments to callee parameters
+        for (param, arg_operand) in callee.params.iter().zip(lowered_args) {
+            let dest_val_id = callee_local_map[param.id.0 as usize];
+            let dest_place = Place {
+                id: dest_val_id,
+                typ: param.typ,
+            };
+            self.emit(dest_place, InstructionKind::Assign(arg_operand));
+        }
+
+        // push the new context for lowering the callee
+        let old_local_map = replace(&mut self.local_map, callee_local_map);
+        let old_constant_locals = replace(&mut self.constant_locals, vec![None; callee_n_locals]);
+        let old_runtime_local_uses = replace(
+            &mut self.runtime_local_uses,
+            self.runtime_uses_map.get(&callee_id).cloned().unwrap(),
+        );
+        let old_local_symbols = replace(
+            &mut self.local_symbols,
+            callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
+        );
+        let old_inlined_return_target = replace(
+            &mut self.inlined_return_target,
+            Some((exit_block_id, inline_ret_place)),
+        );
+
+        self.lower_block(&callee.body)?;
+
+        if !self.is_terminated() {
+            self.terminate(Terminator::Jump(exit_block_id));
+        }
+
+        // restore the old context
+        self.local_map = old_local_map;
+        self.constant_locals = old_constant_locals;
+        self.runtime_local_uses = old_runtime_local_uses;
+        self.local_symbols = old_local_symbols;
+        self.inlined_return_target = old_inlined_return_target;
+
+        self.switch_to(exit_block_id);
+
+        let result = match inline_ret_place {
+            Some(place) => Operand::Place(place),
+            None => Operand::Const(Const::Unit),
+        };
+        Ok(result)
     }
 
     #[inline(always)]
@@ -730,13 +863,19 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
                 visit_expr_runtime_uses(value, uses);
             }
         }
-        ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
+        ExpressionKind::Call { args, .. }
+        | ExpressionKind::IntrinsicCall { args, .. }
+        | ExpressionKind::Syscall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
         }
         ExpressionKind::MethodCall { receiver, args, .. } => {
-            uses[receiver.local.0 as usize] = true;
+            if let Some(local_id) = receiver.local {
+                uses[local_id.0 as usize] = true;
+            } else if let Some(val) = &receiver.value {
+                visit_expr_runtime_uses(val, uses);
+            }
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
@@ -750,6 +889,7 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
         | ExpressionKind::Integer(_)
         | ExpressionKind::Float(_)
         | ExpressionKind::String(_)
+        | ExpressionKind::Char(_)
         | ExpressionKind::Bool(_) => {}
     }
 }

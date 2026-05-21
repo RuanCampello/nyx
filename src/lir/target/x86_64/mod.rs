@@ -1,9 +1,9 @@
 use crate::{
+    hir::SyscallCode,
     lir::{
         MachineType, VReg,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
-    mir::SyscallCode,
     parser::expression::BinaryOperator,
 };
 
@@ -258,7 +258,7 @@ impl MemOps for X86_64 {
     fn vreg_operand(v: VReg) -> X86Operand { X86Operand::VReg(v) }
 
     #[inline(always)]
-    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool, _signed: bool) -> X86Instr {
         X86Instr::FieldLoad { dest, origin, offset, bytes, is_float }
     }
 
@@ -268,7 +268,7 @@ impl MemOps for X86_64 {
     }
 
     #[inline(always)]
-    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> X86Instr {
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool, _signed: bool) -> X86Instr {
         X86Instr::PtrLoad { dest, ptr, offset, bytes, is_float }
     }
 
@@ -408,6 +408,16 @@ impl Instruction<X86_64> for X86Instr {
             Self::IDiv {
                 precoloured_uses, ..
             } => precoloured_uses,
+            _ => &[],
+        }
+    }
+
+    #[inline(always)]
+    fn stack_forced(&self) -> &[VReg] {
+        match self {
+            Self::StackAddr { origin, .. }
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore { origin, .. } => std::slice::from_ref(origin),
             _ => &[],
         }
     }

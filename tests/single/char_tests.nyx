@@ -1,0 +1,36 @@
+use std::char;
+
+fn main(): i32 {
+    let a = 'a';
+    let zero = '0';
+    let space = ' ';
+
+    if !a.is_alphabetic() return 1;
+    if a.is_digit() return 2;
+    if !a.is_lowercase() return 3;
+    if a.is_uppercase() return 4;
+    if !zero.is_digit() return 5;
+    if zero.is_alphabetic() return 6;
+    if !space.is_whitespace() return 7;
+    if !a.is_alphanumeric() return 8;
+    if !zero.is_alphanumeric() return 9;
+    if space.is_alphanumeric() return 10;
+
+    // literals
+    if !'5'.is_digit() return 11;
+    if !'B'.is_uppercase() return 12;
+    if 'B'.is_lowercase() return 13;
+
+    let euro = '€';
+    if euro != '€' return 14;
+    let han = '中';
+    if han != '中' return 15;
+
+    if !a.is_ascii() return 16;
+    if euro.is_ascii() return 17;
+    if han.is_ascii() return 18;
+    let del = '\x7f';
+    if !del.is_ascii() return 19;
+
+    0
+}

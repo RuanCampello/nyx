@@ -1,0 +1,8 @@
+fn id(x: i32): i32 { x}
+
+fn main(): i32 {
+    let answer = id(42);
+    let scratch = id(99);
+
+    answer
+}

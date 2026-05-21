@@ -18,6 +18,16 @@ use crate::{
 };
 use std::{borrow::Cow, fmt::Write};
 
+#[derive(Clone)]
+struct ParallelMove<'m> {
+    src: String,
+    src_reg: Option<X86Reg>,
+    dest: String,
+    dest_reg: X86Reg,
+    suffix: &'m str,
+    is_float: bool,
+}
+
 impl Emittable<X86_64> for Function<X86_64> {
     fn emit(&self, alloc: Allocation<X86_64>, out: &mut String) {
         let name = &self.name;
@@ -333,9 +343,13 @@ impl Function<X86_64> {
                 ..
             } => {
                 let suffix = suffix(bytes);
-                let (rax, extend) = match bytes {
-                    8 => ("%rax", "cqto"),
-                    _ => ("%eax", "cltd"),
+                let rax = format!("%{}", X86Reg::Rax.name(*bytes));
+                let extend = match bytes {
+                    1 => "cbtw",
+                    2 => "cwtd",
+                    4 => "cltd",
+                    8 => "cqto",
+                    _ => panic!("invalid idiv size: {bytes}"),
                 };
                 let dividend = alloc.location(dividend, bytes);
                 let result = alloc.location(result, bytes);
@@ -471,6 +485,7 @@ impl Function<X86_64> {
                     }
                 }
 
+                #[rustfmt::skip]
                 let arg_moves: Vec<_> = moves
                     .iter()
                     .map(|(vreg, reg)| {
@@ -478,9 +493,10 @@ impl Function<X86_64> {
                         let is_float = self.is_float(vreg);
                         let suffix = typed_suffix(&bytes, is_float);
                         let src = alloc.location(vreg, &bytes);
+                        let src_reg = alloc.reg(vreg);
                         let dest = format!("%{}", reg.name(bytes));
 
-                        (src, dest, suffix, is_float)
+                        ParallelMove { src, src_reg, dest, dest_reg: *reg, suffix, is_float }
                     })
                     .collect();
 
@@ -569,9 +585,23 @@ impl Function<X86_64> {
                 then_block,
                 else_block,
             } => {
-                let condition = alloc.location(cond, &4);
+                let bytes = self.reg_bytes(cond);
+                let condition = alloc.location(cond, &bytes);
+                let suffix = suffix(&bytes);
 
-                emit!(out, "testl       {condition}, {condition}");
+                match condition.contains("(%rbp)") {
+                    true => {
+                        let scratch = match bytes {
+                            8 => "%r11",
+                            4 => "%r11d",
+                            2 => "%r11w",
+                            _ => "%r11b",
+                        };
+                        emit!(out, "mov{suffix}    {condition}, {scratch}");
+                        emit!(out, "test{suffix}    {scratch}, {scratch}");
+                    }
+                    _ => emit!(out, "test{suffix}    {condition}, {condition}"),
+                }
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
             }
@@ -645,6 +675,14 @@ impl Allocation<X86_64> {
             _ => panic!("struct VReg unexpectedly allocated to a register"),
         }
     }
+
+    #[inline(always)]
+    fn reg(&self, vreg: &VReg) -> Option<X86Reg> {
+        match self.location_of(vreg) {
+            Location::Reg(reg) => Some(reg),
+            Location::Stack(_) => None,
+        }
+    }
 }
 
 #[inline(always)]
@@ -686,7 +724,7 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
             }
 
             false => {
-                let scratch = if suffix == "q" { "%r11" } else { "%r11d" };
+                let scratch = scratch_gpr(suffix);
                 emit!(out, "mov{suffix}    {src}, {scratch}");
                 emit!(out, "mov{suffix}    {scratch}, {dest}");
             }
@@ -696,37 +734,61 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
     }
 }
 
+impl<'m> ParallelMove<'m> {
+    #[inline(always)]
+    fn is_self_move(&self) -> bool {
+        self.src_reg == Some(self.dest_reg) || self.src == self.dest
+    }
+
+    #[inline(always)]
+    fn dest_is_read_by(&self, other: &Self) -> bool {
+        other.src_reg == Some(self.dest_reg) || other.src == self.dest
+    }
+}
+
 /// Serialise a set of parallel register moves without data corruption
 ///
 /// - Chains (A->B then B->C) are resolved by topological ordering
 /// - Cycles (A->B, B->A) are broken using a scratch register (`%r11`/`%xmm15`)
-fn resolve_parallel_moves(out: &mut String, mut moves: Vec<(String, String, &str, bool)>) {
-    moves.retain(|(s, d, _, _)| s != d);
+fn resolve_parallel_moves(out: &mut String, mut moves: Vec<ParallelMove>) {
+    moves.retain(|m| !m.is_self_move());
 
     loop {
         // find a move whose dest is not read by any other pending move
-        let safe = moves.iter().position(|(_, dest, _, _)| {
-            !moves.iter().any(|(src, other_dest, _, _)| other_dest != dest && src == dest)
+        let safe = moves.iter().position(|m| {
+            !moves
+                .iter()
+                .any(|other| other.dest_reg != m.dest_reg && m.dest_is_read_by(other))
         });
 
         match safe {
             Some(i) => {
-                let (ref src, ref dest, suffix, is_float) = moves.swap_remove(i);
-                mov_or_scratch(out, src, dest, suffix, is_float);
+                let m = moves.swap_remove(i);
+                mov_or_scratch(out, &m.src, &m.dest, m.suffix, m.is_float);
             }
             None if moves.is_empty() => break,
             None => {
                 // in cycle, save first source to scratch, breaking the dependency
-                let (_, _, suffix, is_float) = moves[0];
-                let scratch = match (is_float, suffix) {
+                let scratch = match (moves[0].is_float, moves[0].suffix) {
                     (true, _) => "%xmm15",
-                    (_, "q") => "%r11",
-                    _ => "%r11d",
+                    (false, suffix) => scratch_gpr(suffix),
                 };
 
-                emit!(out, "mov{suffix}    {}, {scratch}", moves[0].0);
-                moves[0].0 = scratch.to_string();
+                emit!(out, "mov{}    {}, {scratch}", moves[0].suffix, moves[0].src);
+                moves[0].src = scratch.to_string();
+                moves[0].src_reg = None;
             }
         }
+    }
+}
+
+#[inline(always)]
+fn scratch_gpr<'s>(suffix: &str) -> &'s str {
+    match suffix {
+        "q" => "%r11",
+        "l" => "%r11d",
+        "w" => "%r11w",
+        "b" => "%r11b",
+        _ => panic!("invalid integer register suffix: {suffix}"),
     }
 }

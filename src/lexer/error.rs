@@ -17,6 +17,12 @@ pub(crate) enum LexErrorKind {
     UnexpectedChar(char),
     /// A string literal was opened but never closed.
     UnterminatedString,
+    /// A char literal was opened but never closed.
+    UnterminatedChar,
+    /// A char literal was empty (i.e. '').
+    EmptyChar,
+    /// A char literal contains more than one character.
+    OverlongChar,
     /// A block comment `/* ... */` was opened but never closed.
     UnterminatedComment,
     /// An invalid escape sequence in a string (e.g. `\q`).

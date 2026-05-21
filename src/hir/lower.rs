@@ -1,9 +1,10 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId, Method,
-        Parameter, Receiver, Statement, Struct, StructField, StructId, SymbolId, Type,
-        error::{HirError, HirErrorKind},
-        symbols::SymbolTable,
+        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
+        Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId, SymbolId,
+        SymbolTable, SyscallCode, Type,
+        error::{ConstFnViolationKind, HirError, HirErrorKind},
+        scope::{Scope, Structs},
     },
     lexer::token::Span,
     parser::{
@@ -17,73 +18,39 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Debug)]
-pub(in crate::hir) struct FunctionSignature {
-    pub name: SymbolId,
-    pub params: Vec<Type>,
-    pub return_type: Type,
-    pub intrinsic: Option<Intrinsic>,
-    pub method: Option<Method>,
-}
-
-pub(in crate::hir) struct FunctionBuilder<'s, 'f> {
-    signatures: &'s [FunctionSignature],
-    functions: &'s Functions,
-    methods: &'s Methods,
-    structs: &'s [Struct],
-    struct_map: &'s Structs,
+pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
+    scope: &'s Scope,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
-    function: Option<statement::Function<'f>>,
+    function: Option<&'f statement::Function<'src>>,
     function_id: FunctionId,
     next_local: u32,
     symbols: &'s mut SymbolTable,
+    is_const: bool,
+    in_std: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Visit {
+pub(in crate::hir) enum Visit {
     Unvisited,
     Visiting,
     Visited,
 }
 
-pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
-pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
-pub(in crate::hir) type Methods = HashMap<(StructId, SymbolId), FunctionId>;
-
-impl Default for FunctionSignature {
-    fn default() -> Self {
-        use lasso::{Key, Spur};
-
-        Self {
-            name: SymbolId(Spur::try_from_usize(0).expect("spur shouldn't fail")),
-            params: Vec::new(),
-            return_type: Type::Unit,
-            intrinsic: None,
-            method: None,
-        }
-    }
-}
-
-impl<'s, 'f> FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     pub fn new(
-        signatures: &'s [FunctionSignature],
-        functions: &'s Functions,
-        methods: &'s Methods,
-        structs: &'s [Struct],
-        struct_map: &'s Structs,
+        scope: &'s Scope,
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
-        function: statement::Function<'f>,
+        function: &'f statement::Function<'src>,
+        in_std: bool,
     ) -> Self {
         Self {
-            functions,
-            methods,
-            structs,
-            struct_map,
+            scope,
             symbols,
-            signatures,
+            is_const: function.is_const,
+            in_std,
             return_type: Type::Unit,
             function: Some(function),
             function_id,
@@ -94,10 +61,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    pub fn lower(mut self) -> Result<Function, HirError<'f>> {
+    pub fn lower(mut self) -> Result<Function, HirError<'src>> {
         let function = self.function.take().expect("function to be present");
         let id = self.function_id;
-        let signatures = &self.signatures[id.0 as usize];
+        let signatures = &self.scope.signatures[id.0 as usize];
         let symbol = signatures.name;
         self.return_type = signatures.return_type;
 
@@ -145,6 +112,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             return_type: signatures.return_type,
             is_const: function.is_const,
             is_pub: function.is_pub,
+            inline: function.inline,
             intrinsic: signatures.intrinsic,
             method: signatures.method,
             body,
@@ -153,9 +121,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_block(
         &mut self,
-        block: &statement::Block<'f>,
+        block: &statement::Block<'src>,
         is_tail: bool,
-    ) -> Result<(Block, bool), HirError<'f>> {
+    ) -> Result<(Block, bool), HirError<'src>> {
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
@@ -183,9 +151,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     fn lower_statement(
         &mut self,
-        statement: &statement::Statement<'f>,
+        statement: &statement::Statement<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'f>> {
+    ) -> Result<(Statement, bool), HirError<'src>> {
         use statement::Statement as Stmt;
 
         match statement {
@@ -268,6 +236,8 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 Ok((Statement::Block(block), returns))
             }
 
+            Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
+
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
@@ -283,9 +253,9 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// When the hint is `None`, literals default to `i32` and `f64` respectively
     fn lower_expr(
         &mut self,
-        expr: &expression::Expression<'f>,
+        expr: &expression::Expression<'src>,
         hint: Option<Type>,
-    ) -> Result<Expression, HirError<'f>> {
+    ) -> Result<Expression, HirError<'src>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -322,6 +292,12 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 span: *span,
             }),
 
+            Expr::Char(value, span) => Ok(Expression {
+                kind: ExpressionKind::Char(*value),
+                typ: Type::Char,
+                span: *span,
+            }),
+
             Expr::Bool(value, span) => Ok(Expression {
                 kind: ExpressionKind::Bool(*value),
                 typ: Type::Bool,
@@ -348,6 +324,15 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => Some(Type::Bool),
+                    UnaryOperator::Deref => hint.map(|h| Type::Ref {
+                        mutable: false,
+                        to: match h {
+                            Type::Struct(id) => RefTarget::Struct(id),
+                            Type::Char => RefTarget::Char,
+                            Type::Ref { to, .. } => to,
+                            _ => RefTarget::Char,
+                        },
+                    }),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
 
@@ -366,12 +351,29 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                         }
                     },
                     UnaryOperator::Not => Type::Bool,
+                    UnaryOperator::Deref => match expr.typ {
+                        Type::Ref { to, .. } => to.into(),
+                        _ => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::Ref {
+                                        mutable: false,
+                                        to: RefTarget::Char,
+                                    },
+                                    found: expr.typ,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    },
                 };
 
-                self.assert_type(expected, expr.typ, expr.span)?;
+                if *operator != UnaryOperator::Deref {
+                    self.assert_type(expected, expr.typ, expr.span)?;
+                }
 
                 Ok(Expression {
-                    typ: expr.typ,
+                    typ: expected,
                     span: *span,
                     kind: ExpressionKind::Unary {
                         operator: *operator,
@@ -487,13 +489,13 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
             Expr::Struct { name, fields, span } => {
                 let symbol = self.symbols.insert(name);
-                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownType {
                         name: (*name).to_string(),
                     },
                     span: *span,
                 })?;
-                let definition = &self.structs[id.0 as usize];
+                let definition = &self.scope.structs[id.0 as usize];
                 let struct_name = self.symbols.get(definition.name).to_string();
 
                 let mut seen = HashSet::with_capacity(fields.len());
@@ -559,60 +561,56 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             }
 
             Expr::Call { callee, args, span } => {
-                if let Expr::Identifier(name, _) = callee.as_ref() {
-                    if let Ok(intrinsic) = Intrinsic::from_str(name) {
-                        return self.lower_intrinsic(intrinsic, args, *span);
-                    }
-                }
-
                 if let Expr::Field {
                     expr: receiver,
                     field: method_name,
                     ..
                 } = callee.as_ref()
                 {
-                    let (local, fields, receiver_type) =
-                        self.resolve_receiver_chain(receiver, *span)?;
-                    let receiver_struct = match receiver_type {
-                        Type::Struct(id) => id,
-                        Type::Ref { to, .. } => to,
-                        found => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::Struct(StructId::default()),
-                                    found,
+                    let (local, fields, receiver_expr, receiver_type) =
+                        match self.try_resolve_receiver_chain(receiver, *span) {
+                            Ok((loc, flds, typ)) => (Some(loc), flds, None, typ),
+                            _ => {
+                                let lowered = self.lower_expr(receiver, None)?;
+                                let typ = lowered.typ;
+                                (None, Vec::new(), Some(Box::new(lowered)), typ)
+                            }
+                        };
+
+                    let receiver_base_type = receiver_type.strip_reference();
+                    let method_symbol = self.symbols.insert(method_name);
+                    let struct_name = match receiver_base_type {
+                        Type::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                        other => other.to_string(),
+                    };
+                    let function =
+                        *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
+                            || HirError {
+                                kind: HirErrorKind::UnknownMethod {
+                                    struct_name,
+                                    name: method_name.to_string(),
                                 },
                                 span: *span,
-                            });
-                        }
-                    };
-
-                    let method_symbol = self.symbols.insert(method_name);
-                    let function = *self
-                        .methods
-                        .get(&(receiver_struct, method_symbol))
-                        .ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownMethod {
-                                struct_name: self
-                                    .symbols
-                                    .get(self[receiver_struct].name)
-                                    .to_string(),
-                                name: method_name.to_string(),
                             },
-                            span: *span,
-                        })?;
-                    let signature = &self.signatures[function.0 as usize];
+                        )?;
+
+                    let signature = &self.scope.signatures[function.0 as usize];
                     let Type::Ref { mutable, .. } = signature.params[0] else {
                         unreachable!("method signature must start with receiver reference");
                     };
 
-                    if mutable && !self[local].mutable {
-                        return Err(HirError {
-                            kind: HirErrorKind::ImmutableBind {
-                                name: self.symbols.get(self[local].name).to_string(),
-                            },
-                            span: *span,
-                        });
+                    if mutable {
+                        if local.filter(|&id| self[id].mutable).is_none() {
+                            let name = match local {
+                                Some(id) => self.symbols.get(self[id].name).to_string(),
+                                None => "temporary".to_string(),
+                            };
+
+                            return Err(HirError {
+                                kind: HirErrorKind::ImmutableBind { name },
+                                span: *span,
+                            });
+                        }
                     }
 
                     let explicit_params = &signature.params[1..];
@@ -645,6 +643,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                             receiver: Receiver {
                                 local,
                                 fields,
+                                value: receiver_expr,
                                 typ: signature.params[0],
                             },
                             args: lowered_args,
@@ -655,14 +654,14 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let (function, signature) = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(name);
-                        let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
+                        let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                             kind: HirErrorKind::UnknownFunction {
                                 name: name.to_string(),
                             },
                             span: *span,
                         })?;
 
-                        (id, &self.signatures[id.0 as usize])
+                        (id, &self.scope.signatures[id.0 as usize])
                     }
 
                     other => {
@@ -676,6 +675,15 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     }
                 };
 
+                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                            name: self.symbols.get(signature.name).to_string(),
+                        }),
+                        span: *span,
+                    });
+                }
+
                 if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                     return Err(HirError {
                         kind: HirErrorKind::ArityMismatch {
@@ -685,6 +693,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                         },
                         span: *span,
                     });
+                }
+
+                if signature.intrinsic == Some(Intrinsic::Syscall) {
+                    return self.lower_syscall(args, signature.return_type, *span);
                 }
 
                 let mut lowered_args = Vec::with_capacity(args.len());
@@ -734,10 +746,25 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 let mangled_name = format!("{qualifier}__{name}");
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
-                if let Some(&id) = self.functions.get(&mangled_symbol) {
-                    let signature = &self.signatures[id.0 as usize];
+                if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
+                    let signature = &self.scope.signatures[id.0 as usize];
 
-                    if signature.params.len() != args.len() {
+                    if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                        return Err(HirError {
+                            kind: HirErrorKind::ConstFnViolation(
+                                ConstFnViolationKind::NonConstCall {
+                                    name: self.symbols.get(signature.name).to_string(),
+                                },
+                            ),
+                            span: *span,
+                        });
+                    }
+
+                    if signature.intrinsic == Some(Intrinsic::Syscall) {
+                        return self.lower_syscall(args, signature.return_type, *span);
+                    }
+
+                    if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                         return Err(HirError {
                             kind: HirErrorKind::ArityMismatch {
                                 name: format!("{qualifier}::{name}"),
@@ -749,36 +776,64 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     }
 
                     let mut lowered_args = Vec::with_capacity(args.len());
-                    for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                        let expr = self.lower_expr(expr, Some(param_type))?;
-                        self.assert_type(param_type, expr.typ, expr.span)?;
-                        lowered_args.push(expr);
+                    match signature.intrinsic {
+                        Some(_) => {
+                            for arg in args.iter() {
+                                let lowered = self.lower_expr(arg, None)?;
+                                lowered_args.push(lowered);
+                            }
+                        }
+
+                        _ => {
+                            for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                                let expr = self.lower_expr(expr, Some(param_type))?;
+                                self.assert_type(param_type, expr.typ, expr.span)?;
+                                lowered_args.push(expr);
+                            }
+                        }
                     }
+
+                    let kind = match signature.intrinsic {
+                        Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                            intrinsic,
+                            args: lowered_args,
+                        },
+                        _ => ExpressionKind::Call {
+                            function: id,
+                            args: lowered_args,
+                        },
+                    };
 
                     return Ok(Expression {
                         typ: signature.return_type,
                         span: *span,
-                        kind: ExpressionKind::Call {
-                            function: id,
-                            args: lowered_args,
-                        },
+                        kind,
                     });
                 }
 
-                if let Ok(intrinsic) = Intrinsic::from_str(name) {
-                    return self.lower_intrinsic(intrinsic, args, *span);
-                }
-
                 let symbol = self.symbols.insert(name);
-                let id = *self.functions.get(&symbol).ok_or_else(|| HirError {
+                let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownFunction {
                         name: format!("{qualifier}::{name}"),
                     },
                     span: *span,
                 })?;
-                let signature = &self.signatures[id.0 as usize];
+                let signature = &self.scope.signatures[id.0 as usize];
 
-                if signature.params.len() != args.len() {
+                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+                    return Err(HirError {
+                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                            name: self.symbols.get(signature.name).to_string(),
+                        }),
+                        span: *span,
+                    });
+                }
+
+                if signature.intrinsic == Some(Intrinsic::Syscall) {
+                    return self.lower_syscall(args, signature.return_type, *span);
+                }
+
+                if signature.intrinsic.is_none() && signature.params.len() != args.len() {
                     return Err(HirError {
                         kind: HirErrorKind::ArityMismatch {
                             name: name.to_string(),
@@ -790,10 +845,21 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                 }
 
                 let mut lowered_args = Vec::with_capacity(args.len());
-                for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                    let expr = self.lower_expr(expr, Some(param_type))?;
-                    self.assert_type(param_type, expr.typ, expr.span)?;
-                    lowered_args.push(expr);
+                match signature.intrinsic {
+                    Some(_) => {
+                        for arg in args.iter() {
+                            let lowered = self.lower_expr(arg, None)?;
+                            lowered_args.push(lowered);
+                        }
+                    }
+
+                    _ => {
+                        for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                            let expr = self.lower_expr(expr, Some(param_type))?;
+                            self.assert_type(param_type, expr.typ, expr.span)?;
+                            lowered_args.push(expr);
+                        }
+                    }
                 }
 
                 let return_type = signature.return_type;
@@ -814,14 +880,63 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
                     kind,
                 })
             }
+
+            Expr::TypeIntrinsic {
+                kind,
+                qualifier,
+                typ,
+                span,
+            } => {
+                let name = kind.into();
+                let lookup_symbol = match qualifier {
+                    Some(q) => {
+                        let mangled = self.symbols.insert(&format!("{q}__{name}"));
+                        match self.scope.functions.contains_key(&mangled) {
+                            true => mangled,
+                            _ => self.symbols.insert(name),
+                        }
+                    }
+                    None => self.symbols.insert(name),
+                };
+
+                if !self.scope.functions.contains_key(&lookup_symbol) {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownFunction {
+                            name: match qualifier {
+                                Some(q) => format!("{q}::{name}"),
+                                None => name.to_string(),
+                            },
+                        },
+                        span: *span,
+                    });
+                }
+
+                #[rustfmt::skip]
+                let typ = resolve_annotation(self.symbols, &self.scope.struct_map, &typ.value(), typ.span())?;
+
+                let structs: Vec<Option<Struct>> =
+                    self.scope.structs.iter().map(|s| Some(s.clone())).collect();
+                let (size, align) = typ.layout(&structs);
+
+                let value = match kind {
+                    expression::TypeIntrinsicKind::SizeOf => size as i64,
+                    expression::TypeIntrinsicKind::AlignOf => align as i64,
+                };
+
+                Ok(Expression {
+                    kind: ExpressionKind::Integer(value),
+                    typ: Type::Uptr,
+                    span: *span,
+                })
+            }
         }
     }
 
     fn lower_if(
         &mut self,
-        if_stmt: &statement::If<'f>,
+        if_stmt: &statement::If<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'f>> {
+    ) -> Result<(Statement, bool), HirError<'src>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::Bool, condition.typ, condition.span)?;
 
@@ -884,21 +999,68 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         ))
     }
 
-    fn lower_intrinsic(
+    fn lower_syscall(
         &mut self,
-        intrinsic: Intrinsic,
-        args: &[expression::Expression<'f>],
+        args: &[expression::Expression<'src>],
+        return_type: Type,
         span: Span,
-    ) -> Result<Expression, HirError<'f>> {
-        let args = args
+    ) -> Result<Expression, HirError<'src>> {
+        if !self.in_std {
+            return Err(HirError {
+                kind: HirErrorKind::UnknownFunction {
+                    name: "syscall".to_string(),
+                },
+                span,
+            });
+        }
+
+        let Some((code_arg, value_args)) = args.split_first() else {
+            return Err(HirError {
+                kind: HirErrorKind::ArityMismatch {
+                    name: "syscall".to_string(),
+                    expected: 1,
+                    found: 0,
+                },
+                span,
+            });
+        };
+
+        if value_args.len() > 6 {
+            return Err(HirError {
+                kind: HirErrorKind::ArityMismatch {
+                    name: "syscall".to_string(),
+                    expected: 7,
+                    found: args.len(),
+                },
+                span,
+            });
+        }
+
+        let expression::Expression::Identifier(name, code_span) = code_arg else {
+            return Err(HirError {
+                kind: HirErrorKind::UndeclaredIdentifier {
+                    name: format!("{code_arg:?}"),
+                },
+                span: code_arg.span(),
+            });
+        };
+
+        let code = SyscallCode::from_str(name).map_err(|_| HirError {
+            kind: HirErrorKind::UndeclaredIdentifier {
+                name: name.to_string(),
+            },
+            span: *code_span,
+        })?;
+
+        let args = value_args
             .iter()
             .map(|arg| self.lower_expr(arg, None))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Expression {
-            typ: Type::Unit,
+            typ: return_type,
             span,
-            kind: ExpressionKind::IntrinsicCall { intrinsic, args },
+            kind: ExpressionKind::Syscall { code, args },
         })
     }
 
@@ -908,7 +1070,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         left: Type,
         right: Type,
         span: Span,
-    ) -> Result<Type, HirError<'f>> {
+    ) -> Result<Type, HirError<'src>> {
         match operator {
             BinaryOperator::Add
             | BinaryOperator::Sub
@@ -937,7 +1099,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() {
+                match left.is_number() || left == Type::Char {
                     true => Ok(Type::Bool),
                     _ => Err(HirError {
                         kind: HirErrorKind::TypeMismatch {
@@ -959,7 +1121,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression<'f>) -> Result<Type, HirError<'f>> {
+    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'src>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
@@ -967,13 +1129,13 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     #[inline(always)]
     fn resolve_type(
         &mut self,
-        typ: &statement::Type<'f>,
+        typ: &statement::Type<'src>,
         span: Span,
-    ) -> Result<Type, HirError<'f>> {
+    ) -> Result<Type, HirError<'src>> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
+                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownType {
                         name: name.to_string(),
                     },
@@ -989,7 +1151,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
 
     #[inline(always)]
     #[must_use]
-    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'f>> {
+    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
         match expected == found {
             true => Ok(()),
             false => Err(HirError {
@@ -1004,7 +1166,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         name: SymbolId,
         typ: Type,
         mutable: bool,
-    ) -> Result<LocalId, HirError<'f>> {
+    ) -> Result<LocalId, HirError<'src>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
@@ -1031,7 +1193,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'f>> {
+    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'src>> {
         self.scopes
             .iter()
             .rev()
@@ -1050,10 +1212,10 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     /// returns the origin `LocalId`, the full path as symbols and the final field's `Type`
     fn resolve_field_chain(
         &mut self,
-        mut expr: &expression::Expression,
-        last: &'f str,
+        mut expr: &expression::Expression<'src>,
+        last: &'src str,
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
         use expression::Expression as Expr;
 
         let mut fields = vec![last];
@@ -1087,18 +1249,25 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
         let mut field_symbols = Vec::with_capacity(fields.len());
 
         for (idx, &field_name) in fields.iter().enumerate() {
-            let (Type::Struct(id) | Type::Ref { to: id, .. }) = current_type else {
-                return Err(HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: current_type,
-                    },
-                    span,
-                });
+            let struct_id = match current_type {
+                Type::Struct(id) => id,
+                Type::Ref {
+                    to: RefTarget::Struct(id),
+                    ..
+                } => id,
+                found => {
+                    return Err(HirError {
+                        kind: HirErrorKind::TypeMismatch {
+                            expected: Type::Struct(StructId::default()),
+                            found,
+                        },
+                        span,
+                    });
+                }
             };
 
             let field = self.symbols.insert(field_name);
-            let struct_def = &self[id];
+            let struct_def = &self[struct_id];
             let name = self.symbols.get(struct_def.name);
 
             let field_def = {
@@ -1115,16 +1284,16 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
             field_symbols.push(field);
 
             let is_last = idx == fields.len() - 1;
-            if !is_last {
-                if !matches!(current_type, Type::Struct(_) | Type::Ref { .. }) {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found: current_type,
-                        },
-                        span,
-                    });
-                }
+            #[rustfmt::skip]
+            let is_struct_to_struct = matches!(current_type, Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. });
+            if !is_last && !is_struct_to_struct {
+                return Err(HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: current_type,
+                    },
+                    span,
+                });
             }
         }
 
@@ -1132,11 +1301,11 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 
     #[inline(always)]
-    fn resolve_receiver_chain(
+    fn try_resolve_receiver_chain(
         &mut self,
-        expr: &expression::Expression<'f>,
+        expr: &expression::Expression<'src>,
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'f>> {
+    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -1166,7 +1335,7 @@ impl<'s, 'f> FunctionBuilder<'s, 'f> {
     }
 }
 
-fn lower_struct<'h>(
+pub(in crate::hir) fn lower_struct<'h>(
     id: usize,
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
@@ -1230,302 +1399,7 @@ fn lower_struct<'h>(
     Ok(())
 }
 
-pub fn collect_function_signatures<'h>(
-    statements: &[statement::Statement<'h>],
-    symbols: &mut SymbolTable,
-    struct_map: &Structs,
-) -> Result<(Vec<FunctionSignature>, Functions, Methods), HirError<'h>> {
-    let mut signatures = Vec::new();
-    let mut functions = Functions::new();
-    let mut methods = Methods::new();
-
-    for statement in statements {
-        match statement {
-            statement::Statement::Fn(function) => {
-                if function.receiver.is_some() {
-                    return Err(HirError {
-                        kind: HirErrorKind::ReceiverOutsideImpl,
-                        span: function.span,
-                    });
-                }
-
-                let symbol = symbols.insert(function.name);
-                if functions.contains_key(&symbol) {
-                    return Err(HirError {
-                        kind: HirErrorKind::DuplicateFunction {
-                            name: function.name.to_string(),
-                        },
-                        span: statement.span(),
-                    });
-                }
-
-                let function_id = FunctionId(signatures.len() as u32);
-                functions.insert(symbol, function_id);
-
-                let params = function
-                    .params
-                    .iter()
-                    .map(|p| resolve_annotation(symbols, struct_map, &p.typ.value(), p.typ.span()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let return_type = function
-                    .return_type
-                    .as_ref()
-                    .map(|s| resolve_annotation(symbols, struct_map, &s.value(), s.span()))
-                    .transpose()?
-                    .unwrap_or(Type::Unit);
-
-                let name_str = symbols.get(symbol);
-                let intrinsic = Intrinsic::from_str(name_str).ok();
-
-                signatures.push(FunctionSignature {
-                    return_type,
-                    params,
-                    name: symbol,
-                    intrinsic,
-                    method: None,
-                })
-            }
-
-            statement::Statement::Impl(implementation) => {
-                let struct_symbol = symbols.insert(implementation.name);
-                let struct_id =
-                    struct_map.get(&struct_symbol).copied().ok_or_else(|| HirError {
-                        kind: HirErrorKind::UnknownType {
-                            name: implementation.name.to_string(),
-                        },
-                        span: implementation.span,
-                    })?;
-
-                for method in &implementation.methods {
-                    let method_symbol = symbols.insert(method.name);
-                    let mangled =
-                        symbols.insert(&format!("{}__{}", implementation.name, method.name));
-
-                    match method.receiver {
-                        Some(receiver) => {
-                            if methods.contains_key(&(struct_id, method_symbol)) {
-                                return Err(HirError {
-                                    kind: HirErrorKind::DuplicateMethod {
-                                        struct_name: implementation.name.to_string(),
-                                        name: method.name.to_string(),
-                                    },
-                                    span: method.span,
-                                });
-                            }
-
-                            let function_id = FunctionId(signatures.len() as u32);
-                            methods.insert((struct_id, method_symbol), function_id);
-
-                            let mut params = Vec::with_capacity(method.params.len() + 1);
-                            params.push(Type::Ref {
-                                mutable: receiver.mutable,
-                                to: struct_id,
-                            });
-                            params.extend(
-                                method
-                                    .params
-                                    .iter()
-                                    .map(|p| {
-                                        resolve_annotation(
-                                            symbols,
-                                            struct_map,
-                                            &p.typ.value(),
-                                            p.typ.span(),
-                                        )
-                                    })
-                                    .collect::<Result<Vec<_>, _>>()?,
-                            );
-                            let return_type = method
-                                .return_type
-                                .as_ref()
-                                .map(|s| {
-                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
-                                })
-                                .transpose()?
-                                .unwrap_or(Type::Unit);
-
-                            signatures.push(FunctionSignature {
-                                return_type,
-                                params,
-                                name: mangled,
-                                intrinsic: None,
-                                method: Some(Method {
-                                    receiver: struct_id,
-                                    name: method_symbol,
-                                    mutable: receiver.mutable,
-                                }),
-                            });
-                        }
-
-                        None => {
-                            if functions.contains_key(&mangled) {
-                                return Err(HirError {
-                                    kind: HirErrorKind::DuplicateFunction {
-                                        name: format!("{}::{}", implementation.name, method.name),
-                                    },
-                                    span: method.span,
-                                });
-                            }
-
-                            let function_id = FunctionId(signatures.len() as u32);
-                            functions.insert(mangled, function_id);
-
-                            let params = method
-                                .params
-                                .iter()
-                                .map(|p| {
-                                    resolve_annotation(
-                                        symbols,
-                                        struct_map,
-                                        &p.typ.value(),
-                                        p.typ.span(),
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            let return_type = method
-                                .return_type
-                                .as_ref()
-                                .map(|s| {
-                                    resolve_annotation(symbols, struct_map, &s.value(), s.span())
-                                })
-                                .transpose()?
-                                .unwrap_or(Type::Unit);
-
-                            signatures.push(FunctionSignature {
-                                return_type,
-                                params,
-                                name: mangled,
-                                intrinsic: None,
-                                method: None,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // 'use' declarations are valid at the top level but carry no signature information
-            // they are resolved by the module loader before this function is called
-            statement::Statement::Use(_) | statement::Statement::Struct(_) => continue,
-            _ => {
-                return Err(HirError {
-                    kind: HirErrorKind::TopLevelNonFunction,
-                    span: statement.span(),
-                });
-            }
-        }
-    }
-
-    Ok((signatures, functions, methods))
-}
-
-pub(in crate::hir) fn function_declarations<'h>(
-    statements: &[statement::Statement<'h>],
-) -> Vec<statement::Function<'h>> {
-    let mut functions = Vec::new();
-
-    for statement in statements {
-        match statement {
-            statement::Statement::Fn(function) => functions.push(function.clone()),
-            statement::Statement::Impl(implementation) => {
-                functions.extend(implementation.methods.iter().cloned());
-            }
-            _ => {}
-        }
-    }
-
-    functions
-}
-
-pub(in crate::hir) fn function_id_for<'h>(
-    function: &statement::Function<'h>,
-    functions: &Functions,
-    methods: &Methods,
-    struct_map: &Structs,
-    symbols: &mut SymbolTable,
-) -> Result<FunctionId, HirError<'h>> {
-    match (function.receiver, function.impl_type) {
-        (Some(_), _) => {
-            let impl_type = function.impl_type.expect("method must know its impl owner");
-            let struct_symbol = symbols.insert(impl_type);
-            let struct_id = *struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType {
-                    name: impl_type.to_string(),
-                },
-                span: function.span,
-            })?;
-            let method_symbol = symbols.insert(function.name);
-
-            methods.get(&(struct_id, method_symbol)).copied().ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownFunction {
-                    name: function.name.to_string(),
-                },
-                span: function.span,
-            })
-        }
-        (None, Some(impl_type)) => {
-            let mangled = symbols.insert(&format!("{impl_type}__{}", function.name));
-            functions.get(&mangled).copied().ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownFunction {
-                    name: format!("{}::{}", impl_type, function.name),
-                },
-                span: function.span,
-            })
-        }
-        (None, None) => {
-            let symbol = symbols.insert(function.name);
-            functions.get(&symbol).copied().ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownFunction {
-                    name: function.name.to_string(),
-                },
-                span: function.span,
-            })
-        }
-    }
-}
-
-pub fn collect_structs<'h>(
-    statements: &[statement::Statement<'h>],
-    symbols: &mut SymbolTable,
-) -> Result<(Vec<Struct>, Structs), HirError<'h>> {
-    let mut map = Structs::new();
-    let mut declarations = Vec::new();
-
-    for statement in statements {
-        let statement::Statement::Struct(declaration) = statement else {
-            continue;
-        };
-
-        let symbol = symbols.insert(declaration.name);
-        if map.contains_key(&symbol) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateStruct {
-                    name: declaration.name.to_string(),
-                },
-                span: declaration.span,
-            });
-        }
-
-        let id = StructId(declarations.len() as u32);
-        map.insert(symbol, id);
-        declarations.push((symbol, declaration));
-    }
-
-    let mut lowered = vec![None; declarations.len()];
-    let mut states = vec![Visit::Unvisited; declarations.len()];
-
-    for id in 0..declarations.len() {
-        lower_struct(id, &declarations, &map, symbols, &mut lowered, &mut states)?;
-    }
-
-    let structs = lowered
-        .into_iter()
-        .map(|definition| definition.expect("all struct definitions are lowered"))
-        .collect();
-
-    Ok((structs, map))
-}
-
-fn resolve_annotation<'h>(
+pub(in crate::hir) fn resolve_annotation<'h>(
     symbols: &mut SymbolTable,
     struct_map: &Structs,
     typ: &statement::Type<'h>,
@@ -1582,40 +1456,16 @@ const fn align_to(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }
 
-pub fn signatures_from_hir(functions: &[Function]) -> (Vec<FunctionSignature>, Functions, Methods) {
-    let mut signatures = Vec::with_capacity(functions.len());
-    let mut map = Functions::new();
-    let mut methods = Methods::new();
-
-    for (idx, function) in functions.iter().enumerate() {
-        let id = FunctionId(idx as u32);
-        match function.method {
-            Some(method) => {
-                methods.insert((method.receiver, method.name), id);
-            }
-            None => {
-                map.insert(function.name, id);
-            }
-        }
-
-        signatures.push(function.into());
-    }
-
-    (signatures, map, methods)
-}
-
-impl<'s, 'f> Index<LocalId> for FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'src> {
     type Output = Local;
-
     fn index(&self, index: LocalId) -> &Self::Output {
         &self.locals[index.0 as usize]
     }
 }
 
-impl<'s, 'f> Index<StructId> for FunctionBuilder<'s, 'f> {
+impl<'s, 'f, 'src> Index<StructId> for FunctionBuilder<'s, 'f, 'src> {
     type Output = Struct;
-
     fn index(&self, index: StructId) -> &Self::Output {
-        &self.structs[index.0 as usize]
+        &self.scope.structs[index.0 as usize]
     }
 }

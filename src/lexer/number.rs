@@ -90,6 +90,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn floats() {
         assert_eq!(tok("3.14").kind, TokenKind::Float(3.14));
         assert_eq!(tok("0.5").kind, TokenKind::Float(0.5));

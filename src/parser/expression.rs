@@ -1,12 +1,16 @@
+use crate::lexer::Spanned;
 use crate::lexer::token::{Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
+use crate::parser::statement::Type as StatementType;
 use crate::parser::{Parsable, Parser};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression<'i> {
     Integer(i64, Span),
     Float(f64, Span),
     String(&'i str, Span),
+    Char(char, Span),
     Bool(bool, Span),
     Identifier(&'i str, Span),
     Unary {
@@ -46,6 +50,21 @@ pub enum Expression<'i> {
         args: Vec<Expression<'i>>,
         span: Span,
     },
+    /// Special compiler intrinsics that accept a type annotation as an argument
+    /// these must be handled at the expression parser level because types are not value-level expressions,
+    /// so standard function/intrinsic call parsing would fail on them
+    TypeIntrinsic {
+        kind: TypeIntrinsicKind,
+        qualifier: Option<&'i str>,
+        typ: Spanned<StatementType<'i>>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeIntrinsicKind {
+    SizeOf,
+    AlignOf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +78,7 @@ pub struct StructField<'i> {
 pub enum UnaryOperator {
     Neg,
     Not,
+    Deref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +110,7 @@ impl<'i> Expression<'i> {
             Self::Integer(_, span)
             | Self::Float(_, span)
             | Self::String(_, span)
+            | Self::Char(_, span)
             | Self::Bool(_, span)
             | Self::Identifier(_, span)
             | Self::Unary { span, .. }
@@ -98,7 +119,8 @@ impl<'i> Expression<'i> {
             | Self::Struct { span, .. }
             | Self::Field { span, .. }
             | Self::Call { span, .. }
-            | Self::QualifiedCall { span, .. } => *span,
+            | Self::QualifiedCall { span, .. }
+            | Self::TypeIntrinsic { span, .. } => *span,
         }
     }
 
@@ -124,15 +146,19 @@ impl<'i> Expression<'i> {
             TokenKind::Integer(n) => Ok(Expression::Integer(n, token.span)),
             TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
+            TokenKind::Char(c) => Ok(Expression::Char(c, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
             TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
                 true => Self::parse_struct(parser, ident, token.span),
                 false => Ok(Expression::Identifier(ident, token.span)),
             },
-            TokenKind::Punct(Punct::Minus) | TokenKind::Punct(Punct::Bang) => {
+            TokenKind::Punct(Punct::Minus)
+            | TokenKind::Punct(Punct::Bang)
+            | TokenKind::Punct(Punct::Star) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
+                    TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
 
                     _ => {
                         return Err(ParserError::new(
@@ -142,7 +168,7 @@ impl<'i> Expression<'i> {
                     }
                 };
 
-                let expr = Self::parse_expr(parser, 10)?;
+                let expr = Self::parse_expr(parser, 7)?;
                 let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
@@ -263,6 +289,20 @@ impl<'i> Expression<'i> {
                             ));
                         };
 
+                        if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
+                            parser.expect_token(Punct::OpenParen)?;
+                            let typ = Spanned::<StatementType>::parse(parser)?;
+                            let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                            let span = left.span() + end_span;
+
+                            return Ok(Expression::TypeIntrinsic {
+                                kind,
+                                qualifier: Some(qualifier),
+                                typ,
+                                span,
+                            });
+                        }
+
                         parser.expect_token(Punct::OpenParen)?;
                         let mut args = Vec::new();
                         let mut first = true;
@@ -305,6 +345,21 @@ impl<'i> Expression<'i> {
                 }
             }
             TokenKind::Punct(Punct::OpenParen) => {
+                if let Expression::Identifier(name, _) = &left {
+                    if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
+                        let typ = Spanned::<StatementType>::parse(parser)?;
+                        let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                        let span = left.span() + end_span;
+
+                        return Ok(Expression::TypeIntrinsic {
+                            kind,
+                            qualifier: None,
+                            typ,
+                            span,
+                        });
+                    }
+                }
+
                 let mut args = Vec::new();
                 let end_position;
                 let mut first = true;
@@ -404,5 +459,26 @@ impl<'i> Expression<'i> {
         matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
             && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
             && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
+    }
+}
+
+impl FromStr for TypeIntrinsicKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "size_of" => Ok(Self::SizeOf),
+            "align_of" => Ok(Self::AlignOf),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<&TypeIntrinsicKind> for &str {
+    fn from(value: &TypeIntrinsicKind) -> Self {
+        match value {
+            TypeIntrinsicKind::SizeOf => "size_of",
+            TypeIntrinsicKind::AlignOf => "align_of",
+        }
     }
 }

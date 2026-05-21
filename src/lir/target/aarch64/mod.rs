@@ -1,11 +1,8 @@
-use crate::parser::expression::BinaryOperator;
-use crate::{
-    lir::{
-        MachineType, VReg,
-        target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
-    },
-    mir::SyscallCode,
+use crate::lir::{
+    MachineType, VReg,
+    target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
 };
+use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
 
 mod codegen;
 mod lower;
@@ -35,7 +32,7 @@ pub enum A64Instr {
     MovImm { dest: VReg, imm: i64, bytes: u8 },
     Mov { dest: VReg, src: VReg, bytes: u8 },
     /// load a stack-passed param
-    LdrParam { dest: VReg, fp_offset: i32, bytes: u8 },
+    LdrParam { dest: VReg, fp_offset: i32, bytes: u8, signed: bool },
 
     // integer arithmetic
     Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
@@ -76,6 +73,7 @@ pub enum A64Instr {
         origin: VReg,
         offset: i32,
         bytes: u8,
+        signed: bool,
     },
 
     FieldStore {
@@ -94,6 +92,7 @@ pub enum A64Instr {
         offset: i32,
         bytes: u8,
         is_float: bool,
+        signed: bool,
     },
 
     PtrStore {
@@ -346,8 +345,8 @@ impl MemOps for AArch64 {
     fn vreg_operand(v: VReg) -> A64Operand { A64Operand::VReg(v) }
 
     #[inline(always)]
-    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, _is_float: bool) -> A64Instr {
-        A64Instr::FieldLoad { dest, origin, offset, bytes }
+    fn field_load(dest: VReg, origin: VReg, offset: i32, bytes: u8, _is_float: bool, signed: bool) -> A64Instr {
+        A64Instr::FieldLoad { dest, origin, offset, bytes, signed }
     }
 
     #[inline(always)]
@@ -356,8 +355,8 @@ impl MemOps for AArch64 {
     }
 
     #[inline(always)]
-    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool) -> A64Instr {
-        A64Instr::PtrLoad { dest, ptr, offset, bytes, is_float }
+    fn ptr_load(dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool, signed: bool) -> A64Instr {
+        A64Instr::PtrLoad { dest, ptr, offset, bytes, is_float, signed }
     }
 
     #[inline(always)]
@@ -495,6 +494,16 @@ impl Instruction<AArch64> for A64Instr {
             _ => &[],
         }
     }
+
+    #[inline(always)]
+    fn stack_forced(&self) -> &[VReg] {
+        match self {
+            Self::StackAddr { origin, .. }
+            | Self::FieldLoad { origin, .. }
+            | Self::FieldStore { origin, .. } => std::slice::from_ref(origin),
+            _ => &[],
+        }
+    }
 }
 
 impl A64Instr {
@@ -523,9 +532,17 @@ impl A64Instr {
 }
 
 impl PhysicalReg for A64Reg {
+    #[inline(always)]
+    #[rustfmt::skip]
     fn class(self) -> RegClass {
         match self {
-            r if r >= Self::D0 && r <= Self::D31 => RegClass::Float,
+            Self::D0 | Self::D1 | Self::D2 | Self::D3 | Self::D4
+            | Self::D5 | Self::D6 | Self::D7 | Self::D8 | Self::D9
+            | Self::D10 | Self::D11 | Self::D12 | Self::D13 | Self::D14
+            | Self::D15 | Self::D16 | Self::D17 | Self::D18 | Self::D19
+            | Self::D20 | Self::D21 | Self::D22 | Self::D23 | Self::D24
+            | Self::D25 | Self::D26 | Self::D27 | Self::D28 | Self::D29
+            | Self::D30 | Self::D31 => RegClass::Float,
             _ => RegClass::Int,
         }
     }

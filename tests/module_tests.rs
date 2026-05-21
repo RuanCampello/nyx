@@ -18,6 +18,11 @@ const CASES: &[Case] = &[
         entry: "tests/module/geometry/main.nyx",
         exit_code: 0,
     },
+    Case {
+        name: "composable_interfaces",
+        entry: "tests/module/composable_interfaces/main.nyx",
+        exit_code: 0,
+    },
 ];
 
 fn compile_and_run(entry: &Path, project_name: &str) -> Result<i32, String> {

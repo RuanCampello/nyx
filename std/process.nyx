@@ -1,1 +1,3 @@
-pub fn exit() {}
+pub fn exit(code: i32) {
+    syscall(SYS_EXIT, code);
+}

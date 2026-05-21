@@ -1,0 +1,33 @@
+use composable_interfaces::contracts::{
+    Ackable,
+    DeviceIdentity,
+    DispatchableAlert,
+    TelemetryReading,
+    ThresholdReading,
+};
+use composable_interfaces::readings::{DoorAlarm, PowerFeed};
+
+fn main(): i64 {
+    let feed = PowerFeed::new(41, 7, 1200, 4400, 5000);
+
+    if feed.device_id() != 41 return 1;
+    if feed.site_id() != 7 return 2;
+    if feed.sample_tick() != 1200 return 3;
+    if feed.limit() != 5000 return 4;
+    if feed.is_over_limit() return 5;
+    if feed.health_score() != 98 return 6;
+    if feed.watts() != 4400 return 7;
+
+    let alarm = DoorAlarm::new(88, 3, 1215, 360, 120, 17);
+
+    if alarm.device_id() != 88 return 8;
+    if alarm.site_id() != 3 return 9;
+    if alarm.sample_tick() != 1215 return 10;
+    if alarm.limit() != 120 return 11;
+    if !alarm.is_over_limit() return 12;
+    if alarm.health_score() != 15 return 13;
+    if alarm.ack_code() != 17088 return 14;
+    if alarm.priority() != 903 return 15;
+
+    0
+}

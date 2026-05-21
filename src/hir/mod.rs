@@ -5,8 +5,9 @@
 
 use crate::{
     hir::{
-        error::{HirError, HirErrorKind},
-        functions::{FunctionBuilder, FunctionSignature},
+        declarations::Declarations,
+        error::HirError,
+        scope::{FunctionSignature, Scope},
         symbols::SymbolTable,
     },
     lexer::token::Span,
@@ -18,9 +19,11 @@ use crate::{
 use lasso::{Key, Spur};
 use std::str::FromStr;
 
+mod declarations;
 pub mod error;
-mod functions;
+mod lower;
 pub(crate) mod module;
+mod scope;
 mod symbols;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,9 +51,39 @@ pub struct StructField {
     declared_index: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The target of a reference type (`Type::Ref`)
+///
+/// Since `Type` is designed to be a flat, recursive-free, and `Copy` enum,
+/// we cannot represent references recursively as `&'t Type`. `RefTarget` represents
+/// all valid non-reference types that can be referenced in Nyx, preventing
+/// invalid type states like nested references (e.g. `&&i64`) by construction
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefTarget {
+    Struct(StructId),
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Uptr,
+    Iptr,
+    Char,
+    Str,
+    String,
+    Unit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Type {
+    #[default]
+    Unit,
     I8,
     U8,
     I16,
@@ -68,8 +101,10 @@ pub enum Type {
     Str,
     String,
     Struct(StructId),
-    Ref { mutable: bool, to: StructId },
-    Unit,
+    Ref {
+        mutable: bool,
+        to: RefTarget,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,13 +147,14 @@ pub struct Function {
     pub return_type: Type,
     pub is_const: bool,
     pub is_pub: bool,
+    pub inline: bool,
     pub intrinsic: Option<Intrinsic>,
     pub body: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
-    pub(crate) receiver: StructId,
+    pub(crate) receiver: Type,
     pub(crate) name: SymbolId,
     pub(crate) mutable: bool,
 }
@@ -152,6 +188,7 @@ pub enum ExpressionKind {
     Integer(i64),
     Float(f64),
     String(String),
+    Char(char),
     Bool(bool),
     Local(LocalId),
     Unary {
@@ -193,6 +230,10 @@ pub enum ExpressionKind {
         function: FunctionId,
         args: Vec<Expression>,
     },
+    Syscall {
+        code: SyscallCode,
+        args: Vec<Expression>,
+    },
     IntrinsicCall {
         intrinsic: Intrinsic,
         args: Vec<Expression>,
@@ -201,8 +242,9 @@ pub enum ExpressionKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Receiver {
-    pub(crate) local: LocalId,
+    pub(crate) local: Option<LocalId>,
     pub(crate) fields: Vec<SymbolId>,
+    pub(crate) value: Option<Box<Expression>>,
     pub(crate) typ: Type,
 }
 
@@ -210,6 +252,12 @@ pub struct Receiver {
 pub enum Intrinsic {
     PrintLn,
     Print,
+    Syscall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallCode {
+    Write,
     Exit,
 }
 
@@ -222,60 +270,19 @@ pub struct SymbolId(pub Spur);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
 
-pub(crate) trait Offset {
-    /// remaps module-local into merged index space by applying a per-module offset
-    fn offset(&mut self, offset: u32);
-}
-
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
     let mut symbols = SymbolTable::new();
-    let (structs, structs_map) = functions::collect_structs(&statements, &mut symbols)?;
-    let (signatures, functions_map, methods_map) =
-        functions::collect_function_signatures(&statements, &mut symbols, &structs_map)?;
+    let declarations = Declarations::partition(&statements)?;
 
-    let mut functions = Vec::new();
-    for function in functions::function_declarations(&statements) {
-        let function_id = functions::function_id_for(
-            &function,
-            &functions_map,
-            &methods_map,
-            &structs_map,
-            &mut symbols,
-        )?;
-        let function = FunctionBuilder::new(
-            &signatures,
-            &functions_map,
-            &methods_map,
-            &structs,
-            &structs_map,
-            &mut symbols,
-            function_id,
-            function,
-        );
-        functions.push(function.lower()?);
-    }
+    let mut scope = Scope::new();
+    scope.extend(&declarations, &mut symbols, false)?;
 
-    for statement in statements {
-        match statement {
-            statement::Statement::Fn(_)
-            | statement::Statement::Struct(_)
-            | statement::Statement::Impl(_) => continue,
-            // 'use' declarations are valid at the top level but have no HIR representation
-            // symbol resolution happens at the module loader level, not here
-            statement::Statement::Use(_) => continue,
-            other => {
-                return Err(HirError {
-                    kind: HirErrorKind::TopLevelNonFunction,
-                    span: other.span(),
-                });
-            }
-        }
-    }
+    let functions = scope.lower_functions(&declarations, &mut symbols, false)?;
 
     Ok(Hir {
         symbols: symbols.into_symbols(),
-        structs,
+        structs: scope.structs,
         functions,
     })
 }
@@ -288,11 +295,21 @@ impl From<&Function> for FunctionSignature {
             name: value.name,
             intrinsic: value.intrinsic,
             method: value.method,
+            is_const: value.is_const,
+            inline: value.inline,
         }
     }
 }
 
 impl Type {
+    #[inline]
+    pub(in crate::hir) fn strip_reference(self) -> Self {
+        match self {
+            Self::Ref { to, .. } => Self::from(to),
+            other => other,
+        }
+    }
+
     pub(in crate::hir) const fn is_number(&self) -> bool {
         self.is_integer() || self.is_float()
     }
@@ -325,9 +342,9 @@ impl Type {
     /// returns (size, alignment) of the type
     const fn layout(&self, structs: &[Option<Struct>]) -> (u32, u32) {
         match self {
-            Type::I8 | Type::U8 | Type::Bool | Type::Char => (1, 1),
+            Type::I8 | Type::U8 | Type::Bool => (1, 1),
             Type::I16 | Type::U16 => (2, 2),
-            Type::I32 | Type::U32 | Type::F32 => (4, 4),
+            Type::I32 | Type::U32 | Type::F32 | Type::Char => (4, 4),
             Type::I64
             | Type::U64
             | Type::Iptr
@@ -348,128 +365,56 @@ impl Type {
     }
 }
 
-// FIXME: we probably don't need this offset thingy after
-// refactoring struct calculation
-// reavaliate it later future me :D
-
-impl Offset for Type {
-    #[inline(always)]
-    fn offset(&mut self, offset: u32) {
-        match *self {
-            Type::Struct(id) => *self = Type::Struct(StructId(id.0 + offset)),
-            Type::Ref { mutable, to } => {
-                *self = Type::Ref {
-                    mutable,
-                    to: StructId(to.0 + offset),
-                }
-            }
-            _ => {}
+impl From<RefTarget> for Type {
+    fn from(value: RefTarget) -> Self {
+        match value {
+            RefTarget::Unit => Type::Unit,
+            RefTarget::I8 => Type::I8,
+            RefTarget::U8 => Type::U8,
+            RefTarget::I16 => Type::I16,
+            RefTarget::U16 => Type::U16,
+            RefTarget::I32 => Type::I32,
+            RefTarget::U32 => Type::U32,
+            RefTarget::I64 => Type::I64,
+            RefTarget::U64 => Type::U64,
+            RefTarget::F32 => Type::F32,
+            RefTarget::F64 => Type::F64,
+            RefTarget::Bool => Type::Bool,
+            RefTarget::Uptr => Type::Uptr,
+            RefTarget::Iptr => Type::Iptr,
+            RefTarget::Char => Type::Char,
+            RefTarget::Str => Type::Str,
+            RefTarget::String => Type::String,
+            RefTarget::Struct(id) => Type::Struct(id),
         }
     }
 }
 
-impl Offset for Struct {
-    fn offset(&mut self, offset: u32) {
-        self.id = StructId(self.id.0 + offset);
+impl TryFrom<Type> for RefTarget {
+    type Error = ();
 
-        for StructField { typ, .. } in &mut self.fields {
-            typ.offset(offset);
+    fn try_from(typ: Type) -> Result<Self, Self::Error> {
+        match typ {
+            Type::Unit => Ok(Self::Unit),
+            Type::I8 => Ok(Self::I8),
+            Type::U8 => Ok(Self::U8),
+            Type::I16 => Ok(Self::I16),
+            Type::U16 => Ok(Self::U16),
+            Type::I32 => Ok(Self::I32),
+            Type::U32 => Ok(Self::U32),
+            Type::I64 => Ok(Self::I64),
+            Type::U64 => Ok(Self::U64),
+            Type::F32 => Ok(Self::F32),
+            Type::F64 => Ok(Self::F64),
+            Type::Bool => Ok(Self::Bool),
+            Type::Uptr => Ok(Self::Uptr),
+            Type::Iptr => Ok(Self::Iptr),
+            Type::Char => Ok(Self::Char),
+            Type::Str => Ok(Self::Str),
+            Type::String => Ok(Self::String),
+            Type::Struct(id) => Ok(Self::Struct(id)),
+            Type::Ref { .. } => Err(()),
         }
-    }
-}
-
-impl Offset for Expression {
-    fn offset(&mut self, offset: u32) {
-        self.typ.offset(offset);
-
-        match &mut self.kind {
-            ExpressionKind::Unit
-            | ExpressionKind::Integer(_)
-            | ExpressionKind::Float(_)
-            | ExpressionKind::Bool(_)
-            | ExpressionKind::String(_)
-            | ExpressionKind::FieldAccess { .. }
-            | ExpressionKind::Local(_) => {}
-
-            ExpressionKind::Unary { expr, .. } => expr.offset(offset),
-            ExpressionKind::Binary { left, right, .. } => {
-                left.offset(offset);
-                right.offset(offset);
-            }
-
-            ExpressionKind::Assign { value, .. } => value.offset(offset),
-            ExpressionKind::FieldAssign { value, .. } => value.offset(offset),
-            ExpressionKind::MethodCall { receiver, args, .. } => {
-                receiver.typ.offset(offset);
-                for arg in args {
-                    arg.offset(offset);
-                }
-            }
-            ExpressionKind::Struct { fields, id } => {
-                *id = StructId(id.0 + offset);
-
-                for (_, value) in fields {
-                    value.offset(offset);
-                }
-            }
-            ExpressionKind::Call { args, .. } | ExpressionKind::IntrinsicCall { args, .. } => {
-                for arg in args {
-                    arg.offset(offset);
-                }
-            }
-        }
-    }
-}
-
-impl Offset for Block {
-    fn offset(&mut self, offset: u32) {
-        for statement in &mut self.statements {
-            match statement {
-                Statement::Expr(expr)
-                | Statement::Return(Some(expr))
-                | Statement::Let {
-                    init: Some(expr), ..
-                } => {
-                    expr.offset(offset);
-                }
-                Statement::Return(None) | Statement::Let { init: None, .. } => {}
-                Statement::Block(block) => block.offset(offset),
-                Statement::While { condition, body } => {
-                    condition.offset(offset);
-                    body.offset(offset);
-                }
-                Statement::If {
-                    condition,
-                    then_block,
-                    else_block,
-                } => {
-                    condition.offset(offset);
-                    then_block.offset(offset);
-                    if let Some(else_block) = else_block {
-                        else_block.offset(offset);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Offset for Function {
-    fn offset(&mut self, offset: u32) {
-        self.return_type.offset(offset);
-        if let Some(method) = &mut self.method {
-            method.receiver = StructId(method.receiver.0 + offset);
-        }
-
-        for param in &mut self.params {
-            param.typ.offset(offset);
-        }
-
-        for local in &mut self.locals {
-            local.typ.offset(offset);
-        }
-
-        self.body.offset(offset);
     }
 }
 
@@ -520,10 +465,14 @@ impl std::fmt::Display for Type {
             Type::Str => "&str",
             Type::String => "String",
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
-            Type::Ref { mutable, to } => match mutable {
-                true => return write!(f, "&mut struct#{}", to.0),
-                false => return write!(f, "&struct#{}", to.0),
-            },
+            Type::Ref { mutable, to } => {
+                let prefix = if *mutable { "&mut " } else { "&" };
+                f.write_str(prefix)?;
+                return match to {
+                    RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
+                    other => write!(f, "{}", Type::from(*other)),
+                };
+            }
             Type::Unit => "unit",
         };
 
@@ -538,7 +487,20 @@ impl FromStr for Intrinsic {
         Ok(match str {
             "println" => Self::PrintLn,
             "print" => Self::Print,
-            "exit" => Self::Exit,
+            "syscall" => Self::Syscall,
+
+            _ => return Err(()),
+        })
+    }
+}
+
+impl FromStr for SyscallCode {
+    type Err = ();
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        Ok(match str {
+            "SYS_WRITE" => Self::Write,
+            "SYS_EXIT" => Self::Exit,
 
             _ => return Err(()),
         })
@@ -554,7 +516,7 @@ impl std::fmt::Debug for SymbolId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::Parser;
+    use crate::{hir::error::HirErrorKind, parser::Parser};
     use lasso::Key;
 
     #[test]
@@ -1270,6 +1232,55 @@ mod tests {
             err.kind,
             HirErrorKind::ImmutableBind {
                 name: "self".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn wrong_interface_parameters_impl() {
+        let src = r#"
+        interface StorageEngine {
+            fn flush(&self): bool;
+            fn read_page(&self): i64;
+        }
+
+        struct BTreeStorage {
+            page_size: i64,
+        }
+
+        impl BTreeStorage with StorageEngine {
+            fn flush(&self): bool { true }
+            fn read_page(&self, page_id: i64): i64 { self.page_size }
+        }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).err().expect("known bug");
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::InterfaceSignatureMismatch {
+                struct_name,
+                interface_name,
+                method_name,
+                ..
+            } if struct_name == "BTreeStorage"
+                && interface_name == "StorageEngine"
+                && method_name == "read_page"
+        ));
+    }
+
+    #[test]
+    fn primitive_orphan_rule_is_enforced() {
+        let src = r#"
+            impl i64 {
+                fn val(&self): i64 { *self }
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::OrphanImpl {
+                name: "i64".to_string(),
             }
         );
     }

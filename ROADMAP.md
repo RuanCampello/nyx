@@ -33,7 +33,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Floating-Point Types (`f32`, `f64`)
 - [x] Boolean (`bool`)
 - [ ] Strings
-  - [ ] `char`
+  - [x] `char`
   - [x] `&str`
   - [ ] `String` (**requires** memory allocator implementation)
 - [ ] Fixed-size arrays (`[T; N]`)
@@ -46,7 +46,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Mutable References (`&mut`)
 - [ ] Type definition
   - [ ] Polymorphism (`Interface`)
-    - [ ] Static dispatch
+    - [x] Static dispatch
+    - [ ] Dynamic dispatch
+    - [x] Interface composition
   - [ ] Composite data declaration (`struct`)
     - [x] Field access and instantiation
     - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)

@@ -28,6 +28,7 @@ pub enum TokenKind<'src> {
     Integer(i64),
     Float(f64),
     String(&'src str),
+    Char(char),
     Bool(bool),
     Identifier(&'src str),
     Keyword(Keyword),
@@ -52,6 +53,8 @@ pub enum Keyword {
     Const,
     Pub,
     Use,
+    Interface,
+    With,
 }
 
 /// Punctuators and operators.
@@ -172,6 +175,8 @@ impl Keyword {
             Self::Const => "const",
             Self::Use => "use",
             Self::Pub => "pub",
+            Self::Interface => "interface",
+            Self::With => "with",
         }
     }
 }
@@ -195,6 +200,8 @@ impl std::str::FromStr for Keyword {
             "const" => Self::Const,
             "pub" => Self::Pub,
             "use" => Self::Use,
+            "with" => Self::With,
+            "interface" => Self::Interface,
             _ => return Err(()),
         })
     }
@@ -240,6 +247,7 @@ impl fmt::Display for TokenKind<'_> {
             Self::Integer(n) => write!(f, "{n}"),
             Self::Float(n) => write!(f, "{n}"),
             Self::String(s) => write!(f, "\"{s}\""),
+            Self::Char(c) => write!(f, "'{c}'"),
             Self::Bool(b) => write!(f, "{b}"),
             Self::Identifier(id) => write!(f, "{id}"),
             Self::Keyword(kw) => write!(f, "{kw}"),

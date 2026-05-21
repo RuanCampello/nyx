@@ -14,11 +14,13 @@ pub mod cursor;
 pub mod error;
 pub mod token;
 
+mod char;
 mod comment;
 mod identifier;
 mod number;
 mod string;
 
+use char::CharLiteral;
 use comment::{BlockComment, LineComment};
 use cursor::Cursor;
 use error::LexError;
@@ -76,6 +78,7 @@ impl<'src> Lexer<'src> {
             'a'..='z' | 'A'..='Z' | '_' => Identifier.lex(&mut self.cursor, start)?,
             '0'..='9' => NumberLiteral.lex(&mut self.cursor, start)?,
             '"' => StringLiteral.lex(&mut self.cursor, start)?,
+            '\'' => CharLiteral.lex(&mut self.cursor, start)?,
 
             '(' => self.single_punct(Punct::OpenParen),
             ')' => self.single_punct(Punct::CloseParen),
@@ -302,7 +305,7 @@ mod tests {
             Punct::And,
             Punct::Or,
         ]
-        .map(|p| TokenKind::Punct(p))
+        .map(TokenKind::Punct)
         .to_vec();
 
         assert_eq!(ks, expected);
@@ -314,7 +317,7 @@ mod tests {
 
         assert_eq!(
             [Punct::Ampersand, Punct::And, Punct::And, Punct::Ampersand]
-                .map(|p| TokenKind::Punct(p))
+                .map(TokenKind::Punct)
                 .to_vec(),
             ks
         )
@@ -351,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn number_literals() {
         assert_eq!(
             kinds("42 3.14 0 1_000"),

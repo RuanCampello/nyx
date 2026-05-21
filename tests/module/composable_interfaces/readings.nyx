@@ -1,0 +1,124 @@
+pub struct PowerFeed {
+    device: i64,
+    site: i64,
+    tick: i64,
+    watts: i64,
+    max_watts: i64,
+}
+
+pub struct DoorAlarm {
+    device: i64,
+    site: i64,
+    tick: i64,
+    opened_for: i64,
+    allowed_open_seconds: i64,
+    operator: i64,
+}
+
+impl PowerFeed {
+    pub fn new(device: i64, site: i64, tick: i64, watts: i64, max_watts: i64): PowerFeed {
+        PowerFeed {
+            device: device,
+            site: site,
+            tick: tick,
+            watts: watts,
+            max_watts: max_watts,
+        }
+    }
+
+    pub fn watts(&self): i64 {
+        self.watts
+    }
+}
+
+impl PowerFeed with DeviceIdentity {
+    pub fn device_id(&self): i64 {
+        self.device
+    }
+
+    pub fn site_id(&self): i64 {
+        self.site
+    }
+}
+
+impl PowerFeed with TelemetryReading {
+    pub fn sample_tick(&self): i64 {
+        self.tick
+    }
+
+    pub fn health_score(&self): i64 {
+        if self.is_over_limit() { 25 } else { 98 }
+    }
+}
+
+impl PowerFeed with ThresholdReading {
+    pub fn limit(&self): i64 {
+        self.max_watts
+    }
+
+    pub fn is_over_limit(&self): bool {
+        self.watts > self.max_watts
+    }
+}
+
+impl DoorAlarm {
+    pub fn new(
+        device: i64,
+        site: i64,
+        tick: i64,
+        opened_for: i64,
+        allowed_open_seconds: i64,
+        operator: i64
+    ): DoorAlarm {
+        DoorAlarm {
+            device: device,
+            site: site,
+            tick: tick,
+            opened_for: opened_for,
+            allowed_open_seconds: allowed_open_seconds,
+            operator: operator,
+        }
+    }
+}
+
+impl DoorAlarm with DeviceIdentity {
+    pub fn device_id(&self): i64 {
+        self.device
+    }
+
+    pub fn site_id(&self): i64 {
+        self.site
+    }
+}
+
+impl DoorAlarm with TelemetryReading {
+    pub fn sample_tick(&self): i64 {
+        self.tick
+    }
+
+    pub fn health_score(&self): i64 {
+        if self.is_over_limit() { 15 } else { 100 }
+    }
+}
+
+impl DoorAlarm with ThresholdReading {
+    pub fn limit(&self): i64 {
+        self.allowed_open_seconds
+    }
+
+    pub fn is_over_limit(&self): bool {
+        self.opened_for > self.allowed_open_seconds
+    }
+}
+
+impl DoorAlarm with Ackable {
+    pub fn ack_code(&self): i64 {
+        self.operator * 1000 + self.device_id()
+    }
+}
+
+impl DoorAlarm with DispatchableAlert {
+    pub fn priority(&self): i64 {
+        if self.is_over_limit() { 900 + self.site_id() } else { 100 }
+    }
+}

@@ -1,0 +1,20 @@
+inline fn calculate(x: i32, y: i32): i32 {
+    let mut sum = x + y;
+    if sum > 10 {
+        sum = sum * 2;
+    } else {
+        sum = sum + 5;
+    }
+    sum
+}
+
+inline fn nested_inline(a: i32): i32 {
+    calculate(a, a + 1)
+}
+
+fn main(): i32 {
+    let x = 3;
+    let res1 = nested_inline(x);
+    let res2 = nested_inline(6);
+    res1 + res2
+}

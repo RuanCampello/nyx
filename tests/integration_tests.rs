@@ -101,6 +101,41 @@ const CASES: &[Case] = &[
         file: "tests/single/impl_methods.nyx",
         exit_code: Some(42),
     },
+    Case {
+        name: "inlined_add",
+        file: "tests/single/inlined_add.nyx",
+        exit_code: Some(3),
+    },
+    Case {
+        name: "inline_complex",
+        file: "tests/single/inline_complex.nyx",
+        exit_code: Some(38),
+    },
+    Case {
+        name: "inline_methods",
+        file: "tests/single/inline_methods.nyx",
+        exit_code: Some(30),
+    },
+    Case {
+        name: "interfaces",
+        file: "tests/single/interfaces.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "char_tests",
+        file: "tests/single/char_tests.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "regalloc_terminator",
+        file: "tests/single/regalloc_terminator.nyx",
+        exit_code: Some(42),
+    },
+    Case {
+        name: "div_sizes",
+        file: "tests/single/div_sizes.nyx",
+        exit_code: Some(0),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

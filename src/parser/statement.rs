@@ -13,6 +13,7 @@ pub enum Statement<'i> {
     Fn(Function<'i>),
     Struct(Struct<'i>),
     Impl(Impl<'i>),
+    Interface(Interface<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
     Use(UseDecl<'i>),
@@ -77,17 +78,36 @@ pub struct Struct<'i> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct StructField<'i> {
+    pub name: &'i str,
+    pub typ: Spanned<Type<'i>>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Impl<'i> {
     pub name: &'i str,
+    pub interface: Option<&'i str>,
     pub methods: Vec<Function<'i>>,
     pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StructField<'i> {
+pub struct Interface<'i> {
     pub name: &'i str,
-    pub typ: Spanned<Type<'i>>,
+    pub superinterfaces: Vec<&'i str>,
+    pub methods: Vec<InterfaceMethod<'i>>,
+    pub is_pub: bool,
     pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct InterfaceMethod<'i> {
+    pub name: &'i str,
+    pub receiver: Option<Receiver>,
+    pub params: Vec<Parameter<'i>>,
+    pub return_type: Option<Spanned<Type<'i>>>,
+    span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -185,8 +205,14 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Struct) => Ok(Statement::Struct(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Impl) => Ok(Statement::Impl(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Interface) => {
+                Ok(Statement::Interface(parser.parse_node()?))
+            }
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
                 Ok(Statement::Struct(parser.parse_node()?))
+            }
+            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_interface() => {
+                Ok(Statement::Interface(parser.parse_node()?))
             }
             TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(
@@ -443,37 +469,11 @@ impl<'i> Parsable<'i> for Function<'i> {
                         && receiver.is_none()
                         && parser.consume_punct(Punct::Ampersand)?
                     {
-                        let receiver_start = parser.last_span().unwrap_or(fn_token.span);
-                        let mutable = parser.consume_keyword(Keyword::Mut)?;
-                        let (name, name_span) = parser.expect_identifier()?;
-                        if name != "self" {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedIdentifier {
-                                    found: TokenKind::Identifier(name),
-                                },
-                                name_span,
-                            ));
-                        }
-
-                        receiver = Some(Receiver {
-                            mutable,
-                            span: receiver_start + name_span,
-                        });
-
+                        receiver = Some(parser.parse_node()?);
                         continue;
                     }
 
-                    let mutable = parser.consume_keyword(Keyword::Mut)?;
-                    let (param_name, param_span) = parser.expect_identifier()?;
-                    parser.expect_token(Punct::Colon)?;
-                    let typ = parser.parse_node::<Spanned<Type>>()?;
-
-                    params.push(Parameter {
-                        name: param_name,
-                        typ,
-                        span: param_span + typ.span(),
-                        mutable,
-                    })
+                    params.push(parser.parse_node()?);
                 }
 
                 Err(err) => return Err(err.into()),
@@ -481,7 +481,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         }
 
         let return_type = match parser.consume_punct(Punct::Colon)? {
-            true => Some(parser.parse_node::<Spanned<Type>>()?),
+            true => Some(parser.parse_node()?),
             false => None,
         };
         let body = Block::parse(parser)?;
@@ -506,6 +506,10 @@ impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let impl_token = parser.expect_token(Keyword::Impl)?;
         let (name, _) = parser.expect_identifier()?;
+        let interface = match parser.consume_keyword(Keyword::With)? {
+            true => Some(parser.expect_identifier()?.0),
+            false => None,
+        };
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
@@ -520,6 +524,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                         name,
                         methods,
                         span,
+                        interface,
                     });
                 }
 
@@ -608,6 +613,106 @@ impl<'i> Parsable<'i> for Struct<'i> {
                 span,
             });
         }
+    }
+}
+
+impl<'i> Parsable<'i> for Interface<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let interface_token = parser.expect_token(Keyword::Interface)?;
+        let (name, _) = parser.expect_identifier()?;
+        let mut superinterfaces = Vec::new();
+
+        if parser.consume_punct(Punct::Colon)? {
+            loop {
+                superinterfaces.push(parser.expect_identifier()?.0);
+
+                if !parser.consume_punct(Punct::Plus)? {
+                    break;
+                }
+            }
+        }
+
+        parser.expect_token(Punct::OpenBrace)?;
+
+        let mut methods = Vec::new();
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                    let close = parser.expect_token(Punct::CloseBrace)?;
+                    return Ok(Self {
+                        name,
+                        superinterfaces,
+                        span: interface_token.span + close.span,
+                        methods,
+                        is_pub,
+                    });
+                }
+                Some(Err(err)) => return Err(err.into()),
+                _ => methods.push(InterfaceMethod::parse(parser)?),
+            }
+        }
+    }
+}
+
+impl<'i> Parsable<'i> for InterfaceMethod<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let fn_token = parser.expect_token(Keyword::Fn)?;
+        let (name, _) = parser.expect_identifier()?;
+        parser.expect_token(Punct::OpenParen)?;
+
+        let mut params = Vec::new();
+        let mut receiver = None;
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseParen) => {
+                    parser.expect_token(Punct::CloseParen)?;
+                    break;
+                }
+
+                Some(Ok(_)) => {
+                    if !params.is_empty() || receiver.is_some() {
+                        parser.expect_token(Punct::Comma)?;
+                    }
+
+                    if params.is_empty()
+                        && receiver.is_none()
+                        && parser.consume_punct(Punct::Ampersand)?
+                    {
+                        receiver = Some(parser.parse_node()?);
+                        continue;
+                    }
+
+                    params.push(parser.parse_node()?);
+                }
+
+                Some(Err(err)) => return Err(err.into()),
+
+                None => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::UnexpectedEof,
+                        fn_token.span,
+                    ));
+                }
+            }
+        }
+
+        let return_type = match parser.consume_punct(Punct::Colon)? {
+            true => Some(parser.parse_node()?),
+            _ => None,
+        };
+
+        let semi = parser.expect_token(Punct::Semicolon)?;
+
+        Ok(Self {
+            span: fn_token.span + semi.span,
+            name,
+            receiver,
+            params,
+            return_type,
+        })
     }
 }
 
@@ -714,6 +819,44 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
     }
 }
 
+impl<'i> Parsable<'i> for Receiver {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let start = parser.last_span().unwrap_or_default();
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let (name, span) = parser.expect_identifier()?;
+
+        if name != "self" {
+            return Err(ParserError::new(
+                ParseErrorKind::ExpectedIdentifier {
+                    found: TokenKind::Identifier(name),
+                },
+                span,
+            ));
+        }
+
+        Ok(Self {
+            mutable,
+            span: start + span,
+        })
+    }
+}
+
+impl<'i> Parsable<'i> for Parameter<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let (name, span) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Colon)?;
+        let typ = parser.parse_node::<Spanned<Type>>()?;
+
+        Ok(Self {
+            mutable,
+            name,
+            typ,
+            span: span + typ.span(),
+        })
+    }
+}
+
 impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         Spanned::<Type>::parse(parser)
@@ -730,6 +873,7 @@ impl<'s> Statement<'s> {
             Self::Fn(s) => s.span,
             Self::Struct(s) => s.span,
             Self::Impl(s) => s.span,
+            Self::Interface(i) => i.span,
             Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,

@@ -22,6 +22,7 @@ pub enum HirErrorKind<'h> {
     UnknownFunction { name: String },
     UnknownMethod { struct_name: String, name: String },
     UnknownType { name: String },
+    OrphanImpl { name: String },
     DuplicateStruct { name: String },
     DuplicateField { name: String },
     InvalidFieldAccess,
@@ -50,6 +51,27 @@ pub enum HirErrorKind<'h> {
     },
     ImmutableBind { name: String },
     ConstFnViolation(ConstFnViolationKind),
+
+    DuplicateInterface { name: String },
+    UnknownInterface { name: String },
+    MissingInterfaceMethod { 
+        struct_name: String,
+        interface_name: String,
+        method_name: String,
+    },
+    MissingSuperinterfaceImpl {
+        struct_name: String,
+        interface_name: String,
+        superinterface_name: String,
+    },
+    InterfaceSignatureMismatch {
+        struct_name: String,
+        interface_name: String,
+        method_name: String,
+        expected: String,
+        found: String,
+        impl_span: Span,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]

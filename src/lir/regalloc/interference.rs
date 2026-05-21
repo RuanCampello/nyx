@@ -11,19 +11,22 @@ pub(in crate::lir::regalloc) struct Interference {
     /// VRegs whose live range crosses at least one call (or instruction with clobbers)
     /// These must not be placed in caller-saved registers
     pub call_crossed: BTreeSet<VReg>,
+    pub stack_forced: BTreeSet<VReg>,
 }
 
 impl Interference {
     pub fn build<T: Target>(function: &Function<T>, liveness: &Liveness) -> Self {
-        let mut graph = Self::default();
-
-        for (idx, _) in function.vreg_types.iter().enumerate() {
-            graph.add_node(VReg(idx as u32));
-        }
+        let mut graph = Self {
+            edges: vec![BTreeSet::new(); function.vreg_types.len()],
+            call_crossed: BTreeSet::new(),
+            stack_forced: BTreeSet::new(),
+        };
 
         for (idx, block) in function.blocks.iter().enumerate() {
             let mut live = liveness.blocks[idx].live_out.clone();
             let mut uses = Vec::new();
+
+            live.extend(block.term.uses_of().iter().copied());
 
             for instruction in block.instructions.iter().rev() {
                 if !instruction.clobbers().is_empty() {
@@ -50,9 +53,7 @@ impl Interference {
                     live.insert(*vreg);
                 }
 
-                for &def in instruction.defs() {
-                    graph.add_node(def);
-                }
+                graph.stack_forced.extend(instruction.stack_forced().iter().copied());
             }
         }
 
@@ -65,13 +66,7 @@ impl Interference {
     }
 
     pub fn neighbours(&self, vreg: &VReg) -> &BTreeSet<VReg> {
-        use std::sync::OnceLock;
-
-        static EMPTY: OnceLock<BTreeSet<VReg>> = OnceLock::new();
-
-        self.edges
-            .get(vreg.0 as usize)
-            .unwrap_or_else(|| EMPTY.get_or_init(BTreeSet::new))
+        &self.edges[vreg.0 as usize]
     }
 
     pub fn degree(&self, vreg: &VReg) -> usize {
@@ -98,20 +93,9 @@ impl Interference {
     }
 
     pub fn add_edge(&mut self, a: VReg, b: VReg) {
-        if a == b {
-            return;
-        }
-        self.add_node(a);
-        self.add_node(b);
-
-        self.edges[a.0 as usize].insert(b);
-        self.edges[b.0 as usize].insert(a);
-    }
-
-    pub fn add_node(&mut self, v: VReg) {
-        let len = v.0 as usize + 1;
-        if self.edges.len() < len {
-            self.edges.resize_with(len, BTreeSet::new);
+        if a != b {
+            self.edges[a.0 as usize].insert(b);
+            self.edges[b.0 as usize].insert(a);
         }
     }
 }

@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, Struct, Type},
+    hir::{FunctionId, Intrinsic, Struct, SyscallCode, Type},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
@@ -51,7 +51,7 @@ pub struct Instruction {
 
 #[derive(Debug, PartialEq)]
 pub struct Function {
-    id: FunctionId,
+    pub(crate) id: FunctionId,
     pub(crate) intrinsic: Option<Intrinsic>,
     /// index into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: usize,
@@ -120,12 +120,6 @@ pub enum InstructionKind {
         args: Vec<Operand>,
         returns: bool,
     },
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SyscallCode {
-    Write,
-    Exit,
 }
 
 /// This is a *input* of a instruction.
@@ -315,6 +309,38 @@ mod tests {
             .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
 
         assert!(has_call, "expected a Call instruction in main");
+    }
+
+    #[test]
+    fn inline_call_does_not_produce_call_instruction() {
+        let mir = parse_and_lower(
+            r#"
+            inline fn add(a: i32, b: i32): i32 { a + b }
+            fn main() { add(1, 2); }
+        "#,
+        );
+
+        let main = &mir.functions[1];
+        let has_call = main.blocks[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
+
+        assert!(
+            !has_call,
+            "expected no call instruction in main since add is inlined"
+        );
+
+        let has_add = main.blocks[0].instructions.iter().any(|i| {
+            matches!(
+                i.kind,
+                InstructionKind::Binary {
+                    operation: BinaryOperator::Add,
+                    ..
+                }
+            )
+        });
+        assert!(has_add, "expected inlined binary(add) instruction in main");
     }
 
     #[test]

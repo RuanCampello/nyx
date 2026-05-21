@@ -162,6 +162,13 @@ impl<'i> Parser<'i> {
             Some(Ok(t)) if t.is_kind(Keyword::Struct)
         )
     }
+
+    pub(crate) fn is_pub_interface(&self) -> bool {
+        matches!(
+            self.peek_nth(1),
+            Some(Ok(t)) if t.is_kind(Keyword::Interface)
+        )
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +322,39 @@ mod tests {
                 Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
             )]
         );
+    }
+
+    #[test]
+    fn unary_binds_after_method_call() {
+        let statements = Parser::new("!rect.is_larger_than(15);").parse().unwrap();
+
+        let [
+            Statement::Expr(
+                Expression::Unary {
+                    operator: UnaryOperator::Not,
+                    expr,
+                    ..
+                },
+                _,
+            ),
+        ] = statements.as_slice()
+        else {
+            panic!("expected unary expression statement, got {statements:?}");
+        };
+
+        let Expression::Call { callee, args, .. } = expr.as_ref() else {
+            panic!("expected unary operand to be a method call, got {expr:?}");
+        };
+
+        assert!(matches!(
+            callee.as_ref(),
+            Expression::Field {
+                expr,
+                field: "is_larger_than",
+                ..
+            } if matches!(expr.as_ref(), Expression::Identifier("rect", _))
+        ));
+        assert!(matches!(args.as_slice(), [Expression::Integer(15, _)]));
     }
 
     #[test]

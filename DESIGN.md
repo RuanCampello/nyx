@@ -82,3 +82,27 @@ use std::io::{println};
 project-relative import
 // use my_project::math::{add, subtract};
 ```
+
+## Interfaces
+
+### Semantic Model
+
+Interfaces define a contract of method signatures. The compiler validates interface compliance at the High-level IR (HIR) boundary.
+
+An implementation block binds methods to a struct under a given interface:
+```rust
+impl Rectangle with Shape {
+    fn area(&self): i64 { ... }
+}
+```
+
+The semantic analyzer enforces the following rules:
+- **Completeness**: Every method declared in the interface must be defined in the `impl` block.
+- **Signature Matching**: Method names, parameter types, receiver mutability (`&self` vs `&mut self`), and return types must match exactly.
+- **Superinterface Constraints**: Interfaces support single inheritance (`interface B: A`) and multiple composition (`interface C: A + B`). The implementing struct must explicitly implement all superinterfaces in the hierarchy.
+
+### Dispatch Model
+
+Nyx implements **static dispatch** for interface methods. Method resolution occurs during HIR semantic analysis, mapping call sites directly to the mangled implementation function (e.g. `Rectangle__area`).
+
+Dynamic dispatch (vtable-based trait objects) is not supported.

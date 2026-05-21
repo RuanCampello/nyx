@@ -2,14 +2,11 @@
 
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{
-        Function, FunctionBuilder, FunctionId, Hir, Offset, Struct, StructId, SymbolTable,
-        functions::{self, collect_function_signatures, collect_structs, signatures_from_hir},
-    },
+    hir::{Declarations, Function, Hir, Struct, SymbolTable, scope::Scope},
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{self, Statement, UseItems},
+        statement::{Statement, UseItems},
     },
 };
 use std::{
@@ -27,6 +24,7 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     root: PathBuf,
     /// standard library root
     std: PathBuf,
+    scope: Scope,
     cache: HashMap<PathBuf, Arc<Module>>,
     /// modules currently being loaded
     /// used for cycle detection
@@ -94,6 +92,7 @@ impl<F: FileSystem> ModuleLoader<F> {
             root,
             fs,
             std,
+            scope: Scope::new(),
             cache: HashMap::new(),
             in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
@@ -201,146 +200,49 @@ impl<F: FileSystem> ModuleLoader<F> {
 
         self.in_flight.remove(canonical);
 
-        let module = self.analyse(canonical, statements)?;
+        let module = self.analyse(canonical, &source, statements)?;
         self.cache.insert(canonical.to_path_buf(), Arc::new(module));
 
         Ok(())
     }
 
-    fn analyse(&mut self, path: &Path, statements: Vec<Statement>) -> Result<Module, ModuleError> {
-        for statement in &statements {
-            match statement {
-                Statement::Fn(_)
-                | Statement::Use(_)
-                | Statement::Struct(_)
-                | Statement::Impl(_) => {}
-                _ => {
-                    return Err(ModuleError::TopLevelNonFunction {
-                        path: path.into(),
-                        span: statement.span(),
-                    });
-                }
-            }
-        }
-
-        let (mut structs, local_struct_map) =
-            collect_structs(&statements, &mut self.symbols).map_err(|e| Diagnostic::from(e))?;
-
-        // build a combined signature + id table that includes all already-lowered dependencies
-        let mut dependencies: Vec<_> = self.cache.keys().collect();
-        dependencies.sort_unstable();
-
-        let mut functions = Vec::new();
-        let mut dependency_structs = Vec::new();
-        let mut struct_map = functions::Structs::new();
-
-        for dependency in dependencies {
-            let module = &self.cache[dependency];
-            functions.extend(module.functions.iter().cloned());
-
-            for struct_def in &module.structs {
-                let name = self.symbols.get(struct_def.name).to_string();
-                if module.exports.contains_key(&name) {
-                    struct_map.insert(struct_def.name, struct_def.id);
-                }
-
-                dependency_structs.push(struct_def.clone());
-            }
-        }
-
-        let (mut signatures, mut map, mut methods) = signatures_from_hir(&functions);
-        let struct_offset = dependency_structs.len() as u32;
-
-        for (&symbol, &id) in &local_struct_map {
-            struct_map.insert(symbol, StructId(id.0 + struct_offset));
-        }
-
-        for struct_def in &mut structs {
-            struct_def.offset(struct_offset);
-        }
-
-        let mut analysis_structs = dependency_structs;
-        analysis_structs.extend(structs.iter().cloned());
-
-        let local_offset = signatures.len() as u32;
-        let (local_signatures, local_map, local_methods) =
-            collect_function_signatures(&statements, &mut self.symbols, &struct_map)
-                .map_err(|e| Diagnostic::from(e))?;
-
-        // merge local signatures into combined table
-        for (&symbol, &local_id) in &local_map {
-            // check for duplicated function names between local and imported
-            if map.contains_key(&symbol) {
-                use crate::hir::error::{HirError, HirErrorKind};
-
-                let name = self.symbols.get(symbol).to_string();
-
-                let span = statements
-                    .iter()
-                    .find_map(|stmt| match stmt {
-                        Statement::Fn(func) if func.name == name.as_str() => Some(func.span),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-
-                return Err(ModuleError::Diagnostic(
-                    HirError {
-                        kind: HirErrorKind::DuplicateFunction { name },
-                        span,
-                    }
-                    .into(),
-                ));
-            }
-
-            map.insert(symbol, FunctionId(local_offset + local_id.0));
-        }
-
-        for (&key, &local_id) in &local_methods {
-            methods.insert(key, FunctionId(local_offset + local_id.0));
-        }
-
-        signatures.extend(local_signatures);
-
-        let mut functions = Vec::new();
-        let mut exports = HashMap::new();
-
-        for statement in &statements {
-            if let statement::Statement::Struct(s) = statement {
-                if s.is_pub {
-                    exports.insert(s.name.to_string(), 0);
-                }
-            }
-        }
-
-        for function in crate::hir::functions::function_declarations(&statements) {
-            let function_id = crate::hir::functions::function_id_for(
-                &function,
-                &map,
-                &methods,
-                &struct_map,
-                &mut self.symbols,
-            )
+    fn analyse(
+        &mut self,
+        path: &Path,
+        source: &str,
+        statements: Vec<Statement>,
+    ) -> Result<Module, ModuleError> {
+        let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
+        let struct_offset = self.scope.structs.len();
+        let in_std = path.starts_with(&self.std);
+        self.scope
+            .extend(&decls, &mut self.symbols, in_std)
             .map_err(|e| Diagnostic::from(e))?;
 
-            let builder = FunctionBuilder::new(
-                &signatures,
-                &map,
-                &methods,
-                &analysis_structs,
-                &struct_map,
-                &mut self.symbols,
-                function_id,
-                function,
-            );
-            let mut hir = builder.lower().map_err(|e| Diagnostic::from(e))?;
+        diagnostic::initialise(source, path.to_str().unwrap_or("<unknown>"));
 
-            hir.id = FunctionId(local_offset + functions.len() as u32);
+        let functions = self
+            .scope
+            .lower_functions(&decls, &mut self.symbols, in_std)
+            .map_err(|e| Diagnostic::from(e))?;
 
-            if hir.is_pub {
-                exports.insert(self.symbols.get(hir.name).to_string(), functions.len());
+        let structs = self.scope.structs[struct_offset..].to_vec();
+
+        let mut exports = HashMap::new();
+        for s in &decls.structs {
+            if s.is_pub {
+                exports.insert(s.name.to_string(), 0);
             }
-
-            functions.push(hir);
+        }
+        for i in &decls.interfaces {
+            if i.is_pub {
+                exports.insert(i.name.to_string(), 0);
+            }
+        }
+        for f in &functions {
+            if f.is_pub {
+                exports.insert(self.symbols.get(f.name).to_string(), 0);
+            }
         }
 
         Ok(Module {
@@ -420,7 +322,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::Type;
+    use crate::hir::{ExpressionKind, Statement, Type};
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
@@ -432,20 +334,45 @@ mod tests {
 
     impl FileSystem for VirtualFS {
         fn read(&self, path: &Path) -> Result<String, io::Error> {
-            self.files
-                .get(path)
-                .cloned()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+            if let Some(content) = self.files.get(path) {
+                return Ok(content.clone());
+            }
+
+            if path.starts_with(STD) {
+                let filename = path.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, path.display().to_string())
+                })?;
+                let real_path = resolve_std_root().join(filename);
+                if let Ok(content) = std::fs::read_to_string(&real_path) {
+                    return Ok(content);
+                }
+            }
+
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                path.display().to_string(),
+            ))
         }
 
         fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
-            match self.files.contains_key(path) {
-                true => Ok(path.to_path_buf()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    path.display().to_string(),
-                )),
+            if self.files.contains_key(path) {
+                return Ok(path.to_path_buf());
             }
+
+            if path.starts_with(STD) {
+                let filename = path.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, path.display().to_string())
+                })?;
+                let real_path = resolve_std_root().join(filename);
+                if real_path.exists() {
+                    return Ok(path.to_path_buf());
+                }
+            }
+
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                path.display().to_string(),
+            ))
         }
     }
 
@@ -745,15 +672,18 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions.len(), 2); // main + exit (syscall is a synthetic scope entry, not a Module fn)
 
-        let main = &hir.functions[0];
+        let main = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
             matches!(
                 stmt,
                 hir::Statement::Expr(hir::Expression {
-                    kind: hir::ExpressionKind::IntrinsicCall {
-                        intrinsic: hir::Intrinsic::Exit,
+                    kind: hir::ExpressionKind::Call {
                         args,
                         ..
                     },
@@ -771,6 +701,76 @@ mod tests {
         });
 
         assert!(has_exit_call);
+
+        let exit = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "exit")
+            .unwrap();
+        let emits_exit_syscall = exit.body.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                hir::Statement::Expr(hir::Expression {
+                    kind: hir::ExpressionKind::Syscall {
+                        code: hir::SyscallCode::Exit,
+                        args,
+                    },
+                    ..
+                })
+                if args.len() == 1
+            )
+        });
+
+        assert!(emits_exit_syscall);
+    }
+
+    #[test]
+    fn syscall_primitive_is_std_only() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            use std::process;
+            fn main() {
+                syscall(SYS_EXIT, 0);
+            }
+            "#,
+        );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn qualified_std_intrinsics_keep_call_arguments() {
+        use crate::hir;
+
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            use std::io;
+            fn main() {
+                io::println("ok");
+            }
+            "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        assert!(matches!(
+            &main.body.statements[0],
+            hir::Statement::Expr(hir::Expression {
+                kind: hir::ExpressionKind::IntrinsicCall {
+                    intrinsic: hir::Intrinsic::PrintLn,
+                    args,
+                },
+                ..
+            }) if args.len() == 1
+        ));
     }
 
     #[test]
@@ -797,5 +797,123 @@ mod tests {
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.structs.len(), 1);
+    }
+
+    #[test]
+    fn struct_orphan_rule_rejected() {
+        let fs = VirtualFS::default()
+            .add("/project/types.nyx", "pub struct Point { x: i32, y: i32 }")
+            .add(
+                "/project/main.nyx",
+                r#"
+            use my_app::types::{Point};
+            impl Point {
+                fn sum(&self): i32 { self.x + self.y }
+            }
+            fn main(): i32 { 0 }
+            "#,
+            );
+
+        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        assert!(matches!(err, ModuleError::Diagnostic(_)));
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_primitives() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+                fn main(): uptr {
+                    let a = mem::size_of(i32);
+                    let b = mem::align_of(i64);
+                    a + b
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        let a_init = match &main_fn.body.statements[0] {
+            Statement::Let {
+                init: Some(expr), ..
+            } => expr,
+            _ => panic!("expected let statement"),
+        };
+        assert_eq!(a_init.kind, ExpressionKind::Integer(4));
+        assert_eq!(a_init.typ, Type::Uptr);
+
+        let b_init = match &main_fn.body.statements[1] {
+            Statement::Let {
+                init: Some(expr), ..
+            } => expr,
+            _ => panic!("expected let statement"),
+        };
+        assert_eq!(b_init.kind, ExpressionKind::Integer(8));
+        assert_eq!(b_init.typ, Type::Uptr);
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_structs() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+                struct Foo {
+                    a: i8,
+                    b: i64,
+                    c: i32,
+                }
+                fn main(): uptr {
+                    mem::size_of(Foo)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+        assert_eq!(body_expr.kind, ExpressionKind::Integer(16));
+        assert_eq!(body_expr.typ, Type::Uptr);
+    }
+
+    #[test]
+    fn test_size_of_without_qualifier() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem::{size_of};
+                fn main(): uptr {
+                    size_of(i8)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .unwrap();
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+        assert_eq!(body_expr.kind, ExpressionKind::Integer(1));
     }
 }
