@@ -672,7 +672,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 3);
+        assert_eq!(hir.functions.len(), 2); // main + exit (syscall is a synthetic scope entry, not a Module fn)
 
         let main = hir
             .functions

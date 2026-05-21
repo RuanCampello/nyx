@@ -290,6 +290,25 @@ impl Scope {
             });
         }
 
+        // when compiling std, inject a built-in 'syscall' signature so std modules
+        // don't need to declare it
+        if in_std {
+            let syscall_sym = symbols.insert("syscall");
+            if !self.functions.contains_key(&syscall_sym) {
+                let id = FunctionId(self.signatures.len() as u32);
+                self.functions.insert(syscall_sym, id);
+                self.signatures.push(FunctionSignature {
+                    name: syscall_sym,
+                    params: vec![],
+                    return_type: Type::Iptr,
+                    intrinsic: Some(Intrinsic::Syscall),
+                    method: None,
+                    is_const: false,
+                    inline: false,
+                });
+            }
+        }
+
         for implementation in &declarations.impls {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) if in_std => primitive,

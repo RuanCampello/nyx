@@ -3,6 +3,7 @@ use crate::lexer::token::{Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::statement::Type as StatementType;
 use crate::parser::{Parsable, Parser};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression<'i> {
@@ -288,17 +289,11 @@ impl<'i> Expression<'i> {
                             ));
                         };
 
-                        // FIXME: this is a very nasty way of doing this, better refactor later
-                        if name == "size_of" || name == "align_of" {
+                        if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
                             parser.expect_token(Punct::OpenParen)?;
                             let typ = Spanned::<StatementType>::parse(parser)?;
                             let end_span = parser.expect_token(Punct::CloseParen)?.span;
                             let span = left.span() + end_span;
-
-                            let kind = match name == "size_of" {
-                                true => TypeIntrinsicKind::SizeOf,
-                                _ => TypeIntrinsicKind::AlignOf,
-                            };
 
                             return Ok(Expression::TypeIntrinsic {
                                 kind,
@@ -351,16 +346,10 @@ impl<'i> Expression<'i> {
             }
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left {
-                    if *name == "size_of" || *name == "align_of" {
+                    if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
                         let typ = Spanned::<StatementType>::parse(parser)?;
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
                         let span = left.span() + end_span;
-
-                        let kind = if *name == "size_of" {
-                            TypeIntrinsicKind::SizeOf
-                        } else {
-                            TypeIntrinsicKind::AlignOf
-                        };
 
                         return Ok(Expression::TypeIntrinsic {
                             kind,
@@ -470,6 +459,18 @@ impl<'i> Expression<'i> {
         matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
             && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
             && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
+    }
+}
+
+impl FromStr for TypeIntrinsicKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "size_of" => Ok(Self::SizeOf),
+            "align_of" => Ok(Self::AlignOf),
+            _ => Err(()),
+        }
     }
 }
 
