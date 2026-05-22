@@ -120,6 +120,8 @@ pub enum InstructionKind {
         args: Vec<Operand>,
         returns: bool,
     },
+
+    Cast { src: Operand, typ: Type },
 }
 
 /// This is a *input* of a instruction.
