@@ -6,6 +6,7 @@ use crate::parser::{Parsable, Parser};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum Expression<'i> {
     Integer(i64, Span),
     Float(f64, Span),
@@ -13,43 +14,19 @@ pub enum Expression<'i> {
     Char(char, Span),
     Bool(bool, Span),
     Identifier(&'i str, Span),
-    Unary {
-        operator: UnaryOperator,
-        expr: Box<Expression<'i>>,
-        span: Span,
-    },
+    Unary { operator: UnaryOperator, expr: Box<Expression<'i>>, span: Span },
     Binary {
         left: Box<Expression<'i>>,
         operator: BinaryOperator,
         right: Box<Expression<'i>>,
         span: Span,
     },
-    Assignment {
-        target: Box<Expression<'i>>,
-        value: Box<Expression<'i>>,
-        span: Span,
-    },
-    Field {
-        expr: Box<Expression<'i>>,
-        field: &'i str,
-        span: Span,
-    },
-    Struct {
-        name: &'i str,
-        fields: Vec<StructField<'i>>,
-        span: Span,
-    },
-    Call {
-        callee: Box<Expression<'i>>,
-        args: Vec<Expression<'i>>,
-        span: Span,
-    },
-    QualifiedCall {
-        qualifier: &'i str,
-        name: &'i str,
-        args: Vec<Expression<'i>>,
-        span: Span,
-    },
+    Assignment { target: Box<Expression<'i>>, value: Box<Expression<'i>>, span: Span },
+    Field { expr: Box<Expression<'i>>, field: &'i str, span: Span },
+    Struct { name: &'i str, fields: Vec<StructField<'i>>, span: Span },
+    Call { callee: Box<Expression<'i>>, args: Vec<Expression<'i>>, span: Span },
+    QualifiedCall { qualifier: &'i str, name: &'i str, args: Vec<Expression<'i>>, span: Span },
+    QualifiedName { qualifier: &'i str, name: &'i str, span: Span },
     /// Special compiler intrinsics that accept a type annotation as an argument
     /// these must be handled at the expression parser level because types are not value-level expressions,
     /// so standard function/intrinsic call parsing would fail on them
@@ -115,6 +92,7 @@ impl<'i> Expression<'i> {
             | Self::Field { span, .. }
             | Self::Call { span, .. }
             | Self::QualifiedCall { span, .. }
+            | Self::QualifiedName { span, .. }
             | Self::TypeIntrinsic { span, .. } => *span,
         }
     }
@@ -340,7 +318,20 @@ impl<'i> Expression<'i> {
                         })
                     }
 
-                    _ => Ok(Expression::Identifier(name, name_span)),
+                    _ => {
+                        let Expression::Identifier(qualifier, _) = left else {
+                            return Err(ParserError::new(
+                                ParseErrorKind::ExpectedExpression { found: token.kind },
+                                token.span,
+                            ));
+                        };
+                        let span = left.span() + name_span;
+                        Ok(Expression::QualifiedName {
+                            qualifier,
+                            name,
+                            span,
+                        })
+                    }
                 }
             }
             TokenKind::Punct(Punct::OpenParen) => {

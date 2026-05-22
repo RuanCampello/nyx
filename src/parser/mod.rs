@@ -169,6 +169,27 @@ impl<'i> Parser<'i> {
             Some(Ok(t)) if t.is_kind(Keyword::Interface)
         )
     }
+
+    pub(crate) fn is_const_decl(&self) -> bool {
+        match self.peek_nth(0) {
+            Some(Ok(t)) if t.is_kind(Keyword::Const) => {
+                matches!(
+                    self.peek_nth(1),
+                    Some(Ok(t2)) if matches!(t2.kind, TokenKind::Identifier(id) if id != "fn")
+                )
+            }
+            Some(Ok(t)) if t.is_kind(Keyword::Pub) => {
+                matches!(
+                    self.peek_nth(1),
+                    Some(Ok(t2)) if t2.is_kind(Keyword::Const)
+                ) && matches!(
+                    self.peek_nth(2),
+                    Some(Ok(t3)) if matches!(t3.kind, TokenKind::Identifier(id) if id != "fn")
+                )
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use crate::parser::{Parsable, Parser};
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement<'i> {
     Let(Let<'i>),
+    Const(Const<'i>),
     Return(Return<'i>),
     If(If<'i>),
     While(While<'i>),
@@ -25,6 +26,15 @@ pub struct Let<'i> {
     pub name: &'i str,
     pub typ: Option<Spanned<Type<'i>>>,
     pub value: Option<Expression<'i>>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Const<'i> {
+    pub is_pub: bool,
+    pub name: &'i str,
+    pub typ: Spanned<Type<'i>>,
+    pub value: Expression<'i>,
     pub span: Span,
 }
 
@@ -89,6 +99,7 @@ pub struct Impl<'i> {
     pub name: &'i str,
     pub interface: Option<&'i str>,
     pub methods: Vec<Function<'i>>,
+    pub constants: Vec<Const<'i>>,
     pub span: Span,
 }
 
@@ -195,6 +206,10 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 ));
             }
         };
+
+        if parser.is_const_decl() {
+            return Ok(Statement::Const(parser.parse_node()?));
+        }
 
         match kind {
             TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
@@ -303,6 +318,34 @@ impl<'i> Parsable<'i> for Let<'i> {
 
         Ok(Let {
             mutable,
+            name,
+            typ,
+            value,
+            span,
+        })
+    }
+}
+
+impl<'i> Parsable<'i> for Const<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let start_span = match parser.peek_nth(0) {
+            Some(Ok(token)) => token.span,
+            Some(Err(err)) => return Err((&err).into()),
+            None => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
+        };
+
+        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let _const_token = parser.expect_token(Keyword::Const)?;
+        let (name, _) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Colon)?;
+        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
+        parser.expect_token(Punct::Eq)?;
+        let value = parser.parse_node::<Expression<'i>>()?;
+        let semi = parser.expect_token(Punct::Semicolon)?;
+        let span = start_span + semi.span;
+
+        Ok(Const {
+            is_pub,
             name,
             typ,
             value,
@@ -513,9 +556,10 @@ impl<'i> Parsable<'i> for Impl<'i> {
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
+        let mut constants = Vec::new();
 
         loop {
-            match parser.peek() {
+            match parser.peek_nth(0) {
                 Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     let span = impl_token.span + close.span;
@@ -523,6 +567,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                     return Ok(Self {
                         name,
                         methods,
+                        constants,
                         span,
                         interface,
                     });
@@ -530,6 +575,11 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+                }
+
+                Some(Ok(_)) if parser.is_const_decl() => {
+                    let constant = parser.parse_node::<Const>()?;
+                    constants.push(constant);
                 }
 
                 Some(Ok(token)) if token.is_fn_start() => {
@@ -548,7 +598,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                     ));
                 }
 
-                Some(Err(err)) => return Err(err.into()),
+                Some(Err(err)) => return Err((&err).into()),
                 None => {
                     return Err(ParserError::new(
                         ParseErrorKind::UnexpectedEof,
@@ -867,6 +917,7 @@ impl<'s> Statement<'s> {
     pub const fn span(&self) -> Span {
         match self {
             Self::Let(s) => s.span,
+            Self::Const(c) => c.span,
             Self::Return(s) => s.span,
             Self::If(s) => s.span,
             Self::While(s) => s.span,
