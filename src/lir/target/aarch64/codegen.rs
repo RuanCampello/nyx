@@ -16,14 +16,13 @@ use crate::{
         Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
+            Emittable, ParallelMove, PhysicalReg, RegClass, Target,
             aarch64::{A64Instr, A64Operand, A64Reg, AArch64},
+            resolve_parallel_moves,
         },
     },
 };
 use std::fmt::Write;
-
-
 
 impl Emittable<AArch64> for Function<AArch64> {
     fn emit(&self, alloc: Allocation<AArch64>, out: &mut String) {
@@ -339,7 +338,10 @@ impl Function<AArch64> {
             #[rustfmt::skip]
             A64Instr::And { dest, lhs, rhs, bytes }
             | A64Instr::Or { dest, lhs, rhs, bytes }
-            | A64Instr::Eor { dest, lhs, rhs, bytes } => {
+            | A64Instr::Eor { dest, lhs, rhs, bytes }
+            | A64Instr::Lsl { dest, lhs, rhs, bytes }
+            | A64Instr::Lsr { dest, lhs, rhs, bytes }
+            | A64Instr::Asr { dest, lhs, rhs, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -348,8 +350,17 @@ impl Function<AArch64> {
                     A64Instr::And { .. } => emit!(out, "and     {dest}, {lhs}, {rhs}"),
                     A64Instr::Or { .. }  => emit!(out, "orr     {dest}, {lhs}, {rhs}"),
                     A64Instr::Eor { .. } => emit!(out, "eor     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Lsl { .. } => emit!(out, "lsl     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Lsr { .. } => emit!(out, "lsr     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Asr { .. } => emit!(out, "asr     {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
+            }
+
+            A64Instr::Mvn { dest, src, bytes } => {
+                let dest = alloc.location(dest, bytes);
+                let src = alloc.location(src, bytes);
+                emit!(out, "mvn     {dest}, {src}");
             }
 
             #[rustfmt::skip]
@@ -882,5 +893,3 @@ const fn mem_suffix<'s>(bytes: &u8) -> &'s str {
         _ => "",
     }
 }
-
-
