@@ -31,6 +31,7 @@ hi def link nyxSelf Constant
 " Operators
 syn match nyxOperator display "\%(+\|-\|/\|*\|=\|\^\|&\||\|!\|>\|<\|%\)=\?"
 syn match nyxOperator display "&&\|||"
+syn keyword nyxOperator as
 hi def link nyxOperator Operator
 
 " Function Definitions
