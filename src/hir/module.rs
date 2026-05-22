@@ -98,6 +98,9 @@ impl<'s, F: FileSystem> ModuleLoader<'s, F> {
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
+        #[cfg(test)]
+        crate::hir::STD_FUNCTIONS_COUNT.with(|c| c.set(0));
+
         let canonical =
             self.fs.canonicalise(entry.as_ref()).map_err(|_| ModuleError::FileNotFound {
                 path: entry.as_ref().into(),
@@ -443,7 +446,7 @@ mod tests {
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
 
-        assert_eq!(hir.functions.len(), 20);
+        assert_eq!(hir.user_functions_count(), 1);
         let main = hir
             .functions
             .iter()
@@ -544,7 +547,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 22);
+        assert_eq!(hir.user_functions_count(), 3);
     }
 
     #[test]
@@ -624,7 +627,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 20);
+        assert_eq!(hir.user_functions_count(), 1);
     }
 
     #[test]
@@ -665,7 +668,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21);
+        assert_eq!(hir.user_functions_count(), 2);
     }
 
     #[test]
@@ -683,7 +686,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21); // main + exit (syscall is a synthetic scope entry, not a Module fn)
+        assert_eq!(hir.user_functions_count(), 1); // main (exit is from std)
 
         let main = hir
             .functions
@@ -806,7 +809,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21);
+        assert_eq!(hir.user_functions_count(), 2);
         assert_eq!(hir.structs.len(), 1);
     }
 

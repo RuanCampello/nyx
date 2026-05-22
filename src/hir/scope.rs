@@ -114,6 +114,12 @@ impl<'sc> Scope<'sc> {
                 let id = self.function_id(function, symbols, None, |name| {
                     HirErrorKind::UnknownFunction { name }
                 })?;
+
+                #[cfg(test)]
+                if in_std {
+                    crate::hir::STD_FUNCTIONS_COUNT.with(|c| c.set(c.get() + 1));
+                }
+
                 lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower()
             })
             .collect()
