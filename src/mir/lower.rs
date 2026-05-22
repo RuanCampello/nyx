@@ -288,6 +288,15 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Place(self.place_for_local(*local_id, expr.typ)))
             }
 
+            ExpressionKind::Cast { from, to } => {
+                let src = self.lower_expr(from)?;
+                let dest = self.fresh_temporary(*to);
+
+                self.emit(dest, InstructionKind::Cast { src, typ: *to });
+
+                Ok(Operand::Place(dest))
+            }
+
             ExpressionKind::Unary {
                 operator,
                 expr: inner,
@@ -364,10 +373,7 @@ impl<'a> FunctionLower<'a> {
                         true => (0, origin.typ),
                         false => self.field_path_info(origin.typ, &receiver.fields),
                     };
-                    debug_assert!(matches!(
-                        receiver_type,
-                        Type::Struct(_) | Type::Ref { .. } | Type::Char
-                    ));
+                    debug_assert!(!matches!(receiver_type, Type::Unit));
 
                     match matches!(receiver_type, Type::Ref { .. }) {
                         #[rustfmt::skip]
@@ -852,7 +858,9 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
 fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
     match &expr.kind {
         ExpressionKind::Local(id) => uses[id.0 as usize] = true,
-        ExpressionKind::Unary { expr, .. } => visit_expr_runtime_uses(expr, uses),
+        ExpressionKind::Unary { expr, .. } | ExpressionKind::Cast { from: expr, .. } => {
+            visit_expr_runtime_uses(expr, uses)
+        }
         ExpressionKind::Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);

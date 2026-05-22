@@ -65,10 +65,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
-  - [ ] XOR, NOR, NAND (**requires** syntax definition)
-- [ ] Bitwise Operators
-  - [ ] Logic (`&`, `|`, `^`, `!`)
-  - [ ] Shifts (`>>`, `<<`)
+- [x] Bitwise Operators
+  - [x] Logic (`&`, `|`, `^`, `!`)
+  - [x] Shifts (`>>`, `<<`)
 - [x] Variable Assignment (`=`)
 - [x] Function Calls
 - [ ] Reference Operators
@@ -115,3 +114,4 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [ ] UDP
 - [ ] Memory allocator (**requires** definition of memory layout)
 - [ ] Error handling (**requires** definition of error handling model)
+- [ ] Panic handling

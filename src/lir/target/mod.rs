@@ -63,7 +63,7 @@ pub trait Lowerable: Target {
 /// The emitter just looks up locations and writes mnemonics
 pub trait Emittable<T: Target> {
     fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
-    fn start(out: &mut String);
+    fn start(out: &mut String, main: &str);
 }
 
 /// A named physical register on a specific target.
@@ -144,6 +144,7 @@ pub enum RegClass {
 }
 
 /// Copy an aggregate value between two memory locations, chunk by chunk
+#[rustfmt::skip]
 pub fn aggregate_copy<T: MemOps>(
     lir: &mut lir::Function<T>,
     block: &lir::BlockId,
@@ -161,14 +162,67 @@ pub fn aggregate_copy<T: MemOps>(
         let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false, false);
         lir.push_instr(block, load);
 
-        let store = T::scalar_store(
-            is_dest_ref,
-            dest,
-            T::vreg_operand(scratch),
-            dest_base + offset,
-            bytes,
-            false,
-        );
+        let store = T::scalar_store(is_dest_ref, dest, T::vreg_operand(scratch), dest_base + offset, bytes, false);
         lir.push_instr(block, store);
+    }
+}
+
+/// A target-independent representation of a register-to-register/stack-to-register move,
+/// used to resolve argument placement
+#[derive(Clone)]
+pub struct ParallelMove<Reg> {
+    pub src: String,
+    pub src_reg: Option<Reg>,
+    pub dest: String,
+    pub dest_reg: Reg,
+    pub bytes: u8,
+    pub is_float: bool,
+}
+
+impl<Reg: Copy + Eq> ParallelMove<Reg> {
+    #[inline(always)]
+    pub fn is_self_move(&self) -> bool {
+        self.src_reg == Some(self.dest_reg) || self.src == self.dest
+    }
+
+    #[inline(always)]
+    pub fn dest_is_read_by(&self, other: &Self) -> bool {
+        other.src_reg == Some(self.dest_reg) || other.src == self.dest
+    }
+}
+
+/// Serialise a set of parallel register moves without data corruption
+///
+/// - Chains (A->B then B->C) are resolved by topological ordering
+/// - Cycles (A->B, B->A) are broken using a target-specific scratch register
+pub fn resolve_parallel_moves<Reg, Ctx, FMove, FCycle>(
+    mut moves: Vec<ParallelMove<Reg>>,
+    ctx: &mut Ctx,
+    mut emit_move: FMove,
+    mut emit_cycle_break: FCycle,
+) where
+    Reg: Eq + Copy,
+    FMove: FnMut(&mut Ctx, ParallelMove<Reg>),
+    FCycle: FnMut(&mut Ctx, &mut ParallelMove<Reg>),
+{
+    moves.retain(|m| !m.is_self_move());
+
+    loop {
+        // find a move whose dest is not read by any other pending move
+        let safe = moves.iter().position(|m| {
+            !moves.iter().any(|other| !std::ptr::eq(m, other) && m.dest_is_read_by(other))
+        });
+
+        match safe {
+            Some(i) => {
+                let m = moves.swap_remove(i);
+                emit_move(ctx, m);
+            }
+            None if moves.is_empty() => break,
+            None => {
+                // in cycle, save first source to scratch, breaking the dependency
+                emit_cycle_break(ctx, &mut moves[0]);
+            }
+        }
     }
 }

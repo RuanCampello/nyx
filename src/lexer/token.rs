@@ -55,6 +55,7 @@ pub enum Keyword {
     Use,
     Interface,
     With,
+    As,
 }
 
 /// Punctuators and operators.
@@ -78,6 +79,10 @@ pub enum Punct {
     And,       // &&
     Or,        // ||
     Ampersand, // &
+    Pipe,      // |
+    Caret,     // ^
+    Shl,       // <<
+    Shr,       // >>
 
     OpenParen,    // (
     CloseParen,   // )
@@ -177,6 +182,7 @@ impl Keyword {
             Self::Pub => "pub",
             Self::Interface => "interface",
             Self::With => "with",
+            Self::As => "as",
         }
     }
 }
@@ -202,6 +208,7 @@ impl std::str::FromStr for Keyword {
             "use" => Self::Use,
             "with" => Self::With,
             "interface" => Self::Interface,
+            "as" => Self::As,
             _ => return Err(()),
         })
     }
@@ -225,6 +232,10 @@ impl Punct {
             Self::And => "&&",
             Self::Or => "||",
             Self::Ampersand => "&",
+            Self::Pipe => "|",
+            Self::Caret => "^",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
             Self::OpenParen => "(",
             Self::CloseParen => ")",
             Self::OpenBrace => "{",

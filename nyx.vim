@@ -9,12 +9,16 @@ syn keyword nyxKeyword fn let mut if else return while for struct inline const p
 hi def link nyxKeyword Keyword
 
 " Built-in Types
-syn keyword nyxType i8 u8 i16 u16 i32 i64 f32 f64 bool char String uptr iptr
+syn keyword nyxType i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 bool char String uptr iptr
 hi def link nyxType Type
 
 " Custom Types
 syn match nyxStruct "\<[A-Z][a-zA-Z0-9_]*\>"
 hi def link nyxStruct Type
+
+" Constants
+syn match nyxConstant "\<[A-Z][A-Z0-9_]*\>"
+hi def link nyxConstant Constant
 
 " Booleans
 syn keyword nyxBoolean true false
@@ -31,6 +35,7 @@ hi def link nyxSelf Constant
 " Operators
 syn match nyxOperator display "\%(+\|-\|/\|*\|=\|\^\|&\||\|!\|>\|<\|%\)=\?"
 syn match nyxOperator display "&&\|||"
+syn keyword nyxOperator as
 hi def link nyxOperator Operator
 
 " Function Definitions
@@ -56,5 +61,9 @@ syn match nyxInterpolation "{[a-zA-Z_][a-zA-Z0-9_]*}" contained
 syn region nyxString start='"' end='"' skip='\\"' contains=nyxInterpolation
 hi def link nyxInterpolation Identifier
 hi def link nyxString String
+
+" Constants (UPPER_SNAKE_CASE)
+syn match nyxConstant "\<[A-Z][A-Z0-9_]*\>"
+hi def link nyxConstant Constant
 
 let b:current_syntax = "nyx"

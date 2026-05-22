@@ -19,12 +19,12 @@ use std::{
 ///
 /// Maintains a cache of loaded modules and the shared symbol table
 /// to ensure symbol IDs remain unique across the entire compilation.
-pub(crate) struct ModuleLoader<F: FileSystem = FS> {
+pub(crate) struct ModuleLoader<'s, F: FileSystem = FS> {
     name: String,
     root: PathBuf,
     /// standard library root
     std: PathBuf,
-    scope: Scope,
+    scope: Scope<'s>,
     cache: HashMap<PathBuf, Arc<Module>>,
     /// modules currently being loaded
     /// used for cycle detection
@@ -46,29 +46,18 @@ struct Module {
 }
 
 #[derive(Debug)]
+#[rustfmt::skip]
 pub enum ModuleError {
-    FileNotFound {
-        path: PathBuf,
-        span: Option<Span>,
-    },
-    CircularImport {
-        path: PathBuf,
-        span: Span,
-    },
+    FileNotFound { path: PathBuf, span: Option<Span> },
+    CircularImport { path: PathBuf, span: Span },
     EmptyPath,
-    UnknownRoot {
-        name: String,
-        span: Span,
-    },
+    UnknownRoot { name: String, span: Span },
     UnknownExport {
         path: PathBuf,
         name: String,
         span: Span,
     },
-    TopLevelNonFunction {
-        path: PathBuf,
-        span: Span,
-    },
+    TopLevelNonFunction { path: PathBuf, span: Span },
     Diagnostic(Diagnostic),
 }
 
@@ -79,19 +68,24 @@ pub(crate) trait FileSystem {
 
 pub(crate) struct FS;
 
-impl ModuleLoader<FS> {
+/// modules automatically injected into the scope of any nyx program
+const PRELUDE: [&str; 3] = ["int.nyx", "float.nyx", "char.nyx"];
+
+impl<'s> ModuleLoader<'s, FS> {
     pub fn new(name: String, root: PathBuf) -> Self {
         Self::with_file_system(name, root, resolve_std_root(), FS)
     }
 }
 
-impl<F: FileSystem> ModuleLoader<F> {
+impl<'s, F: FileSystem> ModuleLoader<'s, F> {
     pub fn with_file_system(name: String, root: PathBuf, std: PathBuf, fs: F) -> Self {
+        let canonical_root = fs.canonicalise(&root).unwrap_or_else(|_| root.clone());
+        let canonical_std = fs.canonicalise(&std).unwrap_or_else(|_| std.clone());
         Self {
             name,
-            root,
+            root: canonical_root,
             fs,
-            std,
+            std: canonical_std,
             scope: Scope::new(),
             cache: HashMap::new(),
             in_flight: HashSet::new(),
@@ -109,6 +103,16 @@ impl<F: FileSystem> ModuleLoader<F> {
                 path: entry.as_ref().into(),
                 span: None,
             })?;
+
+        // automatically discover standard library prelude
+        for name in &PRELUDE {
+            let path = self.std.join(name);
+            if let Ok(canon) = self.fs.canonicalise(&path) {
+                if self.fs.read(&canon).is_ok() {
+                    self.discover(&canon, None)?;
+                }
+            }
+        }
 
         self.discover(&canonical, None)?;
 
@@ -239,9 +243,9 @@ impl<F: FileSystem> ModuleLoader<F> {
                 exports.insert(i.name.to_string(), 0);
             }
         }
-        for f in &functions {
+        for f in &decls.functions {
             if f.is_pub {
-                exports.insert(self.symbols.get(f.name).to_string(), 0);
+                exports.insert(f.name.to_string(), 0);
             }
         }
 
@@ -383,7 +387,7 @@ mod tests {
         }
     }
 
-    fn vloader(fs: VirtualFS) -> ModuleLoader<VirtualFS> {
+    fn vloader(fs: VirtualFS) -> ModuleLoader<'static, VirtualFS> {
         ModuleLoader::with_file_system(APP.into(), PROJECT.into(), STD.into(), fs)
     }
 
@@ -439,8 +443,13 @@ mod tests {
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
 
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(hir.functions[0].return_type, Type::I32);
+        assert_eq!(hir.functions.len(), 20);
+        let main = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
+            .unwrap();
+        assert_eq!(main.return_type, Type::I32);
     }
 
     #[test]
@@ -535,7 +544,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 3);
+        assert_eq!(hir.functions.len(), 22);
     }
 
     #[test]
@@ -565,7 +574,9 @@ mod tests {
         let add_count = hir
             .functions
             .iter()
-            .filter(|f| hir.symbols.get(f.name.0.into_usize()).map(|s| s == "add").unwrap_or(false))
+            .filter(|f| {
+                hir.symbols.get(f.name.0.into_usize()).map(|s| s == "nyx::add").unwrap_or(false)
+            })
             .count();
         assert_eq!(
             add_count, 1,
@@ -613,7 +624,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions.len(), 20);
     }
 
     #[test]
@@ -654,7 +665,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert_eq!(hir.functions.len(), 21);
     }
 
     #[test]
@@ -672,12 +683,12 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2); // main + exit (syscall is a synthetic scope entry, not a Module fn)
+        assert_eq!(hir.functions.len(), 21); // main + exit (syscall is a synthetic scope entry, not a Module fn)
 
         let main = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
             matches!(
@@ -705,7 +716,7 @@ mod tests {
         let exit = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "exit")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::exit")
             .unwrap();
         let emits_exit_syscall = exit.body.statements.iter().any(|stmt| {
             matches!(
@@ -758,7 +769,7 @@ mod tests {
         let main = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
 
         assert!(matches!(
@@ -795,7 +806,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert_eq!(hir.functions.len(), 21);
         assert_eq!(hir.structs.len(), 1);
     }
 
@@ -836,7 +847,7 @@ mod tests {
         let main_fn = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
@@ -879,7 +890,7 @@ mod tests {
         let main_fn = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
@@ -907,7 +918,7 @@ mod tests {
         let main_fn = hir
             .functions
             .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "main")
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
         let body_expr = match &main_fn.body.statements[0] {
             Statement::Expr(expr) => expr,

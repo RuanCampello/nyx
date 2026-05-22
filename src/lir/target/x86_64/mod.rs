@@ -38,8 +38,10 @@ pub enum X86Instr {
     Lea { dest: VReg, src: X86Operand },
     /// materialise the frame-pointer-relative address of a stack aggregate
     StackAddr { dest: VReg, origin: VReg },
-    /// zero-extend 1-byte `setcc` result -> 4 bytes
-    Movzx { dest: VReg, src: VReg },
+    /// zero-extend -> dest_bytes
+    Movzx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
+    /// sign-extend -> dest_bytes
+    Movsx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
 
     // integer arithmetic
     Add { dest: VReg, src: X86Operand, bytes: u8 },
@@ -77,6 +79,10 @@ pub enum X86Instr {
     And { dest: VReg, src: X86Operand, bytes: u8 },
     Or { dest: VReg, src: X86Operand, bytes: u8 },
     Xor { dest: VReg, src: X86Operand, bytes: u8 },
+    Not { dest: VReg, bytes: u8 },
+    Shl { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
+    Shr { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
+    Sar { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
 
     /// load a scalar field struct on the stack
     FieldLoad {
@@ -287,6 +293,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Lea { dest, .. }
             | Self::StackAddr { dest, .. }
             | Self::Movzx { dest, .. }
+            | Self::Movsx { dest, .. }
             | Self::Add { dest, .. }
             | Self::Sub { dest, .. }
             | Self::Imul { dest, .. }
@@ -301,7 +308,11 @@ impl Instruction<X86_64> for X86Instr {
             | Self::DivFloat { dest, .. }
             | Self::FieldLoad { dest, .. }
             | Self::PtrLoad { dest, .. }
-            | Self::XorFloat { dest, .. } => std::slice::from_ref(dest),
+            | Self::XorFloat { dest, .. }
+            | Self::Not { dest, .. }
+            | Self::Shl { dest, .. }
+            | Self::Shr { dest, .. }
+            | Self::Sar { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
@@ -328,6 +339,8 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
             | Self::MovFloat { src: X86Operand::VReg(v), .. }
+            | Self::Movzx { src: X86Operand::VReg(v), .. }
+            | Self::Movsx { src: X86Operand::VReg(v), .. }
             | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             // 2-address: dest is read+write, src is read-only
@@ -341,7 +354,10 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { src: X86Operand::VReg(v), .. }
             | Self::MulFloat { src: X86Operand::VReg(v), .. }
             | Self::DivFloat { src: X86Operand::VReg(v), .. }
-            | Self::XorFloat { src: X86Operand::VReg(v), .. } => uses.push(*v),
+            | Self::XorFloat { src: X86Operand::VReg(v), .. }
+            | Self::Shl { src: X86Operand::VReg(v), .. }
+            | Self::Shr { src: X86Operand::VReg(v), .. }
+            | Self::Sar { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             // immediate-source 2-address: only dest is used
             Self::Add { dest, .. }
@@ -354,7 +370,10 @@ impl Instruction<X86_64> for X86Instr {
             | Self::SubFloat { dest, .. }
             | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. }
-            | Self::XorFloat { dest, .. } => uses.push(*dest),
+            | Self::XorFloat { dest, .. }
+            | Self::Shl { dest, .. }
+            | Self::Shr { dest, .. }
+            | Self::Sar { dest, .. } => uses.push(*dest),
 
             Self::FieldStore {origin, src: X86Operand::VReg(vreg), ..} => {
                 uses.push(*origin);
@@ -370,8 +389,7 @@ impl Instruction<X86_64> for X86Instr {
             }
             Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
-            Self::Neg { dest, .. } => uses.push(*dest),
-            Self::Movzx { src, ..  } => uses.push(*src),
+            Self::Neg { dest, .. } | Self::Not { dest, .. } => uses.push(*dest),
 
             Self::Cmp { lhs, rhs, .. }
             | Self::Test { lhs, rhs, .. }
@@ -395,6 +413,7 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
+    #[inline]
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
             Self::IDiv { .. } => &[X86Reg::Rdx],
@@ -403,11 +422,14 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
+    #[rustfmt::skip]
+    #[inline]
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
-            Self::IDiv {
-                precoloured_uses, ..
-            } => precoloured_uses,
+            Self::IDiv { precoloured_uses, .. } => precoloured_uses,
+            Self::Shl { precoloured_uses, .. }
+            | Self::Shr { precoloured_uses, .. }
+            | Self::Sar { precoloured_uses, .. } => precoloured_uses.as_slice(),
             _ => &[],
         }
     }

@@ -31,6 +31,7 @@ pub enum A64Instr {
     // integer movs
     MovImm { dest: VReg, imm: i64, bytes: u8 },
     Mov { dest: VReg, src: VReg, bytes: u8 },
+    Extend { dest: VReg, src: VReg, src_bytes: u8, dest_bytes: u8, signed: bool },
     /// load a stack-passed param
     LdrParam { dest: VReg, fp_offset: i32, bytes: u8, signed: bool },
 
@@ -45,6 +46,10 @@ pub enum A64Instr {
     And { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
     Or { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
     Eor { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Mvn { dest: VReg, src: VReg, bytes: u8 },
+    Lsl { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Lsr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Asr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
 
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
@@ -214,7 +219,7 @@ impl Target for AArch64 {
             A64Reg::X4,  A64Reg::X5,  A64Reg::X6,  A64Reg::X7,
             A64Reg::X8,  A64Reg::X9,  A64Reg::X10, A64Reg::X11,
             A64Reg::X12, A64Reg::X13, A64Reg::X14, A64Reg::X15,
-            A64Reg::X16, A64Reg::X17,
+            A64Reg::X17,
             A64Reg::X19, A64Reg::X20, A64Reg::X21, A64Reg::X22,
             A64Reg::X23, A64Reg::X24, A64Reg::X25, A64Reg::X26,
             A64Reg::X27, A64Reg::X28,
@@ -229,7 +234,7 @@ impl Target for AArch64 {
             A64Reg::D4,  A64Reg::D5,  A64Reg::D6,  A64Reg::D7,
             A64Reg::D8,  A64Reg::D9,  A64Reg::D10, A64Reg::D11,
             A64Reg::D12, A64Reg::D13, A64Reg::D14, A64Reg::D15,
-            A64Reg::D16, A64Reg::D17, A64Reg::D18, A64Reg::D19,
+            A64Reg::D17, A64Reg::D18, A64Reg::D19,
             A64Reg::D20, A64Reg::D21, A64Reg::D22, A64Reg::D23,
             A64Reg::D24, A64Reg::D25, A64Reg::D26, A64Reg::D27,
             A64Reg::D28, A64Reg::D29, A64Reg::D30, A64Reg::D31,
@@ -376,9 +381,13 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Mul { dest, .. }
             | Self::SDiv { dest, .. }
             | Self::Neg { dest, .. }
+            | Self::Mvn { dest, .. }
             | Self::And { dest, .. }
             | Self::Or { dest, .. }
             | Self::Eor { dest, .. }
+            | Self::Lsl { dest, .. }
+            | Self::Lsr { dest, .. }
+            | Self::Asr { dest, .. }
             | Self::Cset { dest, .. }
             | Self::FMov { dest, .. }
             | Self::FLiteral { dest, .. }
@@ -390,6 +399,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FieldLoad { dest, .. }
             | Self::StackAddr { dest, .. }
             | Self::PtrLoad { dest, .. }
+            | Self::Extend { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
@@ -407,7 +417,9 @@ impl Instruction<AArch64> for A64Instr {
         match self {
             Self::Mov { src, .. }
             | Self::Neg { src, .. }
+            | Self::Mvn { src, .. }
             | Self::FMov { src, .. }
+            | Self::Extend { src, .. }
             | Self::FNeg { src, .. } => uses.push(*src),
 
             Self::Add { lhs, rhs, .. }
@@ -415,6 +427,9 @@ impl Instruction<AArch64> for A64Instr {
             | Self::And { lhs, rhs, .. }
             | Self::Or { lhs, rhs, .. }
             | Self::Eor { lhs, rhs, .. }
+            | Self::Lsl { lhs, rhs, .. }
+            | Self::Lsr { lhs, rhs, .. }
+            | Self::Asr { lhs, rhs, .. }
             | Self::Cmp { lhs, rhs, .. }
             | Self::Cmn { lhs, rhs, .. }
             | Self::Tst { lhs, rhs, .. } => {

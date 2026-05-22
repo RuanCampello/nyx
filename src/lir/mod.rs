@@ -7,7 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
-    hir::Type,
+    hir::{Type, mangle},
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -117,9 +117,13 @@ where
     //
     // this allows the binary to be linked with `ld` directly
     // `_start` calls `nyx_main`, passes its return value to the exit syscall
-    let has_main = mir.symbols.iter().any(|name| name == "main");
-    if has_main {
-        Function::<T>::start(&mut out);
+    let main = mir
+        .symbols
+        .iter()
+        .find(|name| name.as_str() == "main" || name.ends_with("::main"))
+        .map(|name| mangle::assembly_label(name));
+    if let Some(main) = main {
+        Function::<T>::start(&mut out, &main);
     }
 
     if !mir.strings.is_empty() {
@@ -253,6 +257,7 @@ impl MachineType {
 
 impl Type {
     #[inline(always)]
+    #[rustfmt::skip]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
             Type::I8 => MachineType::Int { bytes: 1, signed: true },
@@ -261,13 +266,10 @@ impl Type {
             Type::U16 => MachineType::Int { bytes: 2, signed: false },
             Type::I32 => MachineType::Int { bytes: 4, signed: true },
             Type::U32 | Type::Char => MachineType::Int { bytes: 4, signed: false },
-            Type::I64
-            | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
-            Type::U64
-            | Type::Uptr
-            | Type::Str
-            | Type::String
-            | Type::Ref { .. } => MachineType::Int { bytes: 8, signed: false },
+            Type::I64 | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
+            Type::U64 | Type::Uptr | Type::Str | Type::String | Type::Ref { .. } => {
+                MachineType::Int { bytes: 8, signed: false, }
+            }
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },
             Type::Struct(id) => {

@@ -169,6 +169,27 @@ impl<'i> Parser<'i> {
             Some(Ok(t)) if t.is_kind(Keyword::Interface)
         )
     }
+
+    pub(crate) fn is_const_decl(&self) -> bool {
+        match self.peek_nth(0) {
+            Some(Ok(t)) if t.is_kind(Keyword::Const) => {
+                matches!(
+                    self.peek_nth(1),
+                    Some(Ok(t2)) if matches!(t2.kind, TokenKind::Identifier(id) if id != "fn")
+                )
+            }
+            Some(Ok(t)) if t.is_kind(Keyword::Pub) => {
+                matches!(
+                    self.peek_nth(1),
+                    Some(Ok(t2)) if t2.is_kind(Keyword::Const)
+                ) && matches!(
+                    self.peek_nth(2),
+                    Some(Ok(t3)) if matches!(t3.kind, TokenKind::Identifier(id) if id != "fn")
+                )
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +488,79 @@ mod tests {
             let_statement.value,
             Some(Expression::Struct { name: "Point", .. })
         ));
+    }
+
+    #[test]
+    fn bitwise_and_shifts_precedence() {
+        let statements = Parser::new("!x & y | z ^ w << 2 >> 3;").parse().unwrap();
+        let [Statement::Expr(expr, _)] = statements.as_slice() else {
+            panic!("expected expression statement");
+        };
+        let Expression::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } = expr
+        else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*operator, BinaryOperator::BitOr);
+
+        let Expression::Binary {
+            left: l_l,
+            operator: l_op,
+            right: l_r,
+            ..
+        } = left.as_ref()
+        else {
+            panic!("expected left binary expression");
+        };
+        assert_eq!(*l_op, BinaryOperator::BitAnd);
+        assert!(matches!(
+            l_l.as_ref(),
+            Expression::Unary {
+                operator: UnaryOperator::Not,
+                ..
+            }
+        ));
+        assert!(matches!(l_r.as_ref(), Expression::Identifier("y", _)));
+
+        let Expression::Binary {
+            left: r_l,
+            operator: r_op,
+            right: r_r,
+            ..
+        } = right.as_ref()
+        else {
+            panic!("expected right binary expression");
+        };
+        assert_eq!(*r_op, BinaryOperator::BitXor);
+        assert!(matches!(r_l.as_ref(), Expression::Identifier("z", _)));
+
+        let Expression::Binary {
+            left: rr_l,
+            operator: rr_op,
+            right: rr_r,
+            ..
+        } = r_r.as_ref()
+        else {
+            panic!("expected shift-right binary expression");
+        };
+        assert_eq!(*rr_op, BinaryOperator::Shr);
+
+        let Expression::Binary {
+            left: rrl_l,
+            operator: rrl_op,
+            right: rrl_r,
+            ..
+        } = rr_l.as_ref()
+        else {
+            panic!("expected shift-left binary expression");
+        };
+        assert_eq!(*rrl_op, BinaryOperator::Shl);
+        assert!(matches!(rrl_l.as_ref(), Expression::Identifier("w", _)));
+        assert!(matches!(rrl_r.as_ref(), Expression::Integer(2, _)));
+        assert!(matches!(rr_r.as_ref(), Expression::Integer(3, _)));
     }
 }

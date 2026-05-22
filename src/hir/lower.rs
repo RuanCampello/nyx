@@ -1,9 +1,10 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId, SymbolId,
-        SymbolTable, SyscallCode, Type,
+        Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
+        LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
+        SymbolId, SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
+        mangle::Mangler,
         scope::{Scope, Structs},
     },
     lexer::token::Span,
@@ -19,7 +20,7 @@ use std::{
 };
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
-    scope: &'s Scope,
+    scope: &'s Scope<'s>,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -29,13 +30,6 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     symbols: &'s mut SymbolTable,
     is_const: bool,
     in_std: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::hir) enum Visit {
-    Unvisited,
-    Visiting,
-    Visited,
 }
 
 impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
@@ -54,6 +48,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             return_type: Type::Unit,
             function: Some(function),
             function_id,
+            next_local: 0,
+            locals: Vec::new(),
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    pub fn new_for_const(scope: &'s Scope, symbols: &'s mut SymbolTable, in_std: bool) -> Self {
+        Self {
+            scope,
+            symbols,
+            is_const: true,
+            in_std,
+            return_type: Type::Unit,
+            function: None,
+            function_id: FunctionId(0),
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
@@ -242,7 +251,69 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
             Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
+            Stmt::Const(_) => unimplemented!("local constants are not supported yet"),
         }
+    }
+
+    fn lower_identifier(&mut self, name: &str, span: Span) -> Result<Expression, HirError<'src>> {
+        if let Some(id) = self.local_id(name) {
+            return Ok(self.local_expr(id, span));
+        }
+
+        if let Some(constant) = self.constant(name) {
+            let mut value = constant.value.clone();
+            value.span = span;
+
+            return Ok(value);
+        }
+
+        let symbol = self.symbols.get_id(name).ok_or_else(|| HirError {
+            kind: HirErrorKind::UndeclaredIdentifier {
+                name: name.to_string(),
+            },
+            span,
+        })?;
+        let id = self.resolve_local(symbol, span)?;
+
+        Ok(self.local_expr(id, span))
+    }
+
+    fn local_id(&self, name: &str) -> Option<LocalId> {
+        let symbol = self.symbols.get_id(name)?;
+
+        self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
+    }
+
+    fn local_expr(&self, id: LocalId, span: Span) -> Expression {
+        Expression {
+            kind: ExpressionKind::Local(id),
+            typ: self[id].typ,
+            span,
+        }
+    }
+
+    fn constant(&self, name: &str) -> Option<&Constant> {
+        if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
+            let scoped = self.mangler().scoped_item(impl_type, name);
+            if let Some(constant) = self.constant_by_symbol_name(&scoped) {
+                return Some(constant);
+            }
+        }
+
+        let top_level = self.mangler().item(name);
+        self.constant_by_symbol_name(&top_level)
+            .or_else(|| self.constant_by_symbol_name(name))
+    }
+
+    fn constant_by_symbol_name(&self, name: &str) -> Option<&Constant> {
+        let symbol = self.symbols.get_id(name)?;
+
+        self.scope.constants.get(&symbol)
+    }
+
+    #[inline]
+    fn mangler(&self) -> &Mangler<'_> {
+        &self.scope.mangler
     }
 
     /// Lowers an expression with an optional type hint flowing downward (biderectional checking)
@@ -304,15 +375,64 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span: *span,
             }),
 
-            Expr::Identifier(name, span) => {
-                let symbol = self.symbols.insert(name);
-                let id = self.resolve_local(symbol, *span)?;
+            Expr::Cast {
+                expr: inner,
+                target_type,
+                span,
+            } => {
+                let target = self.resolve_type(&target_type.value(), target_type.span())?;
+                let lowered_expr = self.lower_expr(inner, None)?;
+                let src = lowered_expr.typ;
+
+                if !src.is_primitive_castable() || !target.is_primitive_castable() {
+                    return Err(HirError {
+                        kind: HirErrorKind::InvalidCast { src, target },
+                        span: *span,
+                    });
+                }
 
                 Ok(Expression {
-                    kind: ExpressionKind::Local(id),
-                    typ: self[id].typ,
+                    kind: ExpressionKind::Cast {
+                        from: Box::new(lowered_expr),
+                        to: target,
+                    },
+                    typ: target,
                     span: *span,
                 })
+            }
+
+            Expr::Identifier(name, span) => self.lower_identifier(name, *span),
+
+            Expr::QualifiedName {
+                qualifier,
+                name,
+                span,
+            } => {
+                let mangled_name = self.mangler().scoped_item(qualifier, name);
+                let symbol = match self.symbols.get_id(&mangled_name) {
+                    Some(sym) => sym,
+                    None => {
+                        return Err(HirError {
+                            kind: HirErrorKind::UndeclaredIdentifier {
+                                name: format!("{qualifier}::{name}"),
+                            },
+                            span: *span,
+                        });
+                    }
+                };
+
+                let Some(c) = self.scope.constants.get(&symbol) else {
+                    return Err(HirError {
+                        kind: HirErrorKind::UndeclaredIdentifier {
+                            name: format!("{qualifier}::{name}"),
+                        },
+                        span: *span,
+                    });
+                };
+
+                let mut val = c.value.clone();
+                val.span = *span;
+                Ok(val)
             }
 
             Expr::Unary {
@@ -323,7 +443,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 // for negation the hint flows through to the operand
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
-                    UnaryOperator::Not => Some(Type::Bool),
+                    UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| Type::Ref {
                         mutable: false,
                         to: match h {
@@ -350,7 +470,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             });
                         }
                     },
-                    UnaryOperator::Not => Type::Bool,
+                    UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
+                        true => expr.typ,
+                        _ => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::Bool,
+                                    found: expr.typ,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    },
                     UnaryOperator::Deref => match expr.typ {
                         Type::Ref { to, .. } => to.into(),
                         _ => {
@@ -404,8 +535,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     | BinaryOperator::Gt
                     | BinaryOperator::GtEq
                     | BinaryOperator::Eq
-                    | BinaryOperator::Ne => Some(left.typ),
+                    | BinaryOperator::Ne
+                    | BinaryOperator::BitAnd
+                    | BinaryOperator::BitOr
+                    | BinaryOperator::BitXor => Some(left.typ),
                     BinaryOperator::And | BinaryOperator::Or => Some(Type::Bool),
+                    BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
                 let right = self.lower_expr(right, right_hint)?;
 
@@ -429,7 +564,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span,
             } => match target.as_ref() {
                 Expr::Identifier(name, _) => {
-                    let symbol = self.symbols.insert(name);
+                    let symbol = match self.symbols.get_id(name) {
+                        Some(sym) => sym,
+                        None => {
+                            return Err(HirError {
+                                kind: HirErrorKind::UndeclaredIdentifier {
+                                    name: name.to_string(),
+                                },
+                                span: *span,
+                            });
+                        }
+                    };
                     let id = self.resolve_local(symbol, *span)?;
 
                     if !self[id].mutable {
@@ -653,7 +798,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 let (function, signature) = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
-                        let symbol = self.symbols.insert(name);
+                        let symbol = self.symbols.insert(&self.mangler().item(name));
                         let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                             kind: HirErrorKind::UnknownFunction {
                                 name: name.to_string(),
@@ -743,7 +888,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 args,
                 span,
             } => {
-                let mangled_name = format!("{qualifier}__{name}");
+                let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
                 if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
@@ -811,7 +956,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                let symbol = self.symbols.insert(name);
+                let symbol = self.symbols.insert(&self.mangler().item(name));
                 let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownFunction {
                         name: format!("{qualifier}::{name}"),
@@ -890,13 +1035,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let name = kind.into();
                 let lookup_symbol = match qualifier {
                     Some(q) => {
-                        let mangled = self.symbols.insert(&format!("{q}__{name}"));
+                        let mangled = self.symbols.insert(&self.mangler().scoped_item(q, name));
                         match self.scope.functions.contains_key(&mangled) {
                             true => mangled,
-                            _ => self.symbols.insert(name),
+                            _ => self.symbols.insert(&self.mangler().item(name)),
                         }
                     }
-                    None => self.symbols.insert(name),
+                    None => self.symbols.insert(&self.mangler().item(name)),
                 };
 
                 if !self.scope.functions.contains_key(&lookup_symbol) {
@@ -1071,6 +1216,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
+        let type_mismatch = |found| HirError {
+            kind: HirErrorKind::TypeMismatch {
+                expected: Type::I32,
+                found,
+            },
+            span,
+        };
+
         match operator {
             BinaryOperator::Add
             | BinaryOperator::Sub
@@ -1079,13 +1232,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(left),
-                    _ => Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::I32,
-                            found: left,
-                        },
-                        span,
-                    }),
+                    _ => Err(type_mismatch(left)),
                 }
             }
 
@@ -1101,13 +1248,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(left, right, span)?;
                 match left.is_number() || left == Type::Char {
                     true => Ok(Type::Bool),
-                    _ => Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::I32,
-                            found: left,
-                        },
-                        span,
-                    }),
+                    _ => Err(type_mismatch(left)),
                 }
             }
 
@@ -1116,6 +1257,27 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(Type::Bool, right, span)?;
 
                 Ok(Type::Bool)
+            }
+
+            BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
+                self.assert_type(left, right, span)?;
+
+                match left == Type::Bool || left.is_integer() {
+                    true => Ok(left),
+                    _ => Err(type_mismatch(left)),
+                }
+            }
+
+            BinaryOperator::Shl | BinaryOperator::Shr => {
+                if !left.is_integer() {
+                    return Err(type_mismatch(left));
+                }
+
+                if !right.is_integer() {
+                    return Err(type_mismatch(right));
+                }
+
+                Ok(left)
             }
         }
     }
@@ -1335,11 +1497,41 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::hir) enum Visit {
+    Unvisited,
+    Visiting,
+    Visited,
+}
+
+pub(in crate::hir) fn lower_structs<'h>(
+    declarations: &[(SymbolId, &statement::Struct<'h>)],
+    map: &Structs,
+    symbols: &mut SymbolTable,
+    lowered: &mut [Option<Struct>],
+) -> Result<(), HirError<'h>> {
+    // pre-insert all field names into the symbol table to avoid mutable borrows of symbols
+    // during the topological sort dfs
+    for (_, declaration) in declarations {
+        for field in &declaration.fields {
+            symbols.insert(field.name);
+        }
+    }
+
+    let mut states = vec![Visit::Unvisited; declarations.len()];
+    let symbols = &*symbols; // shadow as shared reference
+    for id in 0..declarations.len() {
+        lower_struct(id, declarations, map, symbols, lowered, &mut states)?;
+    }
+
+    Ok(())
+}
+
 pub(in crate::hir) fn lower_struct<'h>(
     id: usize,
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
-    symbols: &mut SymbolTable,
+    symbols: &SymbolTable,
     lowered: &mut [Option<Struct>],
     states: &mut [Visit],
 ) -> Result<(), HirError<'h>> {
@@ -1363,7 +1555,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     let mut fields = Vec::with_capacity(declaration.fields.len());
 
     for (idx, field) in declaration.fields.iter().enumerate() {
-        let field_symbol = symbols.insert(field.name);
+        let field_symbol = symbols.get_id(field.name).unwrap();
         if !seen.insert(field_symbol) {
             return Err(HirError {
                 kind: HirErrorKind::DuplicateField {
@@ -1399,15 +1591,40 @@ pub(in crate::hir) fn lower_struct<'h>(
     Ok(())
 }
 
+pub(in crate::hir) fn lower_const<'s, 'src>(
+    scope: &'s Scope,
+    symbols: &'s mut SymbolTable,
+    expr: &expression::Expression<'src>,
+    expected_type: Type,
+    in_std: bool,
+) -> Result<Expression, HirError<'src>> {
+    let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std);
+    let lowered = builder.lower_expr(expr, Some(expected_type))?;
+
+    builder.assert_type(expected_type, lowered.typ, lowered.span)?;
+
+    Ok(lowered)
+}
+
 pub(in crate::hir) fn resolve_annotation<'h>(
-    symbols: &mut SymbolTable,
+    symbols: &SymbolTable,
     struct_map: &Structs,
     typ: &statement::Type<'h>,
     span: Span,
 ) -> Result<Type, HirError<'h>> {
     match typ {
         statement::Type::Named(name) => {
-            let symbol = symbols.insert(name);
+            let symbol = match symbols.get_id(name) {
+                Some(sym) => sym,
+                None => {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownType {
+                            name: (*name).to_string(),
+                        },
+                        span,
+                    });
+                }
+            };
             struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownType {
                     name: (*name).to_string(),

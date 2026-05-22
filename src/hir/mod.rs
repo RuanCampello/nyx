@@ -22,6 +22,7 @@ use std::str::FromStr;
 mod declarations;
 pub mod error;
 mod lower;
+pub(crate) mod mangle;
 pub(crate) mod module;
 mod scope;
 mod symbols;
@@ -58,48 +59,36 @@ pub struct StructField {
 /// all valid non-reference types that can be referenced in Nyx, preventing
 /// invalid type states like nested references (e.g. `&&i64`) by construction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[rustfmt::skip]
 pub enum RefTarget {
     Struct(StructId),
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
+    I8, U8,
+    I16, U16,
+    I32, U32,
+    I64, U64,
+    F32, F64,
     Bool,
-    Uptr,
-    Iptr,
+    Uptr, Iptr,
     Char,
-    Str,
-    String,
+    Str, String,
     Unit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[rustfmt::skip]
 #[non_exhaustive]
 pub enum Type {
     #[default]
     Unit,
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
+    I8, U8,
+    I16, U16,
+    I32, U32,
+    I64, U64,
+    F32, F64,
     Bool,
-    Uptr,
-    Iptr,
+    Uptr, Iptr,
     Char,
-    Str,
-    String,
+    Str, String,
     Struct(StructId),
     Ref {
         mutable: bool,
@@ -111,22 +100,13 @@ pub enum Type {
 pub struct StructId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum Statement {
-    Let {
-        id: LocalId,
-        init: Option<Expression>,
-    },
+    Let { id: LocalId, init: Option<Expression> },
     Expr(Expression),
     Return(Option<Expression>),
-    If {
-        condition: Expression,
-        then_block: Block,
-        else_block: Option<Block>,
-    },
-    While {
-        condition: Expression,
-        body: Block,
-    },
+    If { condition: Expression, then_block: Block, else_block: Option<Block> },
+    While { condition: Expression, body: Block },
     Block(Block),
 }
 
@@ -150,6 +130,14 @@ pub struct Function {
     pub inline: bool,
     pub intrinsic: Option<Intrinsic>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Constant {
+    pub name: SymbolId,
+    pub typ: Type,
+    pub value: Expression,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +170,7 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum ExpressionKind {
     #[allow(dead_code)]
     Unit,
@@ -191,53 +180,24 @@ pub enum ExpressionKind {
     Char(char),
     Bool(bool),
     Local(LocalId),
-    Unary {
-        operator: UnaryOperator,
-        expr: Box<Expression>,
-    },
-    Binary {
-        operator: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    Assign {
-        target: LocalId,
-        value: Box<Expression>,
-    },
+    Unary { operator: UnaryOperator, expr: Box<Expression> },
+    Binary { operator: BinaryOperator, left: Box<Expression>, right: Box<Expression> },
+    Assign { target: LocalId, value: Box<Expression> },
     /// source-level field path resolved to a base local plus field symbols
     /// MIR turns this into a byte-offset load from that base aggregate
-    FieldAccess {
-        local: LocalId,
-        fields: Vec<SymbolId>,
-    },
+    FieldAccess { local: LocalId, fields: Vec<SymbolId> },
     /// source-level field path assignment
     /// the base local mutability is checked in HIR
-    FieldAssign {
-        local: LocalId,
-        fields: Vec<SymbolId>,
-        value: Box<Expression>,
-    },
-    MethodCall {
-        function: FunctionId,
-        receiver: Receiver,
-        args: Vec<Expression>,
-    },
+    FieldAssign { local: LocalId, fields: Vec<SymbolId>, value: Box<Expression> },
+    MethodCall { function: FunctionId, receiver: Receiver, args: Vec<Expression> },
     Struct {
         id: StructId,
         fields: Vec<(SymbolId, Expression)>,
     },
-    Call {
-        function: FunctionId,
-        args: Vec<Expression>,
-    },
-    Syscall {
-        code: SyscallCode,
-        args: Vec<Expression>,
-    },
-    IntrinsicCall {
-        intrinsic: Intrinsic,
-        args: Vec<Expression>,
-    },
+    Call { function: FunctionId, args: Vec<Expression> },
+    Syscall { code: SyscallCode, args: Vec<Expression> },
+    IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
+    Cast { from: Box<Expression>, to: Type },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -362,6 +322,25 @@ impl Type {
                 (definition.size, definition.align)
             }
         }
+    }
+
+    #[inline(always)]
+    pub(in crate::hir) const fn is_primitive_castable(&self) -> bool {
+        matches!(
+            self,
+            Type::I8
+                | Type::U8
+                | Type::I16
+                | Type::U16
+                | Type::I32
+                | Type::U32
+                | Type::I64
+                | Type::U64
+                | Type::Iptr
+                | Type::Uptr
+                | Type::Bool
+                | Type::Char
+        )
     }
 }
 
@@ -586,6 +565,52 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_and_shifts_typechecking() {
+        let source_ok = r#"
+            fn main() {
+                let a: i32 = 1;
+                let b: i32 = 2;
+                let c: i32 = a & b;
+                let d: i32 = a | b;
+                let e: i32 = a ^ b;
+                let f: i32 = !a;
+                let g: i32 = a << b;
+                let h: i32 = a >> b;
+
+                let x: bool = true;
+                let y: bool = false;
+                let z: bool = x & y;
+                let w: bool = x | y;
+                let v: bool = x ^ y;
+                let u: bool = !x;
+            }
+        "#;
+        let statements = Parser::new(source_ok).parse().unwrap();
+        assert!(super::lower(statements).is_ok());
+
+        let source_err_shift = r#"
+            fn main() {
+                let a: bool = true;
+                let b: i32 = 2;
+                let c: bool = a << b;
+            }
+        "#;
+        let statements = Parser::new(source_err_shift).parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
+
+        let source_err_not = r#"
+            fn main() {
+                let a: f64 = 1.0;
+                let b: f64 = !a;
+            }
+        "#;
+        let statements = Parser::new(source_err_not).parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
+    }
+
+    #[test]
     fn if_condition_must_be_bool() {
         let statements = Parser::new(
             r#"
@@ -643,7 +668,7 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::ArityMismatch {
-                name: "add".into(),
+                name: "nyx::add".into(),
                 expected: 2,
                 found: 3,
             }
@@ -1283,5 +1308,182 @@ mod tests {
                 name: "i64".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn const_top_level() {
+        let src = r#"
+            const ANSWER: i32 = 42;
+            fn main(): i32 {
+                ANSWER
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(42)));
+    }
+
+    #[test]
+    fn const_scoped_and_qualified() {
+        let src = r#"
+            struct Dummy {}
+            impl Dummy {
+                pub const VALUE: uptr = 127;
+            }
+            fn main(): uptr {
+                Dummy::VALUE
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+    }
+
+    #[test]
+    fn const_primitive_scoped_in_std() {
+        let src = r#"
+            impl i8 {
+                pub const MAX: uptr = 127;
+            }
+            fn main(): uptr {
+                i8::MAX
+            }
+        "#;
+        let mut symbols = SymbolTable::new();
+        let statements = Parser::new(src).parse().unwrap();
+        let declarations = Declarations::partition(&statements).unwrap();
+        let mut scope = Scope::new();
+        scope.extend(&declarations, &mut symbols, true).unwrap();
+        let functions = scope.lower_functions(&declarations, &mut symbols, true).unwrap();
+        let main_func = &functions[0];
+        let ret_expr = match &main_func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+    }
+
+    #[test]
+    fn const_nested_evaluation() {
+        let src = r#"
+            const A: i32 = 10;
+            const B: i32 = A + 2;
+            fn main(): i32 {
+                B
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        match &ret_expr.kind {
+            ExpressionKind::Binary {
+                left,
+                operator,
+                right,
+            } => {
+                assert_eq!(*operator, BinaryOperator::Add);
+                assert!(matches!(left.kind, ExpressionKind::Integer(10)));
+                assert!(matches!(right.kind, ExpressionKind::Integer(2)));
+            }
+            other => panic!("expected Binary expression, got {other:?}"),
+        };
+    }
+
+    #[test]
+    fn const_circular_dependency() {
+        let src = r#"
+            const A: i32 = B;
+            const B: i32 = A;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::CircularConstant { ref name } if name == "A" || name == "B"
+        ));
+    }
+
+    #[test]
+    fn const_duplicate_declaration() {
+        let src = r#"
+            const X: i32 = 1;
+            const X: i32 = 2;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateConstant {
+                name: "X".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_scoped_duplicate_declaration() {
+        let src = r#"
+            struct Dummy {}
+            impl Dummy {
+                pub const VALUE: i32 = 1;
+                pub const VALUE: i32 = 2;
+            }
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateConstant {
+                name: "Dummy::VALUE".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_undefined_reference() {
+        let src = r#"
+            const A: i32 = UNDEFINED;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UndeclaredIdentifier {
+                name: "UNDEFINED".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_shadowing() {
+        let src = r#"
+            const ANSWER: i32 = 42;
+            fn main(): i32 {
+                let ANSWER: i32 = 100;
+                ANSWER
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[1] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
     }
 }

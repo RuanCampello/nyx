@@ -13,7 +13,7 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::Type,
+    hir::{Type, mangle},
     lir::{
         self, BlockId, MachineType, Term, VReg,
         target::{
@@ -45,7 +45,7 @@ impl Lowerable for AArch64 {
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
-            .map(|n| format!("nyx_{n}"))
+            .map(|n| mangle::assembly_label(n))
             .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
 
         let mut lir = lir::Function::<AArch64>::new(name);
@@ -148,11 +148,15 @@ impl<'f> Lower<'f> {
                         false => self.lir.push_instr(id, A64Instr::Neg { dest, src, bytes }),
                     },
                     // boolean NOT: XOR with 1
-                    U::Not => {
-                        #[rustfmt::skip]
-                        let instr = A64Instr::Eor { dest, lhs: src, rhs: A64Operand::Imm(1), bytes: 4 };
-                        self.lir.push_instr(id, instr);
-                    }
+                    // integer NOT: MVN instruction
+                    U::Not => match typ == Type::Bool {
+                        true => {
+                            #[rustfmt::skip]
+                            let instr = A64Instr::Eor { dest, lhs: src, rhs: A64Operand::Imm(1), bytes: 4 };
+                            self.lir.push_instr(id, instr);
+                        }
+                        _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
+                    },
                     U::Deref => unreachable!(),
                 }
             }
@@ -166,6 +170,7 @@ impl<'f> Lower<'f> {
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();
                 let lhs_type = lhs.typ();
+                let rhs_type = rhs.typ();
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
@@ -246,29 +251,33 @@ impl<'f> Lower<'f> {
                                 self.lir.push_instr(id, instr);
                             }
 
-                            B::And => {
-                                let rhs = self.fit_logical_operand(rhs, lhs_type, id);
-                                self.lir.push_instr(
-                                    id,
-                                    A64Instr::And {
-                                        dest,
-                                        lhs,
-                                        rhs,
-                                        bytes,
-                                    },
-                                );
+                            #[rustfmt::skip]
+                            B::And | B::BitAnd => {
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                self.lir.push_instr(id, A64Instr::And { dest, lhs, rhs, bytes });
                             }
-                            B::Or => {
-                                let rhs = self.fit_logical_operand(rhs, lhs_type, id);
-                                self.lir.push_instr(
-                                    id,
-                                    A64Instr::Or {
-                                        dest,
-                                        lhs,
-                                        rhs,
-                                        bytes,
+                            #[rustfmt::skip]
+                            B::Or | B::BitOr => {
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                self.lir.push_instr(id, A64Instr::Or { dest, lhs, rhs, bytes });
+                            }
+                            #[rustfmt::skip]
+                            B::BitXor => {
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                self.lir.push_instr(id, A64Instr::Eor { dest, lhs, rhs, bytes, });
+                            }
+                            #[rustfmt::skip]
+                            B::Shl | B::Shr => {
+                                let rhs = self.fit_shift_operand(rhs, rhs_type, bytes, id);
+                                let instr = match operation {
+                                    B::Shl => A64Instr::Lsl { dest, lhs, rhs, bytes },
+                                    B::Shr => match lhs_type.machine_type(self.layouts).is_signed() {
+                                        true => A64Instr::Asr { dest, lhs, rhs, bytes },
+                                        _ => A64Instr::Lsr { dest, lhs, rhs, bytes },
                                     },
-                                );
+                                    _ => unsafe { std::hint::unreachable_unchecked() },
+                                };
+                                self.lir.push_instr(id, instr);
                             }
 
                             _ => unsafe { std::hint::unreachable_unchecked() },
@@ -287,7 +296,7 @@ impl<'f> Lower<'f> {
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
-                    .map(|n| format!("nyx_{n}"))
+                    .map(|n| mangle::assembly_label(n))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());
@@ -312,8 +321,13 @@ impl<'f> Lower<'f> {
 
                         match AArch64::param(int_idx, RegClass::Int) {
                             Some(abi_reg) => moves.push((ptr, abi_reg)),
-                            None => stack_args
-                                .push((A64Operand::VReg(ptr), MachineType::Int { bytes: 8, signed: false })),
+                            None => stack_args.push((
+                                A64Operand::VReg(ptr),
+                                MachineType::Int {
+                                    bytes: 8,
+                                    signed: false,
+                                },
+                            )),
                         }
 
                         int_idx += 1;
@@ -499,6 +513,60 @@ impl<'f> Lower<'f> {
                     },
                 );
             }
+
+            InstructionKind::Cast { src, typ } => {
+                use std::cmp::Ordering;
+
+                let src_mt = src.typ().machine_type(self.layouts);
+                let src_bytes = src_mt.bytes();
+                let src_signed = src_mt.is_signed();
+
+                let dest_mt = typ.machine_type(self.layouts);
+                let dest_bytes = dest_mt.bytes();
+
+                let op = self.lower_operand(src, id);
+
+                #[rustfmt::skip]
+                let instr = match src_bytes.cmp(&dest_bytes) {
+                    Ordering::Equal => match op {
+                        A64Operand::VReg(src) => A64Instr::Mov { dest, src, bytes: dest_bytes },
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+
+                    // downcasting / truncate
+                    Ordering::Greater if dest_bytes < 4 => match op {
+                        A64Operand::VReg(src) => A64Instr::Extend { dest, src, src_bytes: dest_bytes, dest_bytes, signed: dest_mt.is_signed() },
+                        A64Operand::Imm(imm) => {
+                            let mask = if dest_bytes == 1 { 0xff } else { 0xffff };
+                            let masked = match dest_mt.is_signed() {
+                                true => {
+                                    let shift = 64 - (dest_bytes * 8);
+                                    (imm << shift) >> shift
+                                }
+                                _ => imm & mask,
+                            };
+
+                            A64Instr::MovImm { dest, imm: masked, bytes: dest_bytes }
+                        }
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+                    Ordering::Greater => match op {
+                        A64Operand::VReg(src) => A64Instr::Mov { dest, src, bytes: dest_bytes },
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+
+                    // upcasting
+                    Ordering::Less => match op {
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::VReg(src) => A64Instr::Extend { dest, src, src_bytes, dest_bytes, signed: src_signed },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+                };
+
+                self.lir.push_instr(id, instr);
+            }
         }
     }
 
@@ -589,7 +657,10 @@ impl<'f> Lower<'f> {
         let mut float_stack_idx = 0;
 
         if matches!(self.function.return_type, Type::Struct(_)) {
-            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+            let ptr = self.lir.new_vreg(MachineType::Int {
+                bytes: 8,
+                signed: false,
+            });
             let reg = AArch64::param(int_idx, RegClass::Int)
                 .expect("sret pointer must fit in the first integer argument register");
             self.lir.add_precolour(ptr, reg);
@@ -599,7 +670,10 @@ impl<'f> Lower<'f> {
 
         for (vid, typ) in &self.function.params {
             if let Type::Struct(sid) = typ {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                let ptr = self.lir.new_vreg(MachineType::Int {
+                    bytes: 8,
+                    signed: false,
+                });
 
                 match AArch64::param(int_idx, RegClass::Int) {
                     Some(reg) => self.lir.add_precolour(ptr, reg),
@@ -731,7 +805,10 @@ impl<'f> Lower<'f> {
     }
 
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+        let dest = self.lir.new_vreg(MachineType::Int {
+            bytes: 8,
+            signed: false,
+        });
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
 
         dest
@@ -879,7 +956,29 @@ impl<'f> Lower<'f> {
         block: &BlockId,
     ) -> A64Operand {
         match op {
-            A64Operand::Imm(n) if n >= 0 && fits_imm12(n) => A64Operand::Imm(n),
+            A64Operand::Imm(n) if n > 0 && fits_imm12(n) => A64Operand::Imm(n),
+            A64Operand::VReg(_) => op,
+            _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
+        }
+    }
+
+    /// for LSL/LSR/ASR: shift amount can be immediate (0..31 for 32-bit, 0..63 for 64-bit) or a register
+    #[inline(always)]
+    fn fit_shift_operand(
+        &mut self,
+        op: A64Operand,
+        hint_type: Type,
+        bytes: u8,
+        block: &BlockId,
+    ) -> A64Operand {
+        match op {
+            A64Operand::Imm(n) => {
+                let max = if bytes == 8 { 63 } else { 31 };
+                match n >= 0 && n <= max {
+                    true => A64Operand::Imm(n),
+                    _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
+                }
+            }
             A64Operand::VReg(_) => op,
             _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
         }

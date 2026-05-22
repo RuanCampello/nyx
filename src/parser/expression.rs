@@ -1,11 +1,12 @@
 use crate::lexer::Spanned;
-use crate::lexer::token::{Punct, Span, TokenKind};
+use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
-use crate::parser::statement::Type as StatementType;
+use crate::parser::statement::Type;
 use crate::parser::{Parsable, Parser};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum Expression<'i> {
     Integer(i64, Span),
     Float(f64, Span),
@@ -13,52 +14,29 @@ pub enum Expression<'i> {
     Char(char, Span),
     Bool(bool, Span),
     Identifier(&'i str, Span),
-    Unary {
-        operator: UnaryOperator,
-        expr: Box<Expression<'i>>,
-        span: Span,
-    },
+    Unary { operator: UnaryOperator, expr: Box<Expression<'i>>, span: Span },
     Binary {
         left: Box<Expression<'i>>,
         operator: BinaryOperator,
         right: Box<Expression<'i>>,
         span: Span,
     },
-    Assignment {
-        target: Box<Expression<'i>>,
-        value: Box<Expression<'i>>,
-        span: Span,
-    },
-    Field {
-        expr: Box<Expression<'i>>,
-        field: &'i str,
-        span: Span,
-    },
-    Struct {
-        name: &'i str,
-        fields: Vec<StructField<'i>>,
-        span: Span,
-    },
-    Call {
-        callee: Box<Expression<'i>>,
-        args: Vec<Expression<'i>>,
-        span: Span,
-    },
-    QualifiedCall {
-        qualifier: &'i str,
-        name: &'i str,
-        args: Vec<Expression<'i>>,
-        span: Span,
-    },
+    Assignment { target: Box<Expression<'i>>, value: Box<Expression<'i>>, span: Span },
+    Field { expr: Box<Expression<'i>>, field: &'i str, span: Span },
+    Struct { name: &'i str, fields: Vec<StructField<'i>>, span: Span },
+    Call { callee: Box<Expression<'i>>, args: Vec<Expression<'i>>, span: Span },
+    QualifiedCall { qualifier: &'i str, name: &'i str, args: Vec<Expression<'i>>, span: Span },
+    QualifiedName { qualifier: &'i str, name: &'i str, span: Span },
     /// Special compiler intrinsics that accept a type annotation as an argument
     /// these must be handled at the expression parser level because types are not value-level expressions,
     /// so standard function/intrinsic call parsing would fail on them
     TypeIntrinsic {
         kind: TypeIntrinsicKind,
         qualifier: Option<&'i str>,
-        typ: Spanned<StatementType<'i>>,
+        typ: Spanned<Type<'i>>,
         span: Span,
     },
+    Cast { expr: Box<Expression<'i>>, target_type: Spanned<Type<'i>>, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,19 +60,14 @@ pub enum UnaryOperator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[rustfmt::skip]
 pub enum BinaryOperator {
-    Add,
-    Sub,
-    Div,
-    Mul,
-    Eq,
-    Ne,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-    And,
-    Or,
+    Add, Sub, Div, Mul,
+    Eq, Ne,
+    Lt, LtEq, Gt, GtEq,
+    And, Or,
+    BitAnd, BitOr, BitXor, Shl,
+    Shr,
 }
 
 impl<'i> Parsable<'i> for Expression<'i> {
@@ -120,7 +93,9 @@ impl<'i> Expression<'i> {
             | Self::Field { span, .. }
             | Self::Call { span, .. }
             | Self::QualifiedCall { span, .. }
-            | Self::TypeIntrinsic { span, .. } => *span,
+            | Self::QualifiedName { span, .. }
+            | Self::TypeIntrinsic { span, .. }
+            | Self::Cast { span, .. } => *span,
         }
     }
 
@@ -168,7 +143,7 @@ impl<'i> Expression<'i> {
                     }
                 };
 
-                let expr = Self::parse_expr(parser, 7)?;
+                let expr = Self::parse_expr(parser, 11)?;
                 let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
@@ -250,11 +225,16 @@ impl<'i> Expression<'i> {
             | TokenKind::Punct(Punct::LtEq)
             | TokenKind::Punct(Punct::Gt)
             | TokenKind::Punct(Punct::GtEq) => 5,
-            TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 6,
-            TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 7,
-            TokenKind::Punct(Punct::OpenParen) => 8, // function call
-            TokenKind::Punct(Punct::ColonColon) => 9,
-            TokenKind::Punct(Punct::Dot) => 10, // field access
+            TokenKind::Punct(Punct::Pipe) => 6,
+            TokenKind::Punct(Punct::Caret) => 7,
+            TokenKind::Punct(Punct::Ampersand) => 8,
+            TokenKind::Punct(Punct::Shl) | TokenKind::Punct(Punct::Shr) => 9,
+            TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 10,
+            TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 11,
+            TokenKind::Punct(Punct::OpenParen) => 12, // function call
+            TokenKind::Keyword(Keyword::As) => 12,    // casting
+            TokenKind::Punct(Punct::ColonColon) => 13,
+            TokenKind::Punct(Punct::Dot) => 14, // field access
             _ => 0,
         }
     }
@@ -291,7 +271,7 @@ impl<'i> Expression<'i> {
 
                         if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
                             parser.expect_token(Punct::OpenParen)?;
-                            let typ = Spanned::<StatementType>::parse(parser)?;
+                            let typ = Spanned::<Type>::parse(parser)?;
                             let end_span = parser.expect_token(Punct::CloseParen)?.span;
                             let span = left.span() + end_span;
 
@@ -341,13 +321,26 @@ impl<'i> Expression<'i> {
                         })
                     }
 
-                    _ => Ok(Expression::Identifier(name, name_span)),
+                    _ => {
+                        let Expression::Identifier(qualifier, _) = left else {
+                            return Err(ParserError::new(
+                                ParseErrorKind::ExpectedExpression { found: token.kind },
+                                token.span,
+                            ));
+                        };
+                        let span = left.span() + name_span;
+                        Ok(Expression::QualifiedName {
+                            qualifier,
+                            name,
+                            span,
+                        })
+                    }
                 }
             }
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left {
                     if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
-                        let typ = Spanned::<StatementType>::parse(parser)?;
+                        let typ = Spanned::<Type>::parse(parser)?;
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
                         let span = left.span() + end_span;
 
@@ -418,6 +411,17 @@ impl<'i> Expression<'i> {
                 }
             }
 
+            TokenKind::Keyword(Keyword::As) => {
+                let target_type = Spanned::<Type>::parse(parser)?;
+                let span = left.span() + target_type.span();
+
+                Ok(Expression::Cast {
+                    expr: Box::new(left),
+                    target_type,
+                    span,
+                })
+            }
+
             _ => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Plus) => BinaryOperator::Add,
@@ -432,6 +436,11 @@ impl<'i> Expression<'i> {
                     TokenKind::Punct(Punct::GtEq) => BinaryOperator::GtEq,
                     TokenKind::Punct(Punct::And) => BinaryOperator::And,
                     TokenKind::Punct(Punct::Or) => BinaryOperator::Or,
+                    TokenKind::Punct(Punct::Ampersand) => BinaryOperator::BitAnd,
+                    TokenKind::Punct(Punct::Pipe) => BinaryOperator::BitOr,
+                    TokenKind::Punct(Punct::Caret) => BinaryOperator::BitXor,
+                    TokenKind::Punct(Punct::Shl) => BinaryOperator::Shl,
+                    TokenKind::Punct(Punct::Shr) => BinaryOperator::Shr,
                     _ => {
                         return Err(ParserError::new(
                             ParseErrorKind::InvalidBinaryOperator { found: token.kind },
