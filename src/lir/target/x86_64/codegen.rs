@@ -341,6 +341,28 @@ impl Function<X86_64> {
                 emit!(out, "neg{suffix}    {dest}");
             }
 
+            Inst::Not { dest, bytes } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+
+                emit!(out, "not{suffix}    {dest}");
+            }
+
+            Inst::Shl { dest, src, bytes, .. }
+            | Inst::Shr { dest, src, bytes, .. }
+            | Inst::Sar { dest, src, bytes, .. } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, &1);
+
+                match instruction {
+                    Inst::Shl { .. } => emit!(out, "shl{suffix}    {src}, {dest}"),
+                    Inst::Shr { .. } => emit!(out, "shr{suffix}    {src}, {dest}"),
+                    Inst::Sar { .. } => emit!(out, "sar{suffix}    {src}, {dest}"),
+                    _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+            }
+
             Inst::IDiv {
                 result,
                 dividend,
