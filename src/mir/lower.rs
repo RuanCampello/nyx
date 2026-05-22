@@ -364,10 +364,7 @@ impl<'a> FunctionLower<'a> {
                         true => (0, origin.typ),
                         false => self.field_path_info(origin.typ, &receiver.fields),
                     };
-                    debug_assert!(matches!(
-                        receiver_type,
-                        Type::Struct(_) | Type::Ref { .. } | Type::Char
-                    ));
+                    debug_assert!(!matches!(receiver_type, Type::Unit));
 
                     match matches!(receiver_type, Type::Ref { .. }) {
                         #[rustfmt::skip]
