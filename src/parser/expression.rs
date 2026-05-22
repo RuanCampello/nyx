@@ -82,19 +82,14 @@ pub enum UnaryOperator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[rustfmt::skip]
 pub enum BinaryOperator {
-    Add,
-    Sub,
-    Div,
-    Mul,
-    Eq,
-    Ne,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-    And,
-    Or,
+    Add, Sub, Div, Mul,
+    Eq, Ne,
+    Lt, LtEq, Gt, GtEq,
+    And, Or,
+    BitAnd, BitOr, BitXor, Shl,
+    Shr,
 }
 
 impl<'i> Parsable<'i> for Expression<'i> {
@@ -168,7 +163,7 @@ impl<'i> Expression<'i> {
                     }
                 };
 
-                let expr = Self::parse_expr(parser, 7)?;
+                let expr = Self::parse_expr(parser, 11)?;
                 let span = token.span + expr.span();
 
                 Ok(Expression::Unary {
@@ -250,11 +245,15 @@ impl<'i> Expression<'i> {
             | TokenKind::Punct(Punct::LtEq)
             | TokenKind::Punct(Punct::Gt)
             | TokenKind::Punct(Punct::GtEq) => 5,
-            TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 6,
-            TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 7,
-            TokenKind::Punct(Punct::OpenParen) => 8, // function call
-            TokenKind::Punct(Punct::ColonColon) => 9,
-            TokenKind::Punct(Punct::Dot) => 10, // field access
+            TokenKind::Punct(Punct::Pipe) => 6,
+            TokenKind::Punct(Punct::Caret) => 7,
+            TokenKind::Punct(Punct::Ampersand) => 8,
+            TokenKind::Punct(Punct::Shl) | TokenKind::Punct(Punct::Shr) => 9,
+            TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 10,
+            TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 11,
+            TokenKind::Punct(Punct::OpenParen) => 12, // function call
+            TokenKind::Punct(Punct::ColonColon) => 13,
+            TokenKind::Punct(Punct::Dot) => 14, // field access
             _ => 0,
         }
     }
@@ -432,6 +431,11 @@ impl<'i> Expression<'i> {
                     TokenKind::Punct(Punct::GtEq) => BinaryOperator::GtEq,
                     TokenKind::Punct(Punct::And) => BinaryOperator::And,
                     TokenKind::Punct(Punct::Or) => BinaryOperator::Or,
+                    TokenKind::Punct(Punct::Ampersand) => BinaryOperator::BitAnd,
+                    TokenKind::Punct(Punct::Pipe) => BinaryOperator::BitOr,
+                    TokenKind::Punct(Punct::Caret) => BinaryOperator::BitXor,
+                    TokenKind::Punct(Punct::Shl) => BinaryOperator::Shl,
+                    TokenKind::Punct(Punct::Shr) => BinaryOperator::Shr,
                     _ => {
                         return Err(ParserError::new(
                             ParseErrorKind::InvalidBinaryOperator { found: token.kind },
