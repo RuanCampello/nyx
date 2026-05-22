@@ -58,48 +58,36 @@ pub struct StructField {
 /// all valid non-reference types that can be referenced in Nyx, preventing
 /// invalid type states like nested references (e.g. `&&i64`) by construction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[rustfmt::skip]
 pub enum RefTarget {
     Struct(StructId),
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
+    I8, U8,
+    I16, U16,
+    I32, U32,
+    I64, U64,
+    F32, F64,
     Bool,
-    Uptr,
-    Iptr,
+    Uptr, Iptr,
     Char,
-    Str,
-    String,
+    Str, String,
     Unit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[rustfmt::skip]
 #[non_exhaustive]
 pub enum Type {
     #[default]
     Unit,
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
+    I8, U8,
+    I16, U16,
+    I32, U32,
+    I64, U64,
+    F32, F64,
     Bool,
-    Uptr,
-    Iptr,
+    Uptr, Iptr,
     Char,
-    Str,
-    String,
+    Str, String,
     Struct(StructId),
     Ref {
         mutable: bool,
@@ -111,22 +99,13 @@ pub enum Type {
 pub struct StructId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum Statement {
-    Let {
-        id: LocalId,
-        init: Option<Expression>,
-    },
+    Let { id: LocalId, init: Option<Expression> },
     Expr(Expression),
     Return(Option<Expression>),
-    If {
-        condition: Expression,
-        then_block: Block,
-        else_block: Option<Block>,
-    },
-    While {
-        condition: Expression,
-        body: Block,
-    },
+    If { condition: Expression, then_block: Block, else_block: Option<Block> },
+    While { condition: Expression, body: Block },
     Block(Block),
 }
 
@@ -182,6 +161,7 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum ExpressionKind {
     #[allow(dead_code)]
     Unit,
@@ -191,53 +171,23 @@ pub enum ExpressionKind {
     Char(char),
     Bool(bool),
     Local(LocalId),
-    Unary {
-        operator: UnaryOperator,
-        expr: Box<Expression>,
-    },
-    Binary {
-        operator: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    Assign {
-        target: LocalId,
-        value: Box<Expression>,
-    },
+    Unary { operator: UnaryOperator, expr: Box<Expression> },
+    Binary { operator: BinaryOperator, left: Box<Expression>, right: Box<Expression> },
+    Assign { target: LocalId, value: Box<Expression> },
     /// source-level field path resolved to a base local plus field symbols
     /// MIR turns this into a byte-offset load from that base aggregate
-    FieldAccess {
-        local: LocalId,
-        fields: Vec<SymbolId>,
-    },
+    FieldAccess { local: LocalId, fields: Vec<SymbolId> },
     /// source-level field path assignment
     /// the base local mutability is checked in HIR
-    FieldAssign {
-        local: LocalId,
-        fields: Vec<SymbolId>,
-        value: Box<Expression>,
-    },
-    MethodCall {
-        function: FunctionId,
-        receiver: Receiver,
-        args: Vec<Expression>,
-    },
+    FieldAssign { local: LocalId, fields: Vec<SymbolId>, value: Box<Expression> },
+    MethodCall { function: FunctionId, receiver: Receiver, args: Vec<Expression> },
     Struct {
         id: StructId,
         fields: Vec<(SymbolId, Expression)>,
     },
-    Call {
-        function: FunctionId,
-        args: Vec<Expression>,
-    },
-    Syscall {
-        code: SyscallCode,
-        args: Vec<Expression>,
-    },
-    IntrinsicCall {
-        intrinsic: Intrinsic,
-        args: Vec<Expression>,
-    },
+    Call { function: FunctionId, args: Vec<Expression> },
+    Syscall { code: SyscallCode, args: Vec<Expression> },
+    IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -583,6 +533,52 @@ mod tests {
                 found: Type::I32
             }
         )
+    }
+
+    #[test]
+    fn bitwise_and_shifts_typechecking() {
+        let source_ok = r#"
+            fn main() {
+                let a: i32 = 1;
+                let b: i32 = 2;
+                let c: i32 = a & b;
+                let d: i32 = a | b;
+                let e: i32 = a ^ b;
+                let f: i32 = !a;
+                let g: i32 = a << b;
+                let h: i32 = a >> b;
+
+                let x: bool = true;
+                let y: bool = false;
+                let z: bool = x & y;
+                let w: bool = x | y;
+                let v: bool = x ^ y;
+                let u: bool = !x;
+            }
+        "#;
+        let statements = Parser::new(source_ok).parse().unwrap();
+        assert!(super::lower(statements).is_ok());
+
+        let source_err_shift = r#"
+            fn main() {
+                let a: bool = true;
+                let b: i32 = 2;
+                let c: bool = a << b;
+            }
+        "#;
+        let statements = Parser::new(source_err_shift).parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
+
+        let source_err_not = r#"
+            fn main() {
+                let a: f64 = 1.0;
+                let b: f64 = !a;
+            }
+        "#;
+        let statements = Parser::new(source_err_not).parse().unwrap();
+        let err = super::lower(statements).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
     }
 
     #[test]
