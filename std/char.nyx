@@ -26,4 +26,42 @@ impl char {
     pub inline fn is_ascii(&self): bool {
         *self <= '\u{7f}'
     }
+
+    pub inline fn to_ascii_lowercase(&self): char {
+        if *self >= 'A' && *self <= 'Z' {
+            return (((*self) as u32) + 32) as char;
+        }
+        *self
+    }
+
+    pub inline fn to_ascii_uppercase(&self): char {
+        if *self >= 'a' && *self <= 'z' {
+            return (((*self) as u32) - 32) as char;
+        }
+        *self
+    }
+
+    pub inline fn is_ascii_graphic(&self): bool {
+        let val = (*self) as u32;
+        val >= 33 && val <= 126
+    }
+
+    pub inline fn is_ascii_control(&self): bool {
+        let val = (*self) as u32;
+        val < 32 || val == 127
+    }
+
+    pub inline fn is_ascii_punctuation(&self): bool {
+        let val = (*self) as u32;
+        (val >= 33 && val <= 47) ||
+        (val >= 58 && val <= 64) ||
+        (val >= 91 && val <= 96) ||
+        (val >= 123 && val <= 126)
+    }
+
+    pub inline fn is_ascii_hexdigit(&self): bool {
+        (*self >= '0' && *self <= '9') ||
+        (*self >= 'a' && *self <= 'f') ||
+        (*self >= 'A' && *self <= 'F')
+    }
 }
