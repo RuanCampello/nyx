@@ -16,6 +16,10 @@ hi def link nyxType Type
 syn match nyxStruct "\<[A-Z][a-zA-Z0-9_]*\>"
 hi def link nyxStruct Type
 
+" Constants
+syn match nyxConstant "\<[A-Z][A-Z0-9_]*\>"
+hi def link nyxConstant Constant
+
 " Booleans
 syn keyword nyxBoolean true false
 hi def link nyxBoolean Boolean
@@ -57,5 +61,9 @@ syn match nyxInterpolation "{[a-zA-Z_][a-zA-Z0-9_]*}" contained
 syn region nyxString start='"' end='"' skip='\\"' contains=nyxInterpolation
 hi def link nyxInterpolation Identifier
 hi def link nyxString String
+
+" Constants (UPPER_SNAKE_CASE)
+syn match nyxConstant "\<[A-Z][A-Z0-9_]*\>"
+hi def link nyxConstant Constant
 
 let b:current_syntax = "nyx"
