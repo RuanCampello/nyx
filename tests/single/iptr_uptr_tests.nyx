@@ -1,0 +1,75 @@
+use std::mem::{size_of};
+
+fn main(): i32 {
+    let bits_iptr = iptr::BITS;
+    let bits_uptr = uptr::BITS;
+
+    // Verify BITS matches size_of * 8
+    if bits_iptr != (size_of(iptr) * 8) as u32 return 1;
+    if bits_uptr != (size_of(uptr) * 8) as u32 return 2;
+
+    // Verify limits are correctly set/computed
+    let max_iptr = iptr::MAX;
+    let min_iptr = iptr::MIN;
+    let max_uptr = uptr::MAX;
+    let min_uptr = uptr::MIN;
+
+    if min_uptr != 0 return 3;
+
+    // On 64-bit platforms (which we expect our tests to run on):
+    if size_of(iptr) == 8 {
+        if bits_iptr != 64 return 4;
+        
+        // Avoid 64-bit immediate in cmpq by comparing parts that fit in 32-bit signed range
+        if (max_iptr >> 32) as i32 != 2147483647 return 5;
+        if max_iptr as i32 != -1 return 6;
+        
+        if min_iptr != -9223372036854775807 - 1 return 7;
+    }
+
+    // max_iptr + 1 should wrap to min_iptr
+    if max_iptr + 1 != min_iptr return 8;
+    // min_iptr - 1 should wrap to max_iptr
+    if min_iptr - 1 != max_iptr return 9;
+    // max_uptr + 1 should wrap to 0 (min_uptr)
+    if max_uptr + 1 != min_uptr return 10;
+
+    // abs()
+    let zero: iptr = 0;
+    let one: iptr = 1;
+    let neg_one: iptr = -1;
+    let five: iptr = 5;
+    let neg_five: iptr = -5;
+
+    if zero.abs() != 0 return 11;
+    if one.abs() != 1 return 12;
+    if neg_one.abs() != 1 return 13;
+    if five.abs() != 5 return 14;
+    if neg_five.abs() != 5 return 15;
+
+    // signum()
+    if zero.signum() != 0 return 16;
+    if one.signum() != 1 return 17;
+    if neg_one.signum() != -1 return 18;
+    if five.signum() != 1 return 19;
+    if neg_five.signum() != -1 return 20;
+
+    // is_power_of_two()
+    let u_zero: uptr = 0;
+    let u_one: uptr = 1;
+    let u_two: uptr = 2;
+    let u_three: uptr = 3;
+    let u_four: uptr = 4;
+    let u_five: uptr = 5;
+    let u_sixteen: uptr = 16;
+
+    if u_zero.is_power_of_two() return 21;
+    if !u_one.is_power_of_two() return 22;
+    if !u_two.is_power_of_two() return 23;
+    if u_three.is_power_of_two() return 24;
+    if !u_four.is_power_of_two() return 25;
+    if u_five.is_power_of_two() return 26;
+    if !u_sixteen.is_power_of_two() return 27;
+
+    0
+}
