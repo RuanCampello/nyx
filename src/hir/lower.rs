@@ -323,7 +323,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 // for negation the hint flows through to the operand
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
-                    UnaryOperator::Not => Some(Type::Bool),
+                    UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| Type::Ref {
                         mutable: false,
                         to: match h {
@@ -350,7 +350,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             });
                         }
                     },
-                    UnaryOperator::Not => Type::Bool,
+                    UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
+                        true => expr.typ,
+                        _ => {
+                            return Err(HirError {
+                                kind: HirErrorKind::TypeMismatch {
+                                    expected: Type::Bool,
+                                    found: expr.typ,
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    },
                     UnaryOperator::Deref => match expr.typ {
                         Type::Ref { to, .. } => to.into(),
                         _ => {
@@ -404,8 +415,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     | BinaryOperator::Gt
                     | BinaryOperator::GtEq
                     | BinaryOperator::Eq
-                    | BinaryOperator::Ne => Some(left.typ),
+                    | BinaryOperator::Ne
+                    | BinaryOperator::BitAnd
+                    | BinaryOperator::BitOr
+                    | BinaryOperator::BitXor => Some(left.typ),
                     BinaryOperator::And | BinaryOperator::Or => Some(Type::Bool),
+                    BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
                 let right = self.lower_expr(right, right_hint)?;
 
@@ -1071,6 +1086,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
+        let type_mismatch = |found| HirError {
+            kind: HirErrorKind::TypeMismatch {
+                expected: Type::I32,
+                found,
+            },
+            span,
+        };
+
         match operator {
             BinaryOperator::Add
             | BinaryOperator::Sub
@@ -1079,13 +1102,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(left, right, span)?;
                 match left.is_number() {
                     true => Ok(left),
-                    _ => Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::I32,
-                            found: left,
-                        },
-                        span,
-                    }),
+                    _ => Err(type_mismatch(left)),
                 }
             }
 
@@ -1101,13 +1118,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(left, right, span)?;
                 match left.is_number() || left == Type::Char {
                     true => Ok(Type::Bool),
-                    _ => Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::I32,
-                            found: left,
-                        },
-                        span,
-                    }),
+                    _ => Err(type_mismatch(left)),
                 }
             }
 
@@ -1116,6 +1127,27 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.assert_type(Type::Bool, right, span)?;
 
                 Ok(Type::Bool)
+            }
+
+            BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
+                self.assert_type(left, right, span)?;
+
+                match left == Type::Bool || left.is_integer() {
+                    true => Ok(left),
+                    _ => Err(type_mismatch(left)),
+                }
+            }
+
+            BinaryOperator::Shl | BinaryOperator::Shr => {
+                if !left.is_integer() {
+                    return Err(type_mismatch(left));
+                }
+
+                if !right.is_integer() {
+                    return Err(type_mismatch(right));
+                }
+
+                Ok(left)
             }
         }
     }
