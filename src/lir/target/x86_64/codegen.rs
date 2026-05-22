@@ -11,27 +11,33 @@ use crate::{
         self, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, PhysicalReg, RegClass, Target,
+            Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
             x86_64::{X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
 };
 use std::{borrow::Cow, fmt::Write};
 
-#[derive(Clone)]
-struct ParallelMove<'m> {
-    src: String,
-    src_reg: Option<X86Reg>,
-    dest: String,
-    dest_reg: X86Reg,
-    suffix: &'m str,
-    is_float: bool,
-}
-
 impl Emittable<X86_64> for Function<X86_64> {
     fn emit(&self, alloc: Allocation<X86_64>, out: &mut String) {
         let name = &self.name;
-        let frame_size = alloc.frame_size;
+
+        let mut max_outgoing_args = 0;
+        for block in &self.blocks {
+            for instr in &block.instructions {
+                if let X86Instr::Call { stack_args, .. } = instr {
+                    let size = stack_args.len() * 8;
+                    if size > max_outgoing_args {
+                        max_outgoing_args = size;
+                    }
+                }
+            }
+        }
+        let callee_saved_size = alloc.used_callee_saved.len() * 8;
+        let total_size = alloc.frame_size as usize + max_outgoing_args + callee_saved_size;
+        let aligned_total = (total_size + 15) & !15;
+        let frame_size = (aligned_total - callee_saved_size) as u32;
+
         let epilogue = format!(".L_{name}_epilogue");
 
         Self::emit_prologue(&alloc, name, frame_size, out);
@@ -431,32 +437,31 @@ impl Function<X86_64> {
                 let n_stack = stack_args.len();
 
                 if n_stack > 0 {
-                    // aligment
-                    let push_bytes = n_stack * 8;
-                    let needs_pad = (push_bytes % 16) == 0;
-                    if needs_pad {
-                        emit!(out, "subq    $8, %rsp");
-                    }
-
-                    for (operand, mt) in stack_args.iter().rev() {
+                    for (i, (operand, mt)) in stack_args.iter().enumerate() {
                         let bytes = mt.bytes();
                         let is_float = matches!(mt, MachineType::Float { .. });
+                        let offset = i * 8;
+                        let dest = format!("{offset}(%rsp)");
 
                         match operand {
-                            X86Operand::Imm(n) => emit!(out, "pushq   ${n}"),
-                            // float or string constants we need to load into a scratch before push
+                            X86Operand::Imm(n) => {
+                                match *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
+                                    true => emit!(out, "movq    ${n}, {dest}"),
+                                    _ => {
+                                        emit!(out, "movabsq ${n}, %r11");
+                                        emit!(out, "movq    %r11, {dest}");
+                                    }
+                                }
+                            }
                             X86Operand::RipRel(label) => match is_float {
                                 true => {
                                     let suffix = float_suffix(&bytes);
-
-                                    emit!(out, "subq    $8, %rsp");
                                     emit!(out, "mov{suffix}    {label}, %xmm15");
-                                    emit!(out, "mov{suffix}    %xmm15, (%rsp)");
+                                    emit!(out, "mov{suffix}    %xmm15, {dest}");
                                 }
-
                                 false => {
                                     emit!(out, "leaq    {label}, %r11");
-                                    emit!(out, "pushq   %r11");
+                                    emit!(out, "movq    %r11, {dest}");
                                 }
                             },
                             X86Operand::VReg(vreg) => {
@@ -465,20 +470,33 @@ impl Function<X86_64> {
                                 match is_float {
                                     true => {
                                         let suffix = float_suffix(&bytes);
+                                        match src.contains("(%rbp)") {
+                                            true => {
+                                                emit!(out, "mov{suffix}    {src}, %xmm15");
+                                                emit!(out, "mov{suffix}    %xmm15, {dest}");
+                                            }
 
-                                        emit!(out, "subq    $8, %rsp");
-                                        emit!(out, "mov{suffix}    {src}, %xmm15");
-                                        emit!(out, "mov{suffix}    %xmm15, (%rsp)");
+                                            _ => emit!(out, "mov{suffix}    {src}, {dest}"),
+                                        }
                                     }
-                                    // widen to 8-byte slot only if necessary
-                                    false if bytes < 8 => {
+                                    false => {
                                         let suffix = suffix(&bytes);
-
-                                        emit!(out, "movs{suffix}q   {src}, %r11");
-                                        emit!(out, "pushq   %r11");
+                                        match bytes < 8 {
+                                            true => {
+                                                emit!(out, "movs{suffix}q   {src}, %r11");
+                                                emit!(out, "movq    %r11, {dest}");
+                                            }
+                                            _ => match src.contains("(%rbp)") {
+                                                true => {
+                                                    emit!(out, "movq    {src}, %r11");
+                                                    emit!(out, "movq    %r11, {dest}");
+                                                }
+                                                _ => {
+                                                    emit!(out, "movq    {src}, {dest}");
+                                                }
+                                            },
+                                        }
                                     }
-
-                                    false => emit!(out, "pushq    {src}"),
                                 }
                             }
                         }
@@ -491,27 +509,35 @@ impl Function<X86_64> {
                     .map(|(vreg, reg)| {
                         let bytes = self.reg_bytes(vreg);
                         let is_float = self.is_float(vreg);
-                        let suffix = typed_suffix(&bytes, is_float);
                         let src = alloc.location(vreg, &bytes);
                         let src_reg = alloc.reg(vreg);
                         let dest = format!("%{}", reg.name(bytes));
 
-                        ParallelMove { src, src_reg, dest, dest_reg: *reg, suffix, is_float }
+                        ParallelMove { src, src_reg, dest, dest_reg: *reg, bytes, is_float }
                     })
                     .collect();
 
-                resolve_parallel_moves(out, arg_moves);
+                resolve_parallel_moves(
+                    arg_moves,
+                    out,
+                    |out, m| {
+                        let suffix = typed_suffix(&m.bytes, m.is_float);
+                        mov_or_scratch(out, &m.src, &m.dest, suffix, m.is_float);
+                    },
+                    |out, m| {
+                        let suffix = typed_suffix(&m.bytes, m.is_float);
+                        let scratch = match m.is_float {
+                            true => "%xmm15",
+                            false => scratch_gpr(suffix),
+                        };
+
+                        emit!(out, "mov{suffix}    {}, {scratch}", m.src);
+                        m.src = scratch.to_string();
+                        m.src_reg = None;
+                    },
+                );
 
                 emit!(out, "call    {target}");
-
-                // restore rsp pass the pushed stack arguments
-                if n_stack > 0 {
-                    let total_push = n_stack * 8;
-                    let needs_pad = (total_push % 16) != 8;
-                    let adjust = total_push + if needs_pad { 8 } else { 0 };
-
-                    emit!(out, "addq    ${adjust}, %rsp");
-                }
 
                 if let Some(ret) = ret {
                     let bytes = self.reg_bytes(ret);
@@ -731,54 +757,6 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
         },
 
         false => emit!(out, "mov{suffix}    {src}, {dest}"),
-    }
-}
-
-impl<'m> ParallelMove<'m> {
-    #[inline(always)]
-    fn is_self_move(&self) -> bool {
-        self.src_reg == Some(self.dest_reg) || self.src == self.dest
-    }
-
-    #[inline(always)]
-    fn dest_is_read_by(&self, other: &Self) -> bool {
-        other.src_reg == Some(self.dest_reg) || other.src == self.dest
-    }
-}
-
-/// Serialise a set of parallel register moves without data corruption
-///
-/// - Chains (A->B then B->C) are resolved by topological ordering
-/// - Cycles (A->B, B->A) are broken using a scratch register (`%r11`/`%xmm15`)
-fn resolve_parallel_moves(out: &mut String, mut moves: Vec<ParallelMove>) {
-    moves.retain(|m| !m.is_self_move());
-
-    loop {
-        // find a move whose dest is not read by any other pending move
-        let safe = moves.iter().position(|m| {
-            !moves
-                .iter()
-                .any(|other| other.dest_reg != m.dest_reg && m.dest_is_read_by(other))
-        });
-
-        match safe {
-            Some(i) => {
-                let m = moves.swap_remove(i);
-                mov_or_scratch(out, &m.src, &m.dest, m.suffix, m.is_float);
-            }
-            None if moves.is_empty() => break,
-            None => {
-                // in cycle, save first source to scratch, breaking the dependency
-                let scratch = match (moves[0].is_float, moves[0].suffix) {
-                    (true, _) => "%xmm15",
-                    (false, suffix) => scratch_gpr(suffix),
-                };
-
-                emit!(out, "mov{}    {}, {scratch}", moves[0].suffix, moves[0].src);
-                moves[0].src = scratch.to_string();
-                moves[0].src_reg = None;
-            }
-        }
     }
 }
 

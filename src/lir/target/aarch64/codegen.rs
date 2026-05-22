@@ -16,17 +16,33 @@ use crate::{
         Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, PhysicalReg, RegClass, Target,
+            Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
             aarch64::{A64Instr, A64Operand, A64Reg, AArch64},
         },
     },
 };
 use std::fmt::Write;
 
+
+
 impl Emittable<AArch64> for Function<AArch64> {
     fn emit(&self, alloc: Allocation<AArch64>, out: &mut String) {
         let name = &self.name;
-        let frame_size = alloc.frame_size;
+
+        let mut max_outgoing_args = 0;
+        for block in &self.blocks {
+            for instr in &block.instructions {
+                if let A64Instr::Call { stack_args, .. } = instr {
+                    let size = stack_args.len() * 8;
+                    if size > max_outgoing_args {
+                        max_outgoing_args = size;
+                    }
+                }
+            }
+        }
+
+        let max_outgoing_args = (max_outgoing_args + 15) & !15;
+        let frame_size = alloc.frame_size + max_outgoing_args as u32;
         let epilogue = format!(".L_{name}_epilogue");
 
         Self::emit_prologue(&alloc, name, frame_size, out);
@@ -407,11 +423,6 @@ impl Function<AArch64> {
                 let n_stack = stack_args.len();
 
                 if n_stack > 0 {
-                    // pre-allocate stack space (16-byte aligned)
-                    let slot_bytes = n_stack * 8;
-                    let aligned = (slot_bytes + 15) & !15;
-                    emit!(out, "sub     sp, sp, #{aligned}");
-
                     for (i, (operand, mt)) in stack_args.iter().enumerate() {
                         let bytes = mt.bytes();
                         let offset = i * 8;
@@ -454,43 +465,39 @@ impl Function<AArch64> {
 
                 let n_moves = moves.len();
                 if n_moves > 0 {
-                    let slot_bytes = n_moves * 8;
-                    let aligned = (slot_bytes + 15) & !15;
-                    emit!(out, "sub     sp, sp, #{aligned}");
+                    #[rustfmt::skip]
+                    let arg_moves = moves
+                        .iter()
+                        .map(|(vreg, reg)| {
+                            let bytes = self.reg_bytes(vreg);
+                            let is_float = self.is_float(vreg);
+                            let src = alloc.location(vreg, &bytes);
+                            let src_reg = alloc.reg(vreg);
+                            let dest = reg.name(bytes).to_string();
 
-                    for (idx, (vreg, _)) in moves.iter().enumerate() {
-                        let bytes = self.reg_bytes(vreg);
-                        let src = alloc.location(vreg, &bytes);
-                        let src = load_src_if_mem(out, &src, bytes, self.is_float(vreg));
-                        let offset = idx * 8;
-                        emit_store(out, &src, &format!("[sp, #{offset}]"), bytes);
-                    }
+                            ParallelMove { src, src_reg, dest, dest_reg: *reg, bytes, is_float }
+                        })
+                        .collect();
 
-                    for (idx, (vreg, reg)) in moves.iter().enumerate() {
-                        let bytes = self.reg_bytes(vreg);
-                        let dest = reg.name(bytes);
-                        let offset = idx * 8;
-                        emit_load_reg(
-                            out,
-                            dest,
-                            &format!("[sp, #{offset}]"),
-                            bytes,
-                            self.is_signed(vreg),
-                            self.is_float(vreg),
-                        );
-                    }
+                    resolve_parallel_moves(
+                        arg_moves,
+                        out,
+                        |out, m| emit_move(out, &m.dest, &m.src, m.bytes, m.is_float),
+                        |out, m| {
+                            let scratch_reg = match m.is_float {
+                                true => A64Reg::D16,
+                                false => A64Reg::X16,
+                            };
+                            let scratch_name = scratch_reg.name(m.bytes).to_string();
 
-                    emit!(out, "add     sp, sp, #{aligned}");
+                            emit_move(out, &scratch_name, &m.src, m.bytes, m.is_float);
+                            m.src = scratch_name;
+                            m.src_reg = Some(scratch_reg);
+                        },
+                    );
                 }
 
                 emit!(out, "bl      {target}");
-
-                // reclaim stack arguments
-                if n_stack > 0 {
-                    let slot_bytes = n_stack * 8;
-                    let aligned = (slot_bytes + 15) & !15;
-                    emit!(out, "add     sp, sp, #{aligned}");
-                }
 
                 if let Some(ret) = ret {
                     let bytes = self.reg_bytes(ret);
@@ -615,11 +622,6 @@ impl Function<AArch64> {
     }
 
     #[inline(always)]
-    fn is_signed(&self, vreg: &VReg) -> bool {
-        self.vreg_types.get(vreg.0 as usize).map(|typ| typ.is_signed()).unwrap_or(false)
-    }
-
-    #[inline(always)]
     fn operand<'s>(
         &self,
         alloc: &Allocation<AArch64>,
@@ -652,6 +654,14 @@ impl Allocation<AArch64> {
 
     fn stack_offset(&self, offset: i32) -> i32 {
         offset - callee_saved_area(self) as i32
+    }
+
+    #[inline(always)]
+    fn reg(&self, vreg: &VReg) -> Option<A64Reg> {
+        match self.location_of(vreg) {
+            Location::Reg(reg) => Some(reg),
+            Location::Stack(_) => None,
+        }
     }
 }
 
@@ -872,3 +882,5 @@ const fn mem_suffix<'s>(bytes: &u8) -> &'s str {
         _ => "",
     }
 }
+
+
