@@ -25,6 +25,7 @@ mod lower;
 pub(crate) mod module;
 mod scope;
 mod symbols;
+mod topo;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {

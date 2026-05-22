@@ -7,6 +7,7 @@ use crate::{
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
+        topo,
     },
     lexer::Spanned,
     parser::{expression, statement},
@@ -145,18 +146,15 @@ impl Scope {
         }
 
         let mut lowered = vec![None; local_declarations.len()];
-        let mut states = vec![lower::Visit::Unvisited; local_declarations.len()];
+        let mut states = vec![topo::SortingVisit::Unvisited; local_declarations.len()];
 
-        for id in 0..local_declarations.len() {
-            lower::lower_struct(
-                id,
-                &local_declarations,
-                &local_map,
-                symbols,
-                &mut lowered,
-                &mut states,
-            )?;
-        }
+        lower::lower_structs(
+            &local_declarations,
+            &local_map,
+            symbols,
+            &mut lowered,
+            &mut states,
+        )?;
 
         for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
             s.id = StructId(s.id.0 + offset);
@@ -681,17 +679,17 @@ impl Scope {
         in_std: bool,
     ) -> Result<(), HirError<'s>> {
         struct ConstDecl<'d, 's> {
-            mangled_name: String,
+            mangled_name: SymbolId,
             impl_type: Option<&'d str>,
             ast: &'d statement::Const<'s>,
         }
 
-        let mut decls: HashMap<String, ConstDecl<'d, 's>> = HashMap::new();
+        let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
 
         // collect top-level constants
         for c in &declarations.constants {
-            let mangled = c.name.to_string();
-            if decls.contains_key(&mangled) {
+            let symbol_id = symbols.insert(c.name);
+            if decls.contains_key(&symbol_id) {
                 return Err(HirError {
                     kind: HirErrorKind::DuplicateConstant {
                         name: c.name.to_string(),
@@ -701,9 +699,9 @@ impl Scope {
             }
 
             decls.insert(
-                mangled.clone(),
+                symbol_id,
                 ConstDecl {
-                    mangled_name: mangled,
+                    mangled_name: symbol_id,
                     impl_type: None,
                     ast: c,
                 },
@@ -714,7 +712,8 @@ impl Scope {
         for imp in &declarations.impls {
             for c in &imp.constants {
                 let mangled = format!("{}__{}", imp.name, c.name);
-                if decls.contains_key(&mangled) {
+                let symbol_id = symbols.insert(&mangled);
+                if decls.contains_key(&symbol_id) {
                     return Err(HirError {
                         kind: HirErrorKind::DuplicateConstant {
                             name: format!("{}::{}", imp.name, c.name),
@@ -724,9 +723,9 @@ impl Scope {
                 }
 
                 decls.insert(
-                    mangled.clone(),
+                    symbol_id,
                     ConstDecl {
-                        mangled_name: mangled,
+                        mangled_name: symbol_id,
                         impl_type: Some(imp.name),
                         ast: c,
                     },
@@ -734,98 +733,73 @@ impl Scope {
             }
         }
 
-        let mut visited = HashSet::new();
-        let mut visiting = HashSet::new();
         let mut sorted = Vec::new();
-
-        fn dfs<'d, 's>(
-            name: &str,
-            decls: &HashMap<String, ConstDecl<'d, 's>>,
-            visiting: &mut HashSet<String>,
-            visited: &mut HashSet<String>,
-            sorted: &mut Vec<String>,
-        ) -> Result<(), HirError<'s>> {
-            if visiting.contains(name) {
-                let decl = decls.get(name).unwrap();
-                return Err(HirError {
-                    kind: HirErrorKind::CircularConstant {
-                        name: name.to_string(),
-                    },
-                    span: decl.ast.span,
-                });
-            }
-            if !visited.contains(name) {
-                visiting.insert(name.to_string());
-                if let Some(decl) = decls.get(name) {
-                    let mut deps = Vec::new();
-                    find_dependencies(&decl.ast.value, decl.impl_type, decls, &mut deps);
-                    for dep in deps {
-                        if decls.contains_key(&dep) {
-                            dfs(&dep, decls, visiting, visited, sorted)?;
-                        }
-                    }
-                }
-                visiting.remove(name);
-                visited.insert(name.to_string());
-                sorted.push(name.to_string());
-            }
-            Ok(())
-        }
+        let mut states = HashMap::new();
 
         fn find_dependencies<'d, 'i>(
             expr: &expression::Expression<'i>,
             current_impl: Option<&str>,
-            decls: &HashMap<String, ConstDecl<'d, 'i>>,
-            deps: &mut Vec<String>,
+            symbols: &SymbolTable,
+            decls: &HashMap<SymbolId, ConstDecl<'d, 'i>>,
+            deps: &mut Vec<SymbolId>,
         ) {
             use expression::Expression as Expr;
 
             match expr {
-                Expr::Identifier(name, _) => match current_impl {
-                    Some(impl_type) => {
+                Expr::Identifier(name, _) => {
+                    if let Some(impl_type) = current_impl {
                         let mangled = format!("{}__{}", impl_type, name);
-                        if decls.contains_key(&mangled) {
-                            deps.push(mangled);
-                            return;
+                        if let Some(symbol_id) = symbols.get_id(&mangled) {
+                            if decls.contains_key(&symbol_id) {
+                                deps.push(symbol_id);
+                                return;
+                            }
                         }
                     }
-                    _ if decls.contains_key(*name) => {
-                        deps.push((*name).to_string());
+                    if let Some(symbol_id) = symbols.get_id(*name) {
+                        if decls.contains_key(&symbol_id) {
+                            deps.push(symbol_id);
+                        }
                     }
-                    _ => {}
-                },
+                }
                 Expr::QualifiedName {
                     qualifier, name, ..
                 } => {
                     let mangled = format!("{}__{}", qualifier, name);
-                    if decls.contains_key(&mangled) {
-                        deps.push(mangled);
+                    if let Some(symbol_id) = symbols.get_id(&mangled) {
+                        if decls.contains_key(&symbol_id) {
+                            deps.push(symbol_id);
+                        }
                     }
                 }
-                Expr::Unary { expr, .. } => find_dependencies(expr, current_impl, decls, deps),
+                Expr::Unary { expr, .. } => {
+                    find_dependencies(expr, current_impl, symbols, decls, deps)
+                }
                 Expr::Binary { left, right, .. } => {
-                    find_dependencies(left, current_impl, decls, deps);
-                    find_dependencies(right, current_impl, decls, deps);
+                    find_dependencies(left, current_impl, symbols, decls, deps);
+                    find_dependencies(right, current_impl, symbols, decls, deps);
                 }
                 Expr::Assignment { target, value, .. } => {
-                    find_dependencies(target, current_impl, decls, deps);
-                    find_dependencies(value, current_impl, decls, deps);
+                    find_dependencies(target, current_impl, symbols, decls, deps);
+                    find_dependencies(value, current_impl, symbols, decls, deps);
                 }
-                Expr::Field { expr, .. } => find_dependencies(expr, current_impl, decls, deps),
+                Expr::Field { expr, .. } => {
+                    find_dependencies(expr, current_impl, symbols, decls, deps)
+                }
                 Expr::Struct { fields, .. } => {
                     for f in fields {
-                        find_dependencies(&f.value, current_impl, decls, deps);
+                        find_dependencies(&f.value, current_impl, symbols, decls, deps);
                     }
                 }
                 Expr::Call { callee, args, .. } => {
-                    find_dependencies(callee, current_impl, decls, deps);
+                    find_dependencies(callee, current_impl, symbols, decls, deps);
                     for arg in args {
-                        find_dependencies(arg, current_impl, decls, deps);
+                        find_dependencies(arg, current_impl, symbols, decls, deps);
                     }
                 }
                 Expr::QualifiedCall { args, .. } => {
                     for arg in args {
-                        find_dependencies(arg, current_impl, decls, deps);
+                        find_dependencies(arg, current_impl, symbols, decls, deps);
                     }
                 }
                 Expr::TypeIntrinsic { .. } => {}
@@ -837,14 +811,37 @@ impl Scope {
             }
         }
 
-        for name in decls.keys() {
-            if !visited.contains(name) {
-                dfs(name, &decls, &mut visiting, &mut visited, &mut sorted)?;
-            }
-        }
+        let nodes: Vec<SymbolId> = decls.keys().copied().collect();
 
-        for mangled_name in sorted {
-            let decl = decls.get(&mangled_name).unwrap();
+        topo::topological_sort(
+            &nodes,
+            &mut states,
+            |symbol_id| {
+                let decl = decls.get(&symbol_id).unwrap();
+                let mut deps = Vec::new();
+                find_dependencies(&decl.ast.value, decl.impl_type, symbols, &decls, &mut deps);
+                Ok(deps)
+            },
+            |symbol_id| {
+                let decl = decls.get(&symbol_id).unwrap();
+                let name = match decl.impl_type {
+                    Some(impl_type) => format!("{}::{}", impl_type, decl.ast.name),
+                    _ => decl.ast.name.to_string(),
+                };
+
+                HirError {
+                    kind: HirErrorKind::CircularConstant { name },
+                    span: decl.ast.span,
+                }
+            },
+            |symbol_id| {
+                sorted.push(symbol_id);
+                Ok(())
+            },
+        )?;
+
+        for symbol_id in sorted {
+            let decl = decls.get(&symbol_id).unwrap();
             let expected_type = lower::resolve_annotation(
                 symbols,
                 &self.struct_map,
@@ -855,7 +852,6 @@ impl Scope {
             let lowered =
                 lower::lower_const(self, symbols, &decl.ast.value, expected_type, in_std)?;
 
-            let symbol_id = symbols.insert(&mangled_name);
             let constant = Constant {
                 name: symbol_id,
                 typ: expected_type,

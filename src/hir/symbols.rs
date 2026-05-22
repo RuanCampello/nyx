@@ -19,6 +19,11 @@ impl SymbolTable {
     }
 
     #[inline(always)]
+    pub fn get_id(&self, name: &str) -> Option<SymbolId> {
+        self.interner.get(name).map(SymbolId)
+    }
+
+    #[inline(always)]
     pub fn get(&self, id: SymbolId) -> &str {
         self.interner.resolve(&id.0)
     }

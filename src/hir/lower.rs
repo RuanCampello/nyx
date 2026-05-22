@@ -5,6 +5,7 @@ use crate::{
         SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         scope::{Scope, Structs},
+        topo,
     },
     lexer::token::Span,
     parser::{
@@ -29,13 +30,6 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     symbols: &'s mut SymbolTable,
     is_const: bool,
     in_std: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::hir) enum Visit {
-    Unvisited,
-    Visiting,
-    Visited,
 }
 
 impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
@@ -321,7 +315,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             }),
 
             Expr::Identifier(name, span) => {
-                let symbol = self.symbols.insert(name);
+                let symbol = match self.symbols.get_id(name) {
+                    Some(sym) => sym,
+                    None => {
+                        return Err(HirError {
+                            kind: HirErrorKind::UndeclaredIdentifier {
+                                name: name.to_string(),
+                            },
+                            span: *span,
+                        });
+                    }
+                };
 
                 // check local variable scopes
                 let Some(id) =
@@ -332,9 +336,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     if let Some(function) = self.function {
                         if let Some(impl_type) = function.impl_type {
                             let mangled_name = format!("{impl_type}__{name}");
-                            let mangled_symbol = self.symbols.insert(&mangled_name);
-                            if let Some(c) = self.scope.constants.get(&mangled_symbol) {
-                                found_const = Some(c);
+                            if let Some(mangled_symbol) = self.symbols.get_id(&mangled_name) {
+                                if let Some(c) = self.scope.constants.get(&mangled_symbol) {
+                                    found_const = Some(c);
+                                }
                             }
                         }
                     }
@@ -375,7 +380,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span,
             } => {
                 let mangled_name = format!("{qualifier}__{name}");
-                let symbol = self.symbols.insert(&mangled_name);
+                let symbol = match self.symbols.get_id(&mangled_name) {
+                    Some(sym) => sym,
+                    None => {
+                        return Err(HirError {
+                            kind: HirErrorKind::UndeclaredIdentifier {
+                                name: format!("{qualifier}::{name}"),
+                            },
+                            span: *span,
+                        });
+                    }
+                };
 
                 let Some(c) = self.scope.constants.get(&symbol) else {
                     return Err(HirError {
@@ -520,7 +535,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span,
             } => match target.as_ref() {
                 Expr::Identifier(name, _) => {
-                    let symbol = self.symbols.insert(name);
+                    let symbol = match self.symbols.get_id(name) {
+                        Some(sym) => sym,
+                        None => {
+                            return Err(HirError {
+                                kind: HirErrorKind::UndeclaredIdentifier {
+                                    name: name.to_string(),
+                                },
+                                span: *span,
+                            });
+                        }
+                    };
                     let id = self.resolve_local(symbol, *span)?;
 
                     if !self[id].mutable {
@@ -1443,68 +1468,83 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 }
 
-pub(in crate::hir) fn lower_struct<'h>(
-    id: usize,
+pub(in crate::hir) fn lower_structs<'h>(
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
     symbols: &mut SymbolTable,
     lowered: &mut [Option<Struct>],
-    states: &mut [Visit],
+    states: &mut [topo::SortingVisit],
 ) -> Result<(), HirError<'h>> {
-    match states[id] {
-        Visit::Visited => return Ok(()),
-        Visit::Visiting => {
+    // pre-insert all field names into the symbol table to avoid mutable borrows of symbols
+    // during the topological sort dfs
+    for (_, declaration) in declarations {
+        for field in &declaration.fields {
+            symbols.insert(field.name);
+        }
+    }
+
+    let nodes: Vec<usize> = (0..declarations.len()).collect();
+    let symbols = &*symbols; // shadow as shared reference
+
+    topo::topological_sort(
+        &nodes,
+        states,
+        |id| {
             let (_, declaration) = declarations[id];
-            return Err(HirError {
+            let mut deps = Vec::new();
+            for field in &declaration.fields {
+                let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+                if let Type::Struct(dep) = typ {
+                    deps.push(dep.0 as usize);
+                }
+            }
+            Ok(deps)
+        },
+        |id| {
+            let (_, declaration) = declarations[id];
+            HirError {
                 kind: HirErrorKind::CircularStruct {
                     name: declaration.name.to_string(),
                 },
                 span: declaration.span,
+            }
+        },
+        |id| {
+            let (name, declaration) = declarations[id];
+            let mut seen = HashSet::new();
+            let mut fields = Vec::with_capacity(declaration.fields.len());
+
+            for (idx, field) in declaration.fields.iter().enumerate() {
+                let field_symbol = symbols.get_id(field.name).unwrap();
+                if !seen.insert(field_symbol) {
+                    return Err(HirError {
+                        kind: HirErrorKind::DuplicateField {
+                            name: field.name.to_string(),
+                        },
+                        span: field.span,
+                    });
+                }
+
+                let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+                fields.push(StructField {
+                    name: field_symbol,
+                    typ,
+                    offset: 0,
+                    declared_index: idx as u32,
+                });
+            }
+
+            let (fields, size, align) = layout_fields(fields, lowered);
+            lowered[id] = Some(Struct {
+                id: StructId(id as u32),
+                name,
+                fields,
+                size,
+                align,
             });
-        }
-        Visit::Unvisited => {}
-    }
-
-    states[id] = Visit::Visiting;
-    let (name, declaration) = declarations[id];
-    let mut seen = HashSet::new();
-    let mut fields = Vec::with_capacity(declaration.fields.len());
-
-    for (idx, field) in declaration.fields.iter().enumerate() {
-        let field_symbol = symbols.insert(field.name);
-        if !seen.insert(field_symbol) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateField {
-                    name: field.name.to_string(),
-                },
-                span: field.span,
-            });
-        }
-
-        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
-        if let Type::Struct(dep) = typ {
-            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
-        }
-
-        fields.push(StructField {
-            name: field_symbol,
-            typ,
-            offset: 0,
-            declared_index: idx as u32,
-        });
-    }
-
-    let (fields, size, align) = layout_fields(fields, lowered);
-    lowered[id] = Some(Struct {
-        id: StructId(id as u32),
-        name,
-        fields,
-        size,
-        align,
-    });
-    states[id] = Visit::Visited;
-
-    Ok(())
+            Ok(())
+        },
+    )
 }
 
 pub(in crate::hir) fn lower_const<'s, 'src>(
@@ -1523,14 +1563,24 @@ pub(in crate::hir) fn lower_const<'s, 'src>(
 }
 
 pub(in crate::hir) fn resolve_annotation<'h>(
-    symbols: &mut SymbolTable,
+    symbols: &SymbolTable,
     struct_map: &Structs,
     typ: &statement::Type<'h>,
     span: Span,
 ) -> Result<Type, HirError<'h>> {
     match typ {
         statement::Type::Named(name) => {
-            let symbol = symbols.insert(name);
+            let symbol = match symbols.get_id(name) {
+                Some(sym) => sym,
+                None => {
+                    return Err(HirError {
+                        kind: HirErrorKind::UnknownType {
+                            name: (*name).to_string(),
+                        },
+                        span,
+                    });
+                }
+            };
             struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownType {
                     name: (*name).to_string(),
