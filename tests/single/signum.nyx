@@ -1,0 +1,24 @@
+fn test_i8(val: i8): i8 { val.signum() }
+fn test_i16(val: i16): i16 { val.signum() }
+fn test_i32(val: i32): i32 { val.signum() }
+fn test_i64(val: i64): i64 { val.signum() }
+
+fn main(): i32 {
+    if test_i8(5) != 1 return 1;
+    if test_i8(-12) != -1 return 2;
+    if test_i8(0) != 0 return 3;
+
+    if test_i16(500) != 1 return 4;
+    if test_i16(-1200) != -1 return 5;
+    if test_i16(0) != 0 return 6;
+
+    if test_i32(50000) != 1 return 7;
+    if test_i32(-120000) != -1 return 8;
+    if test_i32(0) != 0 return 9;
+
+    if test_i64(5000000000) != 1 return 10;
+    if test_i64(-12000000000) != -1 return 11;
+    if test_i64(0) != 0 return 12;
+
+    0
+}

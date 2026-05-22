@@ -7,6 +7,10 @@ impl i8 {
         let mask = *self >> (i8::BITS - 1);
         (*self ^ mask) - mask
     }
+
+    pub const fn signum(&self): i8 {
+        (*self >> (i8::BITS - 1)) | ((-*self >> (i8::BITS - 1)) & 1)
+    }
 }
 
 impl u8 {
@@ -20,13 +24,17 @@ impl u8 {
 }
 
 impl i16 {
-    pub const MAX: i16 = (1 << 7) - 1;
-    pub const MIN: i16 = (-1 << 7);
+    pub const MAX: i16 = (1 << 15) - 1;
+    pub const MIN: i16 = (-1 << 15);
     pub const BITS: u32 = 16;
 
     pub const fn abs(&self): i16 {
         let mask = *self >> (i16::BITS - 1);
         (*self ^ mask) - mask
+    }
+
+    pub const fn signum(&self): i16 {
+        (*self >> (i16::BITS - 1)) | ((-*self >> (i16::BITS - 1)) & 1)
     }
 }
 
@@ -49,6 +57,10 @@ impl i32 {
         let mask = *self >> (i32::BITS - 1);
         (*self ^ mask) - mask
     }
+
+    pub const fn signum(&self): i32 {
+        (*self >> (i32::BITS - 1)) | ((-*self >> (i32::BITS - 1)) & 1)
+    }
 }
 
 impl u32 {
@@ -69,6 +81,10 @@ impl i64 {
     pub const fn abs(&self): i64 {
         let mask = *self >> (i64::BITS - 1);
         (*self ^ mask) - mask
+    }
+
+    pub const fn signum(&self): i64 {
+        (*self >> (i64::BITS - 1)) | ((-*self >> (i64::BITS - 1)) & 1)
     }
 }
 

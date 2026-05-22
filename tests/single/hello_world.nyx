@@ -4,9 +4,6 @@ use std::process::{exit};
 fn main() {
     println("hello, world!");
 
-    let max = i8::MAX;
-    let max_abs = max.abs();
-
     let name = "John Doe";
     let age = 42;
 
