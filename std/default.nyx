@@ -1,0 +1,3 @@
+pub interface Default {
+    fn default(): Self;
+}

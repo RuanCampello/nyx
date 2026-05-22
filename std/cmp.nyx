@@ -1,0 +1,7 @@
+pub interface PartialEq {
+    fn eq(&self, other: &Self): bool;
+    fn ne(&self, other: &Self): bool {
+        !self.eq(other)
+    }
+}
+
