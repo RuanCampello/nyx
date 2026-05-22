@@ -257,41 +257,18 @@ impl MachineType {
 
 impl Type {
     #[inline(always)]
+    #[rustfmt::skip]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
         match self {
-            Type::I8 => MachineType::Int {
-                bytes: 1,
-                signed: true,
-            },
-            Type::U8 | Type::Bool => MachineType::Int {
-                bytes: 1,
-                signed: false,
-            },
-            Type::I16 => MachineType::Int {
-                bytes: 2,
-                signed: true,
-            },
-            Type::U16 => MachineType::Int {
-                bytes: 2,
-                signed: false,
-            },
-            Type::I32 => MachineType::Int {
-                bytes: 4,
-                signed: true,
-            },
-            Type::U32 | Type::Char => MachineType::Int {
-                bytes: 4,
-                signed: false,
-            },
-            Type::I64 | Type::Iptr => MachineType::Int {
-                bytes: 8,
-                signed: true,
-            },
+            Type::I8 => MachineType::Int { bytes: 1, signed: true },
+            Type::U8 | Type::Bool => MachineType::Int { bytes: 1, signed: false },
+            Type::I16 => MachineType::Int { bytes: 2, signed: true },
+            Type::U16 => MachineType::Int { bytes: 2, signed: false },
+            Type::I32 => MachineType::Int { bytes: 4, signed: true },
+            Type::U32 | Type::Char => MachineType::Int { bytes: 4, signed: false },
+            Type::I64 | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
             Type::U64 | Type::Uptr | Type::Str | Type::String | Type::Ref { .. } => {
-                MachineType::Int {
-                    bytes: 8,
-                    signed: false,
-                }
+                MachineType::Int { bytes: 8, signed: false, }
             }
             Type::F32 => MachineType::Float { bytes: 4 },
             Type::F64 => MachineType::Float { bytes: 8 },

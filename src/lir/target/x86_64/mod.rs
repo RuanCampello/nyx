@@ -413,6 +413,7 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
+    #[inline]
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
             Self::IDiv { .. } => &[X86Reg::Rdx],
@@ -421,20 +422,14 @@ impl Instruction<X86_64> for X86Instr {
         }
     }
 
+    #[rustfmt::skip]
+    #[inline]
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
-            Self::IDiv {
-                precoloured_uses, ..
-            } => precoloured_uses,
-            Self::Shl {
-                precoloured_uses, ..
-            }
-            | Self::Shr {
-                precoloured_uses, ..
-            }
-            | Self::Sar {
-                precoloured_uses, ..
-            } => precoloured_uses.as_slice(),
+            Self::IDiv { precoloured_uses, .. } => precoloured_uses,
+            Self::Shl { precoloured_uses, .. }
+            | Self::Shr { precoloured_uses, .. }
+            | Self::Sar { precoloured_uses, .. } => precoloured_uses.as_slice(),
             _ => &[],
         }
     }
