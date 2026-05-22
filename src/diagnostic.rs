@@ -525,6 +525,18 @@ impl<'h> Diagnosticable for HirError<'h> {
             .secondary(self.span, format!("expected {} here", hi(expected)))
             .build(),
 
+            K::InvalidCast { src, target } => Builder::new(format!(
+                "invalid cast from {} to {}",
+                hi(src),
+                hi(target)
+            ))
+            .primary(
+                self.span,
+                format!("cannot cast from type {} to {}", hi(src), hi(target)),
+            )
+            .note("casting is only supported between primitive integer, bool, and char types")
+            .build(),
+
             K::ImmutableBind { name } => {
                 Builder::new(format!("cannot assign to immutable binding {}", hi(name)))
                     .primary(
