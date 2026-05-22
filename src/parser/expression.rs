@@ -1,7 +1,7 @@
 use crate::lexer::Spanned;
-use crate::lexer::token::{Punct, Span, TokenKind};
+use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
-use crate::parser::statement::Type as StatementType;
+use crate::parser::statement::Type;
 use crate::parser::{Parsable, Parser};
 use std::str::FromStr;
 
@@ -33,9 +33,10 @@ pub enum Expression<'i> {
     TypeIntrinsic {
         kind: TypeIntrinsicKind,
         qualifier: Option<&'i str>,
-        typ: Spanned<StatementType<'i>>,
+        typ: Spanned<Type<'i>>,
         span: Span,
     },
+    Cast { expr: Box<Expression<'i>>, target_type: Spanned<Type<'i>>, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,7 +94,8 @@ impl<'i> Expression<'i> {
             | Self::Call { span, .. }
             | Self::QualifiedCall { span, .. }
             | Self::QualifiedName { span, .. }
-            | Self::TypeIntrinsic { span, .. } => *span,
+            | Self::TypeIntrinsic { span, .. }
+            | Self::Cast { span, .. } => *span,
         }
     }
 
@@ -230,6 +232,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 10,
             TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 11,
             TokenKind::Punct(Punct::OpenParen) => 12, // function call
+            TokenKind::Keyword(Keyword::As) => 12,    // casting
             TokenKind::Punct(Punct::ColonColon) => 13,
             TokenKind::Punct(Punct::Dot) => 14, // field access
             _ => 0,
@@ -268,7 +271,7 @@ impl<'i> Expression<'i> {
 
                         if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
                             parser.expect_token(Punct::OpenParen)?;
-                            let typ = Spanned::<StatementType>::parse(parser)?;
+                            let typ = Spanned::<Type>::parse(parser)?;
                             let end_span = parser.expect_token(Punct::CloseParen)?.span;
                             let span = left.span() + end_span;
 
@@ -337,7 +340,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left {
                     if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
-                        let typ = Spanned::<StatementType>::parse(parser)?;
+                        let typ = Spanned::<Type>::parse(parser)?;
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
                         let span = left.span() + end_span;
 
@@ -406,6 +409,17 @@ impl<'i> Expression<'i> {
                         left.span(),
                     )),
                 }
+            }
+
+            TokenKind::Keyword(Keyword::As) => {
+                let target_type = Spanned::<Type>::parse(parser)?;
+                let span = left.span() + target_type.span();
+
+                Ok(Expression::Cast {
+                    expr: Box::new(left),
+                    target_type,
+                    span,
+                })
             }
 
             _ => {
