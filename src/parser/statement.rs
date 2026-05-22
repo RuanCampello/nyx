@@ -118,7 +118,8 @@ pub struct InterfaceMethod<'i> {
     pub receiver: Option<Receiver>,
     pub params: Vec<Parameter<'i>>,
     pub return_type: Option<Spanned<Type<'i>>>,
-    span: Span,
+    pub body: Option<Block<'i>>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -191,6 +192,8 @@ pub enum Type<'i> {
     /// owned heap string
     String,
     Named(&'i str),
+    SelfType,
+    RefSelf,
     #[allow(dead_code)]
     Unit,
 }
@@ -264,6 +267,7 @@ impl<'i> Spanned<Type<'i>> {
 
             return match name {
                 "str" => Ok(Self::new(Type::Str, span)),
+                "Self" => Ok(Self::new(Type::RefSelf, span)),
                 _ => Err(ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
                         found: name.to_string(),
@@ -290,6 +294,7 @@ impl<'i> Spanned<Type<'i>> {
             "bool" => Type::Bool,
             "char" => Type::Char,
             "String" => Type::String,
+            "Self" => Type::SelfType,
             _ => Type::Named(name),
         };
 
@@ -759,14 +764,22 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             _ => None,
         };
 
-        let semi = parser.expect_token(Punct::Semicolon)?;
+        let (body, span) = match parser.consume_punct(Punct::Semicolon)? {
+            true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
+            _ => {
+                let b = parser.parse_node::<Block>()?;
+                let b_span = b.span;
+                (Some(b), fn_token.span + b_span)
+            }
+        };
 
         Ok(Self {
-            span: fn_token.span + semi.span,
+            span,
             name,
             receiver,
             params,
             return_type,
+            body,
         })
     }
 }
