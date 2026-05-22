@@ -115,3 +115,4 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [ ] UDP
 - [ ] Memory allocator (**requires** definition of memory layout)
 - [ ] Error handling (**requires** definition of error handling model)
+- [ ] Panic handling
