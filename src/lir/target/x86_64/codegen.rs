@@ -178,11 +178,60 @@ impl Function<X86_64> {
                 emit!(out, "leaq   {offset}(%rbp), {dest}");
             }
 
-            Inst::Movzx { dest, src } => {
-                let dest = alloc.location(dest, &4);
-                let src = alloc.location(src, &1);
+            Inst::Movzx {
+                dest,
+                src,
+                src_bytes,
+                dest_bytes,
+            } => {
+                let dest_loc = alloc.location(dest, dest_bytes);
+                let src_op = self.operand(alloc, src, src_bytes);
 
-                emit!(out, "movzbl   {src}, {dest}");
+                let needs_scratch = dest_loc.contains("(%rbp)");
+
+                if *src_bytes == 4 && *dest_bytes == 8 {
+                    match needs_scratch {
+                        true => {
+                            emit!(out, "movl    {src_op}, %r11d");
+                            emit!(out, "movq    %r11, {dest_loc}");
+                        }
+                        false => {
+                            let dest_32 = alloc.location(dest, &4);
+                            emit!(out, "movl    {src_op}, {dest_32}");
+                        }
+                    }
+                } else {
+                    let name = zx_instr_name(*src_bytes, *dest_bytes);
+                    match needs_scratch {
+                        true => {
+                            let scratch = scratch_gpr(suffix(dest_bytes));
+                            emit!(out, "{name}   {src_op}, {scratch}");
+                            let dest_suffix = suffix(dest_bytes);
+                            emit!(out, "mov{dest_suffix}    {scratch}, {dest_loc}");
+                        }
+                        _ => emit!(out, "{name}   {src_op}, {dest_loc}"),
+                    }
+                }
+            }
+
+            Inst::Movsx {
+                dest,
+                src,
+                src_bytes,
+                dest_bytes,
+            } => {
+                let dest_loc = alloc.location(dest, dest_bytes);
+                let src_op = self.operand(alloc, src, src_bytes);
+
+                let name = sx_instr_name(*src_bytes, *dest_bytes);
+                if dest_loc.contains("(%rbp)") {
+                    let scratch = scratch_gpr(suffix(dest_bytes));
+                    emit!(out, "{name}   {src_op}, {scratch}");
+                    let dest_suffix = suffix(dest_bytes);
+                    emit!(out, "mov{dest_suffix}    {scratch}, {dest_loc}");
+                } else {
+                    emit!(out, "{name}   {src_op}, {dest_loc}");
+                }
             }
 
             Inst::FieldLoad {
@@ -348,6 +397,7 @@ impl Function<X86_64> {
                 emit!(out, "not{suffix}    {dest}");
             }
 
+            #[rustfmt::skip]
             Inst::Shl { dest, src, bytes, .. }
             | Inst::Shr { dest, src, bytes, .. }
             | Inst::Sar { dest, src, bytes, .. } => {
@@ -790,5 +840,30 @@ fn scratch_gpr<'s>(suffix: &str) -> &'s str {
         "w" => "%r11w",
         "b" => "%r11b",
         _ => panic!("invalid integer register suffix: {suffix}"),
+    }
+}
+
+#[inline(always)]
+fn zx_instr_name<'s>(src_bytes: u8, dest_bytes: u8) -> &'s str {
+    match (src_bytes, dest_bytes) {
+        (1, 2) => "movzbw",
+        (1, 4) => "movzbl",
+        (1, 8) => "movzbq",
+        (2, 4) => "movzwl",
+        (2, 8) => "movzwq",
+        _ => panic!("invalid zero extension: {src_bytes} to {dest_bytes}"),
+    }
+}
+
+#[inline(always)]
+fn sx_instr_name<'s>(src_bytes: u8, dest_bytes: u8) -> &'s str {
+    match (src_bytes, dest_bytes) {
+        (1, 2) => "movsbw",
+        (1, 4) => "movsbl",
+        (1, 8) => "movsbq",
+        (2, 4) => "movswl",
+        (2, 8) => "movswq",
+        (4, 8) => "movslq",
+        _ => panic!("invalid sign extension: {src_bytes} to {dest_bytes}"),
     }
 }

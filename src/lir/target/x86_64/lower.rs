@@ -503,6 +503,31 @@ impl<'f> Lower<'f> {
                     },
                 );
             }
+
+            InstructionKind::Cast { src, typ } => {
+                let src_mt = src.typ().machine_type(self.layouts);
+                let src_bytes = src_mt.bytes();
+                let src_signed = src_mt.is_signed();
+
+                let dest_mt = typ.machine_type(self.layouts);
+                let dest_bytes = dest_mt.bytes();
+
+                let src_op = self.lower_operand(src);
+
+                let is_downcast_or_equal = src_bytes >= dest_bytes;
+                let is_immediate = matches!(src_op, X86Operand::Imm(_));
+
+                #[rustfmt::skip]
+                let instr = match (is_downcast_or_equal, is_immediate) {
+                    // standard move for downcasts, equal sizes, or immediate upcasts
+                    (true, _) | (false, true) => X86Instr::Mov { dest, src: src_op, bytes: dest_bytes },
+                    // upcasting a register/label requires extension based on signedness
+                    (false, false) if src_signed => X86Instr::Movsx { dest, src: src_op, src_bytes, dest_bytes},
+                    (false, false) => X86Instr::Movzx { dest, src: src_op, src_bytes, dest_bytes },
+                };
+
+                self.lir.push_instr(id, instr);
+            }
         }
     }
 
@@ -562,7 +587,15 @@ impl<'f> Lower<'f> {
                 condition,
             },
         );
-        self.lir.push_instr(id, X86Instr::Movzx { dest, src: flag });
+        self.lir.push_instr(
+            id,
+            X86Instr::Movzx {
+                dest,
+                src: X86Operand::VReg(flag),
+                src_bytes: 1,
+                dest_bytes: 4,
+            },
+        );
 
         // movzx widens 1-byte setcc result to i32, so we need to update dest's type
         self.lir.set_vreg_type(
