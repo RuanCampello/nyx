@@ -9,7 +9,7 @@ syn keyword nyxKeyword fn let mut if else return while for struct inline const p
 hi def link nyxKeyword Keyword
 
 " Built-in Types
-syn keyword nyxType i8 u8 i16 u16 i32 u32 i64 f32 f64 bool char String uptr iptr
+syn keyword nyxType i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 bool char String uptr iptr
 hi def link nyxType Type
 
 " Custom Types
