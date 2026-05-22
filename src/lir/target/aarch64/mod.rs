@@ -45,6 +45,10 @@ pub enum A64Instr {
     And { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
     Or { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
     Eor { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Mvn { dest: VReg, src: VReg, bytes: u8 },
+    Lsl { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Lsr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
+    Asr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
 
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
@@ -376,9 +380,13 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Mul { dest, .. }
             | Self::SDiv { dest, .. }
             | Self::Neg { dest, .. }
+            | Self::Mvn { dest, .. }
             | Self::And { dest, .. }
             | Self::Or { dest, .. }
             | Self::Eor { dest, .. }
+            | Self::Lsl { dest, .. }
+            | Self::Lsr { dest, .. }
+            | Self::Asr { dest, .. }
             | Self::Cset { dest, .. }
             | Self::FMov { dest, .. }
             | Self::FLiteral { dest, .. }
@@ -407,6 +415,7 @@ impl Instruction<AArch64> for A64Instr {
         match self {
             Self::Mov { src, .. }
             | Self::Neg { src, .. }
+            | Self::Mvn { src, .. }
             | Self::FMov { src, .. }
             | Self::FNeg { src, .. } => uses.push(*src),
 
@@ -415,6 +424,9 @@ impl Instruction<AArch64> for A64Instr {
             | Self::And { lhs, rhs, .. }
             | Self::Or { lhs, rhs, .. }
             | Self::Eor { lhs, rhs, .. }
+            | Self::Lsl { lhs, rhs, .. }
+            | Self::Lsr { lhs, rhs, .. }
+            | Self::Asr { lhs, rhs, .. }
             | Self::Cmp { lhs, rhs, .. }
             | Self::Cmn { lhs, rhs, .. }
             | Self::Tst { lhs, rhs, .. } => {
