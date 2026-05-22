@@ -47,11 +47,11 @@ impl Emittable<X86_64> for Function<X86_64> {
     }
 
     #[inline(always)]
-    fn start(out: &mut String) {
+    fn start(out: &mut String, main: &str) {
         label!(out, ".globl _start");
         label!(out, "_start:");
 
-        emit!(out, "call    nyx_main");
+        emit!(out, "call    {main}");
         emit!(out, "movl    %eax, %edi"); // exit code = return value
         emit!(out, "movl    $60, %eax"); // syscall: exit
         emit!(out, "syscall");

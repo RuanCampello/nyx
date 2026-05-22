@@ -51,11 +51,11 @@ impl Emittable<AArch64> for Function<AArch64> {
     }
 
     #[inline(always)]
-    fn start(out: &mut String) {
+    fn start(out: &mut String, main: &str) {
         label!(out, ".globl _start");
         label!(out, "_start:");
 
-        emit!(out, "bl      nyx_main");
+        emit!(out, "bl      {main}");
         emit!(out, "mov     x8, #93");
         emit!(out, "svc     #0");
     }

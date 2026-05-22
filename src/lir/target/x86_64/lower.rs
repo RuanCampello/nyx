@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{self, Type};
+use crate::hir::{self, Type, mangle};
 use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg};
 use crate::lir::target::{Lowerable, MemOps, RegClass, Target, aggregate_copy};
 use crate::lir::{self, BlockId, MachineType, Term, VReg};
@@ -35,7 +35,7 @@ impl Lowerable for X86_64 {
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
-            .map(|n| format!("nyx_{n}"))
+            .map(|n| mangle::assembly_label(n))
             .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
 
         let mut lir = lir::Function::<X86_64>::new(name);
@@ -365,7 +365,7 @@ impl<'f> Lower<'f> {
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
-                    .map(|n| format!("nyx_{n}"))
+                    .map(|n| mangle::assembly_label(n))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());

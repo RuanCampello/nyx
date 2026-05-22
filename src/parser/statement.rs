@@ -331,7 +331,12 @@ impl<'i> Parsable<'i> for Const<'i> {
         let start_span = match parser.peek_nth(0) {
             Some(Ok(token)) => token.span,
             Some(Err(err)) => return Err((&err).into()),
-            None => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
+            None => {
+                return Err(ParserError::new(
+                    ParseErrorKind::UnexpectedEof,
+                    Span::default(),
+                ));
+            }
         };
 
         let is_pub = parser.consume_keyword(Keyword::Pub)?;

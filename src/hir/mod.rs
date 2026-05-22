@@ -22,6 +22,7 @@ use std::str::FromStr;
 mod declarations;
 pub mod error;
 mod lower;
+pub(crate) mod mangle;
 pub(crate) mod module;
 mod scope;
 mod symbols;
@@ -667,7 +668,7 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::ArityMismatch {
-                name: "add".into(),
+                name: "nyx::add".into(),
                 expected: 2,
                 found: 3,
             }

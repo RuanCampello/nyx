@@ -7,6 +7,7 @@ use crate::{
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
+        mangle::Mangler,
     },
     lexer::Spanned,
     parser::{expression, statement},
@@ -20,7 +21,8 @@ use std::{
 ///
 /// Grows incrementally as modules are loaded: structs and function
 /// signatures are assigned monotonically increasing IDs across all modules
-pub struct Scope {
+pub struct Scope<'s> {
+    pub(in crate::hir) mangler: Mangler<'s>,
     pub signatures: Vec<FunctionSignature>,
     pub functions: Functions,
     pub methods: Methods,
@@ -64,9 +66,10 @@ pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(StructId, SymbolId)>;
 
-impl Scope {
+impl<'sc> Scope<'sc> {
     pub fn new() -> Self {
         Self {
+            mangler: Mangler::default(),
             signatures: Vec::new(),
             functions: HashMap::new(),
             methods: HashMap::new(),
@@ -146,12 +149,7 @@ impl Scope {
 
         let mut lowered = vec![None; local_declarations.len()];
 
-        lower::lower_structs(
-            &local_declarations,
-            &local_map,
-            symbols,
-            &mut lowered,
-        )?;
+        lower::lower_structs(&local_declarations, &local_map, symbols, &mut lowered)?;
 
         for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
             s.id = StructId(s.id.0 + offset);
@@ -258,7 +256,7 @@ impl Scope {
                 });
             }
 
-            let symbol = symbols.insert(function.name);
+            let symbol = symbols.insert(&self.mangler.item(function.name));
             if self.functions.contains_key(&symbol) {
                 return Err(HirError {
                     kind: HirErrorKind::DuplicateFunction {
@@ -274,7 +272,7 @@ impl Scope {
             let params = self.resolve_params(&function.params, symbols)?;
             let return_type = self.resolve_return_type(function.return_type.as_ref(), symbols)?;
             let intrinsic = match in_std {
-                true => Intrinsic::from_str(symbols.get(symbol)).ok(),
+                true => Intrinsic::from_str(function.name).ok(),
                 false => None,
             };
 
@@ -292,7 +290,7 @@ impl Scope {
         // when compiling std, inject a built-in 'syscall' signature so std modules
         // don't need to declare it
         if in_std {
-            let syscall_sym = symbols.insert("syscall");
+            let syscall_sym = symbols.insert(&self.mangler.item("syscall"));
             if !self.functions.contains_key(&syscall_sym) {
                 let id = FunctionId(self.signatures.len() as u32);
                 self.functions.insert(syscall_sym, id);
@@ -370,7 +368,16 @@ impl Scope {
 
             for method in &implementation.methods {
                 let method_symbol = symbols.insert(method.name);
-                let mangled = symbols.insert(&format!("{}__{}", implementation.name, method.name));
+                let mangled = match implementation.interface {
+                    Some(interface) => symbols.insert(&self.mangler.interface_item(
+                        implementation.name,
+                        interface,
+                        method.name,
+                    )),
+                    None => {
+                        symbols.insert(&self.mangler.scoped_item(implementation.name, method.name))
+                    }
+                };
 
                 match method.receiver {
                     Some(receiver) => {
@@ -627,14 +634,14 @@ impl Scope {
             }),
 
             (None, Some(impl_type)) => {
-                let mangled = symbols.insert(&format!("{impl_type}__{}", function.name));
+                let mangled = symbols.insert(&self.mangler.scoped_item(impl_type, function.name));
                 self.functions.get(&mangled).copied().ok_or_else(|| HirError {
                     kind: error_kind(format!("{impl_type}::{}", function.name)),
                     span: function.span,
                 })
             }
             (None, None) => {
-                let sym = symbols.insert(function.name);
+                let sym = symbols.insert(&self.mangler.item(function.name));
                 self.functions.get(&sym).copied().ok_or_else(|| HirError {
                     kind: error_kind(function.name.to_string()),
                     span: function.span,
@@ -685,7 +692,7 @@ impl Scope {
 
         // collect top-level constants
         for c in &declarations.constants {
-            let symbol_id = symbols.insert(c.name);
+            let symbol_id = symbols.insert(&self.mangler.item(c.name));
             if decls.contains_key(&symbol_id) {
                 return Err(HirError {
                     kind: HirErrorKind::DuplicateConstant {
@@ -708,7 +715,7 @@ impl Scope {
         // collect impl constants
         for imp in &declarations.impls {
             for c in &imp.constants {
-                let mangled = format!("{}__{}", imp.name, c.name);
+                let mangled = self.mangler.scoped_item(imp.name, c.name);
                 let symbol_id = symbols.insert(&mangled);
                 if decls.contains_key(&symbol_id) {
                     return Err(HirError {
@@ -737,6 +744,7 @@ impl Scope {
         fn find_dependencies<'d, 'i>(
             expr: &expression::Expression<'i>,
             current_impl: Option<&str>,
+            mangler: &Mangler,
             symbols: &SymbolTable,
             decls: &HashMap<SymbolId, ConstDecl<'d, 'i>>,
             deps: &mut Vec<SymbolId>,
@@ -746,7 +754,7 @@ impl Scope {
             match expr {
                 Expr::Identifier(name, _) => {
                     if let Some(impl_type) = current_impl {
-                        let mangled = format!("{}__{}", impl_type, name);
+                        let mangled = mangler.scoped_item(impl_type, name);
                         if let Some(symbol_id) = symbols.get_id(&mangled) {
                             if decls.contains_key(&symbol_id) {
                                 deps.push(symbol_id);
@@ -754,7 +762,7 @@ impl Scope {
                             }
                         }
                     }
-                    if let Some(symbol_id) = symbols.get_id(*name) {
+                    if let Some(symbol_id) = symbols.get_id(&mangler.item(name)) {
                         if decls.contains_key(&symbol_id) {
                             deps.push(symbol_id);
                         }
@@ -763,7 +771,7 @@ impl Scope {
                 Expr::QualifiedName {
                     qualifier, name, ..
                 } => {
-                    let mangled = format!("{}__{}", qualifier, name);
+                    let mangled = mangler.scoped_item(qualifier, name);
                     if let Some(symbol_id) = symbols.get_id(&mangled) {
                         if decls.contains_key(&symbol_id) {
                             deps.push(symbol_id);
@@ -771,33 +779,33 @@ impl Scope {
                     }
                 }
                 Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
-                    find_dependencies(expr, current_impl, symbols, decls, deps)
+                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
                 }
                 Expr::Binary { left, right, .. } => {
-                    find_dependencies(left, current_impl, symbols, decls, deps);
-                    find_dependencies(right, current_impl, symbols, decls, deps);
+                    find_dependencies(left, current_impl, mangler, symbols, decls, deps);
+                    find_dependencies(right, current_impl, mangler, symbols, decls, deps);
                 }
                 Expr::Assignment { target, value, .. } => {
-                    find_dependencies(target, current_impl, symbols, decls, deps);
-                    find_dependencies(value, current_impl, symbols, decls, deps);
+                    find_dependencies(target, current_impl, mangler, symbols, decls, deps);
+                    find_dependencies(value, current_impl, mangler, symbols, decls, deps);
                 }
                 Expr::Field { expr, .. } => {
-                    find_dependencies(expr, current_impl, symbols, decls, deps)
+                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
                 }
                 Expr::Struct { fields, .. } => {
                     for f in fields {
-                        find_dependencies(&f.value, current_impl, symbols, decls, deps);
+                        find_dependencies(&f.value, current_impl, mangler, symbols, decls, deps);
                     }
                 }
                 Expr::Call { callee, args, .. } => {
-                    find_dependencies(callee, current_impl, symbols, decls, deps);
+                    find_dependencies(callee, current_impl, mangler, symbols, decls, deps);
                     for arg in args {
-                        find_dependencies(arg, current_impl, symbols, decls, deps);
+                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
                     }
                 }
                 Expr::QualifiedCall { args, .. } => {
                     for arg in args {
-                        find_dependencies(arg, current_impl, symbols, decls, deps);
+                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
                     }
                 }
                 Expr::TypeIntrinsic { .. } => {}
@@ -811,6 +819,7 @@ impl Scope {
 
         fn dfs<'d, 's>(
             symbol_id: SymbolId,
+            mangler: &Mangler,
             symbols: &SymbolTable,
             decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
             visiting: &mut HashSet<SymbolId>,
@@ -832,10 +841,17 @@ impl Scope {
                 visiting.insert(symbol_id);
                 if let Some(decl) = decls.get(&symbol_id) {
                     let mut deps = Vec::new();
-                    find_dependencies(&decl.ast.value, decl.impl_type, symbols, decls, &mut deps);
+                    find_dependencies(
+                        &decl.ast.value,
+                        decl.impl_type,
+                        mangler,
+                        symbols,
+                        decls,
+                        &mut deps,
+                    );
                     for dep in deps {
                         if decls.contains_key(&dep) {
-                            dfs(dep, symbols, decls, visiting, visited, sorted)?;
+                            dfs(dep, mangler, symbols, decls, visiting, visited, sorted)?;
                         }
                     }
                 }
@@ -848,7 +864,15 @@ impl Scope {
 
         for &symbol_id in decls.keys() {
             if !visited.contains(&symbol_id) {
-                dfs(symbol_id, symbols, &decls, &mut visiting, &mut visited, &mut sorted)?;
+                dfs(
+                    symbol_id,
+                    &self.mangler,
+                    symbols,
+                    &decls,
+                    &mut visiting,
+                    &mut visited,
+                    &mut sorted,
+                )?;
             }
         }
 

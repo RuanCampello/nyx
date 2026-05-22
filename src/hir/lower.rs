@@ -1,9 +1,10 @@
 use crate::{
     hir::{
-        Block, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local, LocalId,
-        Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId, SymbolId,
-        SymbolTable, SyscallCode, Type,
+        Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
+        LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
+        SymbolId, SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
+        mangle::Mangler,
         scope::{Scope, Structs},
     },
     lexer::token::Span,
@@ -19,7 +20,7 @@ use std::{
 };
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
-    scope: &'s Scope,
+    scope: &'s Scope<'s>,
     locals: Vec<Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -254,6 +255,67 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
     }
 
+    fn lower_identifier(&mut self, name: &str, span: Span) -> Result<Expression, HirError<'src>> {
+        if let Some(id) = self.local_id(name) {
+            return Ok(self.local_expr(id, span));
+        }
+
+        if let Some(constant) = self.constant(name) {
+            let mut value = constant.value.clone();
+            value.span = span;
+
+            return Ok(value);
+        }
+
+        let symbol = self.symbols.get_id(name).ok_or_else(|| HirError {
+            kind: HirErrorKind::UndeclaredIdentifier {
+                name: name.to_string(),
+            },
+            span,
+        })?;
+        let id = self.resolve_local(symbol, span)?;
+
+        Ok(self.local_expr(id, span))
+    }
+
+    fn local_id(&self, name: &str) -> Option<LocalId> {
+        let symbol = self.symbols.get_id(name)?;
+
+        self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
+    }
+
+    fn local_expr(&self, id: LocalId, span: Span) -> Expression {
+        Expression {
+            kind: ExpressionKind::Local(id),
+            typ: self[id].typ,
+            span,
+        }
+    }
+
+    fn constant(&self, name: &str) -> Option<&Constant> {
+        if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
+            let scoped = self.mangler().scoped_item(impl_type, name);
+            if let Some(constant) = self.constant_by_symbol_name(&scoped) {
+                return Some(constant);
+            }
+        }
+
+        let top_level = self.mangler().item(name);
+        self.constant_by_symbol_name(&top_level)
+            .or_else(|| self.constant_by_symbol_name(name))
+    }
+
+    fn constant_by_symbol_name(&self, name: &str) -> Option<&Constant> {
+        let symbol = self.symbols.get_id(name)?;
+
+        self.scope.constants.get(&symbol)
+    }
+
+    #[inline]
+    fn mangler(&self) -> &Mangler<'_> {
+        &self.scope.mangler
+    }
+
     /// Lowers an expression with an optional type hint flowing downward (biderectional checking)
     ///
     /// The hint is used to resolve the concrete type of integer and float literals when the
@@ -339,72 +401,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })
             }
 
-            Expr::Identifier(name, span) => {
-                let symbol = match self.symbols.get_id(name) {
-                    Some(sym) => sym,
-                    None => {
-                        return Err(HirError {
-                            kind: HirErrorKind::UndeclaredIdentifier {
-                                name: name.to_string(),
-                            },
-                            span: *span,
-                        });
-                    }
-                };
-
-                // check local variable scopes
-                let Some(id) =
-                    self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
-                else {
-                    // check impl-scoped or top-level constants
-                    let mut found_const = None;
-                    if let Some(function) = self.function {
-                        if let Some(impl_type) = function.impl_type {
-                            let mangled_name = format!("{impl_type}__{name}");
-                            if let Some(mangled_symbol) = self.symbols.get_id(&mangled_name) {
-                                if let Some(c) = self.scope.constants.get(&mangled_symbol) {
-                                    found_const = Some(c);
-                                }
-                            }
-                        }
-                    }
-                    if found_const.is_none() {
-                        if let Some(c) = self.scope.constants.get(&symbol) {
-                            found_const = Some(c);
-                        }
-                    }
-
-                    return match found_const {
-                        Some(c) => {
-                            let mut val = c.value.clone();
-                            val.span = *span;
-                            Ok(val)
-                        }
-                        None => {
-                            // fallback to resolve_local
-                            let id = self.resolve_local(symbol, *span)?;
-                            Ok(Expression {
-                                kind: ExpressionKind::Local(id),
-                                typ: self[id].typ,
-                                span: *span,
-                            })
-                        }
-                    };
-                };
-
-                Ok(Expression {
-                    kind: ExpressionKind::Local(id),
-                    typ: self[id].typ,
-                    span: *span,
-                })
-            }
+            Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
             Expr::QualifiedName {
                 qualifier,
                 name,
                 span,
             } => {
-                let mangled_name = format!("{qualifier}__{name}");
+                let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
@@ -794,7 +798,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 let (function, signature) = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
-                        let symbol = self.symbols.insert(name);
+                        let symbol = self.symbols.insert(&self.mangler().item(name));
                         let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                             kind: HirErrorKind::UnknownFunction {
                                 name: name.to_string(),
@@ -884,7 +888,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 args,
                 span,
             } => {
-                let mangled_name = format!("{qualifier}__{name}");
+                let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
                 if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
@@ -952,7 +956,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                let symbol = self.symbols.insert(name);
+                let symbol = self.symbols.insert(&self.mangler().item(name));
                 let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                     kind: HirErrorKind::UnknownFunction {
                         name: format!("{qualifier}::{name}"),
@@ -1031,13 +1035,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let name = kind.into();
                 let lookup_symbol = match qualifier {
                     Some(q) => {
-                        let mangled = self.symbols.insert(&format!("{q}__{name}"));
+                        let mangled = self.symbols.insert(&self.mangler().scoped_item(q, name));
                         match self.scope.functions.contains_key(&mangled) {
                             true => mangled,
-                            _ => self.symbols.insert(name),
+                            _ => self.symbols.insert(&self.mangler().item(name)),
                         }
                     }
-                    None => self.symbols.insert(name),
+                    None => self.symbols.insert(&self.mangler().item(name)),
                 };
 
                 if !self.scope.functions.contains_key(&lookup_symbol) {

@@ -426,9 +426,15 @@ impl Instruction<X86_64> for X86Instr {
             Self::IDiv {
                 precoloured_uses, ..
             } => precoloured_uses,
-            Self::Shl { precoloured_uses, .. }
-            | Self::Shr { precoloured_uses, .. }
-            | Self::Sar { precoloured_uses, .. } => precoloured_uses.as_slice(),
+            Self::Shl {
+                precoloured_uses, ..
+            }
+            | Self::Shr {
+                precoloured_uses, ..
+            }
+            | Self::Sar {
+                precoloured_uses, ..
+            } => precoloured_uses.as_slice(),
             _ => &[],
         }
     }

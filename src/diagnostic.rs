@@ -525,17 +525,17 @@ impl<'h> Diagnosticable for HirError<'h> {
             .secondary(self.span, format!("expected {} here", hi(expected)))
             .build(),
 
-            K::InvalidCast { src, target } => Builder::new(format!(
-                "invalid cast from {} to {}",
-                hi(src),
-                hi(target)
-            ))
-            .primary(
-                self.span,
-                format!("cannot cast from type {} to {}", hi(src), hi(target)),
-            )
-            .note("casting is only supported between primitive integer, bool, and char types")
-            .build(),
+            K::InvalidCast { src, target } => {
+                Builder::new(format!("invalid cast from {} to {}", hi(src), hi(target)))
+                    .primary(
+                        self.span,
+                        format!("cannot cast from type {} to {}", hi(src), hi(target)),
+                    )
+                    .note(
+                        "casting is only supported between primitive integer, bool, and char types",
+                    )
+                    .build()
+            }
 
             K::ImmutableBind { name } => {
                 Builder::new(format!("cannot assign to immutable binding {}", hi(name)))
@@ -677,7 +677,10 @@ impl<'h> Diagnosticable for HirError<'h> {
 
             K::CircularConstant { name } => {
                 Builder::new(format!("circular dependency in constant {}", hi(name)))
-                    .primary(self.span, format!("constant {} depends on itself", hi(name)))
+                    .primary(
+                        self.span,
+                        format!("constant {} depends on itself", hi(name)),
+                    )
                     .build()
             }
 
@@ -1220,7 +1223,7 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::ArityMismatch {
-                name: "add".into(),
+                name: "nyx::add".into(),
                 expected: 2,
                 found: 3,
             }
@@ -1236,7 +1239,7 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::ArityMismatch {
-                name: "add".into(),
+                name: "nyx::add".into(),
                 expected: 2,
                 found: 1,
             }
@@ -1399,7 +1402,7 @@ mod tests {
             "got {kind:?}"
         );
         if let HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) = kind {
-            assert_eq!(name, "helper");
+            assert_eq!(name, "nyx::helper");
         }
     }
 

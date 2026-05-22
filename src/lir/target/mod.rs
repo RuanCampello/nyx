@@ -63,7 +63,7 @@ pub trait Lowerable: Target {
 /// The emitter just looks up locations and writes mnemonics
 pub trait Emittable<T: Target> {
     fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
-    fn start(out: &mut String);
+    fn start(out: &mut String, main: &str);
 }
 
 /// A named physical register on a specific target.
