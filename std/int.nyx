@@ -9,7 +9,7 @@ impl i8 {
     }
 
     pub const fn signum(&self): i8 {
-        (*self >> (i8::BITS - 1)) | ((-*self >> (i8::BITS - 1)) & 1)
+        ((*self > 0) as i8) - ((*self < 0) as i8)
     }
 }
 
@@ -34,7 +34,7 @@ impl i16 {
     }
 
     pub const fn signum(&self): i16 {
-        (*self >> (i16::BITS - 1)) | ((-*self >> (i16::BITS - 1)) & 1)
+        ((*self > 0) as i16) - ((*self < 0) as i16)
     }
 }
 
@@ -59,7 +59,7 @@ impl i32 {
     }
 
     pub const fn signum(&self): i32 {
-        (*self >> (i32::BITS - 1)) | ((-*self >> (i32::BITS - 1)) & 1)
+        ((*self > 0) as i32) - ((*self < 0) as i32)
     }
 }
 
@@ -84,7 +84,7 @@ impl i64 {
     }
 
     pub const fn signum(&self): i64 {
-        (*self >> (i64::BITS - 1)) | ((-*self >> (i64::BITS - 1)) & 1)
+        ((*self > 0) as i64) - ((*self < 0) as i64)
     }
 }
 
