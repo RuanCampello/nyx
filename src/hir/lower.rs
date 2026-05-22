@@ -5,7 +5,6 @@ use crate::{
         SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         scope::{Scope, Structs},
-        topo,
     },
     lexer::token::Span,
     parser::{
@@ -1468,12 +1467,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::hir) enum Visit {
+    Unvisited,
+    Visiting,
+    Visited,
+}
+
 pub(in crate::hir) fn lower_structs<'h>(
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
     symbols: &mut SymbolTable,
     lowered: &mut [Option<Struct>],
-    states: &mut [topo::SortingVisit],
 ) -> Result<(), HirError<'h>> {
     // pre-insert all field names into the symbol table to avoid mutable borrows of symbols
     // during the topological sort dfs
@@ -1483,68 +1488,77 @@ pub(in crate::hir) fn lower_structs<'h>(
         }
     }
 
-    let nodes: Vec<usize> = (0..declarations.len()).collect();
+    let mut states = vec![Visit::Unvisited; declarations.len()];
     let symbols = &*symbols; // shadow as shared reference
+    for id in 0..declarations.len() {
+        lower_struct(id, declarations, map, symbols, lowered, &mut states)?;
+    }
 
-    topo::topological_sort(
-        &nodes,
-        states,
-        |id| {
+    Ok(())
+}
+
+pub(in crate::hir) fn lower_struct<'h>(
+    id: usize,
+    declarations: &[(SymbolId, &statement::Struct<'h>)],
+    map: &Structs,
+    symbols: &SymbolTable,
+    lowered: &mut [Option<Struct>],
+    states: &mut [Visit],
+) -> Result<(), HirError<'h>> {
+    match states[id] {
+        Visit::Visited => return Ok(()),
+        Visit::Visiting => {
             let (_, declaration) = declarations[id];
-            let mut deps = Vec::new();
-            for field in &declaration.fields {
-                let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
-                if let Type::Struct(dep) = typ {
-                    deps.push(dep.0 as usize);
-                }
-            }
-            Ok(deps)
-        },
-        |id| {
-            let (_, declaration) = declarations[id];
-            HirError {
+            return Err(HirError {
                 kind: HirErrorKind::CircularStruct {
                     name: declaration.name.to_string(),
                 },
                 span: declaration.span,
-            }
-        },
-        |id| {
-            let (name, declaration) = declarations[id];
-            let mut seen = HashSet::new();
-            let mut fields = Vec::with_capacity(declaration.fields.len());
-
-            for (idx, field) in declaration.fields.iter().enumerate() {
-                let field_symbol = symbols.get_id(field.name).unwrap();
-                if !seen.insert(field_symbol) {
-                    return Err(HirError {
-                        kind: HirErrorKind::DuplicateField {
-                            name: field.name.to_string(),
-                        },
-                        span: field.span,
-                    });
-                }
-
-                let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
-                fields.push(StructField {
-                    name: field_symbol,
-                    typ,
-                    offset: 0,
-                    declared_index: idx as u32,
-                });
-            }
-
-            let (fields, size, align) = layout_fields(fields, lowered);
-            lowered[id] = Some(Struct {
-                id: StructId(id as u32),
-                name,
-                fields,
-                size,
-                align,
             });
-            Ok(())
-        },
-    )
+        }
+        Visit::Unvisited => {}
+    }
+
+    states[id] = Visit::Visiting;
+    let (name, declaration) = declarations[id];
+    let mut seen = HashSet::new();
+    let mut fields = Vec::with_capacity(declaration.fields.len());
+
+    for (idx, field) in declaration.fields.iter().enumerate() {
+        let field_symbol = symbols.get_id(field.name).unwrap();
+        if !seen.insert(field_symbol) {
+            return Err(HirError {
+                kind: HirErrorKind::DuplicateField {
+                    name: field.name.to_string(),
+                },
+                span: field.span,
+            });
+        }
+
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        if let Type::Struct(dep) = typ {
+            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
+        }
+
+        fields.push(StructField {
+            name: field_symbol,
+            typ,
+            offset: 0,
+            declared_index: idx as u32,
+        });
+    }
+
+    let (fields, size, align) = layout_fields(fields, lowered);
+    lowered[id] = Some(Struct {
+        id: StructId(id as u32),
+        name,
+        fields,
+        size,
+        align,
+    });
+    states[id] = Visit::Visited;
+
+    Ok(())
 }
 
 pub(in crate::hir) fn lower_const<'s, 'src>(

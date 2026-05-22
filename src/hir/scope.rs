@@ -7,7 +7,6 @@ use crate::{
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
-        topo,
     },
     lexer::Spanned,
     parser::{expression, statement},
@@ -146,14 +145,12 @@ impl Scope {
         }
 
         let mut lowered = vec![None; local_declarations.len()];
-        let mut states = vec![topo::SortingVisit::Unvisited; local_declarations.len()];
 
         lower::lower_structs(
             &local_declarations,
             &local_map,
             symbols,
             &mut lowered,
-            &mut states,
         )?;
 
         for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
@@ -733,8 +730,9 @@ impl Scope {
             }
         }
 
+        let mut visiting = HashSet::new();
+        let mut visited = HashSet::new();
         let mut sorted = Vec::new();
-        let mut states = HashMap::new();
 
         fn find_dependencies<'d, 'i>(
             expr: &expression::Expression<'i>,
@@ -811,34 +809,48 @@ impl Scope {
             }
         }
 
-        let nodes: Vec<SymbolId> = decls.keys().copied().collect();
-
-        topo::topological_sort(
-            &nodes,
-            &mut states,
-            |symbol_id| {
-                let decl = decls.get(&symbol_id).unwrap();
-                let mut deps = Vec::new();
-                find_dependencies(&decl.ast.value, decl.impl_type, symbols, &decls, &mut deps);
-                Ok(deps)
-            },
-            |symbol_id| {
+        fn dfs<'d, 's>(
+            symbol_id: SymbolId,
+            symbols: &SymbolTable,
+            decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
+            visiting: &mut HashSet<SymbolId>,
+            visited: &mut HashSet<SymbolId>,
+            sorted: &mut Vec<SymbolId>,
+        ) -> Result<(), HirError<'s>> {
+            if visiting.contains(&symbol_id) {
                 let decl = decls.get(&symbol_id).unwrap();
                 let name = match decl.impl_type {
                     Some(impl_type) => format!("{}::{}", impl_type, decl.ast.name),
                     _ => decl.ast.name.to_string(),
                 };
-
-                HirError {
+                return Err(HirError {
                     kind: HirErrorKind::CircularConstant { name },
                     span: decl.ast.span,
+                });
+            }
+            if !visited.contains(&symbol_id) {
+                visiting.insert(symbol_id);
+                if let Some(decl) = decls.get(&symbol_id) {
+                    let mut deps = Vec::new();
+                    find_dependencies(&decl.ast.value, decl.impl_type, symbols, decls, &mut deps);
+                    for dep in deps {
+                        if decls.contains_key(&dep) {
+                            dfs(dep, symbols, decls, visiting, visited, sorted)?;
+                        }
+                    }
                 }
-            },
-            |symbol_id| {
+                visiting.remove(&symbol_id);
+                visited.insert(symbol_id);
                 sorted.push(symbol_id);
-                Ok(())
-            },
-        )?;
+            }
+            Ok(())
+        }
+
+        for &symbol_id in decls.keys() {
+            if !visited.contains(&symbol_id) {
+                dfs(symbol_id, symbols, &decls, &mut visiting, &mut visited, &mut sorted)?;
+            }
+        }
 
         for symbol_id in sorted {
             let decl = decls.get(&symbol_id).unwrap();

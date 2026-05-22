@@ -1,0 +1,13 @@
+impl f32 {
+    pub const BITS: u32 = 32;
+    pub const RADIX: u32 = 2;
+    pub const MANTISSA_DIGITS: u32 = 24;
+    pub const DIGITS: u32 = 6;
+}
+
+impl f64 {
+    pub const BITS: u32 = 64;
+    pub const RADIX: u32 = 2;
+    pub const MANTISSA_DIGITS: u32 = 53;
+    pub const DIGITS: u32 = 15;
+}
