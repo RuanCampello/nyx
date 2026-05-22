@@ -38,8 +38,10 @@ pub enum X86Instr {
     Lea { dest: VReg, src: X86Operand },
     /// materialise the frame-pointer-relative address of a stack aggregate
     StackAddr { dest: VReg, origin: VReg },
-    /// zero-extend 1-byte `setcc` result -> 4 bytes
-    Movzx { dest: VReg, src: VReg },
+    /// zero-extend -> dest_bytes
+    Movzx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
+    /// sign-extend -> dest_bytes
+    Movsx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
 
     // integer arithmetic
     Add { dest: VReg, src: X86Operand, bytes: u8 },
@@ -291,6 +293,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Lea { dest, .. }
             | Self::StackAddr { dest, .. }
             | Self::Movzx { dest, .. }
+            | Self::Movsx { dest, .. }
             | Self::Add { dest, .. }
             | Self::Sub { dest, .. }
             | Self::Imul { dest, .. }
@@ -336,6 +339,8 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
             | Self::MovFloat { src: X86Operand::VReg(v), .. }
+            | Self::Movzx { src: X86Operand::VReg(v), .. }
+            | Self::Movsx { src: X86Operand::VReg(v), .. }
             | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             // 2-address: dest is read+write, src is read-only
@@ -385,7 +390,6 @@ impl Instruction<X86_64> for X86Instr {
             Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::Neg { dest, .. } | Self::Not { dest, .. } => uses.push(*dest),
-            Self::Movzx { src, ..  } => uses.push(*src),
 
             Self::Cmp { lhs, rhs, .. }
             | Self::Test { lhs, rhs, .. }

@@ -31,6 +31,7 @@ pub enum A64Instr {
     // integer movs
     MovImm { dest: VReg, imm: i64, bytes: u8 },
     Mov { dest: VReg, src: VReg, bytes: u8 },
+    Extend { dest: VReg, src: VReg, src_bytes: u8, dest_bytes: u8, signed: bool },
     /// load a stack-passed param
     LdrParam { dest: VReg, fp_offset: i32, bytes: u8, signed: bool },
 
@@ -398,6 +399,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FieldLoad { dest, .. }
             | Self::StackAddr { dest, .. }
             | Self::PtrLoad { dest, .. }
+            | Self::Extend { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
@@ -417,6 +419,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Neg { src, .. }
             | Self::Mvn { src, .. }
             | Self::FMov { src, .. }
+            | Self::Extend { src, .. }
             | Self::FNeg { src, .. } => uses.push(*src),
 
             Self::Add { lhs, rhs, .. }
