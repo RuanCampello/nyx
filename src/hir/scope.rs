@@ -2,14 +2,14 @@
 
 use crate::{
     hir::{
-        Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId,
+        Constant, Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId,
         SymbolTable, Type,
         declarations::Declarations,
         error::{HirError, HirErrorKind},
         lower::{self},
     },
     lexer::Spanned,
-    parser::statement,
+    parser::{expression, statement},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -28,6 +28,7 @@ pub struct Scope {
     pub struct_map: Structs,
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
+    pub constants: HashMap<SymbolId, Constant>,
 }
 
 #[derive(Debug)]
@@ -73,6 +74,7 @@ impl Scope {
             struct_map: HashMap::new(),
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
+            constants: HashMap::new(),
         }
     }
 
@@ -89,6 +91,8 @@ impl Scope {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols, in_std)?;
+        self.extend_constants(declarations, symbols, in_std)?;
+
         self.validate_interfaces(declarations, symbols)?;
         self.validate_interface_hierarchy(declarations, symbols)?;
 
@@ -668,6 +672,200 @@ impl Scope {
                 lower::resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
             })
             .collect()
+    }
+
+    fn extend_constants<'d, 's>(
+        &mut self,
+        declarations: &Declarations<'d, 's>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+    ) -> Result<(), HirError<'s>> {
+        struct ConstDecl<'d, 's> {
+            mangled_name: String,
+            impl_type: Option<&'d str>,
+            ast: &'d statement::Const<'s>,
+        }
+
+        let mut decls: HashMap<String, ConstDecl<'d, 's>> = HashMap::new();
+
+        // collect top-level constants
+        for c in &declarations.constants {
+            let mangled = c.name.to_string();
+            if decls.contains_key(&mangled) {
+                return Err(HirError {
+                    kind: HirErrorKind::DuplicateConstant {
+                        name: c.name.to_string(),
+                    },
+                    span: c.span,
+                });
+            }
+
+            decls.insert(
+                mangled.clone(),
+                ConstDecl {
+                    mangled_name: mangled,
+                    impl_type: None,
+                    ast: c,
+                },
+            );
+        }
+
+        // collect impl constants
+        for imp in &declarations.impls {
+            for c in &imp.constants {
+                let mangled = format!("{}__{}", imp.name, c.name);
+                if decls.contains_key(&mangled) {
+                    return Err(HirError {
+                        kind: HirErrorKind::DuplicateConstant {
+                            name: format!("{}::{}", imp.name, c.name),
+                        },
+                        span: c.span,
+                    });
+                }
+
+                decls.insert(
+                    mangled.clone(),
+                    ConstDecl {
+                        mangled_name: mangled,
+                        impl_type: Some(imp.name),
+                        ast: c,
+                    },
+                );
+            }
+        }
+
+        let mut visited = HashSet::new();
+        let mut visiting = HashSet::new();
+        let mut sorted = Vec::new();
+
+        fn dfs<'d, 's>(
+            name: &str,
+            decls: &HashMap<String, ConstDecl<'d, 's>>,
+            visiting: &mut HashSet<String>,
+            visited: &mut HashSet<String>,
+            sorted: &mut Vec<String>,
+        ) -> Result<(), HirError<'s>> {
+            if visiting.contains(name) {
+                let decl = decls.get(name).unwrap();
+                return Err(HirError {
+                    kind: HirErrorKind::CircularConstant {
+                        name: name.to_string(),
+                    },
+                    span: decl.ast.span,
+                });
+            }
+            if !visited.contains(name) {
+                visiting.insert(name.to_string());
+                if let Some(decl) = decls.get(name) {
+                    let mut deps = Vec::new();
+                    find_dependencies(&decl.ast.value, decl.impl_type, decls, &mut deps);
+                    for dep in deps {
+                        if decls.contains_key(&dep) {
+                            dfs(&dep, decls, visiting, visited, sorted)?;
+                        }
+                    }
+                }
+                visiting.remove(name);
+                visited.insert(name.to_string());
+                sorted.push(name.to_string());
+            }
+            Ok(())
+        }
+
+        fn find_dependencies<'d, 'i>(
+            expr: &expression::Expression<'i>,
+            current_impl: Option<&str>,
+            decls: &HashMap<String, ConstDecl<'d, 'i>>,
+            deps: &mut Vec<String>,
+        ) {
+            use expression::Expression as Expr;
+
+            match expr {
+                Expr::Identifier(name, _) => match current_impl {
+                    Some(impl_type) => {
+                        let mangled = format!("{}__{}", impl_type, name);
+                        if decls.contains_key(&mangled) {
+                            deps.push(mangled);
+                            return;
+                        }
+                    }
+                    _ if decls.contains_key(*name) => {
+                        deps.push((*name).to_string());
+                    }
+                    _ => {}
+                },
+                Expr::QualifiedName {
+                    qualifier, name, ..
+                } => {
+                    let mangled = format!("{}__{}", qualifier, name);
+                    if decls.contains_key(&mangled) {
+                        deps.push(mangled);
+                    }
+                }
+                Expr::Unary { expr, .. } => find_dependencies(expr, current_impl, decls, deps),
+                Expr::Binary { left, right, .. } => {
+                    find_dependencies(left, current_impl, decls, deps);
+                    find_dependencies(right, current_impl, decls, deps);
+                }
+                Expr::Assignment { target, value, .. } => {
+                    find_dependencies(target, current_impl, decls, deps);
+                    find_dependencies(value, current_impl, decls, deps);
+                }
+                Expr::Field { expr, .. } => find_dependencies(expr, current_impl, decls, deps),
+                Expr::Struct { fields, .. } => {
+                    for f in fields {
+                        find_dependencies(&f.value, current_impl, decls, deps);
+                    }
+                }
+                Expr::Call { callee, args, .. } => {
+                    find_dependencies(callee, current_impl, decls, deps);
+                    for arg in args {
+                        find_dependencies(arg, current_impl, decls, deps);
+                    }
+                }
+                Expr::QualifiedCall { args, .. } => {
+                    for arg in args {
+                        find_dependencies(arg, current_impl, decls, deps);
+                    }
+                }
+                Expr::TypeIntrinsic { .. } => {}
+                Expr::Integer(_, _)
+                | Expr::Float(_, _)
+                | Expr::String(_, _)
+                | Expr::Char(_, _)
+                | Expr::Bool(_, _) => {}
+            }
+        }
+
+        for name in decls.keys() {
+            if !visited.contains(name) {
+                dfs(name, &decls, &mut visiting, &mut visited, &mut sorted)?;
+            }
+        }
+
+        for mangled_name in sorted {
+            let decl = decls.get(&mangled_name).unwrap();
+            let expected_type = lower::resolve_annotation(
+                symbols,
+                &self.struct_map,
+                &decl.ast.typ.value(),
+                decl.ast.typ.span(),
+            )?;
+
+            let lowered =
+                lower::lower_const(self, symbols, &decl.ast.value, expected_type, in_std)?;
+
+            let symbol_id = symbols.insert(&mangled_name);
+            let constant = Constant {
+                name: symbol_id,
+                typ: expected_type,
+                value: lowered,
+                is_pub: decl.ast.is_pub,
+            };
+            self.constants.insert(symbol_id, constant);
+        }
+
+        Ok(())
     }
 }
 

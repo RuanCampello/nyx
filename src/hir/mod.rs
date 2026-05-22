@@ -131,6 +131,14 @@ pub struct Function {
     pub body: Block,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Constant {
+    pub name: SymbolId,
+    pub typ: Type,
+    pub value: Expression,
+    pub is_pub: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
     pub(crate) receiver: Type,
@@ -1279,5 +1287,178 @@ mod tests {
                 name: "i64".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn const_top_level() {
+        let src = r#"
+            const ANSWER: i32 = 42;
+            fn main(): i32 {
+                ANSWER
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(42)));
+    }
+
+    #[test]
+    fn const_scoped_and_qualified() {
+        let src = r#"
+            struct Dummy {}
+            impl Dummy {
+                pub const VALUE: uptr = 127;
+            }
+            fn main(): uptr {
+                Dummy::VALUE
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+    }
+
+    #[test]
+    fn const_primitive_scoped_in_std() {
+        let src = r#"
+            impl i8 {
+                pub const MAX: uptr = 127;
+            }
+            fn main(): uptr {
+                i8::MAX
+            }
+        "#;
+        let mut symbols = SymbolTable::new();
+        let statements = Parser::new(src).parse().unwrap();
+        let declarations = Declarations::partition(&statements).unwrap();
+        let mut scope = Scope::new();
+        scope.extend(&declarations, &mut symbols, true).unwrap();
+        let functions = scope.lower_functions(&declarations, &mut symbols, true).unwrap();
+        let main_func = &functions[0];
+        let ret_expr = match &main_func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+    }
+
+    #[test]
+    fn const_nested_evaluation() {
+        let src = r#"
+            const A: i32 = 10;
+            const B: i32 = A + 2;
+            fn main(): i32 {
+                B
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        match &ret_expr.kind {
+            ExpressionKind::Binary { left, operator, right } => {
+                assert_eq!(*operator, BinaryOperator::Add);
+                assert!(matches!(left.kind, ExpressionKind::Integer(10)));
+                assert!(matches!(right.kind, ExpressionKind::Integer(2)));
+            }
+            other => panic!("expected Binary expression, got {other:?}"),
+        };
+    }
+
+    #[test]
+    fn const_circular_dependency() {
+        let src = r#"
+            const A: i32 = B;
+            const B: i32 = A;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::CircularConstant { ref name } if name == "A" || name == "B"
+        ));
+    }
+
+    #[test]
+    fn const_duplicate_declaration() {
+        let src = r#"
+            const X: i32 = 1;
+            const X: i32 = 2;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateConstant {
+                name: "X".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_scoped_duplicate_declaration() {
+        let src = r#"
+            struct Dummy {}
+            impl Dummy {
+                pub const VALUE: i32 = 1;
+                pub const VALUE: i32 = 2;
+            }
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::DuplicateConstant {
+                name: "Dummy::VALUE".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_undefined_reference() {
+        let src = r#"
+            const A: i32 = UNDEFINED;
+            fn main() {}
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UndeclaredIdentifier {
+                name: "UNDEFINED".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn const_shadowing() {
+        let src = r#"
+            const ANSWER: i32 = 42;
+            fn main(): i32 {
+                let ANSWER: i32 = 100;
+                ANSWER
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
+        let func = &hir.functions[0];
+        let ret_expr = match &func.body.statements[1] {
+            Statement::Return(Some(expr)) => expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(ret_expr.typ, Type::I32);
+        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
     }
 }

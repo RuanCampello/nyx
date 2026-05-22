@@ -1,12 +1,13 @@
 use crate::{
     hir::error::HirError,
-    parser::statement::{Function, Impl, Interface, Statement, Struct, UseDecl},
+    parser::statement::{Const, Function, Impl, Interface, Statement, Struct, UseDecl},
 };
 
 #[derive(Debug)]
 pub(in crate::hir) struct Declarations<'d, 'src> {
     pub uses: Vec<&'d UseDecl<'src>>,
     pub structs: Vec<&'d Struct<'src>>,
+    pub constants: Vec<&'d Const<'src>>,
     pub functions: Vec<&'d Function<'src>>,
     pub interfaces: Vec<&'d Interface<'src>>,
     pub impls: Vec<&'d Impl<'src>>,
@@ -17,6 +18,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),
+            constants: Vec::new(),
             functions: Vec::new(),
             interfaces: Vec::new(),
             impls: Vec::new(),
@@ -29,6 +31,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
                 Statement::Use(u) => declarations.uses.push(u),
                 Statement::Struct(s) => declarations.structs.push(s),
                 Statement::Impl(i) => declarations.impls.push(i),
+                Statement::Const(c) => declarations.constants.push(c),
 
                 other => {
                     return Err(HirError {

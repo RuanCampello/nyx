@@ -662,6 +662,19 @@ impl<'h> Diagnosticable for HirError<'h> {
                 format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
             ))
             .build(),
+
+            K::CircularConstant { name } => {
+                Builder::new(format!("circular dependency in constant {}", hi(name)))
+                    .primary(self.span, format!("constant {} depends on itself", hi(name)))
+                    .build()
+            }
+
+            K::DuplicateConstant { name } => {
+                Builder::new(format!("duplicate constant {}", hi(name)))
+                    .primary(self.span, format!("{} is defined here again", hi(name)))
+                    .help(format!("rename one of the {} constants", hi(name)))
+                    .build()
+            }
         }
     }
 }

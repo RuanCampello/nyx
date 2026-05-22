@@ -60,6 +60,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
     }
 
+    pub fn new_for_const(scope: &'s Scope, symbols: &'s mut SymbolTable, in_std: bool) -> Self {
+        Self {
+            scope,
+            symbols,
+            is_const: true,
+            in_std,
+            return_type: Type::Unit,
+            function: None,
+            function_id: FunctionId(0),
+            next_local: 0,
+            locals: Vec::new(),
+            scopes: vec![HashMap::new()],
+        }
+    }
+
     #[inline(always)]
     pub fn lower(mut self) -> Result<Function, HirError<'src>> {
         let function = self.function.take().expect("function to be present");
@@ -242,6 +257,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
             Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
+            Stmt::Const(_) => unimplemented!("local constants are not supported yet"),
         }
     }
 
@@ -306,13 +322,73 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Expr::Identifier(name, span) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.resolve_local(symbol, *span)?;
+
+                // check local variable scopes
+                let Some(id) =
+                    self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
+                else {
+                    // check impl-scoped or top-level constants
+                    let mut found_const = None;
+                    if let Some(function) = self.function {
+                        if let Some(impl_type) = function.impl_type {
+                            let mangled_name = format!("{impl_type}__{name}");
+                            let mangled_symbol = self.symbols.insert(&mangled_name);
+                            if let Some(c) = self.scope.constants.get(&mangled_symbol) {
+                                found_const = Some(c);
+                            }
+                        }
+                    }
+                    if found_const.is_none() {
+                        if let Some(c) = self.scope.constants.get(&symbol) {
+                            found_const = Some(c);
+                        }
+                    }
+
+                    return match found_const {
+                        Some(c) => {
+                            let mut val = c.value.clone();
+                            val.span = *span;
+                            Ok(val)
+                        }
+                        None => {
+                            // fallback to resolve_local
+                            let id = self.resolve_local(symbol, *span)?;
+                            Ok(Expression {
+                                kind: ExpressionKind::Local(id),
+                                typ: self[id].typ,
+                                span: *span,
+                            })
+                        }
+                    };
+                };
 
                 Ok(Expression {
                     kind: ExpressionKind::Local(id),
                     typ: self[id].typ,
                     span: *span,
                 })
+            }
+
+            Expr::QualifiedName {
+                qualifier,
+                name,
+                span,
+            } => {
+                let mangled_name = format!("{qualifier}__{name}");
+                let symbol = self.symbols.insert(&mangled_name);
+
+                let Some(c) = self.scope.constants.get(&symbol) else {
+                    return Err(HirError {
+                        kind: HirErrorKind::UndeclaredIdentifier {
+                            name: format!("{qualifier}::{name}"),
+                        },
+                        span: *span,
+                    });
+                };
+
+                let mut val = c.value.clone();
+                val.span = *span;
+                Ok(val)
             }
 
             Expr::Unary {
@@ -1429,6 +1505,21 @@ pub(in crate::hir) fn lower_struct<'h>(
     states[id] = Visit::Visited;
 
     Ok(())
+}
+
+pub(in crate::hir) fn lower_const<'s, 'src>(
+    scope: &'s Scope,
+    symbols: &'s mut SymbolTable,
+    expr: &expression::Expression<'src>,
+    expected_type: Type,
+    in_std: bool,
+) -> Result<Expression, HirError<'src>> {
+    let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std);
+    let lowered = builder.lower_expr(expr, Some(expected_type))?;
+
+    builder.assert_type(expected_type, lowered.typ, lowered.span)?;
+
+    Ok(lowered)
 }
 
 pub(in crate::hir) fn resolve_annotation<'h>(

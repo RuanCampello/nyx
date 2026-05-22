@@ -27,38 +27,21 @@ pub enum HirErrorKind<'h> {
     DuplicateField { name: String },
     InvalidFieldAccess,
     InvalidAssignmentTarget,
-    UnknownField {
-        struct_name: String,
-        field: String,
-    },
-    MissingField {
-        struct_name: String,
-        field: String,
-    },
+    UnknownField { struct_name: String, field: String },
+    MissingField { struct_name: String, field: String },
     CircularStruct { name: String },
-    ArityMismatch {
-        name: String,
-        expected: usize,
-        found: usize,
-    },
+    ArityMismatch { name: String, expected: usize, found: usize },
     DuplicateBind { name: String },
     MissingInitialiser { name: String },
     MissingReceiver { name: String },
     ReceiverOutsideImpl,
-    TypeMismatch {
-        expected: Type,
-        found: Type,
-    },
+    TypeMismatch { expected: Type, found: Type },
     ImmutableBind { name: String },
     ConstFnViolation(ConstFnViolationKind),
 
     DuplicateInterface { name: String },
     UnknownInterface { name: String },
-    MissingInterfaceMethod { 
-        struct_name: String,
-        interface_name: String,
-        method_name: String,
-    },
+    MissingInterfaceMethod { struct_name: String, interface_name: String, method_name: String },
     MissingSuperinterfaceImpl {
         struct_name: String,
         interface_name: String,
@@ -72,6 +55,8 @@ pub enum HirErrorKind<'h> {
         found: String,
         impl_span: Span,
     },
+    CircularConstant { name: String },
+    DuplicateConstant { name: String },
 }
 
 #[derive(Debug, PartialEq, Clone)]
