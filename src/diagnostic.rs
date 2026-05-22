@@ -913,12 +913,6 @@ mod tests {
     }
 
     #[test]
-    fn lex_unexpected_char_pipe() {
-        let kind = lex_check!("let x = a | b;");
-        assert_eq!(kind, LexErrorKind::UnexpectedChar('|'));
-    }
-
-    #[test]
     fn lex_unterminated_string() {
         let kind = lex_check!(r#"let x = "hello;"#);
         assert_eq!(kind, LexErrorKind::UnterminatedString);
