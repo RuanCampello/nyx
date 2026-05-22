@@ -147,6 +147,48 @@ impl Function<AArch64> {
                 }
             }
 
+            A64Instr::Extend {
+                dest,
+                src,
+                src_bytes,
+                dest_bytes,
+                signed,
+            } => {
+                let dest_loc = alloc.location(dest, dest_bytes);
+                let src_loc = alloc.location(src, src_bytes);
+
+                let src_reg = match is_mem(&src_loc) {
+                    true => {
+                        let temp_src = "w16";
+                        emit_load(out, temp_src, &src_loc, *src_bytes);
+                        temp_src
+                    }
+                    _ => &src_loc,
+                };
+
+                let dest_is_mem = is_mem(&dest_loc);
+                let dest_reg = match dest_is_mem {
+                    true => A64Reg::X16.name(*dest_bytes),
+                    _ => &dest_loc,
+                };
+
+                let mnemonic = match (src_bytes, signed) {
+                    (1, true) => "sxtb",
+                    (1, false) => "uxtb",
+                    (2, true) => "sxth",
+                    (2, false) => "uxth",
+                    (4, true) => "sxtw",
+                    (4, false) => "uxtw",
+                    _ => unreachable!("invalid extension src_bytes: {}", src_bytes),
+                };
+
+                emit!(out, "{mnemonic}    {dest_reg}, {src_reg}");
+
+                if dest_is_mem {
+                    emit_store(out, dest_reg, &dest_loc, *dest_bytes);
+                }
+            }
+
             A64Instr::MovImm { dest, imm, bytes } => {
                 let dest_loc = alloc.location(dest, bytes);
 

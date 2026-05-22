@@ -513,6 +513,60 @@ impl<'f> Lower<'f> {
                     },
                 );
             }
+
+            InstructionKind::Cast { src, typ } => {
+                use std::cmp::Ordering;
+
+                let src_mt = src.typ().machine_type(self.layouts);
+                let src_bytes = src_mt.bytes();
+                let src_signed = src_mt.is_signed();
+
+                let dest_mt = typ.machine_type(self.layouts);
+                let dest_bytes = dest_mt.bytes();
+
+                let op = self.lower_operand(src, id);
+
+                #[rustfmt::skip]
+                let instr = match src_bytes.cmp(&dest_bytes) {
+                    Ordering::Equal => match op {
+                        A64Operand::VReg(src) => A64Instr::Mov { dest, src, bytes: dest_bytes },
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+
+                    // downcasting / truncate
+                    Ordering::Greater if dest_bytes < 4 => match op {
+                        A64Operand::VReg(src) => A64Instr::Extend { dest, src, src_bytes: dest_bytes, dest_bytes, signed: dest_mt.is_signed() },
+                        A64Operand::Imm(imm) => {
+                            let mask = if dest_bytes == 1 { 0xff } else { 0xffff };
+                            let masked = match dest_mt.is_signed() {
+                                true => {
+                                    let shift = 64 - (dest_bytes * 8);
+                                    (imm << shift) >> shift
+                                }
+                                _ => imm & mask,
+                            };
+
+                            A64Instr::MovImm { dest, imm: masked, bytes: dest_bytes }
+                        }
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+                    Ordering::Greater => match op {
+                        A64Operand::VReg(src) => A64Instr::Mov { dest, src, bytes: dest_bytes },
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+
+                    // upcasting
+                    Ordering::Less => match op {
+                        A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes: dest_bytes },
+                        A64Operand::VReg(src) => A64Instr::Extend { dest, src, src_bytes, dest_bytes, signed: src_signed },
+                        A64Operand::Label(label) => A64Instr::Adr { dest, label },
+                    },
+                };
+
+                self.lir.push_instr(id, instr);
+            }
         }
     }
 
