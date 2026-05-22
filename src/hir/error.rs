@@ -39,6 +39,8 @@ pub enum HirErrorKind<'h> {
     ImmutableBind { name: String },
     ConstFnViolation(ConstFnViolationKind),
 
+    InvalidCast { src: Type, target: Type },
+
     DuplicateInterface { name: String },
     UnknownInterface { name: String },
     MissingInterfaceMethod { struct_name: String, interface_name: String, method_name: String },

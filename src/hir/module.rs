@@ -46,29 +46,18 @@ struct Module {
 }
 
 #[derive(Debug)]
+#[rustfmt::skip]
 pub enum ModuleError {
-    FileNotFound {
-        path: PathBuf,
-        span: Option<Span>,
-    },
-    CircularImport {
-        path: PathBuf,
-        span: Span,
-    },
+    FileNotFound { path: PathBuf, span: Option<Span> },
+    CircularImport { path: PathBuf, span: Span },
     EmptyPath,
-    UnknownRoot {
-        name: String,
-        span: Span,
-    },
+    UnknownRoot { name: String, span: Span },
     UnknownExport {
         path: PathBuf,
         name: String,
         span: Span,
     },
-    TopLevelNonFunction {
-        path: PathBuf,
-        span: Span,
-    },
+    TopLevelNonFunction { path: PathBuf, span: Span },
     Diagnostic(Diagnostic),
 }
 
@@ -78,6 +67,9 @@ pub(crate) trait FileSystem {
 }
 
 pub(crate) struct FS;
+
+/// modules automatically injected into the scope of any nyx program
+const PRELUDE: [&str; 3] = ["int.nyx", "float.nyx", "char.nyx"];
 
 impl ModuleLoader<FS> {
     pub fn new(name: String, root: PathBuf) -> Self {
@@ -113,7 +105,7 @@ impl<F: FileSystem> ModuleLoader<F> {
             })?;
 
         // automatically discover standard library prelude
-        for name in &["int.nyx", "float.nyx", "char.nyx"] {
+        for name in &PRELUDE {
             let path = self.std.join(name);
             if let Ok(canon) = self.fs.canonicalise(&path) {
                 if self.fs.read(&canon).is_ok() {
@@ -451,7 +443,7 @@ mod tests {
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
 
-        assert_eq!(hir.functions.len(), 16);
+        assert_eq!(hir.functions.len(), 20);
         let main = hir
             .functions
             .iter()
@@ -552,7 +544,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 18);
+        assert_eq!(hir.functions.len(), 22);
     }
 
     #[test]
@@ -630,7 +622,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 16);
+        assert_eq!(hir.functions.len(), 20);
     }
 
     #[test]
@@ -671,7 +663,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 17);
+        assert_eq!(hir.functions.len(), 21);
     }
 
     #[test]
@@ -689,7 +681,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 17); // main + exit (syscall is a synthetic scope entry, not a Module fn)
+        assert_eq!(hir.functions.len(), 21); // main + exit (syscall is a synthetic scope entry, not a Module fn)
 
         let main = hir
             .functions
@@ -812,7 +804,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 17);
+        assert_eq!(hir.functions.len(), 21);
         assert_eq!(hir.structs.len(), 1);
     }
 

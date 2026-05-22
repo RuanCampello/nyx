@@ -770,7 +770,7 @@ impl Scope {
                         }
                     }
                 }
-                Expr::Unary { expr, .. } => {
+                Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
                     find_dependencies(expr, current_impl, symbols, decls, deps)
                 }
                 Expr::Binary { left, right, .. } => {

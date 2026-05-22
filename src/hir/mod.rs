@@ -196,6 +196,7 @@ pub enum ExpressionKind {
     Call { function: FunctionId, args: Vec<Expression> },
     Syscall { code: SyscallCode, args: Vec<Expression> },
     IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
+    Cast { from: Box<Expression>, to: Type },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -320,6 +321,25 @@ impl Type {
                 (definition.size, definition.align)
             }
         }
+    }
+
+    #[inline(always)]
+    pub(in crate::hir) const fn is_primitive_castable(&self) -> bool {
+        matches!(
+            self,
+            Type::I8
+                | Type::U8
+                | Type::I16
+                | Type::U16
+                | Type::I32
+                | Type::U32
+                | Type::I64
+                | Type::U64
+                | Type::Iptr
+                | Type::Uptr
+                | Type::Bool
+                | Type::Char
+        )
     }
 }
 
@@ -1370,7 +1390,11 @@ mod tests {
         };
         assert_eq!(ret_expr.typ, Type::I32);
         match &ret_expr.kind {
-            ExpressionKind::Binary { left, operator, right } => {
+            ExpressionKind::Binary {
+                left,
+                operator,
+                right,
+            } => {
                 assert_eq!(*operator, BinaryOperator::Add);
                 assert!(matches!(left.kind, ExpressionKind::Integer(10)));
                 assert!(matches!(right.kind, ExpressionKind::Integer(2)));

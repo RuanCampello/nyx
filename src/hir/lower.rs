@@ -313,6 +313,32 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span: *span,
             }),
 
+            Expr::Cast {
+                expr: inner,
+                target_type,
+                span,
+            } => {
+                let target = self.resolve_type(&target_type.value(), target_type.span())?;
+                let lowered_expr = self.lower_expr(inner, None)?;
+                let src = lowered_expr.typ;
+
+                if !src.is_primitive_castable() || !target.is_primitive_castable() {
+                    return Err(HirError {
+                        kind: HirErrorKind::InvalidCast { src, target },
+                        span: *span,
+                    });
+                }
+
+                Ok(Expression {
+                    kind: ExpressionKind::Cast {
+                        from: Box::new(lowered_expr),
+                        to: target,
+                    },
+                    typ: target,
+                    span: *span,
+                })
+            }
+
             Expr::Identifier(name, span) => {
                 let symbol = match self.symbols.get_id(name) {
                     Some(sym) => sym,
