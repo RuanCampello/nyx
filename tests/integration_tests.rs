@@ -261,3 +261,106 @@ fn run_integration_tests() {
         panic!("\nIntegration test failures:\n{}", errors.join("\n"));
     }
 }
+
+#[test]
+fn run_aarch64_integration_tests() {
+    if Command::new("qemu-aarch64").arg("--version").status().is_err() {
+        println!("qemu-aarch64 not found, skipping aarch64 integration tests");
+        return;
+    }
+    if Command::new("aarch64-linux-gnu-as").arg("--version").status().is_err() {
+        println!("aarch64-linux-gnu-as not found, skipping aarch64 integration tests");
+        return;
+    }
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut errors = Vec::new();
+
+    for test in CASES {
+        let src = PathBuf::from(test.file);
+        let project = src.file_stem().unwrap().to_string_lossy().to_string();
+
+        let compile_res = (|| -> Result<i32, String> {
+            let asm = nyx::compile_project_for(&src, &project, nyx::TargetArch::AArch64)
+                .map_err(|e| e.to_string())?;
+
+            let temp_dir = std::env::temp_dir();
+            let asm_path = temp_dir.join(format!("{}_aarch64.s", test.name));
+            let obj_path = temp_dir.join(format!("{}_aarch64.o", test.name));
+            let exe_path = temp_dir.join(format!("{}_aarch64.test", test.name));
+
+            fs::write(&asm_path, &asm).map_err(|e| format!("failed to write assembly: {e}"))?;
+
+            let as_status = Command::new("aarch64-linux-gnu-as")
+                .args(["-o", obj_path.to_str().unwrap(), asm_path.to_str().unwrap()])
+                .status()
+                .map_err(|e| format!("aarch64-linux-gnu-as failed: {e}"))?;
+
+            fs::remove_file(&asm_path).ok();
+
+            if !as_status.success() {
+                return Err(format!(
+                    "aarch64-linux-gnu-as exited with code {}",
+                    as_status.code().unwrap_or(-1)
+                ));
+            }
+
+            let ld_status = Command::new("aarch64-linux-gnu-ld")
+                .args(["-o", exe_path.to_str().unwrap(), obj_path.to_str().unwrap()])
+                .status()
+                .map_err(|e| format!("aarch64-linux-gnu-ld failed: {e}"))?;
+
+            fs::remove_file(&obj_path).ok();
+
+            if !ld_status.success() {
+                return Err(format!(
+                    "aarch64-linux-gnu-ld exited with code {}",
+                    ld_status.code().unwrap_or(-1)
+                ));
+            }
+
+            if let Some(expected_code) = test.exit_code {
+                let run_status = Command::new("qemu-aarch64")
+                    .arg(&exe_path)
+                    .status()
+                    .map_err(|e| format!("qemu-aarch64 failed to run: {e}"))?;
+
+                fs::remove_file(&exe_path).ok();
+
+                let code = run_status.code().unwrap_or(-1);
+                match code == expected_code {
+                    true => Ok(code),
+                    _ => Err(format!(
+                        "expected exit code {}, got {}",
+                        expected_code, code
+                    )),
+                }
+            } else {
+                fs::remove_file(&exe_path).ok();
+                Ok(0)
+            }
+        })();
+
+        match compile_res {
+            Ok(code) => {
+                passed += 1;
+                println!("{}: passed (exit code {})", test.name, code);
+            }
+            Err(err) => {
+                failed += 1;
+                let msg = format!("{}: {}", test.name, err);
+                eprintln!("{msg}");
+                errors.push(msg);
+            }
+        }
+    }
+
+    println!("\nAArch64: {} passed, {} failed", passed, failed);
+    if !errors.is_empty() {
+        panic!(
+            "\nAArch64 Integration test failures:\n{}",
+            errors.join("\n")
+        );
+    }
+}
