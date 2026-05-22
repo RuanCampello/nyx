@@ -78,6 +78,10 @@ pub enum Punct {
     And,       // &&
     Or,        // ||
     Ampersand, // &
+    Pipe,      // |
+    Caret,     // ^
+    Shl,       // <<
+    Shr,       // >>
 
     OpenParen,    // (
     CloseParen,   // )
@@ -225,6 +229,10 @@ impl Punct {
             Self::And => "&&",
             Self::Or => "||",
             Self::Ampersand => "&",
+            Self::Pipe => "|",
+            Self::Caret => "^",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
             Self::OpenParen => "(",
             Self::CloseParen => ")",
             Self::OpenBrace => "{",

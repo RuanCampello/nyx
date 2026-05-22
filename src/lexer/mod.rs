@@ -131,19 +131,27 @@ impl<'src> Lexer<'src> {
                 }
             }
 
+            '^' => self.single_punct(Punct::Caret),
+
             '<' => {
                 self.cursor.advance();
-                match self.cursor.consume_optional('=') {
-                    true => self.token(Punct::LtEq, start),
-                    false => self.token(Punct::Lt, start),
+                if self.cursor.consume_optional('=') {
+                    self.token(Punct::LtEq, start)
+                } else if self.cursor.consume_optional('<') {
+                    self.token(Punct::Shl, start)
+                } else {
+                    self.token(Punct::Lt, start)
                 }
             }
 
             '>' => {
                 self.cursor.advance();
-                match self.cursor.consume_optional('=') {
-                    true => self.token(Punct::GtEq, start),
-                    _ => self.token(Punct::Gt, start),
+                if self.cursor.consume_optional('=') {
+                    self.token(Punct::GtEq, start)
+                } else if self.cursor.consume_optional('>') {
+                    self.token(Punct::Shr, start)
+                } else {
+                    self.token(Punct::Gt, start)
                 }
             }
 
@@ -159,10 +167,7 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('|') {
                     true => self.token(Punct::Or, start),
-                    _ => {
-                        return Err(LexError::unexpected_char('|', start)
-                            .with_help("did you mean `||` (logical or)?"));
-                    }
+                    false => self.token(Punct::Pipe, start),
                 }
             }
 
@@ -518,5 +523,26 @@ mod tests {
         // "42" at col 9
         assert_eq!(tokens[3].span.start.column, 9);
         assert_eq!(tokens[3].span.end.column, 11);
+    }
+
+    #[test]
+    fn bitwise_and_shifts_lexing() {
+        let ks = kinds("x & y | z ^ w << 2 >> 3");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Identifier("x"),
+                TokenKind::Punct(Punct::Ampersand),
+                TokenKind::Identifier("y"),
+                TokenKind::Punct(Punct::Pipe),
+                TokenKind::Identifier("z"),
+                TokenKind::Punct(Punct::Caret),
+                TokenKind::Identifier("w"),
+                TokenKind::Punct(Punct::Shl),
+                TokenKind::Integer(2),
+                TokenKind::Punct(Punct::Shr),
+                TokenKind::Integer(3),
+            ]
+        );
     }
 }
