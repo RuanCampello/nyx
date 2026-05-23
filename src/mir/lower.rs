@@ -307,8 +307,15 @@ impl<'a> FunctionLower<'a> {
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
                 #[rustfmt::skip]
-                match *operator == UnaryOperator::Deref {
-                    true => self.emit(dest, InstructionKind::FieldLoad { src: rhs, offset: 0, typ: expr.typ }),
+                match *operator {
+                    UnaryOperator::Deref => self.emit(dest, InstructionKind::FieldLoad { src: rhs, offset: 0, typ: expr.typ }),
+                    UnaryOperator::Ref => {
+                        let src = match rhs {
+                            Operand::Place(place) => place,
+                            Operand::Const(_) => unreachable!("cannot take address of constant"),
+                        };
+                        self.emit(dest, InstructionKind::AddressOf { src, offset: 0 })
+                    }
                     _ => self.emit(dest, InstructionKind::Unary { operation: *operator, rhs }),
                 };
 
