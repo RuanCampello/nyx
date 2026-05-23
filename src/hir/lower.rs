@@ -534,10 +534,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     })?;
 
                 if !self[local].mutable {
-                    let err_span = if fields.is_empty() {
-                        *span
-                    } else {
-                        target.span()
+                    let err_span = match fields.is_empty() {
+                        true => *span,
+                        _ => target.span(),
                     };
                     return Err(HirError {
                         kind: HirErrorKind::ImmutableBind {
@@ -1186,11 +1185,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let def = &self.scope.structs[sid.0 as usize];
         let struct_name = self.symbols.get(def.name).to_string();
 
-        let field =
-            def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
-                hir_error!(span, UnknownField { struct_name, field: name.to_string() })
-            });
-        todo!()
+        let field = def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
+            hir_error!(span, UnknownField { struct_name, field: name.to_string() })
+        })?;
+
+        Ok((sym, field.typ))
     }
 
     /// This is used to resolve access chains like `x.y.z` or just `x` into
@@ -1231,48 +1230,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let mut field_symbols = Vec::with_capacity(fields.len());
 
         for (idx, &field_name) in fields.iter().enumerate() {
-            let struct_id = match current_type {
-                Type::Struct(id) => id,
-                Type::Ref { to: RefTarget::Struct(id), .. } => id,
-                found => {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found,
-                        },
-                        span,
-                    });
-                }
-            };
-
-            let field = self.symbols.insert(field_name);
-            let struct_def = &self[struct_id];
-            let name = self.symbols.get(struct_def.name);
-
-            let field_def = {
-                struct_def.fields.iter().find(|f| f.name == field).ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownField {
-                        struct_name: name.to_string(),
-                        field: field_name.to_string(),
-                    },
-                    span,
-                })
-            }?;
-
-            current_type = field_def.typ;
-            field_symbols.push(field);
+            let (sym, typ) = self.lookup_field(current_type, field_name, span)?;
+            current_type = typ;
+            field_symbols.push(sym);
 
             let is_last = idx == fields.len() - 1;
-            #[rustfmt::skip]
-            let is_struct_to_struct = matches!(current_type, Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. });
-            if !is_last && !is_struct_to_struct {
-                return Err(HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: current_type,
-                    },
-                    span,
-                });
+            let is_struct = matches!(
+                current_type,
+                Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. }
+            );
+
+            if !is_last && !is_struct {
+                let expected = Type::Struct(Default::default());
+                return Err(hir_error!(span, TypeMismatch { expected, found: current_type }));
             }
         }
 
