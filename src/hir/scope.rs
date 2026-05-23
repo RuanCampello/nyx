@@ -325,7 +325,18 @@ impl<'sc> Scope<'sc> {
             }
         }
 
-        for implementation in &declarations.impls {
+        self.extend_impl_signatures(declarations, symbols, in_std)?;
+
+        Ok(())
+    }
+
+    fn extend_impl_signatures<'d, 'h>(
+        &mut self,
+        declarations: &Declarations<'d, 'h>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+    ) -> Result<(), HirError<'h>> {
+        for implementation in declarations.impls.iter().copied() {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) if in_std => primitive,
                 Some(primitive) => {
@@ -471,7 +482,6 @@ impl<'sc> Scope<'sc> {
                 }
             }
         }
-
         Ok(())
     }
 
