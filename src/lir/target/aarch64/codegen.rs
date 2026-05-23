@@ -115,7 +115,11 @@ impl Function<AArch64> {
         label!(out, ".section .rodata");
         for (bits, label) in &self.floats {
             let is_32 = label.contains("_f32_");
-            let align = if is_32 { 4 } else { 8 };
+            let align = if is_32 {
+                4
+            } else {
+                8
+            };
 
             label!(out, ".align {align}");
             label!(out, "{label}:");
@@ -147,13 +151,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::Extend {
-                dest,
-                src,
-                src_bytes,
-                dest_bytes,
-                signed,
-            } => {
+            A64Instr::Extend { dest, src, src_bytes, dest_bytes, signed } => {
                 let dest_loc = alloc.location(dest, dest_bytes);
                 let src_loc = alloc.location(src, src_bytes);
 
@@ -202,12 +200,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::LdrParam {
-                dest,
-                fp_offset,
-                bytes,
-                signed,
-            } => {
+            A64Instr::LdrParam { dest, fp_offset, bytes, signed } => {
                 let dest = alloc.location(dest, bytes);
                 let src_addr = format!("[x29, #{fp_offset}]");
 
@@ -247,7 +240,11 @@ impl Function<AArch64> {
 
             A64Instr::Adr { dest, label } => {
                 let dest = alloc.location(dest, &8);
-                let scratch = if is_mem(&dest) { "x16" } else { dest.as_str() };
+                let scratch = if is_mem(&dest) {
+                    "x16"
+                } else {
+                    dest.as_str()
+                };
 
                 emit!(out, "adrp    {scratch}, {label}");
                 emit!(out, "add     {scratch}, {scratch}, :lo12:{label}");
@@ -257,13 +254,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::FieldLoad {
-                dest,
-                origin,
-                offset,
-                bytes,
-                signed,
-            } => {
+            A64Instr::FieldLoad { dest, origin, offset, bytes, signed } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let dest = alloc.location(dest, bytes);
@@ -279,13 +270,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::FieldStore {
-                origin,
-                src,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            A64Instr::FieldStore { origin, src, offset, bytes, is_float } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let dest = format!("[x29, #{offset}]");
@@ -305,14 +290,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::PtrLoad {
-                dest,
-                ptr,
-                offset,
-                bytes,
-                is_float,
-                signed,
-            } => {
+            A64Instr::PtrLoad { dest, ptr, offset, bytes, is_float, signed } => {
                 let ptr = alloc.location(ptr, &8);
                 let dest = alloc.location(dest, bytes);
                 let addr = load_ptr_addr(out, &ptr);
@@ -334,13 +312,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::PtrStore {
-                ptr,
-                src,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            A64Instr::PtrStore { ptr, src, offset, bytes, is_float } => {
                 let ptr = alloc.location(ptr, &8);
                 let addr = load_ptr_addr(out, &ptr);
                 let dest = format!("[{addr}, #{offset}]");
@@ -466,13 +438,7 @@ impl Function<AArch64> {
                 }
             }
 
-            A64Instr::Call {
-                target,
-                moves,
-                ret,
-                stack_args,
-                ..
-            } => {
+            A64Instr::Call { target, moves, ret, stack_args, .. } => {
                 let n_stack = stack_args.len();
 
                 if n_stack > 0 {
@@ -565,19 +531,18 @@ impl Function<AArch64> {
                         let dest = alloc.location(ret, &bytes);
 
                         if src != dest {
-                            let mnemonic = if is_float { "fmov" } else { "mov" };
+                            let mnemonic = if is_float {
+                                "fmov"
+                            } else {
+                                "mov"
+                            };
                             emit!(out, "{mnemonic}    {dest}, {src}");
                         }
                     }
                 }
             }
 
-            A64Instr::Syscall {
-                id: syscall_id,
-                moves,
-                ret,
-                ..
-            } => {
+            A64Instr::Syscall { id: syscall_id, moves, ret, .. } => {
                 for (operand, reg, bytes) in moves {
                     let dest = reg.name(*bytes);
 
@@ -625,11 +590,7 @@ impl Function<AArch64> {
             Term::Return(None) => {}
             Term::Jump(block) => emit!(out, "b       .L_block_{name}_{}", block.0),
 
-            Term::Branch {
-                cond,
-                then_block,
-                else_block,
-            } => {
+            Term::Branch { cond, then_block, else_block } => {
                 let condition = alloc.location(cond, &4);
 
                 emit!(out, "cbnz    {condition}, .L_block_{name}_{}", then_block.0);
@@ -649,7 +610,11 @@ impl Function<AArch64> {
                     let dest = ret_reg.name(bytes);
 
                     if src != dest {
-                        let mnemonic = if is_float { "fmov" } else { "mov" };
+                        let mnemonic = if is_float {
+                            "fmov"
+                        } else {
+                            "mov"
+                        };
                         emit!(out, "{mnemonic}    {dest}, {src}");
                     }
                 }
@@ -668,10 +633,7 @@ impl Function<AArch64> {
 
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
-        matches!(
-            self.vreg_types.get(vreg.0 as usize),
-            Some(MachineType::Float { .. })
-        )
+        matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
     }
 
     #[inline(always)]
@@ -741,7 +703,11 @@ fn emit_wide_immediate(out: &mut String, dest: &str, value: i64, bytes: u8) {
     }
 
     // general case MOVZ lowest chunk, MOVK upper chunks
-    let n_chunks = if bytes <= 4 { 2 } else { 4 };
+    let n_chunks = if bytes <= 4 {
+        2
+    } else {
+        4
+    };
 
     let mut first = true;
     for shift in 0..n_chunks {
@@ -898,12 +864,7 @@ fn emit_restore_regs(out: &mut String, regs: &[A64Reg]) {
 
     while len > 0 {
         len -= 2;
-        emit!(
-            out,
-            "ldp     {}, {}, [sp], #16",
-            regs[len].name(8),
-            regs[len + 1].name(8)
-        );
+        emit!(out, "ldp     {}, {}, [sp], #16", regs[len].name(8), regs[len + 1].name(8));
     }
 }
 

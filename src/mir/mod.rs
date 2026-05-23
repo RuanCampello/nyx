@@ -159,11 +159,7 @@ pub enum Terminator {
     Jump(BlockId),
 
     /// Conditional branch: if `condition` is true
-    Branch {
-        condition: Operand,
-        then_block: BlockId,
-        else_block: BlockId,
-    },
+    Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
 
     /// Return from the function, optionally carrying a returned value
     Return(Option<Operand>),
@@ -181,21 +177,13 @@ pub struct BlockId(pub u32);
 
 impl From<&Struct> for Layout {
     fn from(value: &Struct) -> Self {
-        Self {
-            size: value.size,
-            align: value.align,
-            contains_float: false,
-        }
+        Self { size: value.size, align: value.align, contains_float: false }
     }
 }
 
 impl Layout {
     pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
-        Self {
-            size,
-            align,
-            contains_float,
-        }
+        Self { size, align, contains_float }
     }
 
     pub(crate) const fn contains_float(self) -> bool {
@@ -232,7 +220,14 @@ impl Const {
     pub fn to_general_string(&self) -> String {
         match self {
             Const::Int(n, _) => format!("${n}"),
-            Const::Bool(b) => format!("${}", if *b { 1 } else { 0 }),
+            Const::Bool(b) => format!(
+                "${}",
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            ),
             Const::Unit => unreachable!("Unit constant has no runtime representation"),
             Const::Str { .. } => panic!("string constant must be resolved through the string pool"),
             Const::Float(_, _) => panic!("float constant must be interned into the pool"),
@@ -287,10 +282,7 @@ mod tests {
             .iter()
             .filter(|i| matches!(i.kind, InstructionKind::Assign(_)))
             .collect();
-        assert!(
-            !assigns.is_empty(),
-            "expected at least one Assign instruction"
-        );
+        assert!(!assigns.is_empty(), "expected at least one Assign instruction");
 
         assert!(f.locals.iter().any(|(_, t)| *t == Type::I32));
     }
@@ -328,19 +320,10 @@ mod tests {
             .iter()
             .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
 
-        assert!(
-            !has_call,
-            "expected no call instruction in main since add is inlined"
-        );
+        assert!(!has_call, "expected no call instruction in main since add is inlined");
 
         let has_add = main.blocks[0].instructions.iter().any(|i| {
-            matches!(
-                i.kind,
-                InstructionKind::Binary {
-                    operation: BinaryOperator::Add,
-                    ..
-                }
-            )
+            matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
         });
         assert!(has_add, "expected inlined binary(add) instruction in main");
     }
@@ -354,20 +337,11 @@ mod tests {
         assert!(f.locals.iter().all(|(_, t)| *t == Type::I32));
 
         let has_add = f.blocks[0].instructions.iter().any(|i| {
-            matches!(
-                i.kind,
-                InstructionKind::Binary {
-                    operation: BinaryOperator::Add,
-                    ..
-                }
-            )
+            matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
         });
         assert!(has_add, "expected Binary(Add) instruction");
 
-        assert!(matches!(
-            f.blocks[0].terminator,
-            Terminator::Return(Some(_))
-        ));
+        assert!(matches!(f.blocks[0].terminator, Terminator::Return(Some(_))));
     }
 
     #[test]
@@ -411,18 +385,11 @@ mod tests {
         let has_combined_load = main.blocks[0].instructions.iter().any(|instruction| {
             matches!(
                 instruction.kind,
-                InstructionKind::FieldLoad {
-                    offset: 16,
-                    typ: Type::I64,
-                    ..
-                }
+                InstructionKind::FieldLoad { offset: 16, typ: Type::I64, .. }
             )
         });
 
-        assert!(
-            has_combined_load,
-            "expected bottom_right.x to load at byte offset 16"
-        );
+        assert!(has_combined_load, "expected bottom_right.x to load at byte offset 16");
     }
 
     #[test]
@@ -452,10 +419,7 @@ mod tests {
             )
         });
 
-        assert!(
-            has_assignment,
-            "expected bottom_right.x assignment at byte offset 16"
-        );
+        assert!(has_assignment, "expected bottom_right.x assignment at byte offset 16");
     }
 
     #[test]

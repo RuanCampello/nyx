@@ -11,11 +11,7 @@ struct Case<'c> {
 }
 
 const CASES: &[Case] = &[
-    Case {
-        name: "add",
-        file: "tests/single/add.nyx",
-        exit_code: None,
-    },
+    Case { name: "add", file: "tests/single/add.nyx", exit_code: None },
     Case {
         name: "inference",
         file: "tests/single/inference.nyx",
@@ -192,10 +188,7 @@ fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
 
     if !as_status.success() {
         fs::remove_file(&obj_path).ok();
-        return Err(format!(
-            "`as` exited with code {}",
-            as_status.code().unwrap_or(-1)
-        ));
+        return Err(format!("`as` exited with code {}", as_status.code().unwrap_or(-1)));
     }
 
     Ok(obj_path)
@@ -215,10 +208,7 @@ fn compile_and_run(path: &Path) -> Result<i32, String> {
     fs::remove_file(&obj_path).ok();
 
     if !ld_status.success() {
-        return Err(format!(
-            "`ld` exited with code {}",
-            ld_status.code().unwrap_or(-1)
-        ));
+        return Err(format!("`ld` exited with code {}", ld_status.code().unwrap_or(-1)));
     }
 
     let run_status = Command::new(&exe_path)
@@ -361,10 +351,7 @@ fn run_aarch64_integration_tests() {
                 let code = run_status.code().unwrap_or(-1);
                 match code == expected_code {
                     true => Ok(code),
-                    _ => Err(format!(
-                        "expected exit code {}, got {}",
-                        expected_code, code
-                    )),
+                    _ => Err(format!("expected exit code {}, got {}", expected_code, code)),
                 }
             } else {
                 fs::remove_file(&exe_path).ok();
@@ -388,9 +375,6 @@ fn run_aarch64_integration_tests() {
 
     println!("\nAArch64: {} passed, {} failed", passed, failed);
     if !errors.is_empty() {
-        panic!(
-            "\nAArch64 Integration test failures:\n{}",
-            errors.join("\n")
-        );
+        panic!("\nAArch64 Integration test failures:\n{}", errors.join("\n"));
     }
 }

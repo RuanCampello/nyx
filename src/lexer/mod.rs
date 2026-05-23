@@ -52,10 +52,7 @@ pub trait HasSpan {
 impl<'src> Lexer<'src> {
     #[inline]
     pub fn new(source: &'src str) -> Self {
-        Self {
-            cursor: Cursor::new(source),
-            finished: false,
-        }
+        Self { cursor: Cursor::new(source), finished: false }
     }
 
     /// Produces the next token, or `None` after EOF has been emitted.
@@ -193,10 +190,7 @@ impl<'src> Lexer<'src> {
                     self.cursor.advance(); // consume `/`
                     self.cursor.advance(); // consume `*`
 
-                    BlockComment {
-                        open_offset: offset as usize,
-                    }
-                    .skip(&mut self.cursor)?;
+                    BlockComment { open_offset: offset as usize }.skip(&mut self.cursor)?;
                 }
                 _ => break,
             }
@@ -215,10 +209,7 @@ impl<'src> Lexer<'src> {
     /// Builds a punctuation token from `start` to the current cursor position.
     #[inline]
     fn token(&self, punct: Punct, start: token::Position) -> Token<'src> {
-        Token::new(
-            TokenKind::Punct(punct),
-            Span::new(start, self.cursor.position()),
-        )
+        Token::new(TokenKind::Punct(punct), Span::new(start, self.cursor.position()))
     }
 }
 
@@ -352,10 +343,7 @@ mod tests {
 
     #[test]
     fn boolean_literals() {
-        assert_eq!(
-            kinds("true false"),
-            vec![TokenKind::Bool(true), TokenKind::Bool(false)]
-        );
+        assert_eq!(kinds("true false"), vec![TokenKind::Bool(true), TokenKind::Bool(false)]);
     }
 
     #[test]
@@ -487,10 +475,7 @@ mod tests {
     #[test]
     fn bang_without_eq() {
         let ks = kinds("!x");
-        assert_eq!(
-            ks,
-            vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]
-        );
+        assert_eq!(ks, vec![TokenKind::Punct(Punct::Bang), TokenKind::Identifier("x")]);
     }
 
     #[test]

@@ -325,11 +325,7 @@ impl Instruction<X86_64> for X86Instr {
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
             }
-            Self::Call {
-                aggregate_ret,
-                ret: None,
-                ..
-            } => aggregate_ret.as_slice(),
+            Self::Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
             Self::Syscall { ret: None, .. } => &[],
         }
     }
@@ -461,14 +457,7 @@ impl X86Instr {
             }
         }
 
-        Self::Call {
-            target,
-            moves,
-            uses,
-            ret,
-            aggregate_ret,
-            stack_args,
-        }
+        Self::Call { target, moves, uses, ret, aggregate_ret, stack_args }
     }
 
     /// Creates a comparation instruction depending on `O`

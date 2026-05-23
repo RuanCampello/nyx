@@ -98,11 +98,7 @@ impl Interference {
             .map(|location| location.expect("every VReg must receive a location"))
             .collect();
 
-        Allocation {
-            locations,
-            frame_size,
-            used_callee_saved,
-        }
+        Allocation { locations, frame_size, used_callee_saved }
     }
 
     fn colour_group<T: Target>(

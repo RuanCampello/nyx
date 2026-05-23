@@ -198,11 +198,7 @@ impl<'a> FunctionLower<'a> {
                 }
             }
 
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            Stmt::If { condition, then_block, else_block } => {
                 let condition = self.lower_expr(condition)?;
 
                 let then_id = self.new_block();
@@ -297,10 +293,7 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Unary {
-                operator,
-                expr: inner,
-            } => {
+            ExpressionKind::Unary { operator, expr: inner } => {
                 use crate::parser::expression::UnaryOperator;
 
                 let rhs = self.lower_expr(inner)?;
@@ -322,23 +315,12 @@ impl<'a> FunctionLower<'a> {
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::Binary {
-                operator,
-                left,
-                right,
-            } => {
+            ExpressionKind::Binary { operator, left, right } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Binary {
-                        operation: *operator,
-                        lhs,
-                        rhs,
-                    },
-                );
+                self.emit(dest, InstructionKind::Binary { operation: *operator, lhs, rhs });
 
                 Ok(Operand::Place(dest))
             }
@@ -367,11 +349,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit_call(*function, lowered_args, expr.typ)
             }
 
-            ExpressionKind::MethodCall {
-                function,
-                receiver,
-                args,
-            } => {
+            ExpressionKind::MethodCall { function, receiver, args } => {
                 let receiver_place = self.fresh_temporary(receiver.typ);
 
                 if let Some(local_id) = receiver.local {
@@ -451,11 +429,7 @@ impl<'a> FunctionLower<'a> {
 
                 self.emit(
                     dest,
-                    InstructionKind::Syscall {
-                        code: *code,
-                        args: lowered_args,
-                        returns: true,
-                    },
+                    InstructionKind::Syscall { code: *code, args: lowered_args, returns: true },
                 );
 
                 Ok(Operand::Place(dest))
@@ -487,21 +461,13 @@ impl<'a> FunctionLower<'a> {
                 let dest = self.fresh_temporary(typ);
                 self.emit(
                     dest,
-                    InstructionKind::FieldLoad {
-                        src: Operand::Place(origin),
-                        offset,
-                        typ,
-                    },
+                    InstructionKind::FieldLoad { src: Operand::Place(origin), offset, typ },
                 );
 
                 Ok(Operand::Place(dest))
             }
 
-            ExpressionKind::FieldAssign {
-                local,
-                fields,
-                value,
-            } => {
+            ExpressionKind::FieldAssign { local, fields, value } => {
                 let value = self.lower_expr(value)?;
                 let origin = self.place_for_local(*local, self.local_type(*local));
                 let (offset, typ) = self.field_path_info(origin.typ, fields);
@@ -527,10 +493,7 @@ impl<'a> FunctionLower<'a> {
         for &sym in fields {
             let sid = match current_type {
                 Type::Struct(sid) => sid,
-                Type::Ref {
-                    to: RefTarget::Struct(sid),
-                    ..
-                } => sid,
+                Type::Ref { to: RefTarget::Struct(sid), .. } => sid,
                 _ => unreachable!("field projection on non-struct"),
             };
 
@@ -559,10 +522,7 @@ impl<'a> FunctionLower<'a> {
 
     #[inline(always)]
     fn place_for_local(&self, local_id: LocalId, typ: Type) -> Place {
-        Place {
-            id: self.local_map[local_id.0 as usize],
-            typ,
-        }
+        Place { id: self.local_map[local_id.0 as usize], typ }
     }
 
     #[inline(always)]
@@ -711,13 +671,7 @@ impl<'a> FunctionLower<'a> {
             _ => {
                 let dest = self.fresh_temporary(return_type.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: callee_id,
-                        args: lowered_args,
-                    },
-                );
+                self.emit(dest, InstructionKind::Call { callee: callee_id, args: lowered_args });
 
                 Ok(Operand::Place(dest))
             }
@@ -750,10 +704,7 @@ impl<'a> FunctionLower<'a> {
         // emit assignment of arguments to callee parameters
         for (param, arg_operand) in callee.params.iter().zip(lowered_args) {
             let dest_val_id = callee_local_map[param.id.0 as usize];
-            let dest_place = Place {
-                id: dest_val_id,
-                typ: param.typ,
-            };
+            let dest_place = Place { id: dest_val_id, typ: param.typ };
             self.emit(dest_place, InstructionKind::Assign(arg_operand));
         }
 
@@ -768,10 +719,8 @@ impl<'a> FunctionLower<'a> {
             &mut self.local_symbols,
             callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
         );
-        let old_inlined_return_target = replace(
-            &mut self.inlined_return_target,
-            Some((exit_block_id, inline_ret_place)),
-        );
+        let old_inlined_return_target =
+            replace(&mut self.inlined_return_target, Some((exit_block_id, inline_ret_place)));
 
         self.lower_block(&callee.body)?;
 
@@ -803,11 +752,7 @@ impl<'a> FunctionLower<'a> {
 
 impl PartialBlock {
     fn new(id: BlockId) -> Self {
-        Self {
-            id,
-            instructions: Vec::new(),
-            terminator: None,
-        }
+        Self { id, instructions: Vec::new(), terminator: None }
     }
 
     #[inline(always)]
@@ -842,11 +787,7 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
             hir::Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
             hir::Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
             hir::Statement::Return(None) => {}
-            hir::Statement::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            hir::Statement::If { condition, then_block, else_block } => {
                 visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(then_block, uses);
                 if let Some(else_block) = else_block {

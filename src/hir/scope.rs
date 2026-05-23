@@ -150,9 +150,7 @@ impl<'sc> Scope<'sc> {
             let symbol = symbols.insert(struct_decl.name);
             if self.struct_map.contains_key(&symbol) || local_map.contains_key(&symbol) {
                 return Err(HirError {
-                    kind: HirErrorKind::DuplicateStruct {
-                        name: struct_decl.name.to_string(),
-                    },
+                    kind: HirErrorKind::DuplicateStruct { name: struct_decl.name.to_string() },
                     span: struct_decl.span,
                 });
             }
@@ -192,9 +190,7 @@ impl<'sc> Scope<'sc> {
             let name = symbols.insert(interface.name);
             if self.interfaces.contains_key(&name) {
                 return Err(HirError {
-                    kind: HirErrorKind::DuplicateInterface {
-                        name: interface.name.to_string(),
-                    },
+                    kind: HirErrorKind::DuplicateInterface { name: interface.name.to_string() },
                     span: interface.span,
                 });
             }
@@ -224,14 +220,8 @@ impl<'sc> Scope<'sc> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            self.interfaces.insert(
-                name,
-                InterfaceSignature {
-                    name,
-                    superinterfaces,
-                    methods,
-                },
-            );
+            self.interfaces
+                .insert(name, InterfaceSignature { name, superinterfaces, methods });
         }
 
         Ok(())
@@ -248,9 +238,7 @@ impl<'sc> Scope<'sc> {
 
                 if !self.interfaces.contains_key(&symbol) {
                     return Err(HirError {
-                        kind: HirErrorKind::UnknownInterface {
-                            name: superinterface.to_string(),
-                        },
+                        kind: HirErrorKind::UnknownInterface { name: superinterface.to_string() },
                         span: interface.span,
                     });
                 }
@@ -277,9 +265,7 @@ impl<'sc> Scope<'sc> {
             let symbol = symbols.insert(&self.mangler.item(function.name));
             if self.functions.contains_key(&symbol) {
                 return Err(HirError {
-                    kind: HirErrorKind::DuplicateFunction {
-                        name: function.name.to_string(),
-                    },
+                    kind: HirErrorKind::DuplicateFunction { name: function.name.to_string() },
                     span: function.span,
                 });
             }
@@ -341,9 +327,7 @@ impl<'sc> Scope<'sc> {
                 Some(primitive) if in_std => primitive,
                 Some(primitive) => {
                     return Err(HirError {
-                        kind: HirErrorKind::OrphanImpl {
-                            name: implementation.name.to_string(),
-                        },
+                        kind: HirErrorKind::OrphanImpl { name: implementation.name.to_string() },
                         span: implementation.span,
                     });
                 }
@@ -494,13 +478,12 @@ impl<'sc> Scope<'sc> {
         fn substitute_self(typ: Type, self_type: Type) -> Type {
             match typ {
                 Type::SelfType => self_type,
-                Type::Ref {
-                    mutable,
-                    to: RefTarget::SelfType,
-                } => match RefTarget::try_from(self_type) {
-                    Ok(to) => Type::Ref { mutable, to },
-                    _ => typ,
-                },
+                Type::Ref { mutable, to: RefTarget::SelfType } => {
+                    match RefTarget::try_from(self_type) {
+                        Ok(to) => Type::Ref { mutable, to },
+                        _ => typ,
+                    }
+                }
                 other => other,
             }
         }
@@ -512,9 +495,7 @@ impl<'sc> Scope<'sc> {
 
             let interface_sym = symbols.insert(interface_name);
             let interface = self.interfaces.get(&interface_sym).ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownInterface {
-                    name: interface_name.to_string(),
-                },
+                kind: HirErrorKind::UnknownInterface { name: interface_name.to_string() },
                 span: implementation.span,
             })?;
 
@@ -665,9 +646,7 @@ impl<'sc> Scope<'sc> {
                         let struct_symbol = symbols.insert(impl_type);
                         let struct_id =
                             *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                                kind: HirErrorKind::UnknownType {
-                                    name: impl_type.to_string(),
-                                },
+                                kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
                                 span: function.span,
                             })?;
                         Type::Struct(struct_id)
@@ -787,21 +766,12 @@ impl<'sc> Scope<'sc> {
             let symbol_id = symbols.insert(&self.mangler.item(c.name));
             if decls.contains_key(&symbol_id) {
                 return Err(HirError {
-                    kind: HirErrorKind::DuplicateConstant {
-                        name: c.name.to_string(),
-                    },
+                    kind: HirErrorKind::DuplicateConstant { name: c.name.to_string() },
                     span: c.span,
                 });
             }
 
-            decls.insert(
-                symbol_id,
-                ConstDecl {
-                    mangled_name: symbol_id,
-                    impl_type: None,
-                    ast: c,
-                },
-            );
+            decls.insert(symbol_id, ConstDecl { mangled_name: symbol_id, impl_type: None, ast: c });
         }
 
         // collect impl constants
@@ -820,11 +790,7 @@ impl<'sc> Scope<'sc> {
 
                 decls.insert(
                     symbol_id,
-                    ConstDecl {
-                        mangled_name: symbol_id,
-                        impl_type: Some(imp.name),
-                        ast: c,
-                    },
+                    ConstDecl { mangled_name: symbol_id, impl_type: Some(imp.name), ast: c },
                 );
             }
         }
@@ -955,9 +921,7 @@ impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
                     }
                 }
             }
-            Expr::QualifiedName {
-                qualifier, name, ..
-            } => {
+            Expr::QualifiedName { qualifier, name, .. } => {
                 let mangled = self.mangler.scoped_item(qualifier, name);
                 if let Some(symbol_id) = self.symbols.get_id(&mangled) {
                     if self.decls.contains_key(&symbol_id) {

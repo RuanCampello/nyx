@@ -12,8 +12,6 @@ pub enum MirErrorKind {
 
 impl From<HirError<'static>> for MirError {
     fn from(value: HirError<'static>) -> Self {
-        Self {
-            kind: MirErrorKind::Hir(value),
-        }
+        Self { kind: MirErrorKind::Hir(value) }
     }
 }

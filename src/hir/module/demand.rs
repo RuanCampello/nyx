@@ -47,9 +47,7 @@ pub(super) fn lower_reachable<'src>(
                 .map_err(Diagnostic::from)?;
 
         let mut lowered = scope
-            .lower_matching_functions(&declarations, symbols, node.in_std, |id| {
-                demand.contains(id)
-            })
+            .lower_matching_functions(&declarations, symbols, node.in_std, |id| demand.contains(id))
             .map_err(Diagnostic::from)?;
 
         functions.append(&mut lowered);
@@ -84,11 +82,7 @@ fn build_demand<'src>(
         };
 
         let mut found = Vec::new();
-        let mut visitor = ReachabilityVisitor {
-            scope,
-            symbols,
-            found: &mut found,
-        };
+        let mut visitor = ReachabilityVisitor { scope, symbols, found: &mut found };
         use crate::parser::visitor::Visitor;
         visitor.visit_block(&function.body);
 
@@ -202,12 +196,7 @@ impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                     self.visit_expression(arg);
                 }
             }
-            Expression::QualifiedCall {
-                qualifier,
-                name,
-                args,
-                ..
-            } => {
+            Expression::QualifiedCall { qualifier, name, args, .. } => {
                 if let Some(id) = resolve_qualified(qualifier, name, self.scope, self.symbols) {
                     self.found.push(id);
                 }
@@ -215,9 +204,7 @@ impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                     self.visit_expression(arg);
                 }
             }
-            Expression::TypeIntrinsic {
-                kind, qualifier, ..
-            } => {
+            Expression::TypeIntrinsic { kind, qualifier, .. } => {
                 let name: &str = kind.into();
                 let id = qualifier
                     .and_then(|q| resolve_qualified(q, name, self.scope, self.symbols))

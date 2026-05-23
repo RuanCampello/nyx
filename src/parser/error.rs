@@ -13,26 +13,13 @@ pub struct ParserError<'i> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind<'i> {
     Lexical(LexError),
-    Expected {
-        expected: TokenKind<'i>,
-        found: TokenKind<'i>,
-    },
-    ExpectedIdentifier {
-        found: TokenKind<'i>,
-    },
+    Expected { expected: TokenKind<'i>, found: TokenKind<'i> },
+    ExpectedIdentifier { found: TokenKind<'i> },
     UnexpectedIdentifier,
-    InvalidBinaryOperator {
-        found: TokenKind<'i>,
-    },
-    InvalidUnaryOperator {
-        found: TokenKind<'i>,
-    },
-    ExpectedExpression {
-        found: TokenKind<'i>,
-    },
-    ExpectedTypeIdentifier {
-        found: String,
-    },
+    InvalidBinaryOperator { found: TokenKind<'i> },
+    InvalidUnaryOperator { found: TokenKind<'i> },
+    ExpectedExpression { found: TokenKind<'i> },
+    ExpectedTypeIdentifier { found: String },
     UnexpectedEof,
 }
 

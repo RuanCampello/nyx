@@ -132,35 +132,28 @@ impl Diagnosticable for LexError {
 
             K::UnterminatedString => Builder::new("unterminated string literal")
                 .primary(self.span, "opened here, but never closed")
-                .help(format!(
-                    "add a closing {} at the end of the string",
-                    "\"".fg(SECONDARY)
-                )),
+                .help(format!("add a closing {} at the end of the string", "\"".fg(SECONDARY))),
 
             K::UnterminatedComment => Builder::new("unterminated block comment")
                 .primary(self.span, "block comment opened here, but never closed")
                 .help(format!("add a closing {}", "*/".fg(SECONDARY))),
 
-            K::InvalidEscape(c) => Builder::new(format!(
-                "invalid escape sequence {}",
-                format!("\\{c}").fg(PRIMARY)
-            ))
-            .primary(
-                self.span,
-                format!(
-                    "{} is not a recognised escape",
-                    format!("\\{c}").fg(PRIMARY)
-                ),
-            )
-            .help(format!(
-                "valid escapes: {}  {}  {}  {}  {}  {}",
-                "\\\\".fg(SECONDARY),
-                "\\\"".fg(SECONDARY),
-                "\\n".fg(SECONDARY),
-                "\\t".fg(SECONDARY),
-                "\\r".fg(SECONDARY),
-                "\\0".fg(SECONDARY),
-            )),
+            K::InvalidEscape(c) => {
+                Builder::new(format!("invalid escape sequence {}", format!("\\{c}").fg(PRIMARY)))
+                    .primary(
+                        self.span,
+                        format!("{} is not a recognised escape", format!("\\{c}").fg(PRIMARY)),
+                    )
+                    .help(format!(
+                        "valid escapes: {}  {}  {}  {}  {}  {}",
+                        "\\\\".fg(SECONDARY),
+                        "\\\"".fg(SECONDARY),
+                        "\\n".fg(SECONDARY),
+                        "\\t".fg(SECONDARY),
+                        "\\r".fg(SECONDARY),
+                        "\\0".fg(SECONDARY),
+                    ))
+            }
 
             K::InvalidNumber(detail) => Builder::new(format!("invalid number literal: {detail}"))
                 .primary(self.span, "could not parse this as a number"),
@@ -177,10 +170,7 @@ impl Diagnosticable for LexError {
                 .help("provide a character inside the single quotes"),
 
             K::OverlongChar => Builder::new("character literal is too long")
-                .primary(
-                    self.span,
-                    "character literals must contain exactly one character",
-                )
+                .primary(self.span, "character literals must contain exactly one character")
                 .help("use double quotes for string literals instead"),
         };
 
@@ -306,24 +296,19 @@ impl<'h> Diagnosticable for HirError<'h> {
                     .build()
             }
 
-            K::DuplicateMethod { struct_name, name } => Builder::new(format!(
-                "duplicate method {} for {}",
-                hi(name),
-                hi(struct_name)
-            ))
-            .primary(
-                self.span,
-                format!("{} is already defined for {}", hi(name), hi(struct_name)),
-            )
-            .help(format!("remove or rename one of the {} methods", hi(name)))
-            .build(),
+            K::DuplicateMethod { struct_name, name } => {
+                Builder::new(format!("duplicate method {} for {}", hi(name), hi(struct_name)))
+                    .primary(
+                        self.span,
+                        format!("{} is already defined for {}", hi(name), hi(struct_name)),
+                    )
+                    .help(format!("remove or rename one of the {} methods", hi(name)))
+                    .build()
+            }
 
             K::UndeclaredIdentifier { name } => {
                 Builder::new(format!("use of undeclared identifier {}", hi(name)))
-                    .primary(
-                        self.span,
-                        format!("{} is not declared in this scope", hi(name)),
-                    )
+                    .primary(self.span, format!("{} is not declared in this scope", hi(name)))
                     .help(format!(
                         "declare {} with {} before using it",
                         hi(name),
@@ -342,21 +327,19 @@ impl<'h> Diagnosticable for HirError<'h> {
                     .build()
             }
 
-            K::UnknownMethod { struct_name, name } => Builder::new(format!(
-                "call to unknown method {} on {}",
-                hi(name),
-                hi(struct_name)
-            ))
-            .primary(
-                self.span,
-                format!("{} has no method named {}", hi(struct_name), hi(name)),
-            )
-            .help(format!(
-                "add {} to an impl block for {}",
-                format!("fn {name}(&self)").fg(SECONDARY),
-                hi(struct_name)
-            ))
-            .build(),
+            K::UnknownMethod { struct_name, name } => {
+                Builder::new(format!("call to unknown method {} on {}", hi(name), hi(struct_name)))
+                    .primary(
+                        self.span,
+                        format!("{} has no method named {}", hi(struct_name), hi(name)),
+                    )
+                    .help(format!(
+                        "add {} to an impl block for {}",
+                        format!("fn {name}(&self)").fg(SECONDARY),
+                        hi(struct_name)
+                    ))
+                    .build()
+            }
 
             K::UnknownType { name } => Builder::new(format!("unknown type {}", hi(name)))
                 .primary(self.span, format!("{} is not a known type", hi(name)))
@@ -390,53 +373,40 @@ impl<'h> Diagnosticable for HirError<'h> {
                 .note("struct field names must be unique")
                 .build(),
 
-            K::UnknownField { struct_name, field } => Builder::new(format!(
-                "unknown field {} on {}",
-                hi(field),
-                hi(struct_name)
-            ))
-            .primary(
-                self.span,
-                format!("{} has no field named {}", hi(struct_name), hi(field)),
-            )
-            .build(),
+            K::UnknownField { struct_name, field } => {
+                Builder::new(format!("unknown field {} on {}", hi(field), hi(struct_name)))
+                    .primary(
+                        self.span,
+                        format!("{} has no field named {}", hi(struct_name), hi(field)),
+                    )
+                    .build()
+            }
 
-            K::MissingField { struct_name, field } => Builder::new(format!(
-                "missing field {} in {} literal",
-                hi(field),
-                hi(struct_name)
-            ))
-            .primary(self.span, format!("{} must be initialised here", hi(field)))
-            .help(format!(
-                "all fields of {} must be provided in the struct literal",
-                hi(struct_name)
-            ))
-            .build(),
+            K::MissingField { struct_name, field } => {
+                Builder::new(format!("missing field {} in {} literal", hi(field), hi(struct_name)))
+                    .primary(self.span, format!("{} must be initialised here", hi(field)))
+                    .help(format!(
+                        "all fields of {} must be provided in the struct literal",
+                        hi(struct_name)
+                    ))
+                    .build()
+            }
 
             K::CircularStruct { name } => Builder::new(format!(
                 "circular struct definition involving {}",
                 hi(name)
             ))
-            .primary(
-                self.span,
-                format!("{} is part of a by-value struct cycle", hi(name)),
-            )
+            .primary(self.span, format!("{} is part of a by-value struct cycle", hi(name)))
             .note("break the cycle; a pointer or box type will be needed for recursive structs")
             .help("Nyx does not support self-referential or circular structs yet")
             .build(),
 
             K::InvalidFieldAccess => Builder::new("invalid field access")
-                .primary(
-                    self.span,
-                    "field access is only supported on local variable bindings",
-                )
+                .primary(self.span, "field access is only supported on local variable bindings")
                 .build(),
 
             K::InvalidAssignmentTarget => Builder::new("invalid assignment target")
-                .primary(
-                    self.span,
-                    "the left-hand side must be an identifier or a field path",
-                )
+                .primary(self.span, "the left-hand side must be an identifier or a field path")
                 .note(format!(
                     "use {} or {}",
                     "name = value".fg(SECONDARY),
@@ -444,12 +414,14 @@ impl<'h> Diagnosticable for HirError<'h> {
                 ))
                 .build(),
 
-            K::ArityMismatch {
-                name,
-                expected,
-                found,
-            } => {
-                let arg_word = |n: usize| if n == 1 { "argument" } else { "arguments" };
+            K::ArityMismatch { name, expected, found } => {
+                let arg_word = |n: usize| {
+                    if n == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    }
+                };
                 Builder::new(format!("wrong number of arguments to {}", hi(name)))
                     .primary(
                         self.span,
@@ -465,20 +437,14 @@ impl<'h> Diagnosticable for HirError<'h> {
             }
 
             K::DuplicateBind { name } => Builder::new(format!("duplicate binding {}", hi(name)))
-                .primary(
-                    self.span,
-                    format!("{} is already bound in this scope", hi(name)),
-                )
+                .primary(self.span, format!("{} is already bound in this scope", hi(name)))
                 .note("re-declaring the same name in the same scope is not allowed")
                 .help("use a different name, or shadow it in a nested block")
                 .build(),
 
             K::MissingInitialiser { name } => {
                 Builder::new(format!("missing initialiser for {}", hi(name)))
-                    .primary(
-                        self.span,
-                        format!("{} has no value and no type annotation", hi(name)),
-                    )
+                    .primary(self.span, format!("{} has no value and no type annotation", hi(name)))
                     .note("Nyx cannot infer the type without an initial value to check against")
                     .help(format!(
                         "add a type annotation {} or provide an initial value",
@@ -498,22 +464,13 @@ impl<'h> Diagnosticable for HirError<'h> {
                             "&mut self".fg(SECONDARY)
                         ),
                     )
-                    .help(format!(
-                        "write {}",
-                        format!("fn {name}(&self, …)").fg(SECONDARY)
-                    ))
+                    .help(format!("write {}", format!("fn {name}(&self, …)").fg(SECONDARY)))
                     .build()
             }
 
             K::ReceiverOutsideImpl => Builder::new("self receiver outside impl block")
-                .primary(
-                    self.span,
-                    "receivers are only valid inside method definitions",
-                )
-                .help(format!(
-                    "move this function into {}",
-                    "impl Type { … }".fg(SECONDARY)
-                ))
+                .primary(self.span, "receivers are only valid inside method definitions")
+                .help(format!("move this function into {}", "impl Type { … }".fg(SECONDARY)))
                 .build(),
 
             K::TypeMismatch { expected, found } => Builder::new(format!(
@@ -551,27 +508,21 @@ impl<'h> Diagnosticable for HirError<'h> {
                     .build()
             }
 
-            K::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => {
-                Builder::new(format!(
-                    "cannot call non-const function {} in a const context",
-                    hi(name)
-                ))
-                .primary(
-                    self.span,
-                    format!("{} is not declared {}", hi(name), hi("const")),
-                )
-                .note(format!(
-                    "{} functions may only call other {} functions",
-                    hi("const"),
-                    hi("const")
-                ))
-                .help(format!(
-                    "mark {} as {} if it qualifies",
-                    format!("fn {name}").fg(SECONDARY),
-                    format!("const fn {name}").fg(SECONDARY)
-                ))
-                .build()
-            }
+            K::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => Builder::new(
+                format!("cannot call non-const function {} in a const context", hi(name)),
+            )
+            .primary(self.span, format!("{} is not declared {}", hi(name), hi("const")))
+            .note(format!(
+                "{} functions may only call other {} functions",
+                hi("const"),
+                hi("const")
+            ))
+            .help(format!(
+                "mark {} as {} if it qualifies",
+                format!("fn {name}").fg(SECONDARY),
+                format!("const fn {name}").fg(SECONDARY)
+            ))
+            .build(),
 
             K::DuplicateInterface { name } => {
                 Builder::new(format!("duplicate interface {}", hi(name)))
@@ -588,59 +539,51 @@ impl<'h> Diagnosticable for HirError<'h> {
                 ))
                 .build(),
 
-            K::MissingInterfaceMethod {
-                struct_name,
-                interface_name,
-                method_name,
-            } => Builder::new(format!(
-                "missing method {} required by interface {}",
-                hi(method_name),
-                hi(interface_name)
-            ))
-            .primary(
-                self.span,
-                format!("{} does not implement {}", hi(struct_name), hi(method_name)),
-            )
-            .note(format!(
-                "{} requires {}",
-                hi(interface_name),
-                format!("fn {method_name}(…)").fg(SECONDARY)
-            ))
-            .help(format!(
-                "add {} to {}",
-                format!("fn {method_name}(…)").fg(SECONDARY),
-                format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
-            ))
-            .build(),
-
-            K::MissingSuperinterfaceImpl {
-                struct_name,
-                interface_name,
-                superinterface_name,
-            } => Builder::new(format!(
-                "missing {} implementation required by {}",
-                hi(superinterface_name),
-                hi(interface_name)
-            ))
-            .primary(
-                self.span,
-                format!(
-                    "{} implements {} without {}",
-                    hi(struct_name),
+            K::MissingInterfaceMethod { struct_name, interface_name, method_name } => {
+                Builder::new(format!(
+                    "missing method {} required by interface {}",
+                    hi(method_name),
+                    hi(interface_name)
+                ))
+                .primary(
+                    self.span,
+                    format!("{} does not implement {}", hi(struct_name), hi(method_name)),
+                )
+                .note(format!(
+                    "{} requires {}",
                     hi(interface_name),
-                    hi(superinterface_name)
-                ),
-            )
-            .note(format!(
-                "{} extends {}",
-                hi(interface_name),
-                hi(superinterface_name)
-            ))
-            .help(format!(
-                "add {}",
-                format!("impl {struct_name} with {superinterface_name} {{ … }}").fg(SECONDARY)
-            ))
-            .build(),
+                    format!("fn {method_name}(…)").fg(SECONDARY)
+                ))
+                .help(format!(
+                    "add {} to {}",
+                    format!("fn {method_name}(…)").fg(SECONDARY),
+                    format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
+                ))
+                .build()
+            }
+
+            K::MissingSuperinterfaceImpl { struct_name, interface_name, superinterface_name } => {
+                Builder::new(format!(
+                    "missing {} implementation required by {}",
+                    hi(superinterface_name),
+                    hi(interface_name)
+                ))
+                .primary(
+                    self.span,
+                    format!(
+                        "{} implements {} without {}",
+                        hi(struct_name),
+                        hi(interface_name),
+                        hi(superinterface_name)
+                    ),
+                )
+                .note(format!("{} extends {}", hi(interface_name), hi(superinterface_name)))
+                .help(format!(
+                    "add {}",
+                    format!("impl {struct_name} with {superinterface_name} {{ … }}").fg(SECONDARY)
+                ))
+                .build()
+            }
 
             K::InterfaceSignatureMismatch {
                 struct_name,
@@ -657,17 +600,9 @@ impl<'h> Diagnosticable for HirError<'h> {
             .primary(self.span, format!("found: {}", found.fg(PRIMARY)))
             .secondary(
                 *impl_span,
-                format!(
-                    "{} requires: {}",
-                    hi(interface_name),
-                    expected.fg(SECONDARY)
-                ),
+                format!("{} requires: {}", hi(interface_name), expected.fg(SECONDARY)),
             )
-            .note(format!(
-                "expected: {}\n  found: {}",
-                expected.fg(SECONDARY),
-                found.fg(PRIMARY)
-            ))
+            .note(format!("expected: {}\n  found: {}", expected.fg(SECONDARY), found.fg(PRIMARY)))
             .help(format!(
                 "update {} in {} to match the interface",
                 hi(method_name),
@@ -677,10 +612,7 @@ impl<'h> Diagnosticable for HirError<'h> {
 
             K::CircularConstant { name } => {
                 Builder::new(format!("circular dependency in constant {}", hi(name)))
-                    .primary(
-                        self.span,
-                        format!("constant {} depends on itself", hi(name)),
-                    )
+                    .primary(self.span, format!("constant {} depends on itself", hi(name)))
                     .build()
             }
 
@@ -707,16 +639,12 @@ impl From<ModuleError> for Diagnostic {
         match value {
             ModuleError::Diagnostic(d) => d,
 
-            ModuleError::FileNotFound { path, span } => Builder::new(format!(
-                "module file not found: {}",
-                path.display().fg(PRIMARY)
-            ))
-            .primary(span.unwrap_or_default(), "imported here")
-            .help(format!(
-                "make sure the file {} exists",
-                path.display().fg(HIGHLIGHT)
-            ))
-            .build(),
+            ModuleError::FileNotFound { path, span } => {
+                Builder::new(format!("module file not found: {}", path.display().fg(PRIMARY)))
+                    .primary(span.unwrap_or_default(), "imported here")
+                    .help(format!("make sure the file {} exists", path.display().fg(HIGHLIGHT)))
+                    .build()
+            }
 
             ModuleError::CircularImport { path, span } => Builder::new(format!(
                 "circular import: {} is already being loaded",
@@ -728,10 +656,7 @@ impl From<ModuleError> for Diagnostic {
 
             ModuleError::EmptyPath => Builder::new("empty import path")
                 .primary(Span::default(), "this path has no segments")
-                .help(format!(
-                    "use paths like {}",
-                    "use project::module;".fg(SECONDARY)
-                ))
+                .help(format!("use paths like {}", "use project::module;".fg(SECONDARY)))
                 .build(),
 
             ModuleError::UnknownRoot { name, span } => {
@@ -746,10 +671,7 @@ impl From<ModuleError> for Diagnostic {
                 path.display().fg(HIGHLIGHT),
                 hi(&name)
             ))
-            .primary(
-                span,
-                format!("{} is not exported from this module", hi(&name)),
-            )
+            .primary(span, format!("{} is not exported from this module", hi(&name)))
             .help(format!(
                 "add {} to {} to export it",
                 hi("pub"),
@@ -772,10 +694,7 @@ impl From<ModuleError> for Diagnostic {
 
 impl From<Span> for std::ops::Range<usize> {
     fn from(value: Span) -> Self {
-        Self {
-            start: value.start.offset(),
-            end: value.end.offset(),
-        }
+        Self { start: value.start.offset(), end: value.end.offset() }
     }
 }
 
@@ -975,28 +894,19 @@ mod tests {
     #[test]
     fn parse_expected_token() {
         let kind = parse_check!("let x = 1");
-        assert!(
-            matches!(kind, ParseErrorKind::Expected { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::Expected { .. }), "got {kind:?}");
     }
 
     #[test]
     fn parse_expected_identifier() {
         let kind = parse_check!("let 42: i32 = 1;");
-        assert!(
-            matches!(kind, ParseErrorKind::ExpectedIdentifier { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::ExpectedIdentifier { .. }), "got {kind:?}");
     }
 
     #[test]
     fn parse_unexpected_identifier_bad_assignment() {
         let kind = parse_check!("fn main() { (a + b) = 1; }");
-        assert!(
-            matches!(kind, ParseErrorKind::UnexpectedIdentifier),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::UnexpectedIdentifier), "got {kind:?}");
     }
 
     #[test]
@@ -1009,37 +919,25 @@ mod tests {
     fn parse_invalid_unary_operator() {
         // `+` has no prefix parse rule; the parser raises ExpectedExpression
         let kind = parse_check!("fn main() { let x = +1; }");
-        assert!(
-            matches!(kind, ParseErrorKind::ExpectedExpression { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::ExpectedExpression { .. }), "got {kind:?}");
     }
 
     #[test]
     fn parse_expected_expression() {
         let kind = parse_check!("fn main() { let x = ; }");
-        assert!(
-            matches!(kind, ParseErrorKind::ExpectedExpression { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::ExpectedExpression { .. }), "got {kind:?}");
     }
 
     #[test]
     fn parse_expected_type_identifier() {
         let kind = parse_check!("fn main() { let x: &unknown = 1; }");
-        assert!(
-            matches!(kind, ParseErrorKind::ExpectedTypeIdentifier { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::ExpectedTypeIdentifier { .. }), "got {kind:?}");
     }
 
     #[test]
     fn parse_unexpected_eof() {
         let kind = parse_check!("fn main() {");
-        assert!(
-            matches!(kind, ParseErrorKind::UnexpectedEof),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::UnexpectedEof), "got {kind:?}");
     }
 
     #[test]
@@ -1073,20 +971,14 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::DuplicateMethod {
-                struct_name: "Counter".into(),
-                name: "get".into(),
-            }
+            HirErrorKind::DuplicateMethod { struct_name: "Counter".into(), name: "get".into() }
         );
     }
 
     #[test]
     fn hir_undeclared_identifier() {
         let kind = hir_check!("fn main() { x + 1; }");
-        assert_eq!(
-            kind,
-            HirErrorKind::UndeclaredIdentifier { name: "x".into() }
-        );
+        assert_eq!(kind, HirErrorKind::UndeclaredIdentifier { name: "x".into() });
     }
 
     #[test]
@@ -1103,33 +995,20 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::UnknownMethod {
-                struct_name: "Point".into(),
-                name: "frobnicate".into(),
-            }
+            HirErrorKind::UnknownMethod { struct_name: "Point".into(), name: "frobnicate".into() }
         );
     }
 
     #[test]
     fn hir_unknown_type_in_let() {
         let kind = hir_check!("fn main() { let x: Phantom = 1; }");
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownType {
-                name: "Phantom".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownType { name: "Phantom".into() });
     }
 
     #[test]
     fn hir_unknown_type_in_param() {
         let kind = hir_check!("fn foo(x: Ghost): i32 { 0 }");
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownType {
-                name: "Ghost".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownType { name: "Ghost".into() });
     }
 
     #[test]
@@ -1169,10 +1048,7 @@ mod tests {
     #[test]
     fn hir_invalid_assignment_target() {
         let kind = parse_check!("fn main() { (a + b) = 1; }");
-        assert!(
-            matches!(kind, ParseErrorKind::UnexpectedIdentifier),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, ParseErrorKind::UnexpectedIdentifier), "got {kind:?}");
     }
 
     #[test]
@@ -1183,10 +1059,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::UnknownField {
-                struct_name: "Point".into(),
-                field: "z".into(),
-            }
+            HirErrorKind::UnknownField { struct_name: "Point".into(), field: "z".into() }
         );
     }
 
@@ -1198,10 +1071,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::MissingField {
-                struct_name: "Point".into(),
-                field: "y".into(),
-            }
+            HirErrorKind::MissingField { struct_name: "Point".into(), field: "y".into() }
         );
     }
 
@@ -1222,11 +1092,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::ArityMismatch {
-                name: "nyx::add".into(),
-                expected: 2,
-                found: 3,
-            }
+            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 3 }
         );
     }
 
@@ -1238,11 +1104,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::ArityMismatch {
-                name: "nyx::add".into(),
-                expected: 2,
-                found: 1,
-            }
+            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 1 }
         );
     }
 
@@ -1253,14 +1115,7 @@ mod tests {
          impl Counter { fn add(&mut self, delta: i32) { self.value = self.value + delta; } }
          fn main() { let mut c = Counter { value: 0 }; c.add(1, 2); }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::ArityMismatch {
-                name: "add".into(),
-                expected: 1,
-                found: 2,
-            }
-        );
+        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "add".into(), expected: 1, found: 2 });
     }
 
     #[test]
@@ -1293,25 +1148,13 @@ mod tests {
              let x: i32 = true;
          }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::I32,
-                found: Type::Bool,
-            }
-        );
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::I32, found: Type::Bool });
     }
 
     #[test]
     fn hir_type_mismatch_return_type() {
         let kind = hir_check!("fn foo(): i32 { true }");
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::I32,
-                found: Type::Bool,
-            }
-        );
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::I32, found: Type::Bool });
     }
 
     #[test]
@@ -1321,13 +1164,7 @@ mod tests {
              if 42 { }
          }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Bool,
-                found: Type::I32,
-            }
-        );
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 });
     }
 
     #[test]
@@ -1337,13 +1174,7 @@ mod tests {
              while 1 { }
          }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Bool,
-                found: Type::I32,
-            }
-        );
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 });
     }
 
     #[test]
@@ -1365,12 +1196,7 @@ mod tests {
              fn bad(&self) { self.value = 1; }
          }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::ImmutableBind {
-                name: "self".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "self".into() });
     }
 
     #[test]
@@ -1412,12 +1238,7 @@ mod tests {
             "interface Greet { fn hello(&self); }
          interface Greet { fn bye(&self); }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::DuplicateInterface {
-                name: "Greet".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::DuplicateInterface { name: "Greet".into() });
     }
 
     #[test]
@@ -1426,23 +1247,13 @@ mod tests {
             "struct Foo { x: i32 }
          impl Foo with Ghost { fn hello(&self) { } }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownInterface {
-                name: "Ghost".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "Ghost".into() });
     }
 
     #[test]
     fn hir_unknown_interface_in_superinterface() {
         let kind = hir_check!("interface Child: NonExistent { fn method(&self); }");
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownInterface {
-                name: "NonExistent".into()
-            }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "NonExistent".into() });
     }
 
     #[test]
@@ -1496,10 +1307,7 @@ mod tests {
              fn area(&self): i32 { self.w * self.h }
          }"
         );
-        assert!(
-            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }), "got {kind:?}");
         if let HirErrorKind::InterfaceSignatureMismatch {
             struct_name,
             interface_name,
@@ -1522,10 +1330,7 @@ mod tests {
              fn name(&self, extra: i32): i32 { extra }
          }"
         );
-        assert!(
-            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }), "got {kind:?}");
         if let HirErrorKind::InterfaceSignatureMismatch { method_name, .. } = &kind {
             assert_eq!(method_name, "name");
         }
@@ -1540,9 +1345,6 @@ mod tests {
              fn mutate(&self) { }
          }"
         );
-        assert!(
-            matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }),
-            "got {kind:?}"
-        );
+        assert!(matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }), "got {kind:?}");
     }
 }

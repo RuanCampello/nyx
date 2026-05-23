@@ -7,9 +7,7 @@ pub(crate) struct SourceArena {
 
 impl SourceArena {
     pub fn new() -> Self {
-        Self {
-            sources: RefCell::new(Vec::new()),
-        }
+        Self { sources: RefCell::new(Vec::new()) }
     }
 
     /// Allocates a string in the arena, returning a reference bound to the lifetime of `self`.

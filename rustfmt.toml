@@ -1,2 +1,12 @@
+unstable_features = true
+
+use_small_heuristics = "Off"
+
 array_width = 80
 chain_width = 80
+fn_call_width = 80
+struct_lit_width = 60
+struct_variant_width = 80
+
+format_macro_bodies = true
+indent_style = "Block"

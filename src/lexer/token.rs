@@ -116,11 +116,7 @@ pub struct Span {
 impl Position {
     #[inline]
     pub const fn new(offset: u32, line: u16, column: u16) -> Self {
-        Self {
-            offset,
-            line,
-            column,
-        }
+        Self { offset, line, column }
     }
 
     pub const fn offset(&self) -> usize {

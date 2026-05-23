@@ -33,10 +33,7 @@ impl ModuleResolver {
             root if root == self.name => &self.root,
             "std" => &self.std,
             other => {
-                return Err(ModuleError::UnknownRoot {
-                    name: other.to_string(),
-                    span,
-                });
+                return Err(ModuleError::UnknownRoot { name: other.to_string(), span });
             }
         };
 

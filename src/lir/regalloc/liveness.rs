@@ -101,11 +101,7 @@ impl<I> Block<I> {
     pub fn for_each_successor(&self, mut f: impl FnMut(BlockId)) {
         match self.term {
             Term::Jump(id) => f(id),
-            Term::Branch {
-                then_block,
-                else_block,
-                ..
-            } => {
+            Term::Branch { then_block, else_block, .. } => {
                 f(then_block);
                 f(else_block);
             }

@@ -51,11 +51,7 @@ pub struct Block<I> {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Term {
     Jump(BlockId),
-    Branch {
-        cond: VReg,
-        then_block: BlockId,
-        else_block: BlockId,
-    },
+    Branch { cond: VReg, then_block: BlockId, else_block: BlockId },
     Return(Option<VReg>),
 }
 
@@ -178,11 +174,8 @@ impl<T: Target> Function<T> {
     pub fn new_block(&mut self) -> BlockId {
         let id = BlockId(self.blocks.len() as u32);
 
-        self.blocks.push(Block {
-            id,
-            instructions: Vec::new(),
-            term: Term::Return(None),
-        });
+        self.blocks
+            .push(Block { id, instructions: Vec::new(), term: Term::Return(None) });
 
         id
     }
@@ -205,7 +198,11 @@ impl<T: Target> Function<T> {
         let idx = self.float_counter;
         self.float_counter += 1;
 
-        let prefix = if is_32 { "f32" } else { "f64" };
+        let prefix = if is_32 {
+            "f32"
+        } else {
+            "f64"
+        };
         let label = format!(".LC_{}_{prefix}_{idx}_{bits}", self.name);
 
         self.floats.insert(bits, label.clone());

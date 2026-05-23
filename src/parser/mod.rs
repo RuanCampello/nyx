@@ -31,10 +31,7 @@ pub trait Parsable<'i>: Sized {
 
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
-        Self {
-            cursor: Lexer::new(source).peekable(),
-            last: None,
-        }
+        Self { cursor: Lexer::new(source).peekable(), last: None }
     }
 
     pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError<'i>> {
@@ -102,10 +99,7 @@ impl<'i> Parser<'i> {
         match token.is_kind(expected) {
             true => Ok(token),
             false => Err(ParserError::new(
-                ParseErrorKind::Expected {
-                    expected,
-                    found: token.kind,
-                },
+                ParseErrorKind::Expected { expected, found: token.kind },
                 token.span,
             )),
         }
@@ -226,9 +220,7 @@ mod tests {
         let err = Parser::new("let value = ;").parse().unwrap_err();
         assert_eq!(
             err.kind,
-            ParseErrorKind::ExpectedExpression {
-                found: TokenKind::Punct(Punct::Semicolon)
-            }
+            ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Semicolon) }
         );
 
         assert_eq!(err.span.start.column, 13);
@@ -238,12 +230,7 @@ mod tests {
     #[test]
     fn invalid_identifier() {
         let err = Parser::new("let 123: i32 = 1;").parse().unwrap_err();
-        assert_eq!(
-            err.kind,
-            ParseErrorKind::ExpectedIdentifier {
-                found: TokenKind::Integer(123)
-            }
-        );
+        assert_eq!(err.kind, ParseErrorKind::ExpectedIdentifier { found: TokenKind::Integer(123) });
 
         assert_eq!(err.span.start.column, 5);
         assert_eq!(err.span.end.column, 8);
@@ -254,9 +241,7 @@ mod tests {
         let err = Parser::new("return +1;").parse().unwrap_err();
         assert_eq!(
             err.kind,
-            ParseErrorKind::ExpectedExpression {
-                found: TokenKind::Punct(Punct::Plus)
-            }
+            ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Plus) }
         );
 
         assert_eq!(err.span.start.column, 8);
@@ -350,16 +335,8 @@ mod tests {
     fn unary_binds_after_method_call() {
         let statements = Parser::new("!rect.is_larger_than(15);").parse().unwrap();
 
-        let [
-            Statement::Expr(
-                Expression::Unary {
-                    operator: UnaryOperator::Not,
-                    expr,
-                    ..
-                },
-                _,
-            ),
-        ] = statements.as_slice()
+        let [Statement::Expr(Expression::Unary { operator: UnaryOperator::Not, expr, .. }, _)] =
+            statements.as_slice()
         else {
             panic!("expected unary expression statement, got {statements:?}");
         };
@@ -435,10 +412,7 @@ mod tests {
                 assert_eq!(*name, "z");
                 assert!(matches!(
                     value,
-                    Some(Expression::Binary {
-                        operator: BinaryOperator::Add,
-                        ..
-                    })
+                    Some(Expression::Binary { operator: BinaryOperator::Add, .. })
                 ));
             }
             _ => unreachable!(),
@@ -485,10 +459,7 @@ mod tests {
             let_statement.typ.as_ref().map(|typ| typ.value()),
             Some(Type::Named("Point"))
         ));
-        assert!(matches!(
-            let_statement.value,
-            Some(Expression::Struct { name: "Point", .. })
-        ));
+        assert!(matches!(let_statement.value, Some(Expression::Struct { name: "Point", .. })));
     }
 
     #[test]
@@ -497,65 +468,32 @@ mod tests {
         let [Statement::Expr(expr, _)] = statements.as_slice() else {
             panic!("expected expression statement");
         };
-        let Expression::Binary {
-            left,
-            operator,
-            right,
-            ..
-        } = expr
-        else {
+        let Expression::Binary { left, operator, right, .. } = expr else {
             panic!("expected binary expression");
         };
         assert_eq!(*operator, BinaryOperator::BitOr);
 
-        let Expression::Binary {
-            left: l_l,
-            operator: l_op,
-            right: l_r,
-            ..
-        } = left.as_ref()
-        else {
+        let Expression::Binary { left: l_l, operator: l_op, right: l_r, .. } = left.as_ref() else {
             panic!("expected left binary expression");
         };
         assert_eq!(*l_op, BinaryOperator::BitAnd);
-        assert!(matches!(
-            l_l.as_ref(),
-            Expression::Unary {
-                operator: UnaryOperator::Not,
-                ..
-            }
-        ));
+        assert!(matches!(l_l.as_ref(), Expression::Unary { operator: UnaryOperator::Not, .. }));
         assert!(matches!(l_r.as_ref(), Expression::Identifier("y", _)));
 
-        let Expression::Binary {
-            left: r_l,
-            operator: r_op,
-            right: r_r,
-            ..
-        } = right.as_ref()
+        let Expression::Binary { left: r_l, operator: r_op, right: r_r, .. } = right.as_ref()
         else {
             panic!("expected right binary expression");
         };
         assert_eq!(*r_op, BinaryOperator::BitXor);
         assert!(matches!(r_l.as_ref(), Expression::Identifier("z", _)));
 
-        let Expression::Binary {
-            left: rr_l,
-            operator: rr_op,
-            right: rr_r,
-            ..
-        } = r_r.as_ref()
+        let Expression::Binary { left: rr_l, operator: rr_op, right: rr_r, .. } = r_r.as_ref()
         else {
             panic!("expected shift-right binary expression");
         };
         assert_eq!(*rr_op, BinaryOperator::Shr);
 
-        let Expression::Binary {
-            left: rrl_l,
-            operator: rrl_op,
-            right: rrl_r,
-            ..
-        } = rr_l.as_ref()
+        let Expression::Binary { left: rrl_l, operator: rrl_op, right: rrl_r, .. } = rr_l.as_ref()
         else {
             panic!("expected shift-left binary expression");
         };

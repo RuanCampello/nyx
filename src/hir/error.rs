@@ -75,13 +75,40 @@ pub enum ResolverError {
     CircularImport { path: PathBuf },
 }
 
+impl<'h> HirError<'h> {
+    #[inline(always)]
+    pub(in crate::hir) fn new(kind: HirErrorKind<'h>, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
+macro_rules! hir_error {
+    ($span:expr, $kind:ident $({ $($field:ident $(: $val:expr)?),* $(,)? })?) => {
+        $crate::hir::error::HirError::new(
+            $crate::hir::error::HirErrorKind::$kind $({ $($field $(: $val)?),* })?,
+            $span,
+        )
+    };
+    ($span:expr, $kind:ident($($arg:expr),*)) => {
+        $crate::hir::error::HirError::new(
+            $crate::hir::error::HirErrorKind::$kind($($arg),*),
+            $span,
+        )
+    };
+    ($span:expr, $kind:ident) => {
+        $crate::hir::error::HirError::new(
+            $crate::hir::error::HirErrorKind::$kind,
+            $span,
+        )
+    };
+}
+
+pub(in crate::hir) use hir_error;
+
 impl<'h> From<ParserError<'h>> for HirError<'h> {
     fn from(value: ParserError<'h>) -> Self {
         let span = value.span;
 
-        Self {
-            kind: HirErrorKind::Parser(value),
-            span,
-        }
+        Self { kind: HirErrorKind::Parser(value), span }
     }
 }

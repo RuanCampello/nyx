@@ -149,11 +149,7 @@ impl<'i> Expression<'i> {
                 let expr = Self::parse_expr(parser, 11)?;
                 let span = token.span + expr.span();
 
-                Ok(Expression::Unary {
-                    operator,
-                    expr: Box::new(expr),
-                    span,
-                })
+                Ok(Expression::Unary { operator, expr: Box::new(expr), span })
             }
 
             TokenKind::Punct(Punct::OpenParen) => {
@@ -254,11 +250,7 @@ impl<'i> Expression<'i> {
                 let (field, span) = parser.expect_identifier()?;
                 let span = left.span() + span;
 
-                Ok(Expression::Field {
-                    expr: Box::new(left),
-                    field,
-                    span,
-                })
+                Ok(Expression::Field { expr: Box::new(left), field, span })
             }
             TokenKind::Punct(Punct::ColonColon) => {
                 let (name, name_span) = parser.expect_identifier()?;
@@ -316,12 +308,7 @@ impl<'i> Expression<'i> {
                         }
 
                         let span = left.span() + end_span;
-                        Ok(Expression::QualifiedCall {
-                            qualifier,
-                            name,
-                            args,
-                            span,
-                        })
+                        Ok(Expression::QualifiedCall { qualifier, name, args, span })
                     }
 
                     _ => {
@@ -332,11 +319,7 @@ impl<'i> Expression<'i> {
                             ));
                         };
                         let span = left.span() + name_span;
-                        Ok(Expression::QualifiedName {
-                            qualifier,
-                            name,
-                            span,
-                        })
+                        Ok(Expression::QualifiedName { qualifier, name, span })
                     }
                 }
             }
@@ -347,12 +330,7 @@ impl<'i> Expression<'i> {
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
                         let span = left.span() + end_span;
 
-                        return Ok(Expression::TypeIntrinsic {
-                            kind,
-                            qualifier: None,
-                            typ,
-                            span,
-                        });
+                        return Ok(Expression::TypeIntrinsic { kind, qualifier: None, typ, span });
                     }
                 }
 
@@ -387,11 +365,7 @@ impl<'i> Expression<'i> {
                 }
 
                 let span = Span::new(left.span().start, end_position);
-                Ok(Expression::Call {
-                    callee: Box::new(left),
-                    args,
-                    span,
-                })
+                Ok(Expression::Call { callee: Box::new(left), args, span })
             }
 
             TokenKind::Punct(Punct::Eq) => {
@@ -407,10 +381,7 @@ impl<'i> Expression<'i> {
                         })
                     }
 
-                    _ => Err(ParserError::new(
-                        ParseErrorKind::UnexpectedIdentifier,
-                        left.span(),
-                    )),
+                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
                 }
             }
 
@@ -418,11 +389,7 @@ impl<'i> Expression<'i> {
                 let target_type = Spanned::<Type>::parse(parser)?;
                 let span = left.span() + target_type.span();
 
-                Ok(Expression::Cast {
-                    expr: Box::new(left),
-                    target_type,
-                    span,
-                })
+                Ok(Expression::Cast { expr: Box::new(left), target_type, span })
             }
 
             _ => {

@@ -1,10 +1,10 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
+mod arena;
 mod demand;
 mod graph;
 mod resolver;
 mod signatures;
-mod arena;
 
 use crate::{
     diagnostic::Diagnostic,
@@ -160,10 +160,7 @@ mod tests {
                 }
             }
 
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                path.display().to_string(),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
         }
 
         fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
@@ -181,10 +178,7 @@ mod tests {
                 }
             }
 
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                path.display().to_string(),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
         }
     }
 
@@ -263,10 +257,7 @@ mod tests {
     #[test]
     fn import_and_call() {
         let _fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -358,10 +349,7 @@ mod tests {
     #[test]
     fn same_dependency_imported_twice_was_not_duplicated() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/util.nyx",
                 r#"
@@ -386,19 +374,13 @@ mod tests {
                 hir.symbols.get(f.name.0.into_usize()).map(|s| s == "nyx::add").unwrap_or(false)
             })
             .count();
-        assert_eq!(
-            add_count, 1,
-            "add should appear exactly once in the merged HIR"
-        );
+        assert_eq!(add_count, 1, "add should appear exactly once in the merged HIR");
     }
 
     #[test]
     fn arity_mismatch_across_modules() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -438,10 +420,7 @@ mod tests {
     #[test]
     fn duplicate_function_across_modules_rejected() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -467,10 +446,7 @@ mod tests {
             }
             "#,
             )
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            );
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
@@ -659,18 +635,14 @@ mod tests {
             .unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
-            Statement::Let {
-                init: Some(expr), ..
-            } => expr,
+            Statement::Let { init: Some(expr), .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(a_init.kind, ExpressionKind::Integer(4));
         assert_eq!(a_init.typ, Type::Uptr);
 
         let b_init = match &main_fn.body.statements[1] {
-            Statement::Let {
-                init: Some(expr), ..
-            } => expr,
+            Statement::Let { init: Some(expr), .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(b_init.kind, ExpressionKind::Integer(8));

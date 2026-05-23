@@ -463,20 +463,12 @@ impl Instruction<AArch64> for A64Instr {
                 uses.push(*rhs);
             }
 
-            Self::Call {
-                uses: instruction_uses,
-                ..
+            Self::Call { uses: instruction_uses, .. }
+            | Self::Syscall { uses: instruction_uses, .. } => {
+                uses.extend_from_slice(instruction_uses)
             }
-            | Self::Syscall {
-                uses: instruction_uses,
-                ..
-            } => uses.extend_from_slice(instruction_uses),
 
-            Self::FieldStore {
-                origin,
-                src: A64Operand::VReg(v),
-                ..
-            } => {
+            Self::FieldStore { origin, src: A64Operand::VReg(v), .. } => {
                 uses.push(*origin);
                 uses.push(*v);
             }
@@ -485,11 +477,7 @@ impl Instruction<AArch64> for A64Instr {
             Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => {
                 uses.push(*origin)
             }
-            Self::PtrStore {
-                ptr,
-                src: A64Operand::VReg(v),
-                ..
-            } => {
+            Self::PtrStore { ptr, src: A64Operand::VReg(v), .. } => {
                 uses.push(*ptr);
                 uses.push(*v);
             }
@@ -536,13 +524,7 @@ impl A64Instr {
             }
         }
 
-        Self::Call {
-            target,
-            moves,
-            uses,
-            ret,
-            stack_args,
-        }
+        Self::Call { target, moves, uses, ret, stack_args }
     }
 }
 

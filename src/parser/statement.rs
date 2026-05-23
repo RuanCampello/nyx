@@ -203,10 +203,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
         let (kind, is_fn_start) = match parser.peek() {
             Some(Ok(token)) => (token.kind, token.is_fn_start()),
             _ => {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             }
         };
 
@@ -233,10 +230,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 Ok(Statement::Interface(parser.parse_node()?))
             }
             TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
-            TokenKind::Eof => Err(ParserError::new(
-                ParseErrorKind::UnexpectedEof,
-                Span::default(),
-            )),
+            TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
@@ -294,9 +288,7 @@ impl<'i> Spanned<Type<'i>> {
                 Some(Type::Str) => Ok(Self::new(Type::Str, span)),
                 Some(Type::SelfType) => Ok(Self::new(Type::RefSelf, span)),
                 _ => Err(ParserError::new(
-                    ParseErrorKind::ExpectedTypeIdentifier {
-                        found: name.to_string(),
-                    },
+                    ParseErrorKind::ExpectedTypeIdentifier { found: name.to_string() },
                     span,
                 )),
             };
@@ -328,13 +320,7 @@ impl<'i> Parsable<'i> for Let<'i> {
         let semicolon = parser.expect_token(Punct::Semicolon)?;
         let span = let_token.span + semicolon.span;
 
-        Ok(Let {
-            mutable,
-            name,
-            typ,
-            value,
-            span,
-        })
+        Ok(Let { mutable, name, typ, value, span })
     }
 }
 
@@ -344,10 +330,7 @@ impl<'i> Parsable<'i> for Const<'i> {
             Some(Ok(token)) => token.span,
             Some(Err(err)) => return Err((&err).into()),
             None => {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             }
         };
 
@@ -361,13 +344,7 @@ impl<'i> Parsable<'i> for Const<'i> {
         let semi = parser.expect_token(Punct::Semicolon)?;
         let span = start_span + semi.span;
 
-        Ok(Const {
-            is_pub,
-            name,
-            typ,
-            value,
-            span,
-        })
+        Ok(Const { is_pub, name, typ, value, span })
     }
 }
 
@@ -421,17 +398,11 @@ impl<'i> Parsable<'i> for If<'i> {
 
                     Some(Err(err)) => Err(err.into()),
 
-                    _ => Err(ParserError::new(
-                        ParseErrorKind::UnexpectedEof,
-                        if_token.span,
-                    )),
+                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, if_token.span)),
                 }?;
 
                 let span = Span::new(if_token.span.start, end);
-                let block = Block {
-                    span,
-                    statements: vec![statement],
-                };
+                let block = Block { span, statements: vec![statement] };
 
                 (block, span.end)
             }
@@ -442,10 +413,7 @@ impl<'i> Parsable<'i> for If<'i> {
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
             let Some(Ok(next_token)) = parser.peek() else {
-                return Err(ParserError::new(
-                    ParseErrorKind::UnexpectedEof,
-                    Span::default(),
-                ));
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             };
 
             match next_token.kind {
@@ -472,12 +440,7 @@ impl<'i> Parsable<'i> for If<'i> {
         }
 
         let span = Span::new(if_token.span.start, end_pos);
-        Ok(If {
-            condition,
-            then_branch,
-            else_branch,
-            span,
-        })
+        Ok(If { condition, then_branch, else_branch, span })
     }
 }
 
@@ -488,11 +451,7 @@ impl<'i> Parsable<'i> for While<'i> {
         let body = Block::parse(parser)?;
         let span = while_token.span + body.span;
 
-        Ok(While {
-            condition,
-            body,
-            span,
-        })
+        Ok(While { condition, body, span })
     }
 }
 
@@ -581,13 +540,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     let span = impl_token.span + close.span;
 
-                    return Ok(Self {
-                        name,
-                        methods,
-                        constants,
-                        span,
-                        interface,
-                    });
+                    return Ok(Self { name, methods, constants, span, interface });
                 }
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
@@ -617,10 +570,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
                 Some(Err(err)) => return Err((&err).into()),
                 None => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::UnexpectedEof,
-                        impl_token.span,
-                    ));
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, impl_token.span));
                 }
             }
         }
@@ -670,12 +620,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     let span = struct_token.span + close.span;
 
-                    return Ok(Self {
-                        name,
-                        fields,
-                        is_pub,
-                        span,
-                    });
+                    return Ok(Self { name, fields, is_pub, span });
                 }
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
@@ -702,11 +647,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
             let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
             let span = field_span + typ.span();
 
-            fields.push(StructField {
-                name: field_name,
-                typ,
-                span,
-            });
+            fields.push(StructField { name: field_name, typ, span });
         }
     }
 }
@@ -786,10 +727,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                 Some(Err(err)) => return Err(err.into()),
 
                 None => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::UnexpectedEof,
-                        fn_token.span,
-                    ));
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, fn_token.span));
                 }
             }
         }
@@ -808,14 +746,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             }
         };
 
-        Ok(Self {
-            span,
-            name,
-            receiver,
-            params,
-            return_type,
-            body,
-        })
+        Ok(Self { span, name, receiver, params, return_type, body })
     }
 }
 
@@ -914,11 +845,7 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
         let semi = parser.expect_token(Punct::Semicolon)?;
         let span = use_token.span + semi.span;
 
-        Ok(UseDecl {
-            path: UsePath { segments },
-            items,
-            span,
-        })
+        Ok(UseDecl { path: UsePath { segments }, items, span })
     }
 }
 
@@ -930,17 +857,12 @@ impl<'i> Parsable<'i> for Receiver {
 
         if name != "self" {
             return Err(ParserError::new(
-                ParseErrorKind::ExpectedIdentifier {
-                    found: TokenKind::Identifier(name),
-                },
+                ParseErrorKind::ExpectedIdentifier { found: TokenKind::Identifier(name) },
                 span,
             ));
         }
 
-        Ok(Self {
-            mutable,
-            span: start + span,
-        })
+        Ok(Self { mutable, span: start + span })
     }
 }
 
@@ -951,12 +873,7 @@ impl<'i> Parsable<'i> for Parameter<'i> {
         parser.expect_token(Punct::Colon)?;
         let typ = parser.parse_node::<Spanned<Type>>()?;
 
-        Ok(Self {
-            mutable,
-            name,
-            typ,
-            span: span + typ.span(),
-        })
+        Ok(Self { mutable, name, typ, span: span + typ.span() })
     }
 }
 
