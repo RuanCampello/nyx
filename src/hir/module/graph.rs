@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PRELUDE: [&str; 3] = ["int.nyx", "float.nyx", "char.nyx"];
+const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx"];
 
 #[derive(Debug)]
 pub(super) struct ModuleGraph {

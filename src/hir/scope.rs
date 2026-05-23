@@ -64,7 +64,7 @@ pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
-pub(in crate::hir) type InterfaceImpls = HashSet<(StructId, SymbolId)>;
+pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
 
 impl<'sc> Scope<'sc> {
     pub fn new() -> Self {
@@ -372,17 +372,8 @@ impl<'sc> Scope<'sc> {
             };
 
             if let Some(interface_name) = implementation.interface {
-                let Type::Struct(struct_id) = receiver_type else {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found: receiver_type,
-                        },
-                        span: implementation.span,
-                    });
-                };
                 let interface = symbols.insert(interface_name);
-                self.interface_impls.insert((struct_id, interface));
+                self.interface_impls.insert((receiver_type, interface));
             }
 
             for method in &implementation.methods {
@@ -517,13 +508,17 @@ impl<'sc> Scope<'sc> {
                 span: implementation.span,
             })?;
 
-            let struct_sym = symbols.insert(implementation.name);
-            let struct_id = *self
-                .struct_map
-                .get(&struct_sym)
-                .expect("impl struct must exist in scope after extend_structs");
-
-            let receiver_type = Type::Struct(struct_id);
+            let receiver_type = match resolve_primitive_type(implementation.name) {
+                Some(primitive) => primitive,
+                _ => {
+                    let struct_sym = symbols.insert(implementation.name);
+                    let struct_id = *self
+                        .struct_map
+                        .get(&struct_sym)
+                        .expect("impl struct must exist in scope after extend_structs");
+                    Type::Struct(struct_id)
+                }
+            };
 
             let impl_methods: HashMap<_, _> =
                 implementation.methods.iter().map(|method| (method.name, method)).collect();
@@ -538,7 +533,7 @@ impl<'sc> Scope<'sc> {
                     });
                 }
 
-                if !self.interface_impls.contains(&(struct_id, *required)) {
+                if !self.interface_impls.contains(&(receiver_type, *required)) {
                     return Err(HirError {
                         kind: HirErrorKind::MissingSuperinterfaceImpl {
                             struct_name: implementation.name.to_string(),
@@ -691,9 +686,15 @@ impl<'sc> Scope<'sc> {
                     .get(&mangled)
                     .copied()
                     .or_else(|| {
-                        let struct_symbol = symbols.insert(impl_type);
-                        let struct_id = *self.struct_map.get(&struct_symbol)?;
-                        self.interface_impls.iter().filter(|&&(sid, _)| sid == struct_id).find_map(
+                        let receiver_type = match resolve_primitive_type(impl_type) {
+                            Some(primitive) => primitive,
+                            _ => {
+                                let struct_symbol = symbols.insert(impl_type);
+                                let struct_id = *self.struct_map.get(&struct_symbol)?;
+                                Type::Struct(struct_id)
+                            }
+                        };
+                        self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
                             |&(_, interface_sym)| {
                                 let interface_name = symbols.get(interface_sym);
                                 let interface_mangled =

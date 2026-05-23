@@ -1,7 +1,10 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{Declarations, FunctionId, SymbolTable, scope::Scope},
+    hir::{
+        self, Declarations, FunctionId, SymbolTable,
+        scope::{self, Scope},
+    },
     parser::{
         expression::Expression,
         statement::{Block, Else, Function, Interface, Statement},
@@ -145,11 +148,17 @@ fn find_interface_for_method(
     symbols: &SymbolTable,
 ) -> Option<String> {
     let impl_type = function.impl_type?;
-    let struct_symbol = symbols.get_id(impl_type)?;
-    let struct_id = scope.struct_map.get(&struct_symbol)?;
+    let receiver_type = match scope::resolve_primitive_type(impl_type) {
+        Some(primitive) => primitive,
+        _ => {
+            let struct_symbol = symbols.get_id(impl_type)?;
+            let struct_id = scope.struct_map.get(&struct_symbol)?;
+            hir::Type::Struct(*struct_id)
+        }
+    };
     let method_name = symbols.get_id(function.name)?;
 
-    scope.interface_impls.iter().filter(|&&(sid, _)| sid == *struct_id).find_map(
+    scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
         |&(_, interface_sym)| {
             let interface = scope.interfaces.get(&interface_sym)?;
             interface
@@ -306,10 +315,16 @@ fn resolve_qualified(
     scoped
         .and_then(|symbol| scope.functions.get(&symbol).copied())
         .or_else(|| {
-            let struct_symbol = symbols.get_id(qualifier)?;
-            let struct_id = *scope.struct_map.get(&struct_symbol)?;
+            let receiver_type = match scope::resolve_primitive_type(qualifier) {
+                Some(primitive) => primitive,
+                _ => {
+                    let struct_symbol = symbols.get_id(qualifier)?;
+                    let struct_id = scope.struct_map.get(&struct_symbol)?;
+                    hir::Type::Struct(*struct_id)
+                }
+            };
 
-            scope.interface_impls.iter().filter(|&&(sid, _)| sid == struct_id).find_map(
+            scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
                 |&(_, interface_sym)| {
                     let interface_name = symbols.get(interface_sym);
                     let mangled = scope.mangler.interface_item(qualifier, interface_name, name);

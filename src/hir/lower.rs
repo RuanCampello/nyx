@@ -913,13 +913,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
                 let id = self.scope.functions.get(&mangled_symbol).copied().or_else(|| {
-                    let struct_symbol = self.symbols.insert(qualifier);
-                    let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
+                    let receiver_type = match scope::resolve_primitive_type(qualifier) {
+                        Some(primitive) => primitive,
+                        _ => {
+                            let struct_symbol = self.symbols.insert(qualifier);
+                            let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
+                            Type::Struct(struct_id)
+                        }
+                    };
 
                     self.scope
                         .interface_impls
                         .iter()
-                        .filter(|&&(sid, _)| sid == struct_id)
+                        .filter(|&&(t, _)| t == receiver_type)
                         .find_map(|&(_, interface_sym)| {
                             let interface_name = self.symbols.get(interface_sym);
                             let interface_mangled = self.symbols.insert(
