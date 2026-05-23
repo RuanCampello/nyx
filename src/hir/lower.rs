@@ -1682,49 +1682,34 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     self_type: Option<Type>,
 ) -> Result<Type, HirError<'h>> {
     match typ {
-        statement::Type::Named(name) => {
-            let symbol = match symbols.get_id(name) {
-                Some(sym) => sym,
-                None => {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownType {
-                            name: (*name).to_string(),
-                        },
-                        span,
-                    });
-                }
-            };
-            struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
+        statement::Type::Named(name) => symbols
+            .get_id(name)
+            .and_then(|symbol| struct_map.get(&symbol).copied())
+            .map(Type::Struct)
+            .ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownType {
-                    name: (*name).to_string(),
+                    name: name.to_string(),
                 },
                 span,
-            })
-        }
-        statement::Type::SelfType => {
-            if let Some(self_ty) = self_type {
-                Ok(self_ty)
-            } else {
-                Ok(Type::SelfType)
-            }
-        }
-        statement::Type::RefSelf => {
-            if let Some(self_ty) = self_type {
-                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
+            }),
+        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
+        statement::Type::RefSelf => self_type.map_or(
+            Ok(Type::Ref {
+                mutable: false,
+                to: RefTarget::SelfType,
+            }),
+            |self_typ| {
+                let to = RefTarget::try_from(self_typ).map_err(|_| HirError {
                     kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: self_ty,
+                        expected: Type::Struct(Default::default()),
+                        found: self_typ,
                     },
                     span,
                 })?;
+
                 Ok(Type::Ref { mutable: false, to })
-            } else {
-                Ok(Type::Ref {
-                    mutable: false,
-                    to: RefTarget::SelfType,
-                })
-            }
-        }
+            },
+        ),
         typ => Ok(typ.into()),
     }
 }
