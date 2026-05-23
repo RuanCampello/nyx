@@ -277,6 +277,7 @@ impl Type {
                 MachineType::Struct { size, align }
             }
             Type::Unit => unreachable!("unit doesn't have a machine type"),
+            Type::SelfType => unreachable!("Self type doesn't have a machine type"),
         }
     }
 

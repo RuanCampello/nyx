@@ -158,6 +158,7 @@ impl<'f> Lower<'f> {
                         _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
                     },
                     U::Deref => unreachable!(),
+                    U::Ref => unreachable!("UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"),
                 }
             }
 
