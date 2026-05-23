@@ -71,10 +71,11 @@ pub enum RefTarget {
     Uptr, Iptr,
     Char,
     Str, String,
+    SelfType,
     Unit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[rustfmt::skip]
 #[non_exhaustive]
 pub enum Type {
@@ -90,6 +91,7 @@ pub enum Type {
     Char,
     Str, String,
     Struct(StructId),
+    SelfType,
     Ref {
         mutable: bool,
         to: RefTarget,
@@ -231,9 +233,17 @@ pub struct SymbolId(pub Spur);
 pub struct LocalId(pub u32);
 
 /// Lowers the program AST to a HIR program.
-pub fn lower<'h>(statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
+pub fn lower<'h>(mut statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
+    let interfaces: std::collections::HashMap<_, _> = statements
+        .iter()
+        .filter_map(|stmt| match stmt {
+            statement::Statement::Interface(i) => Some((i.name, i.clone())),
+            _ => None,
+        })
+        .collect();
+
     let mut symbols = SymbolTable::new();
-    let declarations = Declarations::partition(&statements)?;
+    let declarations = Declarations::partition(&mut statements, |name| interfaces.get(name))?;
 
     let mut scope = Scope::new();
     scope.extend(&declarations, &mut symbols, false)?;
@@ -321,6 +331,7 @@ impl Type {
 
                 (definition.size, definition.align)
             }
+            Type::SelfType => unreachable!(),
         }
     }
 
@@ -365,6 +376,7 @@ impl From<RefTarget> for Type {
             RefTarget::Str => Type::Str,
             RefTarget::String => Type::String,
             RefTarget::Struct(id) => Type::Struct(id),
+            RefTarget::SelfType => Type::SelfType,
         }
     }
 }
@@ -392,6 +404,7 @@ impl TryFrom<Type> for RefTarget {
             Type::Str => Ok(Self::Str),
             Type::String => Ok(Self::String),
             Type::Struct(id) => Ok(Self::Struct(id)),
+            Type::SelfType => Ok(Self::SelfType),
             Type::Ref { .. } => Err(()),
         }
     }
@@ -419,6 +432,11 @@ impl From<&statement::Type<'_>> for Type {
             AstType::Str => Type::Str,
             AstType::String => Type::String,
             AstType::Unit => Type::Unit,
+            AstType::SelfType => Type::SelfType,
+            AstType::RefSelf => Type::Ref {
+                mutable: false,
+                to: RefTarget::SelfType,
+            },
             AstType::Named(_) => unreachable!("already resolved by resolve_type"),
         }
     }
@@ -444,11 +462,13 @@ impl std::fmt::Display for Type {
             Type::Str => "&str",
             Type::String => "String",
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
+            Type::SelfType => "Self",
             Type::Ref { mutable, to } => {
                 let prefix = if *mutable { "&mut " } else { "&" };
                 f.write_str(prefix)?;
                 return match to {
                     RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
+                    RefTarget::SelfType => write!(f, "Self"),
                     other => write!(f, "{}", Type::from(*other)),
                 };
             }
@@ -1374,8 +1394,8 @@ mod tests {
             }
         "#;
         let mut symbols = SymbolTable::new();
-        let statements = Parser::new(src).parse().unwrap();
-        let declarations = Declarations::partition(&statements).unwrap();
+        let mut statements = Parser::new(src).parse().unwrap();
+        let declarations = Declarations::partition(&mut statements, |_| None).unwrap();
         let mut scope = Scope::new();
         scope.extend(&declarations, &mut symbols, true).unwrap();
         let functions = scope.lower_functions(&declarations, &mut symbols, true).unwrap();

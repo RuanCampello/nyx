@@ -260,14 +260,39 @@ impl<'i> Parsable<'i> for Statement<'i> {
     }
 }
 
+impl<'i> Type<'i> {
+    pub fn from_str(name: &'i str) -> Option<Self> {
+        match name {
+            "i8" => Some(Type::I8),
+            "i16" => Some(Type::I16),
+            "i32" => Some(Type::I32),
+            "i64" => Some(Type::I64),
+            "u8" => Some(Type::U8),
+            "u16" => Some(Type::U16),
+            "u32" => Some(Type::U32),
+            "u64" => Some(Type::U64),
+            "f32" => Some(Type::F32),
+            "f64" => Some(Type::F64),
+            "uptr" => Some(Type::Uptr),
+            "iptr" => Some(Type::Iptr),
+            "bool" => Some(Type::Bool),
+            "char" => Some(Type::Char),
+            "String" => Some(Type::String),
+            "str" => Some(Type::Str),
+            "Self" => Some(Type::SelfType),
+            _ => None,
+        }
+    }
+}
+
 impl<'i> Spanned<Type<'i>> {
     pub fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         if parser.consume_punct(Punct::Ampersand)? {
             let (name, span) = parser.expect_identifier()?;
 
-            return match name {
-                "str" => Ok(Self::new(Type::Str, span)),
-                "Self" => Ok(Self::new(Type::RefSelf, span)),
+            return match Type::from_str(name) {
+                Some(Type::Str) => Ok(Self::new(Type::Str, span)),
+                Some(Type::SelfType) => Ok(Self::new(Type::RefSelf, span)),
                 _ => Err(ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
                         found: name.to_string(),
@@ -275,28 +300,10 @@ impl<'i> Spanned<Type<'i>> {
                     span,
                 )),
             };
-        };
+        }
 
         let (name, span) = parser.expect_identifier()?;
-        let value = match name {
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" => Type::I64,
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "u64" => Type::U64,
-            "f32" => Type::F32,
-            "f64" => Type::F64,
-            "uptr" => Type::Uptr,
-            "iptr" => Type::Iptr,
-            "bool" => Type::Bool,
-            "char" => Type::Char,
-            "String" => Type::String,
-            "Self" => Type::SelfType,
-            _ => Type::Named(name),
-        };
+        let value = Type::from_str(name).unwrap_or(Type::Named(name));
 
         Ok(Self::new(value, span))
     }
@@ -617,6 +624,34 @@ impl<'i> Parsable<'i> for Impl<'i> {
                 }
             }
         }
+    }
+}
+
+impl<'i> Impl<'i> {
+    /// injects an interface's default method implementation into this `impl` block
+    /// if the block hasn't overridden them
+    pub fn inject_default_methods(&mut self, interface: &Interface<'i>) {
+        let default_methods: Vec<_> = interface
+            .methods
+            .iter()
+            .filter(|m| !self.methods.iter().any(|existing| existing.name == m.name))
+            .filter_map(|m| {
+                m.body.as_ref().map(|body| Function {
+                    name: m.name,
+                    impl_type: Some(self.name),
+                    receiver: m.receiver,
+                    params: m.params.clone(),
+                    return_type: m.return_type.clone(),
+                    body: body.clone(),
+                    is_const: false,
+                    is_pub: false,
+                    inline: false,
+                    span: m.span,
+                })
+            })
+            .collect();
+
+        self.methods.extend(default_methods);
     }
 }
 
@@ -946,6 +981,21 @@ impl<'s> Statement<'s> {
             Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
+        }
+    }
+}
+
+pub fn inject_default_methods<'a, 'b>(
+    statements: &mut [Statement<'a>],
+    lookup_interface: impl Fn(&str) -> Option<&'b Interface<'a>>,
+) where
+    'a: 'b,
+{
+    for stmt in statements {
+        if let Statement::Impl(imp) = stmt {
+            if let Some(interface) = imp.interface.and_then(&lookup_interface) {
+                imp.inject_default_methods(interface);
+            }
         }
     }
 }

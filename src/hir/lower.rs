@@ -5,7 +5,7 @@ use crate::{
         SymbolId, SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         mangle::Mangler,
-        scope::{Scope, Structs},
+        scope::{self, Scope, Structs},
     },
     lexer::token::Span,
     parser::{
@@ -30,6 +30,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     symbols: &'s mut SymbolTable,
     is_const: bool,
     in_std: bool,
+    self_type: Option<Type>,
 }
 
 impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
@@ -40,6 +41,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         function: &'f statement::Function<'src>,
         in_std: bool,
     ) -> Self {
+        let self_type = function.impl_type.and_then(|impl_type| {
+            scope::resolve_primitive_type(impl_type).or_else(|| {
+                let struct_symbol = symbols.get_id(impl_type)?;
+                scope.struct_map.get(&struct_symbol).copied().map(Type::Struct)
+            })
+        });
+
         Self {
             scope,
             symbols,
@@ -51,6 +59,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
+            self_type,
         }
     }
 
@@ -66,6 +75,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
+            self_type: None,
         }
     }
 
@@ -453,6 +463,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             _ => RefTarget::Char,
                         },
                     }),
+                    UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
 
@@ -497,9 +508,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             });
                         }
                     },
+                    UnaryOperator::Ref => {
+                        let to = RefTarget::try_from(expr.typ).map_err(|_| HirError {
+                            kind: HirErrorKind::TypeMismatch {
+                                expected: Type::Struct(StructId::default()),
+                                found: expr.typ,
+                            },
+                            span: expr.span,
+                        })?;
+                        Type::Ref { mutable: false, to }
+                    }
                 };
 
-                if *operator != UnaryOperator::Deref {
+                if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
@@ -891,7 +912,24 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
-                if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
+                let id = self.scope.functions.get(&mangled_symbol).copied().or_else(|| {
+                    let struct_symbol = self.symbols.insert(qualifier);
+                    let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
+
+                    self.scope
+                        .interface_impls
+                        .iter()
+                        .filter(|&&(sid, _)| sid == struct_id)
+                        .find_map(|&(_, interface_sym)| {
+                            let interface_name = self.symbols.get(interface_sym);
+                            let interface_mangled = self.symbols.insert(
+                                &self.mangler().interface_item(qualifier, interface_name, name),
+                            );
+                            self.scope.functions.get(&interface_mangled).copied()
+                        })
+                });
+
+                if let Some(id) = id {
                     let signature = &self.scope.signatures[id.0 as usize];
 
                     if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
@@ -1056,8 +1094,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                #[rustfmt::skip]
-                let typ = resolve_annotation(self.symbols, &self.scope.struct_map, &typ.value(), typ.span())?;
+                let typ = resolve_annotation(
+                    self.symbols,
+                    &self.scope.struct_map,
+                    &typ.value(),
+                    typ.span(),
+                    None,
+                )?;
 
                 let structs: Vec<Option<Struct>> =
                     self.scope.structs.iter().map(|s| Some(s.clone())).collect();
@@ -1305,6 +1348,31 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })?;
 
                 Ok(Type::Struct(id))
+            }
+
+            statement::Type::SelfType => self.self_type.ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: "Self".to_string(),
+                },
+                span,
+            }),
+
+            statement::Type::RefSelf => {
+                let self_ty = self.self_type.ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: "Self".to_string(),
+                    },
+                    span,
+                })?;
+                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: self_ty,
+                    },
+                    span,
+                })?;
+
+                Ok(Type::Ref { mutable: false, to })
             }
 
             typ => Ok(typ.into()),
@@ -1565,7 +1633,7 @@ pub(in crate::hir) fn lower_struct<'h>(
             });
         }
 
-        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
         if let Type::Struct(dep) = typ {
             lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
         }
@@ -1611,6 +1679,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     struct_map: &Structs,
     typ: &statement::Type<'h>,
     span: Span,
+    self_type: Option<Type>,
 ) -> Result<Type, HirError<'h>> {
     match typ {
         statement::Type::Named(name) => {
@@ -1631,6 +1700,30 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                 },
                 span,
             })
+        }
+        statement::Type::SelfType => {
+            if let Some(self_ty) = self_type {
+                Ok(self_ty)
+            } else {
+                Ok(Type::SelfType)
+            }
+        }
+        statement::Type::RefSelf => {
+            if let Some(self_ty) = self_type {
+                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: self_ty,
+                    },
+                    span,
+                })?;
+                Ok(Type::Ref { mutable: false, to })
+            } else {
+                Ok(Type::Ref {
+                    mutable: false,
+                    to: RefTarget::SelfType,
+                })
+            }
         }
         typ => Ok(typ.into()),
     }

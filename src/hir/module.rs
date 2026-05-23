@@ -6,7 +6,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Statement, UseItems},
+        statement::{Interface, Statement, UseItems},
     },
 };
 use std::{
@@ -32,6 +32,7 @@ pub(crate) struct ModuleLoader<'s, F: FileSystem = FS> {
     /// shared symbols interner for all modules
     symbols: SymbolTable,
     fs: F,
+    interfaces: HashMap<String, Interface<'s>>,
 }
 
 /// A fully-parsed and validated module
@@ -90,6 +91,7 @@ impl<'s, F: FileSystem> ModuleLoader<'s, F> {
             cache: HashMap::new(),
             in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
+            interfaces: HashMap::new(),
         }
     }
 
@@ -172,10 +174,17 @@ impl<'s, F: FileSystem> ModuleLoader<'s, F> {
             path: canonical.into(),
             span: triggered_by,
         })?;
+        let source: &'static str = Box::leak(source.into_boxed_str());
 
-        diagnostic::initialise(&source, canonical.to_str().unwrap_or("<unknown>"));
+        diagnostic::initialise(source, canonical.to_str().unwrap_or("<unknown>"));
 
-        let statements = Parser::new(&source).parse().map_err(|e| Diagnostic::from(e))?;
+        let statements = Parser::new(source).parse().map_err(|e| Diagnostic::from(e))?;
+
+        for stmt in &statements {
+            if let Statement::Interface(interf) = stmt {
+                self.interfaces.insert(interf.name.to_string(), interf.clone());
+            }
+        }
 
         for statement in &statements {
             let Statement::Use(declaration) = statement else {
@@ -217,9 +226,10 @@ impl<'s, F: FileSystem> ModuleLoader<'s, F> {
         &mut self,
         path: &Path,
         source: &str,
-        statements: Vec<Statement>,
+        mut statements: Vec<Statement<'s>>,
     ) -> Result<Module, ModuleError> {
-        let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
+        let decls = Declarations::partition(&mut statements, |name| self.interfaces.get(name))
+            .map_err(|e| Diagnostic::from(e))?;
         let struct_offset = self.scope.structs.len();
         let in_std = path.starts_with(&self.std);
         self.scope

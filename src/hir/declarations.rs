@@ -1,6 +1,6 @@
 use crate::{
     hir::error::HirError,
-    parser::statement::{Const, Function, Impl, Interface, Statement, Struct, UseDecl},
+    parser::statement::{self, Const, Function, Impl, Interface, Statement, Struct, UseDecl},
 };
 
 #[derive(Debug)]
@@ -14,7 +14,15 @@ pub(in crate::hir) struct Declarations<'d, 'src> {
 }
 
 impl<'d, 'src> Declarations<'d, 'src> {
-    pub fn partition(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
+    pub fn partition<'b>(
+        statements: &'d mut [Statement<'src>],
+        lookup_interface: impl Fn(&str) -> Option<&'b Interface<'src>>,
+    ) -> Result<Self, HirError<'src>>
+    where
+        'src: 'b,
+    {
+        statement::inject_default_methods(statements, lookup_interface);
+
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),
@@ -24,7 +32,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
             impls: Vec::new(),
         };
 
-        for statement in statements {
+        for statement in statements.iter() {
             match statement {
                 Statement::Fn(f) => declarations.functions.push(f),
                 Statement::Interface(i) => declarations.interfaces.push(i),
