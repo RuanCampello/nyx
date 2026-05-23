@@ -5,3 +5,68 @@ pub interface PartialEq {
     }
 }
 
+impl i8 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl u8 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl i16 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl u16 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl i32 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl u32 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl i64 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl u64 with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl char with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl uptr with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
+
+impl iptr with PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self == other
+    }
+}
