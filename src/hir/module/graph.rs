@@ -15,35 +15,37 @@ use std::{
 const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx"];
 
 #[derive(Debug)]
-pub(super) struct ModuleGraph {
-    pub(super) nodes: Vec<ModuleNode>,
-    edges: Vec<(usize, usize)>,
-    entry: usize,
+pub(super) struct ModuleGraph<'src> {
+    pub(super) nodes: Vec<ModuleNode<'src>>,
+    pub(super) edges: Vec<(usize, usize)>,
+    pub(super) entry: usize,
 }
 
 #[derive(Debug)]
-pub(super) struct ModuleNode {
+pub(super) struct ModuleNode<'src> {
     pub(super) path: PathBuf,
-    pub(super) source: &'static str,
-    pub(super) statements: Vec<Statement<'static>>,
+    pub(super) source: &'src str,
+    pub(super) statements: Vec<Statement<'src>>,
     pub(super) exports: HashSet<String>,
     pub(super) in_std: bool,
 }
 
-struct GraphBuilder<'a, F> {
+struct GraphBuilder<'a, 'src, F> {
     resolver: &'a ModuleResolver,
     fs: &'a F,
-    nodes: Vec<ModuleNode>,
+    arena: &'src super::arena::SourceArena,
+    nodes: Vec<ModuleNode<'src>>,
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
     in_flight: HashSet<PathBuf>,
 }
 
-pub(super) fn build_graph<F: FileSystem>(
+pub(super) fn build_graph<'src, F: FileSystem>(
     entry: &Path,
     resolver: &ModuleResolver,
     fs: &F,
-) -> Result<ModuleGraph, ModuleError> {
+    arena: &'src super::arena::SourceArena,
+) -> Result<ModuleGraph<'src>, ModuleError> {
     let canonical = fs.canonicalise(entry).map_err(|_| ModuleError::FileNotFound {
         path: entry.into(),
         span: None,
@@ -52,6 +54,7 @@ pub(super) fn build_graph<F: FileSystem>(
     let mut builder = GraphBuilder {
         resolver,
         fs,
+        arena,
         nodes: Vec::new(),
         by_path: HashMap::new(),
         edges: Vec::new(),
@@ -68,7 +71,7 @@ pub(super) fn build_graph<F: FileSystem>(
     })
 }
 
-impl ModuleGraph {
+impl<'src> ModuleGraph<'src> {
     pub(super) fn all_nodes_order(&self) -> Vec<usize> {
         let mut visited = HashSet::new();
         let mut order = Vec::new();
@@ -104,7 +107,7 @@ impl ModuleGraph {
     }
 }
 
-impl<F: FileSystem> GraphBuilder<'_, F> {
+impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
     fn discover_prelude(&mut self) -> Result<(), ModuleError> {
         for name in PRELUDE {
             let path = self.resolver.std_root().join(name);
@@ -140,8 +143,8 @@ impl<F: FileSystem> GraphBuilder<'_, F> {
             path: canonical.clone(),
             span: triggered_by,
         })?;
-        // FIXME: remove this shaissen
-        let source: &'static str = Box::leak(source.into_boxed_str());
+
+        let source = self.arena.alloc(source);
 
         diagnostic::initialise(source, canonical.to_str().unwrap_or("<unknown>"));
         let statements = Parser::new(source).parse().map_err(Diagnostic::from)?;

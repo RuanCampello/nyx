@@ -16,6 +16,7 @@ use std::iter::Peekable;
 pub mod error;
 pub mod expression;
 pub mod statement;
+pub mod visitor;
 
 /// Recursive-descent parser.
 pub struct Parser<'i> {

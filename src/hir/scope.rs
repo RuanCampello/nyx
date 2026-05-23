@@ -10,7 +10,7 @@ use crate::{
         mangle::Mangler,
     },
     lexer::Spanned,
-    parser::{expression, statement},
+    parser::{expression, statement, visitor},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -770,12 +770,6 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
     ) -> Result<(), HirError<'s>> {
-        struct ConstDecl<'d, 's> {
-            mangled_name: SymbolId,
-            impl_type: Option<&'d str>,
-            ast: &'d statement::Const<'s>,
-        }
-
         let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
 
         // collect top-level constants
@@ -829,82 +823,6 @@ impl<'sc> Scope<'sc> {
         let mut visited = HashSet::new();
         let mut sorted = Vec::new();
 
-        fn find_dependencies<'d, 'i>(
-            expr: &expression::Expression<'i>,
-            current_impl: Option<&str>,
-            mangler: &Mangler,
-            symbols: &SymbolTable,
-            decls: &HashMap<SymbolId, ConstDecl<'d, 'i>>,
-            deps: &mut Vec<SymbolId>,
-        ) {
-            use expression::Expression as Expr;
-
-            match expr {
-                Expr::Identifier(name, _) => {
-                    if let Some(impl_type) = current_impl {
-                        let mangled = mangler.scoped_item(impl_type, name);
-                        if let Some(symbol_id) = symbols.get_id(&mangled) {
-                            if decls.contains_key(&symbol_id) {
-                                deps.push(symbol_id);
-                                return;
-                            }
-                        }
-                    }
-                    if let Some(symbol_id) = symbols.get_id(&mangler.item(name)) {
-                        if decls.contains_key(&symbol_id) {
-                            deps.push(symbol_id);
-                        }
-                    }
-                }
-                Expr::QualifiedName {
-                    qualifier, name, ..
-                } => {
-                    let mangled = mangler.scoped_item(qualifier, name);
-                    if let Some(symbol_id) = symbols.get_id(&mangled) {
-                        if decls.contains_key(&symbol_id) {
-                            deps.push(symbol_id);
-                        }
-                    }
-                }
-                Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
-                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
-                }
-                Expr::Binary { left, right, .. } => {
-                    find_dependencies(left, current_impl, mangler, symbols, decls, deps);
-                    find_dependencies(right, current_impl, mangler, symbols, decls, deps);
-                }
-                Expr::Assignment { target, value, .. } => {
-                    find_dependencies(target, current_impl, mangler, symbols, decls, deps);
-                    find_dependencies(value, current_impl, mangler, symbols, decls, deps);
-                }
-                Expr::Field { expr, .. } => {
-                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
-                }
-                Expr::Struct { fields, .. } => {
-                    for f in fields {
-                        find_dependencies(&f.value, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::Call { callee, args, .. } => {
-                    find_dependencies(callee, current_impl, mangler, symbols, decls, deps);
-                    for arg in args {
-                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::QualifiedCall { args, .. } => {
-                    for arg in args {
-                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::TypeIntrinsic { .. } => {}
-                Expr::Integer(_, _)
-                | Expr::Float(_, _)
-                | Expr::String(_, _)
-                | Expr::Char(_, _)
-                | Expr::Bool(_, _) => {}
-            }
-        }
-
         fn dfs<'d, 's>(
             symbol_id: SymbolId,
             mangler: &Mangler,
@@ -914,6 +832,8 @@ impl<'sc> Scope<'sc> {
             visited: &mut HashSet<SymbolId>,
             sorted: &mut Vec<SymbolId>,
         ) -> Result<(), HirError<'s>> {
+            use visitor::Visitor;
+
             if visiting.contains(&symbol_id) {
                 let decl = decls.get(&symbol_id).unwrap();
                 let name = match decl.impl_type {
@@ -929,14 +849,14 @@ impl<'sc> Scope<'sc> {
                 visiting.insert(symbol_id);
                 if let Some(decl) = decls.get(&symbol_id) {
                     let mut deps = Vec::new();
-                    find_dependencies(
-                        &decl.ast.value,
-                        decl.impl_type,
+                    let mut visitor = ConstVisitor {
+                        current_impl: decl.impl_type,
                         mangler,
                         symbols,
                         decls,
-                        &mut deps,
-                    );
+                        deps: &mut deps,
+                    };
+                    visitor.visit_expression(&decl.ast.value);
                     for dep in deps {
                         if decls.contains_key(&dep) {
                             dfs(dep, mangler, symbols, decls, visiting, visited, sorted)?;
@@ -987,6 +907,56 @@ impl<'sc> Scope<'sc> {
         }
 
         Ok(())
+    }
+}
+
+struct ConstVisitor<'a, 'd, 'i, 'sc> {
+    current_impl: Option<&'a str>,
+    mangler: &'a Mangler<'sc>,
+    symbols: &'a SymbolTable,
+    decls: &'a HashMap<SymbolId, ConstDecl<'d, 'i>>,
+    deps: &'a mut Vec<SymbolId>,
+}
+
+struct ConstDecl<'d, 's> {
+    mangled_name: SymbolId,
+    impl_type: Option<&'d str>,
+    ast: &'d statement::Const<'s>,
+}
+
+impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
+    fn visit_expression(&mut self, expr: &expression::Expression<'i>) {
+        use expression::Expression as Expr;
+
+        match expr {
+            Expr::Identifier(name, _) => {
+                if let Some(impl_type) = self.current_impl {
+                    let mangled = self.mangler.scoped_item(impl_type, name);
+                    if let Some(symbol_id) = self.symbols.get_id(&mangled) {
+                        if self.decls.contains_key(&symbol_id) {
+                            self.deps.push(symbol_id);
+                            return;
+                        }
+                    }
+                }
+                if let Some(symbol_id) = self.symbols.get_id(&self.mangler.item(name)) {
+                    if self.decls.contains_key(&symbol_id) {
+                        self.deps.push(symbol_id);
+                    }
+                }
+            }
+            Expr::QualifiedName {
+                qualifier, name, ..
+            } => {
+                let mangled = self.mangler.scoped_item(qualifier, name);
+                if let Some(symbol_id) = self.symbols.get_id(&mangled) {
+                    if self.decls.contains_key(&symbol_id) {
+                        self.deps.push(symbol_id);
+                    }
+                }
+            }
+            _ => visitor::walk_expression(self, expr),
+        }
     }
 }
 

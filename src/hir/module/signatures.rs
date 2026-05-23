@@ -6,12 +6,12 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub(super) fn build_signatures(
-    graph: &mut ModuleGraph,
+pub(super) fn build_signatures<'src>(
+    graph: &mut ModuleGraph<'src>,
     order: &[usize],
     scope: &mut Scope<'static>,
     symbols: &mut SymbolTable,
-) -> Result<HashMap<String, Interface<'static>>, ModuleError> {
+) -> Result<HashMap<String, Interface<'src>>, ModuleError> {
     let interfaces = collect_interfaces(graph);
 
     for &idx in order {
@@ -29,7 +29,7 @@ pub(super) fn build_signatures(
     Ok(interfaces)
 }
 
-fn collect_interfaces(graph: &ModuleGraph) -> HashMap<String, Interface<'static>> {
+fn collect_interfaces<'src>(graph: &ModuleGraph<'src>) -> HashMap<String, Interface<'src>> {
     let mut interfaces = HashMap::new();
 
     for node in &graph.nodes {

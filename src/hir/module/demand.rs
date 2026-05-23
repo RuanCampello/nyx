@@ -7,7 +7,8 @@ use crate::{
     },
     parser::{
         expression::Expression,
-        statement::{Block, Else, Function, Interface, Statement},
+        statement::{Function, Interface},
+        visitor,
     },
 };
 use std::collections::{HashMap, HashSet};
@@ -27,10 +28,10 @@ impl DemandSet {
     }
 }
 
-pub(super) fn lower_reachable(
-    graph: &mut ModuleGraph,
+pub(super) fn lower_reachable<'src>(
+    graph: &mut ModuleGraph<'src>,
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'static>>,
+    interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'static>,
     symbols: &mut SymbolTable,
 ) -> Result<Vec<crate::hir::Function>, ModuleError> {
@@ -57,10 +58,10 @@ pub(super) fn lower_reachable(
     Ok(functions)
 }
 
-fn build_demand(
-    graph: &mut ModuleGraph,
+fn build_demand<'src>(
+    graph: &mut ModuleGraph<'src>,
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'static>>,
+    interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'static>,
     symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
@@ -83,7 +84,13 @@ fn build_demand(
         };
 
         let mut found = Vec::new();
-        walk_block(&function.body, scope, symbols, &mut found);
+        let mut visitor = ReachabilityVisitor {
+            scope,
+            symbols,
+            found: &mut found,
+        };
+        use crate::parser::visitor::Visitor;
+        visitor.visit_block(&function.body);
 
         for callee in found {
             if demand.insert(callee) {
@@ -95,13 +102,13 @@ fn build_demand(
     Ok(demand)
 }
 
-fn collect_functions<'a>(
-    graph: &'a mut ModuleGraph,
+fn collect_functions<'a, 'src>(
+    graph: &'a mut ModuleGraph<'src>,
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'static>>,
+    interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'static>,
     symbols: &SymbolTable,
-) -> Result<HashMap<FunctionId, Function<'static>>, ModuleError> {
+) -> Result<HashMap<FunctionId, Function<'src>>, ModuleError> {
     let mut functions = HashMap::new();
 
     for &idx in order {
@@ -170,131 +177,57 @@ fn find_interface_for_method(
     )
 }
 
-fn walk_block(
-    block: &Block<'_>,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-    found: &mut Vec<FunctionId>,
-) {
-    for statement in &block.statements {
-        walk_statement(statement, scope, symbols, found);
-    }
+struct ReachabilityVisitor<'a> {
+    scope: &'a Scope<'static>,
+    symbols: &'a SymbolTable,
+    found: &'a mut Vec<FunctionId>,
 }
 
-fn walk_statement(
-    statement: &Statement<'_>,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-    found: &mut Vec<FunctionId>,
-) {
-    match statement {
-        Statement::Let(stmt) => {
-            if let Some(value) = &stmt.value {
-                walk_expr(value, scope, symbols, found);
-            }
-        }
-        Statement::Const(stmt) => walk_expr(&stmt.value, scope, symbols, found),
-        Statement::Return(stmt) => {
-            if let Some(value) = &stmt.value {
-                walk_expr(value, scope, symbols, found);
-            }
-        }
-        Statement::If(stmt) => {
-            walk_expr(&stmt.condition, scope, symbols, found);
-            walk_block(&stmt.then_branch, scope, symbols, found);
-            if let Some(else_branch) = &stmt.else_branch {
-                match else_branch.as_ref() {
-                    Else::If(stmt) => {
-                        walk_statement(&Statement::If(stmt.clone()), scope, symbols, found)
+impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
+    fn visit_expression(&mut self, expr: &Expression<'i>) {
+        match expr {
+            Expression::Call { callee, args, .. } => {
+                match callee.as_ref() {
+                    Expression::Identifier(name, _) => {
+                        if let Some(id) = resolve_top_level(name, self.scope, self.symbols) {
+                            self.found.push(id);
+                        }
                     }
-                    Else::Block(block) => walk_block(block, scope, symbols, found),
-                    Else::Expr(expr) => walk_expr(expr, scope, symbols, found),
+                    Expression::Field { .. } => {
+                        self.found.extend(self.scope.methods.values().copied())
+                    }
+                    _ => self.visit_expression(callee),
+                }
+                for arg in args {
+                    self.visit_expression(arg);
                 }
             }
-        }
-        Statement::While(stmt) => {
-            walk_expr(&stmt.condition, scope, symbols, found);
-            walk_block(&stmt.body, scope, symbols, found);
-        }
-        Statement::Expr(expr, _) => walk_expr(expr, scope, symbols, found),
-        Statement::Block(block) => walk_block(block, scope, symbols, found),
-        Statement::Fn(_)
-        | Statement::Struct(_)
-        | Statement::Impl(_)
-        | Statement::Interface(_)
-        | Statement::Use(_) => {}
-    }
-}
-
-fn walk_expr(
-    expr: &Expression<'_>,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-    found: &mut Vec<FunctionId>,
-) {
-    match expr {
-        Expression::Call { callee, args, .. } => {
-            match callee.as_ref() {
-                Expression::Identifier(name, _) => {
-                    if let Some(id) = resolve_top_level(name, scope, symbols) {
-                        found.push(id);
-                    }
+            Expression::QualifiedCall {
+                qualifier,
+                name,
+                args,
+                ..
+            } => {
+                if let Some(id) = resolve_qualified(qualifier, name, self.scope, self.symbols) {
+                    self.found.push(id);
                 }
-                Expression::Field { .. } => found.extend(scope.methods.values().copied()),
-                _ => walk_expr(callee, scope, symbols, found),
+                for arg in args {
+                    self.visit_expression(arg);
+                }
             }
-            for arg in args {
-                walk_expr(arg, scope, symbols, found);
+            Expression::TypeIntrinsic {
+                kind, qualifier, ..
+            } => {
+                let name: &str = kind.into();
+                let id = qualifier
+                    .and_then(|q| resolve_qualified(q, name, self.scope, self.symbols))
+                    .or_else(|| resolve_top_level(name, self.scope, self.symbols));
+                if let Some(id) = id {
+                    self.found.push(id);
+                }
             }
+            _ => visitor::walk_expression(self, expr),
         }
-        Expression::QualifiedCall {
-            qualifier,
-            name,
-            args,
-            ..
-        } => {
-            if let Some(id) = resolve_qualified(qualifier, name, scope, symbols) {
-                found.push(id);
-            }
-            for arg in args {
-                walk_expr(arg, scope, symbols, found);
-            }
-        }
-        Expression::Unary { expr, .. } | Expression::Cast { expr, .. } => {
-            walk_expr(expr, scope, symbols, found);
-        }
-        Expression::Binary { left, right, .. } => {
-            walk_expr(left, scope, symbols, found);
-            walk_expr(right, scope, symbols, found);
-        }
-        Expression::Assignment { target, value, .. } => {
-            walk_expr(target, scope, symbols, found);
-            walk_expr(value, scope, symbols, found);
-        }
-        Expression::Field { expr, .. } => walk_expr(expr, scope, symbols, found),
-        Expression::Struct { fields, .. } => {
-            for field in fields {
-                walk_expr(&field.value, scope, symbols, found);
-            }
-        }
-        Expression::TypeIntrinsic {
-            kind, qualifier, ..
-        } => {
-            let name: &str = kind.into();
-            let id = qualifier
-                .and_then(|q| resolve_qualified(q, name, scope, symbols))
-                .or_else(|| resolve_top_level(name, scope, symbols));
-            if let Some(id) = id {
-                found.push(id);
-            }
-        }
-        Expression::Integer(_, _)
-        | Expression::Float(_, _)
-        | Expression::String(_, _)
-        | Expression::Char(_, _)
-        | Expression::Bool(_, _)
-        | Expression::Identifier(_, _)
-        | Expression::QualifiedName { .. } => {}
     }
 }
 
