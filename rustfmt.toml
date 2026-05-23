@@ -1,5 +1,11 @@
 use_small_heuristics = "Off"
 
+reorder_imports = true
+reorder_modules = true
+
+edition = "2021"
+style_edition = "2024"
+
 array_width = 80
 chain_width = 80
 fn_call_width = 80
