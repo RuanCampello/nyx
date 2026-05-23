@@ -165,12 +165,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     (Some(typ), _) => self.resolve_type(&typ.value(), typ.span())?,
                     (_, Some(expr)) => self.infer(expr)?,
                     (None, None) => {
-                        return Err(HirError {
-                            kind: HirErrorKind::MissingInitialiser {
-                                name: statement.name.to_string(),
-                            },
-                            span: statement.span,
-                        });
+                        return Err(hir_error!(
+                            statement.span,
+                            MissingInitialiser { name: statement.name.into() }
+                        ));
                     },
                 };
 
@@ -261,10 +259,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             return Ok(value);
         }
 
-        let symbol = self.symbols.get_id(name).ok_or_else(|| HirError {
-            kind: HirErrorKind::UndeclaredIdentifier { name: name.to_string() },
-            span,
-        })?;
+        let symbol = self
+            .symbols
+            .get_id(name)
+            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
@@ -953,10 +951,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
-        let type_mismatch = |found| HirError {
-            kind: HirErrorKind::TypeMismatch { expected: Type::I32, found },
-            span,
-        };
+        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::I32, found });
 
         match operator {
             BinaryOperator::Add
@@ -1031,30 +1026,29 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType { name: name.to_string() },
-                    span,
-                })?;
+                let id = self
+                    .scope
+                    .struct_map
+                    .get(&symbol)
+                    .copied()
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
 
                 Ok(Type::Struct(id))
             },
 
-            statement::Type::SelfType => self.self_type.ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType { name: "Self".to_string() },
-                span,
-            }),
+            statement::Type::SelfType => self
+                .self_type
+                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() })),
 
             statement::Type::RefSelf => {
-                let self_ty = self.self_type.ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType { name: "Self".to_string() },
-                    span,
-                })?;
-                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: self_ty,
-                    },
-                    span,
+                let self_ty = self
+                    .self_type
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() }))?;
+                let to = RefTarget::try_from(self_ty).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch { expected: Type::Struct(Default::default()), found: self_ty }
+                    )
                 })?;
 
                 Ok(Type::Ref { mutable: false, to })
@@ -1069,7 +1063,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
         match expected == found {
             true => Ok(()),
-            false => Err(HirError { kind: HirErrorKind::TypeMismatch { expected, found }, span }),
+            false => Err(hir_error!(span, TypeMismatch { expected, found })),
         }
     }
 
@@ -1082,10 +1076,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateBind { name: self.symbols.get(name).to_string() },
-                span: Span::default(),
-            });
+            return Err(hir_error!(
+                Span::default(),
+                DuplicateBind { name: self.symbols.get(name).to_string() }
+            ));
         }
 
         let id = LocalId(self.next_local);
@@ -1103,11 +1097,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             .iter()
             .rev()
             .find_map(|scope| scope.get(&name).copied())
-            .ok_or_else(|| HirError {
-                kind: HirErrorKind::UndeclaredIdentifier {
-                    name: self.symbols.get(name).to_string(),
-                },
-                span,
+            .ok_or_else(|| {
+                hir_error!(span, UndeclaredIdentifier { name: self.symbols.get(name).to_string() })
             })
     }
 
@@ -1165,9 +1156,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     curr = next;
                 },
 
-                _ => {
-                    return Err(HirError { kind: HirErrorKind::InvalidFieldAccess, span });
-                },
+                _ => return Err(hir_error!(span, InvalidFieldAccess)),
             }
         };
 
@@ -1249,10 +1238,10 @@ pub(in crate::hir) fn lower_struct<'h>(
         Visit::Visited => return Ok(()),
         Visit::Visiting => {
             let (_, declaration) = declarations[id];
-            return Err(HirError {
-                kind: HirErrorKind::CircularStruct { name: declaration.name.to_string() },
-                span: declaration.span,
-            });
+            return Err(hir_error!(
+                declaration.span,
+                CircularStruct { name: declaration.name.into() }
+            ));
         },
         Visit::Unvisited => {},
     }
@@ -1265,10 +1254,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     for (idx, field) in declaration.fields.iter().enumerate() {
         let field_symbol = symbols.get_id(field.name).unwrap();
         if !seen.insert(field_symbol) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateField { name: field.name.to_string() },
-                span: field.span,
-            });
+            return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
         }
 
         let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
@@ -1318,20 +1304,19 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             .get_id(name)
             .and_then(|symbol| struct_map.get(&symbol).copied())
             .map(Type::Struct)
-            .ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType { name: name.to_string() },
-                span,
-            }),
+            .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
         statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
         statement::Type::RefSelf => self_type.map_or(
             Ok(Type::Ref { mutable: false, to: RefTarget::SelfType }),
             |self_typ| {
-                let to = RefTarget::try_from(self_typ).map_err(|_| HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(Default::default()),
-                        found: self_typ,
-                    },
-                    span,
+                let to = RefTarget::try_from(self_typ).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::Struct(Default::default()),
+                            found: self_typ,
+                        }
+                    )
                 })?;
 
                 Ok(Type::Ref { mutable: false, to })
