@@ -57,6 +57,7 @@ pub enum UnaryOperator {
     Neg,
     Not,
     Deref,
+    Ref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,11 +130,13 @@ impl<'i> Expression<'i> {
             },
             TokenKind::Punct(Punct::Minus)
             | TokenKind::Punct(Punct::Bang)
-            | TokenKind::Punct(Punct::Star) => {
+            | TokenKind::Punct(Punct::Star)
+            | TokenKind::Punct(Punct::Ampersand) => {
                 let operator = match token.kind {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
                     TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
+                    TokenKind::Punct(Punct::Ampersand) => UnaryOperator::Ref,
 
                     _ => {
                         return Err(ParserError::new(

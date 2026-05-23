@@ -1,48 +1,29 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
+mod demand;
+mod graph;
+mod resolver;
+mod signatures;
+mod arena;
+
 use crate::{
-    diagnostic::{self, Diagnostic},
-    hir::{Declarations, Function, Hir, Struct, SymbolTable, scope::Scope},
+    diagnostic::Diagnostic,
+    hir::{Hir, SymbolTable, scope::Scope},
     lexer::token::Span,
-    parser::{
-        Parser,
-        statement::{Statement, UseItems},
-    },
 };
-use std::{
-    collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use resolver::ModuleResolver;
+use std::path::{Path, PathBuf};
 
 /// Orchestrates module loading, path resolution, and HIR construction.
 ///
 /// Maintains a cache of loaded modules and the shared symbol table
 /// to ensure symbol IDs remain unique across the entire compilation.
-pub(crate) struct ModuleLoader<'s, F: FileSystem = FS> {
-    name: String,
-    root: PathBuf,
-    /// standard library root
-    std: PathBuf,
-    scope: Scope<'s>,
-    cache: HashMap<PathBuf, Arc<Module>>,
-    /// modules currently being loaded
-    /// used for cycle detection
-    in_flight: HashSet<PathBuf>,
+pub(crate) struct ModuleLoader<F: FileSystem = FS> {
+    resolver: ModuleResolver,
+    scope: Scope<'static>,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
     fs: F,
-}
-
-/// A fully-parsed and validated module
-#[derive(Debug, Clone)]
-struct Module {
-    #[allow(dead_code)]
-    exports: HashMap<String, usize>,
-    /// all struct definitions in declaration order
-    structs: Vec<Struct>,
-    /// all functions in declaration order
-    functions: Vec<Function>,
 }
 
 #[derive(Debug)]
@@ -68,27 +49,20 @@ pub(crate) trait FileSystem {
 
 pub(crate) struct FS;
 
-/// modules automatically injected into the scope of any nyx program
-const PRELUDE: [&str; 3] = ["int.nyx", "float.nyx", "char.nyx"];
-
-impl<'s> ModuleLoader<'s, FS> {
+impl ModuleLoader<FS> {
     pub fn new(name: String, root: PathBuf) -> Self {
         Self::with_file_system(name, root, resolve_std_root(), FS)
     }
 }
 
-impl<'s, F: FileSystem> ModuleLoader<'s, F> {
+impl<F: FileSystem> ModuleLoader<F> {
     pub fn with_file_system(name: String, root: PathBuf, std: PathBuf, fs: F) -> Self {
         let canonical_root = fs.canonicalise(&root).unwrap_or_else(|_| root.clone());
         let canonical_std = fs.canonicalise(&std).unwrap_or_else(|_| std.clone());
         Self {
-            name,
-            root: canonical_root,
+            resolver: ModuleResolver::new(name, canonical_root, canonical_std),
             fs,
-            std: canonical_std,
             scope: Scope::new(),
-            cache: HashMap::new(),
-            in_flight: HashSet::new(),
             symbols: SymbolTable::new(),
         }
     }
@@ -97,190 +71,24 @@ impl<'s, F: FileSystem> ModuleLoader<'s, F> {
     ///
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
+    #[rustfmt::skip]
     pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
-        let canonical =
-            self.fs.canonicalise(entry.as_ref()).map_err(|_| ModuleError::FileNotFound {
-                path: entry.as_ref().into(),
-                span: None,
-            })?;
-
-        // automatically discover standard library prelude
-        for name in &PRELUDE {
-            let path = self.std.join(name);
-            if let Ok(canon) = self.fs.canonicalise(&path) {
-                if self.fs.read(&canon).is_ok() {
-                    self.discover(&canon, None)?;
-                }
-            }
-        }
-
-        self.discover(&canonical, None)?;
-
-        let mut dependencies: Vec<_> = self.cache.keys().cloned().collect();
-        dependencies.sort_unstable();
-
-        if let Some(position) = dependencies.iter().position(|pos| pos == &canonical) {
-            let entry = dependencies.remove(position);
-
-            dependencies.push(entry);
-        }
-
-        let mut functions = Vec::with_capacity(1 << 8);
-        let mut structs = Vec::with_capacity(1 << 8);
-
-        for path in &dependencies {
-            let module = Arc::clone(&self.cache[path]);
-
-            for struct_def in module.structs.iter().cloned() {
-                structs.push(struct_def);
-            }
-
-            for function in module.functions.iter().cloned() {
-                functions.push(function);
-            }
-        }
+        let arena = arena::SourceArena::new();
+        let mut graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, &arena)?;
+        let order = graph.all_nodes_order();
+        let interfaces = signatures::build_signatures(&mut graph, &order, &mut self.scope, &mut self.symbols)?;
+        let functions = demand::lower_reachable(&mut graph, &order, &interfaces, &self.scope, &mut self.symbols)?;
 
         Ok(Hir {
             functions,
-            structs,
+            structs: self.scope.structs.clone(),
             symbols: self.symbols.clone().into_symbols(),
         })
     }
 
-    /// Recursevly load a module and all its dependencies
-    fn discover(
-        &mut self,
-        canonical: &Path,
-        triggered_by: Option<Span>,
-    ) -> Result<(), ModuleError> {
-        if self.cache.contains_key(canonical) {
-            return Ok(());
-        }
-
-        if self.in_flight.contains(canonical) {
-            return Err(ModuleError::CircularImport {
-                path: canonical.into(),
-                span: triggered_by.unwrap_or_default(),
-            });
-        }
-
-        self.in_flight.insert(canonical.to_path_buf());
-        let source = self.fs.read(canonical).map_err(|_| ModuleError::FileNotFound {
-            path: canonical.into(),
-            span: triggered_by,
-        })?;
-
-        diagnostic::initialise(&source, canonical.to_str().unwrap_or("<unknown>"));
-
-        let statements = Parser::new(&source).parse().map_err(|e| Diagnostic::from(e))?;
-
-        for statement in &statements {
-            let Statement::Use(declaration) = statement else {
-                continue;
-            };
-
-            let import = self.resolve_path(&declaration.path.segments, declaration.span)?;
-            if !self.fs.read(&import).is_ok() {
-                continue;
-            }
-
-            self.discover(&import, Some(declaration.span))?;
-
-            // validate named imports against the module's exports
-            if let UseItems::Named(ref items) = declaration.items {
-                let module = &self.cache[&import];
-
-                for item in items {
-                    if !module.exports.contains_key(item.name) {
-                        return Err(ModuleError::UnknownExport {
-                            path: import.into(),
-                            name: item.name.into(),
-                            span: item.span,
-                        });
-                    }
-                }
-            }
-        }
-
-        self.in_flight.remove(canonical);
-
-        let module = self.analyse(canonical, &source, statements)?;
-        self.cache.insert(canonical.to_path_buf(), Arc::new(module));
-
-        Ok(())
-    }
-
-    fn analyse(
-        &mut self,
-        path: &Path,
-        source: &str,
-        statements: Vec<Statement>,
-    ) -> Result<Module, ModuleError> {
-        let decls = Declarations::partition(&statements).map_err(|e| Diagnostic::from(e))?;
-        let struct_offset = self.scope.structs.len();
-        let in_std = path.starts_with(&self.std);
-        self.scope
-            .extend(&decls, &mut self.symbols, in_std)
-            .map_err(|e| Diagnostic::from(e))?;
-
-        diagnostic::initialise(source, path.to_str().unwrap_or("<unknown>"));
-
-        let functions = self
-            .scope
-            .lower_functions(&decls, &mut self.symbols, in_std)
-            .map_err(|e| Diagnostic::from(e))?;
-
-        let structs = self.scope.structs[struct_offset..].to_vec();
-
-        let mut exports = HashMap::new();
-        for s in &decls.structs {
-            if s.is_pub {
-                exports.insert(s.name.to_string(), 0);
-            }
-        }
-        for i in &decls.interfaces {
-            if i.is_pub {
-                exports.insert(i.name.to_string(), 0);
-            }
-        }
-        for f in &decls.functions {
-            if f.is_pub {
-                exports.insert(f.name.to_string(), 0);
-            }
-        }
-
-        Ok(Module {
-            functions,
-            structs,
-            exports,
-        })
-    }
-
+    #[cfg(test)]
     fn resolve_path(&self, segments: &[&str], span: Span) -> Result<PathBuf, ModuleError> {
-        let (&root, rest) = segments.split_first().ok_or(ModuleError::EmptyPath)?;
-
-        if rest.is_empty() {
-            return Err(ModuleError::EmptyPath);
-        }
-
-        let base = match root {
-            root if root == self.name => &self.root,
-            "std" => &self.std,
-            other => {
-                return Err(ModuleError::UnknownRoot {
-                    name: other.to_string(),
-                    span,
-                });
-            }
-        };
-
-        let (dirs, file_segment) = rest.split_at(rest.len() - 1);
-        let mut path = base.to_path_buf();
-
-        path.extend(dirs);
-        path.push(format!("{}.nyx", file_segment[0]));
-
-        Ok(path)
+        self.resolver.resolve_path(segments, span)
     }
 }
 
@@ -387,7 +195,7 @@ mod tests {
         }
     }
 
-    fn vloader(fs: VirtualFS) -> ModuleLoader<'static, VirtualFS> {
+    fn vloader(fs: VirtualFS) -> ModuleLoader<VirtualFS> {
         ModuleLoader::with_file_system(APP.into(), PROJECT.into(), STD.into(), fs)
     }
 
@@ -443,7 +251,7 @@ mod tests {
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
 
-        assert_eq!(hir.functions.len(), 20);
+        assert_eq!(hir.functions.len(), 1);
         let main = hir
             .functions
             .iter()
@@ -544,7 +352,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 22);
+        assert_eq!(hir.functions.len(), 3);
     }
 
     #[test]
@@ -624,7 +432,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 20);
+        assert_eq!(hir.functions.len(), 1);
     }
 
     #[test]
@@ -665,7 +473,7 @@ mod tests {
             );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21);
+        assert_eq!(hir.functions.len(), 2);
     }
 
     #[test]
@@ -683,7 +491,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21); // main + exit (syscall is a synthetic scope entry, not a Module fn)
+        assert_eq!(hir.functions.len(), 2);
 
         let main = hir
             .functions
@@ -806,7 +614,7 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 21);
+        assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.structs.len(), 1);
     }
 

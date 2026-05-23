@@ -1,0 +1,57 @@
+fn main(): i32 {
+    let a = 'a';
+    let z = 'z';
+    let cap_a = 'A';
+    let cap_z = 'Z';
+    let space = ' ';
+    let exclam = '!';
+    let hash = '#';
+    let zero = '0';
+    let nine = '9';
+    let f = 'f';
+    let cap_f = 'F';
+    let g = 'g';
+    let del = '\x7f';
+
+    // to_ascii_lowercase
+    if cap_a.to_ascii_lowercase() != 'a' return 1;
+    if cap_z.to_ascii_lowercase() != 'z' return 2;
+    if a.to_ascii_lowercase() != 'a' return 3;
+    if space.to_ascii_lowercase() != ' ' return 4;
+
+    // to_ascii_uppercase
+    if a.to_ascii_uppercase() != 'A' return 5;
+    if z.to_ascii_uppercase() != 'Z' return 6;
+    if cap_a.to_ascii_uppercase() != 'A' return 7;
+    if space.to_ascii_uppercase() != ' ' return 8;
+
+    // is_ascii_graphic
+    if !a.is_ascii_graphic() return 9;
+    if !cap_a.is_ascii_graphic() return 10;
+    if !exclam.is_ascii_graphic() return 11;
+    if space.is_ascii_graphic() return 12;
+    if del.is_ascii_graphic() return 13;
+
+    // is_ascii_control
+    if space.is_ascii_control() return 14;
+    if !del.is_ascii_control() return 15;
+    let tab = '\t';
+    if !tab.is_ascii_control() return 16;
+
+    // is_ascii_punctuation
+    if !exclam.is_ascii_punctuation() return 17;
+    if !hash.is_ascii_punctuation() return 18;
+    if a.is_ascii_punctuation() return 19;
+    if space.is_ascii_punctuation() return 20;
+
+    // is_ascii_hexdigit
+    if !zero.is_ascii_hexdigit() return 21;
+    if !nine.is_ascii_hexdigit() return 22;
+    if !a.is_ascii_hexdigit() return 23;
+    if !f.is_ascii_hexdigit() return 24;
+    if !cap_a.is_ascii_hexdigit() return 25;
+    if !cap_f.is_ascii_hexdigit() return 26;
+    if g.is_ascii_hexdigit() return 27;
+
+    0
+}

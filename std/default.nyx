@@ -1,0 +1,69 @@
+pub interface Default {
+    fn default(): Self;
+}
+
+impl i8 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl u8 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl i16 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl u16 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl i32 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl u32 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl i64 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl u64 with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl char with Default {
+    fn default(): Self {
+        '\x00'
+    }
+}
+
+impl uptr with Default {
+    fn default(): Self {
+        0
+    }
+}
+
+impl iptr with Default {
+    fn default(): Self {
+        0
+    }
+}

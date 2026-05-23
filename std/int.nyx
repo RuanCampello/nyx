@@ -1,3 +1,5 @@
+use std::mem::{size_of};
+
 impl i8 {
     pub const MAX: i8 = (1 << 7) - 1;
     pub const MIN: i8 = (-1 << 7);
@@ -92,6 +94,31 @@ impl u64 {
     pub const MAX: u64 = (1 << 64) - 1;
     pub const MIN: u64 = 0;
     pub const BITS: u32 = 64;
+
+    pub inline const fn is_power_of_two(&self): bool {
+        (*self > 0) && ((*self) & (*self - 1)) == 0
+    }
+}
+
+impl iptr {
+    pub const BITS: u32 = (size_of(iptr) * 8) as u32;
+    pub const MAX: iptr = (uptr::MAX >> 1) as iptr;
+    pub const MIN: iptr = -iptr::MAX - 1;
+
+    pub inline const fn abs(&self): iptr {
+        let mask = *self >> (iptr::BITS - 1);
+        (*self ^ mask) - mask
+    }
+
+    pub inline const fn signum(&self): iptr {
+        ((*self > 0) as iptr) - ((*self < 0) as iptr)
+    }
+}
+
+impl uptr {
+    pub const BITS: u32 = (size_of(uptr) * 8) as u32;
+    pub const MAX: uptr = ((1 as uptr) << (uptr::BITS - 1)) - 1 + ((1 as uptr) << (uptr::BITS - 1));
+    pub const MIN: uptr = 0;
 
     pub inline const fn is_power_of_two(&self): bool {
         (*self > 0) && ((*self) & (*self - 1)) == 0

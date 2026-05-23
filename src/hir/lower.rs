@@ -5,7 +5,7 @@ use crate::{
         SymbolId, SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind},
         mangle::Mangler,
-        scope::{Scope, Structs},
+        scope::{self, Scope, Structs},
     },
     lexer::token::Span,
     parser::{
@@ -30,6 +30,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     symbols: &'s mut SymbolTable,
     is_const: bool,
     in_std: bool,
+    self_type: Option<Type>,
 }
 
 impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
@@ -40,6 +41,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         function: &'f statement::Function<'src>,
         in_std: bool,
     ) -> Self {
+        let self_type = function.impl_type.and_then(|impl_type| {
+            scope::resolve_primitive_type(impl_type).or_else(|| {
+                let struct_symbol = symbols.get_id(impl_type)?;
+                scope.struct_map.get(&struct_symbol).copied().map(Type::Struct)
+            })
+        });
+
         Self {
             scope,
             symbols,
@@ -51,6 +59,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
+            self_type,
         }
     }
 
@@ -66,6 +75,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             next_local: 0,
             locals: Vec::new(),
             scopes: vec![HashMap::new()],
+            self_type: None,
         }
     }
 
@@ -453,6 +463,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             _ => RefTarget::Char,
                         },
                     }),
+                    UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
 
@@ -497,9 +508,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             });
                         }
                     },
+                    UnaryOperator::Ref => {
+                        let to = RefTarget::try_from(expr.typ).map_err(|_| HirError {
+                            kind: HirErrorKind::TypeMismatch {
+                                expected: Type::Struct(StructId::default()),
+                                found: expr.typ,
+                            },
+                            span: expr.span,
+                        })?;
+                        Type::Ref { mutable: false, to }
+                    }
                 };
 
-                if *operator != UnaryOperator::Deref {
+                if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
@@ -562,59 +583,41 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 target,
                 value,
                 span,
-            } => match target.as_ref() {
-                Expr::Identifier(name, _) => {
-                    let symbol = match self.symbols.get_id(name) {
-                        Some(sym) => sym,
-                        None => {
-                            return Err(HirError {
-                                kind: HirErrorKind::UndeclaredIdentifier {
-                                    name: name.to_string(),
-                                },
-                                span: *span,
-                            });
-                        }
-                    };
-                    let id = self.resolve_local(symbol, *span)?;
-
-                    if !self[id].mutable {
-                        return Err(HirError {
-                            kind: HirErrorKind::ImmutableBind {
-                                name: name.to_string(),
-                            },
+            } => {
+                let (local, fields, typ) = self.resolve_access_chain(target, *span).map_err(|err| {
+                    if matches!(err.kind, HirErrorKind::InvalidFieldAccess) {
+                        HirError {
+                            kind: HirErrorKind::InvalidAssignmentTarget,
                             span: *span,
-                        });
+                        }
+                    } else {
+                        err
                     }
+                })?;
 
-                    let typ = self[id].typ;
-                    let value = self.lower_expr(value, Some(typ))?;
-                    self.assert_type(typ, value.typ, *span)?;
+                if !self[local].mutable {
+                    let err_span = if fields.is_empty() { *span } else { target.span() };
+                    return Err(HirError {
+                        kind: HirErrorKind::ImmutableBind {
+                            name: self.symbols.get(self[local].name).to_string(),
+                        },
+                        span: err_span,
+                    });
+                }
 
+                let value = self.lower_expr(value, Some(typ))?;
+                self.assert_type(typ, value.typ, *span)?;
+
+                if fields.is_empty() {
                     Ok(Expression {
                         kind: ExpressionKind::Assign {
-                            target: id,
+                            target: local,
                             value: Box::new(value),
                         },
                         typ,
                         span: *span,
                     })
-                }
-
-                Expr::Field { expr, field, span } => {
-                    let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
-
-                    if !self[local].mutable {
-                        return Err(HirError {
-                            kind: HirErrorKind::ImmutableBind {
-                                name: self.symbols.get(self[local].name).to_string(),
-                            },
-                            span: *span,
-                        });
-                    }
-
-                    let value = self.lower_expr(value, Some(typ))?;
-                    self.assert_type(typ, value.typ, *span)?;
-
+                } else {
                     Ok(Expression {
                         kind: ExpressionKind::FieldAssign {
                             local,
@@ -625,11 +628,6 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         span: *span,
                     })
                 }
-
-                _ => Err(HirError {
-                    kind: HirErrorKind::InvalidAssignmentTarget,
-                    span: *span,
-                }),
             },
 
             Expr::Struct { name, fields, span } => {
@@ -695,8 +693,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })
             }
 
-            Expr::Field { expr, field, span } => {
-                let (local, fields, typ) = self.resolve_field_chain(expr, field, *span)?;
+            Expr::Field { span, .. } => {
+                let (local, fields, typ) = self.resolve_access_chain(expr, *span)?;
 
                 Ok(Expression {
                     kind: ExpressionKind::FieldAccess { local, fields },
@@ -713,7 +711,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 } = callee.as_ref()
                 {
                     let (local, fields, receiver_expr, receiver_type) =
-                        match self.try_resolve_receiver_chain(receiver, *span) {
+                        match self.resolve_access_chain(receiver, *span) {
                             Ok((loc, flds, typ)) => (Some(loc), flds, None, typ),
                             _ => {
                                 let lowered = self.lower_expr(receiver, None)?;
@@ -796,22 +794,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                let (function, signature) = match callee.as_ref() {
+                let function_id = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(&self.mangler().item(name));
-                        let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
+                        *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
                             kind: HirErrorKind::UnknownFunction {
                                 name: name.to_string(),
                             },
                             span: *span,
-                        })?;
-
-                        (id, &self.scope.signatures[id.0 as usize])
+                        })?
                     }
 
                     other => {
                         return Err(HirError {
-                            // FIXME: improve this error messag
                             kind: HirErrorKind::UnknownFunction {
                                 name: format!("{other:?}"),
                             },
@@ -820,66 +815,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     }
                 };
 
-                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-                    return Err(HirError {
-                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
-                            name: self.symbols.get(signature.name).to_string(),
-                        }),
-                        span: *span,
-                    });
-                }
-
-                if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-                    return Err(HirError {
-                        kind: HirErrorKind::ArityMismatch {
-                            name: self.symbols.get(signature.name).to_string(),
-                            expected: signature.params.len(),
-                            found: args.len(),
-                        },
-                        span: *span,
-                    });
-                }
-
-                if signature.intrinsic == Some(Intrinsic::Syscall) {
-                    return self.lower_syscall(args, signature.return_type, *span);
-                }
-
-                let mut lowered_args = Vec::with_capacity(args.len());
-
-                match signature.intrinsic {
-                    Some(_) => {
-                        for arg in args.iter() {
-                            let lowered = self.lower_expr(arg, None)?;
-                            lowered_args.push(lowered);
-                        }
-                    }
-
-                    _ => {
-                        for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                            let expr = self.lower_expr(expr, Some(param_type))?;
-                            self.assert_type(param_type, expr.typ, expr.span)?;
-                            lowered_args.push(expr);
-                        }
-                    }
-                }
-
-                let return_type = signature.return_type;
-                let kind = match signature.intrinsic {
-                    Some(intrinsic) => ExpressionKind::IntrinsicCall {
-                        intrinsic,
-                        args: lowered_args,
-                    },
-                    _ => ExpressionKind::Call {
-                        function,
-                        args: lowered_args,
-                    },
-                };
-
-                Ok(Expression {
-                    typ: return_type,
-                    span: *span,
-                    kind,
-                })
+                self.lower_direct_call(function_id, args, *span)
             }
 
             Expr::QualifiedCall {
@@ -891,69 +827,31 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
-                if let Some(&id) = self.scope.functions.get(&mangled_symbol) {
-                    let signature = &self.scope.signatures[id.0 as usize];
-
-                    if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-                        return Err(HirError {
-                            kind: HirErrorKind::ConstFnViolation(
-                                ConstFnViolationKind::NonConstCall {
-                                    name: self.symbols.get(signature.name).to_string(),
-                                },
-                            ),
-                            span: *span,
-                        });
-                    }
-
-                    if signature.intrinsic == Some(Intrinsic::Syscall) {
-                        return self.lower_syscall(args, signature.return_type, *span);
-                    }
-
-                    if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-                        return Err(HirError {
-                            kind: HirErrorKind::ArityMismatch {
-                                name: format!("{qualifier}::{name}"),
-                                expected: signature.params.len(),
-                                found: args.len(),
-                            },
-                            span: *span,
-                        });
-                    }
-
-                    let mut lowered_args = Vec::with_capacity(args.len());
-                    match signature.intrinsic {
-                        Some(_) => {
-                            for arg in args.iter() {
-                                let lowered = self.lower_expr(arg, None)?;
-                                lowered_args.push(lowered);
-                            }
-                        }
-
+                let id = self.scope.functions.get(&mangled_symbol).copied().or_else(|| {
+                    let receiver_type = match scope::resolve_primitive_type(qualifier) {
+                        Some(primitive) => primitive,
                         _ => {
-                            for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                                let expr = self.lower_expr(expr, Some(param_type))?;
-                                self.assert_type(param_type, expr.typ, expr.span)?;
-                                lowered_args.push(expr);
-                            }
+                            let struct_symbol = self.symbols.insert(qualifier);
+                            let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
+                            Type::Struct(struct_id)
                         }
-                    }
-
-                    let kind = match signature.intrinsic {
-                        Some(intrinsic) => ExpressionKind::IntrinsicCall {
-                            intrinsic,
-                            args: lowered_args,
-                        },
-                        _ => ExpressionKind::Call {
-                            function: id,
-                            args: lowered_args,
-                        },
                     };
 
-                    return Ok(Expression {
-                        typ: signature.return_type,
-                        span: *span,
-                        kind,
-                    });
+                    self.scope
+                        .interface_impls
+                        .iter()
+                        .filter(|&&(t, _)| t == receiver_type)
+                        .find_map(|&(_, interface_sym)| {
+                            let interface_name = self.symbols.get(interface_sym);
+                            let interface_mangled = self.symbols.insert(
+                                &self.mangler().interface_item(qualifier, interface_name, name),
+                            );
+                            self.scope.functions.get(&interface_mangled).copied()
+                        })
+                });
+
+                if let Some(id) = id {
+                    return self.lower_direct_call(id, args, *span);
                 }
 
                 let symbol = self.symbols.insert(&self.mangler().item(name));
@@ -963,67 +861,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     },
                     span: *span,
                 })?;
-                let signature = &self.scope.signatures[id.0 as usize];
 
-                if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-                    return Err(HirError {
-                        kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
-                            name: self.symbols.get(signature.name).to_string(),
-                        }),
-                        span: *span,
-                    });
-                }
-
-                if signature.intrinsic == Some(Intrinsic::Syscall) {
-                    return self.lower_syscall(args, signature.return_type, *span);
-                }
-
-                if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-                    return Err(HirError {
-                        kind: HirErrorKind::ArityMismatch {
-                            name: name.to_string(),
-                            expected: signature.params.len(),
-                            found: args.len(),
-                        },
-                        span: *span,
-                    });
-                }
-
-                let mut lowered_args = Vec::with_capacity(args.len());
-                match signature.intrinsic {
-                    Some(_) => {
-                        for arg in args.iter() {
-                            let lowered = self.lower_expr(arg, None)?;
-                            lowered_args.push(lowered);
-                        }
-                    }
-
-                    _ => {
-                        for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
-                            let expr = self.lower_expr(expr, Some(param_type))?;
-                            self.assert_type(param_type, expr.typ, expr.span)?;
-                            lowered_args.push(expr);
-                        }
-                    }
-                }
-
-                let return_type = signature.return_type;
-                let kind = match signature.intrinsic {
-                    Some(intrinsic) => ExpressionKind::IntrinsicCall {
-                        intrinsic,
-                        args: lowered_args,
-                    },
-                    _ => ExpressionKind::Call {
-                        function: id,
-                        args: lowered_args,
-                    },
-                };
-
-                Ok(Expression {
-                    typ: return_type,
-                    span: *span,
-                    kind,
-                })
+                self.lower_direct_call(id, args, *span)
             }
 
             Expr::TypeIntrinsic {
@@ -1056,8 +895,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     });
                 }
 
-                #[rustfmt::skip]
-                let typ = resolve_annotation(self.symbols, &self.scope.struct_map, &typ.value(), typ.span())?;
+                let typ = resolve_annotation(
+                    self.symbols,
+                    &self.scope.struct_map,
+                    &typ.value(),
+                    typ.span(),
+                    None,
+                )?;
 
                 let structs: Vec<Option<Struct>> =
                     self.scope.structs.iter().map(|s| Some(s.clone())).collect();
@@ -1142,6 +986,72 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
             then_returns && else_returns,
         ))
+    }
+
+    fn lower_direct_call(
+        &mut self,
+        function_id: FunctionId,
+        args: &[expression::Expression<'src>],
+        span: Span,
+    ) -> Result<Expression, HirError<'src>> {
+        let signature = &self.scope.signatures[function_id.0 as usize];
+
+        if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
+            return Err(HirError {
+                kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                    name: self.symbols.get(signature.name).to_string(),
+                }),
+                span,
+            });
+        }
+
+        if signature.intrinsic == Some(Intrinsic::Syscall) {
+            return self.lower_syscall(args, signature.return_type, span);
+        }
+
+        if signature.intrinsic.is_none() && signature.params.len() != args.len() {
+            return Err(HirError {
+                kind: HirErrorKind::ArityMismatch {
+                    name: self.symbols.get(signature.name).to_string(),
+                    expected: signature.params.len(),
+                    found: args.len(),
+                },
+                span,
+            });
+        }
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        match signature.intrinsic {
+            Some(_) => {
+                for arg in args {
+                    lowered_args.push(self.lower_expr(arg, None)?);
+                }
+            }
+            _ => {
+                for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
+                    let expr = self.lower_expr(expr, Some(param_type))?;
+                    self.assert_type(param_type, expr.typ, expr.span)?;
+                    lowered_args.push(expr);
+                }
+            }
+        }
+
+        let kind = match signature.intrinsic {
+            Some(intrinsic) => ExpressionKind::IntrinsicCall {
+                intrinsic,
+                args: lowered_args,
+            },
+            _ => ExpressionKind::Call {
+                function: function_id,
+                args: lowered_args,
+            },
+        };
+
+        Ok(Expression {
+            typ: signature.return_type,
+            span,
+            kind,
+        })
     }
 
     fn lower_syscall(
@@ -1307,6 +1217,31 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Type::Struct(id))
             }
 
+            statement::Type::SelfType => self.self_type.ok_or_else(|| HirError {
+                kind: HirErrorKind::UnknownType {
+                    name: "Self".to_string(),
+                },
+                span,
+            }),
+
+            statement::Type::RefSelf => {
+                let self_ty = self.self_type.ok_or_else(|| HirError {
+                    kind: HirErrorKind::UnknownType {
+                        name: "Self".to_string(),
+                    },
+                    span,
+                })?;
+                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(StructId::default()),
+                        found: self_ty,
+                    },
+                    span,
+                })?;
+
+                Ok(Type::Ref { mutable: false, to })
+            }
+
             typ => Ok(typ.into()),
         }
     }
@@ -1368,22 +1303,22 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             })
     }
 
-    /// this is used to resolve chain like `r.field.other_field` into
-    /// `(LocalId(r), [sym("field"), sym("other_field")], Type::I32)`
+    /// This is used to resolve access chains like `x.y.z` or just `x` into
+    /// `(LocalId(x), [sym("y"), sym("z")], Type)`
     ///
-    /// returns the origin `LocalId`, the full path as symbols and the final field's `Type`
-    fn resolve_field_chain(
+    /// Returns the origin `LocalId`, the full path as symbols, and the final field's `Type`.
+    fn resolve_access_chain(
         &mut self,
-        mut expr: &expression::Expression<'src>,
-        last: &'src str,
+        expr: &expression::Expression<'src>,
         span: Span,
     ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
         use expression::Expression as Expr;
 
-        let mut fields = vec![last];
+        let mut fields = Vec::new();
+        let mut curr = expr;
 
         let id = loop {
-            match expr {
+            match curr {
                 Expr::Identifier(name, ident_span) => {
                     let symbol = self.symbols.insert(name);
                     break self.resolve_local(symbol, *ident_span)?;
@@ -1392,8 +1327,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Expr::Field {
                     expr: next, field, ..
                 } => {
-                    fields.push(field);
-                    expr = next;
+                    fields.push(*field);
+                    curr = next;
                 }
 
                 _ => {
@@ -1460,30 +1395,6 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
 
         Ok((id, field_symbols, current_type))
-    }
-
-    #[inline(always)]
-    fn try_resolve_receiver_chain(
-        &mut self,
-        expr: &expression::Expression<'src>,
-        span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
-        use expression::Expression as Expr;
-
-        match expr {
-            Expr::Identifier(name, ident_span) => {
-                let symbol = self.symbols.insert(name);
-                let local = self.resolve_local(symbol, *ident_span)?;
-                Ok((local, Vec::new(), self[local].typ))
-            }
-
-            Expr::Field { expr, field, .. } => self.resolve_field_chain(expr, field, span),
-
-            _ => Err(HirError {
-                kind: HirErrorKind::InvalidFieldAccess,
-                span,
-            }),
-        }
     }
 
     #[inline(always)]
@@ -1565,7 +1476,7 @@ pub(in crate::hir) fn lower_struct<'h>(
             });
         }
 
-        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span())?;
+        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
         if let Type::Struct(dep) = typ {
             lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
         }
@@ -1611,27 +1522,37 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     struct_map: &Structs,
     typ: &statement::Type<'h>,
     span: Span,
+    self_type: Option<Type>,
 ) -> Result<Type, HirError<'h>> {
     match typ {
-        statement::Type::Named(name) => {
-            let symbol = match symbols.get_id(name) {
-                Some(sym) => sym,
-                None => {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownType {
-                            name: (*name).to_string(),
-                        },
-                        span,
-                    });
-                }
-            };
-            struct_map.get(&symbol).copied().map(Type::Struct).ok_or_else(|| HirError {
+        statement::Type::Named(name) => symbols
+            .get_id(name)
+            .and_then(|symbol| struct_map.get(&symbol).copied())
+            .map(Type::Struct)
+            .ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownType {
-                    name: (*name).to_string(),
+                    name: name.to_string(),
                 },
                 span,
-            })
-        }
+            }),
+        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
+        statement::Type::RefSelf => self_type.map_or(
+            Ok(Type::Ref {
+                mutable: false,
+                to: RefTarget::SelfType,
+            }),
+            |self_typ| {
+                let to = RefTarget::try_from(self_typ).map_err(|_| HirError {
+                    kind: HirErrorKind::TypeMismatch {
+                        expected: Type::Struct(Default::default()),
+                        found: self_typ,
+                    },
+                    span,
+                })?;
+
+                Ok(Type::Ref { mutable: false, to })
+            },
+        ),
         typ => Ok(typ.into()),
     }
 }

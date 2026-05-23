@@ -19,3 +19,7 @@ libloading = "0.8"
 [[bench]]
 name = "basic"
 harness = false
+
+[[bench]]
+name = "parsing"
+harness = false

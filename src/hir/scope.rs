@@ -10,7 +10,7 @@ use crate::{
         mangle::Mangler,
     },
     lexer::Spanned,
-    parser::{expression, statement},
+    parser::{expression, statement, visitor},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -64,7 +64,7 @@ pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
 pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
-pub(in crate::hir) type InterfaceImpls = HashSet<(StructId, SymbolId)>;
+pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
 
 impl<'sc> Scope<'sc> {
     pub fn new() -> Self {
@@ -108,13 +108,31 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
     ) -> Result<Vec<Function>, HirError<'s>> {
+        self.lower_matching_functions(declarations, symbols, in_std, |_| true)
+    }
+
+    pub(in crate::hir) fn lower_matching_functions<'d, 's>(
+        &self,
+        declarations: &Declarations<'d, 's>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+        mut should_lower: impl FnMut(FunctionId) -> bool,
+    ) -> Result<Vec<Function>, HirError<'s>> {
         declarations
             .functions()
-            .map(|function| {
-                let id = self.function_id(function, symbols, None, |name| {
+            .filter_map(|function| {
+                let id = match self.function_id(function, symbols, None, |name| {
                     HirErrorKind::UnknownFunction { name }
-                })?;
-                lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower()
+                }) {
+                    Ok(id) => id,
+                    Err(err) => return Some(Err(err)),
+                };
+
+                if !should_lower(id) {
+                    return None;
+                }
+
+                Some(lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower())
             })
             .collect()
     }
@@ -192,9 +210,9 @@ impl<'sc> Scope<'sc> {
                     let has_receiver = method.receiver.is_some();
                     let receiver_mut = method.receiver.map(|r| r.mutable).unwrap_or(false);
 
-                    let params = self.resolve_params(&method.params, symbols)?;
+                    let params = self.resolve_params(&method.params, symbols, None)?;
                     let return_type =
-                        self.resolve_return_type(method.return_type.as_ref(), symbols)?;
+                        self.resolve_return_type(method.return_type.as_ref(), symbols, None)?;
 
                     Ok(InterfaceMethodSignature {
                         name,
@@ -269,8 +287,9 @@ impl<'sc> Scope<'sc> {
             let id = FunctionId(self.signatures.len() as u32);
             self.functions.insert(symbol, id);
 
-            let params = self.resolve_params(&function.params, symbols)?;
-            let return_type = self.resolve_return_type(function.return_type.as_ref(), symbols)?;
+            let params = self.resolve_params(&function.params, symbols, None)?;
+            let return_type =
+                self.resolve_return_type(function.return_type.as_ref(), symbols, None)?;
             let intrinsic = match in_std {
                 true => Intrinsic::from_str(function.name).ok(),
                 false => None,
@@ -306,7 +325,18 @@ impl<'sc> Scope<'sc> {
             }
         }
 
-        for implementation in &declarations.impls {
+        self.extend_impl_signatures(declarations, symbols, in_std)?;
+
+        Ok(())
+    }
+
+    fn extend_impl_signatures<'d, 'h>(
+        &mut self,
+        declarations: &Declarations<'d, 'h>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+    ) -> Result<(), HirError<'h>> {
+        for implementation in declarations.impls.iter().copied() {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) if in_std => primitive,
                 Some(primitive) => {
@@ -353,17 +383,8 @@ impl<'sc> Scope<'sc> {
             };
 
             if let Some(interface_name) = implementation.interface {
-                let Type::Struct(struct_id) = receiver_type else {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found: receiver_type,
-                        },
-                        span: implementation.span,
-                    });
-                };
                 let interface = symbols.insert(interface_name);
-                self.interface_impls.insert((struct_id, interface));
+                self.interface_impls.insert((receiver_type, interface));
             }
 
             for method in &implementation.methods {
@@ -401,9 +422,16 @@ impl<'sc> Scope<'sc> {
                                 .expect("receiver must be a reference target"),
                         };
                         params.push(first_param);
-                        params.extend(self.resolve_params(&method.params, symbols)?);
-                        let return_type =
-                            self.resolve_return_type(method.return_type.as_ref(), symbols)?;
+                        params.extend(self.resolve_params(
+                            &method.params,
+                            symbols,
+                            Some(receiver_type),
+                        )?);
+                        let return_type = self.resolve_return_type(
+                            method.return_type.as_ref(),
+                            symbols,
+                            Some(receiver_type),
+                        )?;
 
                         self.signatures.push(FunctionSignature {
                             name: mangled,
@@ -433,9 +461,13 @@ impl<'sc> Scope<'sc> {
                         let id = FunctionId(self.signatures.len() as u32);
                         self.functions.insert(mangled, id);
 
-                        let params = self.resolve_params(&method.params, symbols)?;
-                        let return_type =
-                            self.resolve_return_type(method.return_type.as_ref(), symbols)?;
+                        let params =
+                            self.resolve_params(&method.params, symbols, Some(receiver_type))?;
+                        let return_type = self.resolve_return_type(
+                            method.return_type.as_ref(),
+                            symbols,
+                            Some(receiver_type),
+                        )?;
 
                         self.signatures.push(FunctionSignature {
                             name: mangled,
@@ -450,7 +482,6 @@ impl<'sc> Scope<'sc> {
                 }
             }
         }
-
         Ok(())
     }
 
@@ -459,6 +490,21 @@ impl<'sc> Scope<'sc> {
         declarations: &Declarations<'d, 'h>,
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'h>> {
+        #[inline]
+        fn substitute_self(typ: Type, self_type: Type) -> Type {
+            match typ {
+                Type::SelfType => self_type,
+                Type::Ref {
+                    mutable,
+                    to: RefTarget::SelfType,
+                } => match RefTarget::try_from(self_type) {
+                    Ok(to) => Type::Ref { mutable, to },
+                    _ => typ,
+                },
+                other => other,
+            }
+        }
+
         for implementation in &declarations.impls {
             let Some(interface_name) = implementation.interface else {
                 continue;
@@ -472,11 +518,17 @@ impl<'sc> Scope<'sc> {
                 span: implementation.span,
             })?;
 
-            let struct_sym = symbols.insert(implementation.name);
-            let struct_id = *self
-                .struct_map
-                .get(&struct_sym)
-                .expect("impl struct must exist in scope after extend_structs");
+            let receiver_type = match resolve_primitive_type(implementation.name) {
+                Some(primitive) => primitive,
+                _ => {
+                    let struct_sym = symbols.insert(implementation.name);
+                    let struct_id = *self
+                        .struct_map
+                        .get(&struct_sym)
+                        .expect("impl struct must exist in scope after extend_structs");
+                    Type::Struct(struct_id)
+                }
+            };
 
             let impl_methods: HashMap<_, _> =
                 implementation.methods.iter().map(|method| (method.name, method)).collect();
@@ -491,7 +543,7 @@ impl<'sc> Scope<'sc> {
                     });
                 }
 
-                if !self.interface_impls.contains(&(struct_id, *required)) {
+                if !self.interface_impls.contains(&(receiver_type, *required)) {
                     return Err(HirError {
                         kind: HirErrorKind::MissingSuperinterfaceImpl {
                             struct_name: implementation.name.to_string(),
@@ -538,10 +590,14 @@ impl<'sc> Scope<'sc> {
                     _ => (false, signature.params.as_slice()),
                 };
 
+                let required_params: Vec<_> =
+                    required.params.iter().map(|&t| substitute_self(t, receiver_type)).collect();
+                let required_return_type = substitute_self(required.return_type, receiver_type);
+
                 let signature_ok = impl_has_receiver == required.has_receiver
                     && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)
-                    && required.params == impl_explicit_params
-                    && required.return_type == signature.return_type;
+                    && required_params == impl_explicit_params
+                    && required_return_type == signature.return_type;
 
                 if !signature_ok {
                     fn format(
@@ -635,10 +691,36 @@ impl<'sc> Scope<'sc> {
 
             (None, Some(impl_type)) => {
                 let mangled = symbols.insert(&self.mangler.scoped_item(impl_type, function.name));
-                self.functions.get(&mangled).copied().ok_or_else(|| HirError {
-                    kind: error_kind(format!("{impl_type}::{}", function.name)),
-                    span: function.span,
-                })
+
+                self.functions
+                    .get(&mangled)
+                    .copied()
+                    .or_else(|| {
+                        let receiver_type = match resolve_primitive_type(impl_type) {
+                            Some(primitive) => primitive,
+                            _ => {
+                                let struct_symbol = symbols.insert(impl_type);
+                                let struct_id = *self.struct_map.get(&struct_symbol)?;
+                                Type::Struct(struct_id)
+                            }
+                        };
+                        self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
+                            |&(_, interface_sym)| {
+                                let interface_name = symbols.get(interface_sym);
+                                let interface_mangled =
+                                    symbols.insert(&self.mangler.interface_item(
+                                        impl_type,
+                                        interface_name,
+                                        function.name,
+                                    ));
+                                self.functions.get(&interface_mangled).copied()
+                            },
+                        )
+                    })
+                    .ok_or_else(|| HirError {
+                        kind: error_kind(format!("{impl_type}::{}", function.name)),
+                        span: function.span,
+                    })
             }
             (None, None) => {
                 let sym = symbols.insert(&self.mangler.item(function.name));
@@ -655,9 +737,18 @@ impl<'sc> Scope<'sc> {
         &self,
         return_type: Option<&Spanned<statement::Type<'h>>>,
         symbols: &mut SymbolTable,
+        self_type: Option<Type>,
     ) -> Result<Type, HirError<'h>> {
         return_type
-            .map(|s| lower::resolve_annotation(symbols, &self.struct_map, &s.value(), s.span()))
+            .map(|s| {
+                lower::resolve_annotation(
+                    symbols,
+                    &self.struct_map,
+                    &s.value(),
+                    s.span(),
+                    self_type,
+                )
+            })
             .transpose()
             .map(|opt| opt.unwrap_or_default())
     }
@@ -667,11 +758,18 @@ impl<'sc> Scope<'sc> {
         &self,
         params: &[statement::Parameter<'h>],
         symbols: &mut SymbolTable,
+        self_type: Option<Type>,
     ) -> Result<Vec<Type>, HirError<'h>> {
         params
             .iter()
             .map(|p| {
-                lower::resolve_annotation(symbols, &self.struct_map, &p.typ.value(), p.typ.span())
+                lower::resolve_annotation(
+                    symbols,
+                    &self.struct_map,
+                    &p.typ.value(),
+                    p.typ.span(),
+                    self_type,
+                )
             })
             .collect()
     }
@@ -682,12 +780,6 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
     ) -> Result<(), HirError<'s>> {
-        struct ConstDecl<'d, 's> {
-            mangled_name: SymbolId,
-            impl_type: Option<&'d str>,
-            ast: &'d statement::Const<'s>,
-        }
-
         let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
 
         // collect top-level constants
@@ -741,82 +833,6 @@ impl<'sc> Scope<'sc> {
         let mut visited = HashSet::new();
         let mut sorted = Vec::new();
 
-        fn find_dependencies<'d, 'i>(
-            expr: &expression::Expression<'i>,
-            current_impl: Option<&str>,
-            mangler: &Mangler,
-            symbols: &SymbolTable,
-            decls: &HashMap<SymbolId, ConstDecl<'d, 'i>>,
-            deps: &mut Vec<SymbolId>,
-        ) {
-            use expression::Expression as Expr;
-
-            match expr {
-                Expr::Identifier(name, _) => {
-                    if let Some(impl_type) = current_impl {
-                        let mangled = mangler.scoped_item(impl_type, name);
-                        if let Some(symbol_id) = symbols.get_id(&mangled) {
-                            if decls.contains_key(&symbol_id) {
-                                deps.push(symbol_id);
-                                return;
-                            }
-                        }
-                    }
-                    if let Some(symbol_id) = symbols.get_id(&mangler.item(name)) {
-                        if decls.contains_key(&symbol_id) {
-                            deps.push(symbol_id);
-                        }
-                    }
-                }
-                Expr::QualifiedName {
-                    qualifier, name, ..
-                } => {
-                    let mangled = mangler.scoped_item(qualifier, name);
-                    if let Some(symbol_id) = symbols.get_id(&mangled) {
-                        if decls.contains_key(&symbol_id) {
-                            deps.push(symbol_id);
-                        }
-                    }
-                }
-                Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
-                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
-                }
-                Expr::Binary { left, right, .. } => {
-                    find_dependencies(left, current_impl, mangler, symbols, decls, deps);
-                    find_dependencies(right, current_impl, mangler, symbols, decls, deps);
-                }
-                Expr::Assignment { target, value, .. } => {
-                    find_dependencies(target, current_impl, mangler, symbols, decls, deps);
-                    find_dependencies(value, current_impl, mangler, symbols, decls, deps);
-                }
-                Expr::Field { expr, .. } => {
-                    find_dependencies(expr, current_impl, mangler, symbols, decls, deps)
-                }
-                Expr::Struct { fields, .. } => {
-                    for f in fields {
-                        find_dependencies(&f.value, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::Call { callee, args, .. } => {
-                    find_dependencies(callee, current_impl, mangler, symbols, decls, deps);
-                    for arg in args {
-                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::QualifiedCall { args, .. } => {
-                    for arg in args {
-                        find_dependencies(arg, current_impl, mangler, symbols, decls, deps);
-                    }
-                }
-                Expr::TypeIntrinsic { .. } => {}
-                Expr::Integer(_, _)
-                | Expr::Float(_, _)
-                | Expr::String(_, _)
-                | Expr::Char(_, _)
-                | Expr::Bool(_, _) => {}
-            }
-        }
-
         fn dfs<'d, 's>(
             symbol_id: SymbolId,
             mangler: &Mangler,
@@ -826,6 +842,8 @@ impl<'sc> Scope<'sc> {
             visited: &mut HashSet<SymbolId>,
             sorted: &mut Vec<SymbolId>,
         ) -> Result<(), HirError<'s>> {
+            use visitor::Visitor;
+
             if visiting.contains(&symbol_id) {
                 let decl = decls.get(&symbol_id).unwrap();
                 let name = match decl.impl_type {
@@ -841,14 +859,14 @@ impl<'sc> Scope<'sc> {
                 visiting.insert(symbol_id);
                 if let Some(decl) = decls.get(&symbol_id) {
                     let mut deps = Vec::new();
-                    find_dependencies(
-                        &decl.ast.value,
-                        decl.impl_type,
+                    let mut visitor = ConstVisitor {
+                        current_impl: decl.impl_type,
                         mangler,
                         symbols,
                         decls,
-                        &mut deps,
-                    );
+                        deps: &mut deps,
+                    };
+                    visitor.visit_expression(&decl.ast.value);
                     for dep in deps {
                         if decls.contains_key(&dep) {
                             dfs(dep, mangler, symbols, decls, visiting, visited, sorted)?;
@@ -883,6 +901,7 @@ impl<'sc> Scope<'sc> {
                 &self.struct_map,
                 &decl.ast.typ.value(),
                 decl.ast.typ.span(),
+                None,
             )?;
 
             let lowered =
@@ -901,26 +920,57 @@ impl<'sc> Scope<'sc> {
     }
 }
 
-#[inline]
-fn resolve_primitive_type(name: &str) -> Option<Type> {
-    match name {
-        "i8" => Some(Type::I8),
-        "u8" => Some(Type::U8),
-        "i16" => Some(Type::I16),
-        "u16" => Some(Type::U16),
-        "i32" => Some(Type::I32),
-        "u32" => Some(Type::U32),
-        "i64" => Some(Type::I64),
-        "u64" => Some(Type::U64),
-        "f32" => Some(Type::F32),
-        "f64" => Some(Type::F64),
-        "bool" => Some(Type::Bool),
-        "uptr" => Some(Type::Uptr),
-        "iptr" => Some(Type::Iptr),
-        "char" => Some(Type::Char),
-        "str" => Some(Type::Str),
-        "string" => Some(Type::String),
-        "unit" => Some(Type::Unit),
-        _ => None,
+struct ConstVisitor<'a, 'd, 'i, 'sc> {
+    current_impl: Option<&'a str>,
+    mangler: &'a Mangler<'sc>,
+    symbols: &'a SymbolTable,
+    decls: &'a HashMap<SymbolId, ConstDecl<'d, 'i>>,
+    deps: &'a mut Vec<SymbolId>,
+}
+
+struct ConstDecl<'d, 's> {
+    mangled_name: SymbolId,
+    impl_type: Option<&'d str>,
+    ast: &'d statement::Const<'s>,
+}
+
+impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
+    fn visit_expression(&mut self, expr: &expression::Expression<'i>) {
+        use expression::Expression as Expr;
+
+        match expr {
+            Expr::Identifier(name, _) => {
+                if let Some(impl_type) = self.current_impl {
+                    let mangled = self.mangler.scoped_item(impl_type, name);
+                    if let Some(symbol_id) = self.symbols.get_id(&mangled) {
+                        if self.decls.contains_key(&symbol_id) {
+                            self.deps.push(symbol_id);
+                            return;
+                        }
+                    }
+                }
+                if let Some(symbol_id) = self.symbols.get_id(&self.mangler.item(name)) {
+                    if self.decls.contains_key(&symbol_id) {
+                        self.deps.push(symbol_id);
+                    }
+                }
+            }
+            Expr::QualifiedName {
+                qualifier, name, ..
+            } => {
+                let mangled = self.mangler.scoped_item(qualifier, name);
+                if let Some(symbol_id) = self.symbols.get_id(&mangled) {
+                    if self.decls.contains_key(&symbol_id) {
+                        self.deps.push(symbol_id);
+                    }
+                }
+            }
+            _ => visitor::walk_expression(self, expr),
+        }
     }
+}
+
+#[inline(always)]
+pub(in crate::hir) fn resolve_primitive_type(name: &str) -> Option<Type> {
+    statement::Type::from_str(name).map(|ast_ty| Type::from(&ast_ty))
 }
