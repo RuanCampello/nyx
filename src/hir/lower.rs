@@ -514,51 +514,41 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Expr::Assignment { target, value, span } => {
                 let (local, fields, typ) =
-                    self.resolve_access_chain(target, *span).map_err(|err| {
-                        if matches!(err.kind, HirErrorKind::InvalidFieldAccess) {
-                            HirError { kind: HirErrorKind::InvalidAssignmentTarget, span: *span }
-                        } else {
-                            err
-                        }
+                    self.resolve_access_chain(target, *span).map_err(|err| match err.kind {
+                        HirErrorKind::InvalidFieldAccess => {
+                            hir_error!(*span, InvalidAssignmentTarget)
+                        },
+                        _ => err,
                     })?;
 
                 if !self[local].mutable {
-                    let err_span = match fields.is_empty() {
-                        true => *span,
-                        _ => target.span(),
-                    };
-                    return Err(HirError {
-                        kind: HirErrorKind::ImmutableBind {
-                            name: self.symbols.get(self[local].name).to_string(),
-                        },
-                        span: err_span,
-                    });
+                    let err_span = *fields.is_empty().then_some(span).unwrap_or(&target.span());
+
+                    return Err(hir_error!(
+                        err_span,
+                        ImmutableBind { name: self.symbols.get(self[local].name).to_string() }
+                    ));
                 }
 
                 let value = self.lower_expr(value, Some(typ))?;
                 self.assert_type(typ, value.typ, *span)?;
 
-                if fields.is_empty() {
-                    Ok(Expression {
-                        kind: ExpressionKind::Assign { target: local, value: Box::new(value) },
-                        typ,
-                        span: *span,
-                    })
-                } else {
-                    Ok(Expression {
-                        kind: ExpressionKind::FieldAssign { local, fields, value: Box::new(value) },
-                        typ,
-                        span: *span,
-                    })
-                }
+                let kind = match fields.is_empty() {
+                    true => ExpressionKind::Assign { target: local, value: Box::new(value) },
+                    _ => ExpressionKind::FieldAssign { local, fields, value: Box::new(value) },
+                };
+                Ok(Expression { kind, typ, span: *span })
             },
 
             Expr::Struct { name, fields, span } => {
                 let symbol = self.symbols.insert(name);
-                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType { name: (*name).to_string() },
-                    span: *span,
-                })?;
+                let id = self
+                    .scope
+                    .struct_map
+                    .get(&symbol)
+                    .copied()
+                    .ok_or_else(|| hir_error!(*span, UnknownType { name: name.to_string() }))?;
+
                 let definition = &self.scope.structs[id.0 as usize];
                 let struct_name = self.symbols.get(definition.name).to_string();
 
@@ -568,21 +558,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 for field in fields {
                     let field_symbol = self.symbols.insert(field.name);
                     if !seen.insert(field_symbol) {
-                        return Err(HirError {
-                            kind: HirErrorKind::DuplicateField { name: field.name.to_string() },
-                            span: field.span,
-                        });
+                        return Err(hir_error!(
+                            field.span,
+                            DuplicateField { name: field.name.to_string() }
+                        ));
                     }
 
                     let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
                     else {
-                        return Err(HirError {
-                            kind: HirErrorKind::UnknownField {
-                                struct_name: struct_name,
-                                field: field.name.to_string(),
-                            },
-                            span: field.span,
-                        });
+                        return Err(hir_error!(
+                            field.span,
+                            UnknownField { struct_name, field: field.name.to_string() }
+                        ));
                     };
 
                     let value = self.lower_expr(&field.value, Some(expected.typ))?;
@@ -592,13 +579,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 for expected in &definition.fields {
                     if !seen.contains(&expected.name) {
-                        return Err(HirError {
-                            kind: HirErrorKind::MissingField {
+                        return Err(hir_error!(
+                            *span,
+                            MissingField {
                                 struct_name,
-                                field: self.symbols.get(expected.name).to_string(),
-                            },
-                            span: *span,
-                        });
+                                field: self.symbols.get(expected.name).to_string()
+                            }
+                        ));
                     }
                 }
 
@@ -639,12 +626,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     };
                     let function =
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
-                            || HirError {
-                                kind: HirErrorKind::UnknownMethod {
-                                    struct_name,
-                                    name: method_name.to_string(),
-                                },
-                                span: *span,
+                            || {
+                                hir_error!(
+                                    *span,
+                                    UnknownMethod { struct_name, name: method_name.to_string() }
+                                )
                             },
                         )?;
 
@@ -660,23 +646,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                                 None => "temporary".to_string(),
                             };
 
-                            return Err(HirError {
-                                kind: HirErrorKind::ImmutableBind { name },
-                                span: *span,
-                            });
+                            return Err(hir_error!(*span, ImmutableBind { name }));
                         }
                     }
 
                     let explicit_params = &signature.params[1..];
                     if explicit_params.len() != args.len() {
-                        return Err(HirError {
-                            kind: HirErrorKind::ArityMismatch {
+                        return Err(hir_error!(
+                            *span,
+                            ArityMismatch {
                                 name: method_name.to_string(),
                                 expected: explicit_params.len(),
-                                found: args.len(),
-                            },
-                            span: *span,
-                        });
+                                found: args.len()
+                            }
+                        ));
                     }
 
                     let lowered_args = args
@@ -708,17 +691,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let function_id = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(&self.mangler().item(name));
-                        *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownFunction { name: name.to_string() },
-                            span: *span,
+                        *self.scope.functions.get(&symbol).ok_or_else(|| {
+                            hir_error!(*span, UnknownFunction { name: name.to_string() })
                         })?
                     },
 
                     other => {
-                        return Err(HirError {
-                            kind: HirErrorKind::UnknownFunction { name: format!("{other:?}") },
-                            span: *span,
-                        });
+                        return Err(hir_error!(
+                            *span,
+                            UnknownFunction { name: format!("{other:?}") }
+                        ));
                     },
                 };
 
@@ -757,9 +739,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let symbol = self.symbols.insert(&self.mangler().item(name));
-                let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownFunction { name: format!("{qualifier}::{name}") },
-                    span: *span,
+                let id = *self.scope.functions.get(&symbol).ok_or_else(|| {
+                    hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
                 })?;
 
                 self.lower_direct_call(id, args, *span)
@@ -779,15 +760,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 };
 
                 if !self.scope.functions.contains_key(&lookup_symbol) {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownFunction {
-                            name: match qualifier {
-                                Some(q) => format!("{q}::{name}"),
-                                None => name.to_string(),
-                            },
-                        },
-                        span: *span,
-                    });
+                    let name =
+                        qualifier.map_or_else(|| name.to_string(), |q| format!("{q}::{name}"));
+                    return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
                 let typ = resolve_annotation(
@@ -882,12 +857,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let signature = &self.scope.signatures[function_id.0 as usize];
 
         if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-            return Err(HirError {
-                kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
-                    name: self.symbols.get(signature.name).to_string(),
-                }),
+            let name = self.symbols.get(signature.name).to_string();
+            return Err(hir_error!(
                 span,
-            });
+                ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
+            ));
         }
 
         if signature.intrinsic == Some(Intrinsic::Syscall) {
@@ -895,14 +869,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
 
         if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: self.symbols.get(signature.name).to_string(),
-                    expected: signature.params.len(),
-                    found: args.len(),
-                },
+            let name = self.symbols.get(signature.name).to_string();
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name, expected: signature.params.len(), found: args.len() }
+            ));
         }
 
         let mut lowered_args = Vec::with_capacity(args.len());
@@ -936,45 +907,32 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         span: Span,
     ) -> Result<Expression, HirError<'src>> {
         if !self.in_std {
-            return Err(HirError {
-                kind: HirErrorKind::UnknownFunction { name: "syscall".to_string() },
-                span,
-            });
+            return Err(hir_error!(span, UnknownFunction { name: "syscall".into() }));
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: "syscall".to_string(),
-                    expected: 1,
-                    found: 0,
-                },
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name: "syscall".to_string(), expected: 1, found: 0 }
+            ));
         };
 
         if value_args.len() > 6 {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: "syscall".to_string(),
-                    expected: 7,
-                    found: args.len(),
-                },
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name: "syscall".to_string(), expected: 7, found: args.len() }
+            ));
         }
 
         let expression::Expression::Identifier(name, code_span) = code_arg else {
-            return Err(HirError {
-                kind: HirErrorKind::UndeclaredIdentifier { name: format!("{code_arg:?}") },
-                span: code_arg.span(),
-            });
+            return Err(hir_error!(
+                code_arg.span(),
+                UndeclaredIdentifier { name: format!("{code_arg:?}") }
+            ));
         };
 
-        let code = SyscallCode::from_str(name).map_err(|_| HirError {
-            kind: HirErrorKind::UndeclaredIdentifier { name: name.to_string() },
-            span: *code_span,
-        })?;
+        let code = SyscallCode::from_str(name)
+            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name: name.to_string() }))?;
 
         let args = value_args
             .iter()
