@@ -108,19 +108,31 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
     ) -> Result<Vec<Function>, HirError<'s>> {
+        self.lower_matching_functions(declarations, symbols, in_std, |_| true)
+    }
+
+    pub(in crate::hir) fn lower_matching_functions<'d, 's>(
+        &self,
+        declarations: &Declarations<'d, 's>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+        mut should_lower: impl FnMut(FunctionId) -> bool,
+    ) -> Result<Vec<Function>, HirError<'s>> {
         declarations
             .functions()
-            .map(|function| {
-                let id = self.function_id(function, symbols, None, |name| {
+            .filter_map(|function| {
+                let id = match self.function_id(function, symbols, None, |name| {
                     HirErrorKind::UnknownFunction { name }
-                })?;
+                }) {
+                    Ok(id) => id,
+                    Err(err) => return Some(Err(err)),
+                };
 
-                #[cfg(test)]
-                if in_std {
-                    crate::hir::STD_FUNCTIONS_COUNT.with(|c| c.set(c.get() + 1));
+                if !should_lower(id) {
+                    return None;
                 }
 
-                lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower()
+                Some(lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower())
             })
             .collect()
     }

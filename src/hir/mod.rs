@@ -513,20 +513,6 @@ impl std::fmt::Debug for SymbolId {
 }
 
 #[cfg(test)]
-thread_local! {
-    /// functions that are baked in each nyx program, mainly from prelude
-    pub(crate) static STD_FUNCTIONS_COUNT: std::cell::Cell<usize> = std::cell::Cell::new(0);
-}
-
-#[cfg(test)]
-impl Hir {
-    pub fn user_functions_count(&self) -> usize {
-        let std_count = STD_FUNCTIONS_COUNT.with(|c| c.get());
-        self.functions.len().saturating_sub(std_count)
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{hir::error::HirErrorKind, parser::Parser};
