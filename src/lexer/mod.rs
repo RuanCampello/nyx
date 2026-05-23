@@ -95,7 +95,7 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::ColonColon, start),
                     _ => self.token(Punct::Colon, start),
                 }
-            }
+            },
 
             '-' => {
                 self.cursor.advance();
@@ -103,14 +103,14 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::Arrow, start),
                     _ => self.token(Punct::Minus, start),
                 }
-            }
+            },
 
             '/' => {
                 // The comment cases (// and /*) are already handled in
                 // skip_whitespace_and_comments, so if we get here it's
                 // a plain division operator :D
                 self.single_punct(Punct::Slash)
-            }
+            },
 
             '=' => {
                 self.cursor.advance();
@@ -118,7 +118,7 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::EqEq, start),
                     _ => self.token(Punct::Eq, start),
                 }
-            }
+            },
 
             '!' => {
                 self.cursor.advance();
@@ -126,7 +126,7 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::BangEq, start),
                     false => self.token(Punct::Bang, start),
                 }
-            }
+            },
 
             '^' => self.single_punct(Punct::Caret),
 
@@ -139,7 +139,7 @@ impl<'src> Lexer<'src> {
                 } else {
                     self.token(Punct::Lt, start)
                 }
-            }
+            },
 
             '>' => {
                 self.cursor.advance();
@@ -150,7 +150,7 @@ impl<'src> Lexer<'src> {
                 } else {
                     self.token(Punct::Gt, start)
                 }
-            }
+            },
 
             '&' => {
                 self.cursor.advance();
@@ -158,7 +158,7 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::And, start),
                     false => self.token(Punct::Ampersand, start),
                 }
-            }
+            },
 
             '|' => {
                 self.cursor.advance();
@@ -166,7 +166,7 @@ impl<'src> Lexer<'src> {
                     true => self.token(Punct::Or, start),
                     false => self.token(Punct::Pipe, start),
                 }
-            }
+            },
 
             other => return Err(LexError::unexpected_char(other, start)),
         };
@@ -184,14 +184,14 @@ impl<'src> Lexer<'src> {
                     self.cursor.advance(); // consume second `/`
 
                     LineComment.skip(&mut self.cursor);
-                }
+                },
                 (Some('/'), Some('*')) => {
                     let offset = self.cursor.position().offset();
                     self.cursor.advance(); // consume `/`
                     self.cursor.advance(); // consume `*`
 
                     BlockComment { open_offset: offset as usize }.skip(&mut self.cursor)?;
-                }
+                },
                 _ => break,
             }
         }
@@ -223,7 +223,7 @@ impl<'src> Iterator for Lexer<'src> {
             Err(e) => {
                 self.finished = true; // stop after first error
                 Some(Err(e))
-            }
+            },
         }
     }
 }

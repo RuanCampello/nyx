@@ -180,11 +180,11 @@ impl<'a> FunctionLower<'a> {
                         self.emit(dest, InstructionKind::Assign(src));
                     }
                 }
-            }
+            },
 
             Stmt::Expr(expr) => {
                 self.lower_expr(expr)?;
-            }
+            },
 
             Stmt::Return(value) => {
                 let operand = value.as_ref().map(|e| self.lower_expr(e)).transpose()?;
@@ -196,7 +196,7 @@ impl<'a> FunctionLower<'a> {
                 } else {
                     self.terminate(Terminator::Return(operand));
                 }
-            }
+            },
 
             Stmt::If { condition, then_block, else_block } => {
                 let condition = self.lower_expr(condition)?;
@@ -227,7 +227,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.switch_to(merge_id);
-            }
+            },
 
             Stmt::While { condition, body } => {
                 // cfg shape:
@@ -257,11 +257,11 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.switch_to(exit_id);
-            }
+            },
 
             Stmt::Block(inner) => {
                 self.lower_block(inner)?;
-            }
+            },
         }
 
         Ok(())
@@ -278,11 +278,11 @@ impl<'a> FunctionLower<'a> {
                 let id = self.intern_string(s);
                 let len = s.len();
                 Ok(Operand::Const(Const::Str { id, len }))
-            }
+            },
 
             ExpressionKind::Local(local_id) => {
                 Ok(Operand::Place(self.place_for_local(*local_id, expr.typ)))
-            }
+            },
 
             ExpressionKind::Cast { from, to } => {
                 let src = self.lower_expr(from)?;
@@ -291,7 +291,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit(dest, InstructionKind::Cast { src, typ: *to });
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Unary { operator, expr: inner } => {
                 use crate::parser::expression::UnaryOperator;
@@ -313,7 +313,7 @@ impl<'a> FunctionLower<'a> {
                 };
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Binary { operator, left, right } => {
                 let lhs = self.lower_expr(left)?;
@@ -323,7 +323,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit(dest, InstructionKind::Binary { operation: *operator, lhs, rhs });
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Assign { target, value } => {
                 self.constant_locals[target.0 as usize] = self.capture_constant_expr(value);
@@ -337,7 +337,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 Ok(src)
-            }
+            },
 
             ExpressionKind::Call { function, args, .. } => {
                 let mut lowered_args = Vec::with_capacity(args.len());
@@ -347,7 +347,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.emit_call(*function, lowered_args, expr.typ)
-            }
+            },
 
             ExpressionKind::MethodCall { function, receiver, args } => {
                 let receiver_place = self.fresh_temporary(receiver.typ);
@@ -373,14 +373,14 @@ impl<'a> FunctionLower<'a> {
                     match matches!(val_type, Type::Ref { .. }) {
                         true => {
                             self.emit(receiver_place, InstructionKind::Assign(lowered_receiver))
-                        }
+                        },
                         _ => {
                             let receiver_val_place = self.fresh_temporary(val_type);
                             #[rustfmt::skip]
                             self.emit(receiver_val_place, InstructionKind::Assign(lowered_receiver));
                             #[rustfmt::skip]
                             self.emit( receiver_place, InstructionKind::AddressOf { src: receiver_val_place, offset: 0 });
-                        }
+                        },
                     }
                 }
 
@@ -392,7 +392,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.emit_call(*function, lowered_args, expr.typ)
-            }
+            },
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
                 use crate::hir::Intrinsic;
@@ -414,13 +414,13 @@ impl<'a> FunctionLower<'a> {
                         }
 
                         Ok(Operand::Const(Const::Unit))
-                    }
+                    },
 
                     Intrinsic::Syscall => {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
-                    }
+                    },
                 }
-            }
+            },
 
             ExpressionKind::Syscall { code, args } => {
                 let lowered_args =
@@ -433,7 +433,7 @@ impl<'a> FunctionLower<'a> {
                 );
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Struct { id, fields } => {
                 let dest = self.fresh_temporary(Type::Struct(*id));
@@ -452,7 +452,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::FieldAccess { local, fields, .. } => {
                 let origin = self.place_for_local(*local, self.local_type(*local));
@@ -465,7 +465,7 @@ impl<'a> FunctionLower<'a> {
                 );
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::FieldAssign { local, fields, value } => {
                 let value = self.lower_expr(value)?;
@@ -476,7 +476,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit(origin, InstructionKind::FieldStore { value, offset });
 
                 Ok(value)
-            }
+            },
         }
     }
 
@@ -574,7 +574,7 @@ impl<'a> FunctionLower<'a> {
                 if let Some(text) = self.capture_constant_expr(expr) {
                     output.push_str(&text);
                 }
-            }
+            },
         }
     }
 
@@ -619,7 +619,7 @@ impl<'a> FunctionLower<'a> {
                         output.push('{');
                         output.push_str(&name);
                         output.push('}');
-                    }
+                    },
                 }
             } else {
                 output.push('{');
@@ -674,7 +674,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit(dest, InstructionKind::Call { callee: callee_id, args: lowered_args });
 
                 Ok(Operand::Place(dest))
-            }
+            },
         }
     }
 
@@ -783,21 +783,21 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
                 if let Some(init) = init {
                     visit_expr_runtime_uses(init, uses);
                 }
-            }
+            },
             hir::Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
             hir::Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
-            hir::Statement::Return(None) => {}
+            hir::Statement::Return(None) => {},
             hir::Statement::If { condition, then_block, else_block } => {
                 visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(then_block, uses);
                 if let Some(else_block) = else_block {
                     visit_block_runtime_uses(else_block, uses);
                 }
-            }
+            },
             hir::Statement::While { condition, body } => {
                 visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(body, uses);
-            }
+            },
             hir::Statement::Block(block) => visit_block_runtime_uses(block, uses),
         }
     }
@@ -808,24 +808,24 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
         ExpressionKind::Local(id) => uses[id.0 as usize] = true,
         ExpressionKind::Unary { expr, .. } | ExpressionKind::Cast { from: expr, .. } => {
             visit_expr_runtime_uses(expr, uses)
-        }
+        },
         ExpressionKind::Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
-        }
+        },
         ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
         ExpressionKind::Struct { fields, .. } => {
             for (_, value) in fields {
                 visit_expr_runtime_uses(value, uses);
             }
-        }
+        },
         ExpressionKind::Call { args, .. }
         | ExpressionKind::IntrinsicCall { args, .. }
         | ExpressionKind::Syscall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
-        }
+        },
         ExpressionKind::MethodCall { receiver, args, .. } => {
             if let Some(local_id) = receiver.local {
                 uses[local_id.0 as usize] = true;
@@ -835,18 +835,18 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
-        }
+        },
         ExpressionKind::FieldAccess { local, .. } => uses[local.0 as usize] = true,
         ExpressionKind::FieldAssign { local, value, .. } => {
             uses[local.0 as usize] = true;
             visit_expr_runtime_uses(value, uses);
-        }
+        },
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
         | ExpressionKind::Float(_)
         | ExpressionKind::String(_)
         | ExpressionKind::Char(_)
-        | ExpressionKind::Bool(_) => {}
+        | ExpressionKind::Bool(_) => {},
     }
 }
 

@@ -171,7 +171,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             },
                             span: statement.span,
                         });
-                    }
+                    },
                 };
 
                 let symbol = self.symbols.insert(statement.name);
@@ -183,12 +183,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         self.assert_type(typ, expr.typ, expr.span)?;
 
                         Some(expr)
-                    }
+                    },
                     _ => None,
                 };
 
                 Ok((Statement::Let { id, init }, false))
-            }
+            },
 
             Stmt::Return(statement) => {
                 let value = match statement.value {
@@ -196,12 +196,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         Some(expr)
-                    }
+                    },
                     _ => None,
                 };
 
                 Ok((Statement::Return(value), true))
-            }
+            },
 
             Stmt::If(statement) => self.lower_if(statement, is_tail),
 
@@ -213,7 +213,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let (body, _) = self.lower_block(&statement.body, false)?;
 
                 Ok((Statement::While { condition, body }, false))
-            }
+            },
 
             Stmt::Expr(expr, _) => {
                 let hint = match is_tail && self.return_type != Type::Unit {
@@ -228,16 +228,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             self.assert_type(self.return_type, expr.typ, expr.span)?;
                             Ok((Statement::Return(Some(expr)), true))
-                        }
+                        },
                     },
                     _ => Ok((Statement::Expr(expr), false)),
                 }
-            }
+            },
 
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
                 Ok((Statement::Block(block), returns))
-            }
+            },
 
             Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
 
@@ -326,7 +326,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 };
 
                 Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
-            }
+            },
 
             Expr::Float(value, span) => {
                 let typ = match hint {
@@ -335,7 +335,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 };
 
                 Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
-            }
+            },
 
             Expr::String(value, span) => Ok(Expression {
                 kind: ExpressionKind::String((*value).to_string()),
@@ -361,10 +361,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let src = lowered_expr.typ;
 
                 if !src.is_primitive_castable() || !target.is_primitive_castable() {
-                    return Err(HirError {
-                        kind: HirErrorKind::InvalidCast { src, target },
-                        span: *span,
-                    });
+                    return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
                 Ok(Expression {
@@ -372,7 +369,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ: target,
                     span: *span,
                 })
-            }
+            },
 
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
@@ -381,28 +378,24 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
-                        return Err(HirError {
-                            kind: HirErrorKind::UndeclaredIdentifier {
-                                name: format!("{qualifier}::{name}"),
-                            },
-                            span: *span,
-                        });
-                    }
+                        return Err(hir_error!(
+                            *span,
+                            UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
+                        ));
+                    },
                 };
 
                 let Some(c) = self.scope.constants.get(&symbol) else {
-                    return Err(HirError {
-                        kind: HirErrorKind::UndeclaredIdentifier {
-                            name: format!("{qualifier}::{name}"),
-                        },
-                        span: *span,
-                    });
+                    return Err(hir_error!(
+                        *span,
+                        UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
+                    ));
                 };
 
                 let mut val = c.value.clone();
                 val.span = *span;
                 Ok(val)
-            }
+            },
 
             Expr::Unary { operator, expr, span } => {
                 // for negation the hint flows through to the operand
@@ -427,49 +420,45 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     UnaryOperator::Neg => match expr.typ.is_number() {
                         true => expr.typ,
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::I32,
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch { expected: Type::I32, found: expr.typ }
+                            ));
+                        },
                     },
                     UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
                         true => expr.typ,
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::Bool,
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch { expected: Type::Bool, found: expr.typ }
+                            ));
+                        },
                     },
                     UnaryOperator::Deref => match expr.typ {
                         Type::Ref { to, .. } => to.into(),
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch {
                                     expected: Type::Ref { mutable: false, to: RefTarget::Char },
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                                    found: expr.typ
+                                }
+                            ));
+                        },
                     },
                     UnaryOperator::Ref => {
-                        let to = RefTarget::try_from(expr.typ).map_err(|_| HirError {
-                            kind: HirErrorKind::TypeMismatch {
-                                expected: Type::Struct(StructId::default()),
-                                found: expr.typ,
-                            },
-                            span: expr.span,
+                        let to = RefTarget::try_from(expr.typ).map_err(|_| {
+                            hir_error!(
+                                expr.span,
+                                TypeMismatch {
+                                    expected: Type::Struct(Default::default()),
+                                    found: expr.typ
+                                }
+                            )
                         })?;
                         Type::Ref { mutable: false, to }
-                    }
+                    },
                 };
 
                 if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
@@ -481,7 +470,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     span: *span,
                     kind: ExpressionKind::Unary { operator: *operator, expr: Box::new(expr) },
                 })
-            }
+            },
 
             Expr::Binary { left, operator, right, span } => {
                 // for arithmetic or comparison, we propagate the hint to the left side first to
@@ -521,7 +510,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ: result,
                     span: *span,
                 })
-            }
+            },
 
             Expr::Assignment { target, value, span } => {
                 let (local, fields, typ) =
@@ -562,7 +551,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         span: *span,
                     })
                 }
-            }
+            },
 
             Expr::Struct { name, fields, span } => {
                 let symbol = self.symbols.insert(name);
@@ -618,7 +607,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     span: *span,
                     kind: ExpressionKind::Struct { id, fields: lowered },
                 })
-            }
+            },
 
             Expr::Field { span, .. } => {
                 let (local, fields, typ) = self.resolve_access_chain(expr, *span)?;
@@ -628,7 +617,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ,
                     span: *span,
                 })
-            }
+            },
 
             Expr::Call { callee, args, span } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
@@ -639,7 +628,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                                 let lowered = self.lower_expr(receiver, None)?;
                                 let typ = lowered.typ;
                                 (None, Vec::new(), Some(Box::new(lowered)), typ)
-                            }
+                            },
                         };
 
                     let receiver_base_type = receiver_type.strip_reference();
@@ -723,18 +712,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             kind: HirErrorKind::UnknownFunction { name: name.to_string() },
                             span: *span,
                         })?
-                    }
+                    },
 
                     other => {
                         return Err(HirError {
                             kind: HirErrorKind::UnknownFunction { name: format!("{other:?}") },
                             span: *span,
                         });
-                    }
+                    },
                 };
 
                 self.lower_direct_call(function_id, args, *span)
-            }
+            },
 
             Expr::QualifiedCall { qualifier, name, args, span } => {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
@@ -747,7 +736,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             let struct_symbol = self.symbols.insert(qualifier);
                             let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
                             Type::Struct(struct_id)
-                        }
+                        },
                     };
 
                     self.scope
@@ -774,7 +763,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })?;
 
                 self.lower_direct_call(id, args, *span)
-            }
+            },
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
                 let name = kind.into();
@@ -785,7 +774,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             true => mangled,
                             _ => self.symbols.insert(&self.mangler().item(name)),
                         }
-                    }
+                    },
                     None => self.symbols.insert(&self.mangler().item(name)),
                 };
 
@@ -823,7 +812,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ: Type::Uptr,
                     span: *span,
                 })
-            }
+            },
         }
     }
 
@@ -846,12 +835,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         let block = Block { span: block.span, statements: vec![statement] };
 
                         Ok((Some(block), returns))
-                    }
+                    },
 
                     Else::Block(block) => {
                         let (block, returns) = self.lower_block(block, is_tail)?;
                         Ok((Some(block), returns))
-                    }
+                    },
 
                     Else::Expr(expr) => {
                         let hint = match is_tail && self.return_type != Type::Unit {
@@ -865,14 +854,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
                                 Statement::Return(Some(lowered))
-                            }
+                            },
                             _ => Statement::Expr(lowered),
                         };
 
                         let returns = is_tail && self.return_type != Type::Unit;
                         let block = Block { statements: vec![stmt], span };
                         Ok((Some(block), returns))
-                    }
+                    },
                 }
             })
             .transpose()?
@@ -922,14 +911,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 for arg in args {
                     lowered_args.push(self.lower_expr(arg, None)?);
                 }
-            }
+            },
             _ => {
                 for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
                     let expr = self.lower_expr(expr, Some(param_type))?;
                     self.assert_type(param_type, expr.typ, expr.span)?;
                     lowered_args.push(expr);
                 }
-            }
+            },
         }
 
         let kind = match signature.intrinsic {
@@ -1021,12 +1010,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
                 self.assert_type(left, right, span)?;
                 Ok(Type::Bool)
-            }
+            },
 
             BinaryOperator::Lt
             | BinaryOperator::LtEq
@@ -1037,14 +1026,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(Type::Bool),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::And | BinaryOperator::Or => {
                 self.assert_type(Type::Bool, left, span)?;
                 self.assert_type(Type::Bool, right, span)?;
 
                 Ok(Type::Bool)
-            }
+            },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
@@ -1053,7 +1042,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::Shl | BinaryOperator::Shr => {
                 if !left.is_integer() {
@@ -1065,7 +1054,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 Ok(left)
-            }
+            },
         }
     }
 
@@ -1090,7 +1079,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })?;
 
                 Ok(Type::Struct(id))
-            }
+            },
 
             statement::Type::SelfType => self.self_type.ok_or_else(|| HirError {
                 kind: HirErrorKind::UnknownType { name: "Self".to_string() },
@@ -1111,7 +1100,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })?;
 
                 Ok(Type::Ref { mutable: false, to })
-            }
+            },
 
             typ => Ok(typ.into()),
         }
@@ -1211,16 +1200,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Expr::Identifier(name, ident_span) => {
                     let symbol = self.symbols.insert(name);
                     break self.resolve_local(symbol, *ident_span)?;
-                }
+                },
 
                 Expr::Field { expr: next, field, .. } => {
                     fields.push(*field);
                     curr = next;
-                }
+                },
 
                 _ => {
                     return Err(HirError { kind: HirErrorKind::InvalidFieldAccess, span });
-                }
+                },
             }
         };
 
@@ -1306,8 +1295,8 @@ pub(in crate::hir) fn lower_struct<'h>(
                 kind: HirErrorKind::CircularStruct { name: declaration.name.to_string() },
                 span: declaration.span,
             });
-        }
-        Visit::Unvisited => {}
+        },
+        Visit::Unvisited => {},
     }
 
     states[id] = Visit::Visiting;

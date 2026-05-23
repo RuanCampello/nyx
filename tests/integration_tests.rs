@@ -234,7 +234,7 @@ fn run_integration_tests() {
                 Ok(code) if code == expected_code => {
                     passed += 1;
                     println!("{}: exit code {}", test.name, code);
-                }
+                },
 
                 Ok(code) => {
                     failed += 1;
@@ -246,7 +246,7 @@ fn run_integration_tests() {
 
                     eprintln!("{msg}");
                     errors.push(msg);
-                }
+                },
 
                 Err(err) => {
                     failed += 1;
@@ -254,7 +254,7 @@ fn run_integration_tests() {
                     let msg = format!("{}: {err}", test.name);
                     println!("{msg}");
                     errors.push(msg);
-                }
+                },
             },
 
             None => match compile_and_assemble(&src) {
@@ -263,7 +263,7 @@ fn run_integration_tests() {
                     fs::remove_file(&obj_path).ok();
 
                     println!("{}: compiles", test.name);
-                }
+                },
 
                 Err(err) => {
                     failed += 1;
@@ -271,7 +271,7 @@ fn run_integration_tests() {
                     eprintln!("{msg}");
 
                     errors.push(msg);
-                }
+                },
             },
         }
     }
@@ -363,13 +363,13 @@ fn run_aarch64_integration_tests() {
             Ok(code) => {
                 passed += 1;
                 println!("{}: passed (exit code {})", test.name, code);
-            }
+            },
             Err(err) => {
                 failed += 1;
                 let msg = format!("{}: {}", test.name, err);
                 eprintln!("{msg}");
                 errors.push(msg);
-            }
+            },
         }
     }
 

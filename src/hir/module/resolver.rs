@@ -34,7 +34,7 @@ impl ModuleResolver {
             "std" => &self.std,
             other => {
                 return Err(ModuleError::UnknownRoot { name: other.to_string(), span });
-            }
+            },
         };
 
         let (dirs, file_segment) = rest.split_at(rest.len() - 1);

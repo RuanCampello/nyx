@@ -104,8 +104,8 @@ impl<I> Block<I> {
             Term::Branch { then_block, else_block, .. } => {
                 f(then_block);
                 f(else_block);
-            }
-            Term::Return(_) => {}
+            },
+            Term::Return(_) => {},
         }
     }
 }

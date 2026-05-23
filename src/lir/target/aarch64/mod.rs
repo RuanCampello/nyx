@@ -287,7 +287,7 @@ impl Target for AArch64 {
                 ];
 
                 REGS.get(idx).copied()
-            }
+            },
 
             RegClass::Float => {
                 const REGS: [A64Reg; 8] = [
@@ -302,7 +302,7 @@ impl Target for AArch64 {
                 ];
 
                 REGS.get(idx).copied()
-            }
+            },
         }
     }
 
@@ -405,7 +405,7 @@ impl Instruction<AArch64> for A64Instr {
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
                 std::slice::from_ref(r)
-            }
+            },
             Self::FieldStore { .. }
             | Self::PtrStore { .. }
             | Self::Call { ret: None, .. }
@@ -438,7 +438,7 @@ impl Instruction<AArch64> for A64Instr {
                 if let A64Operand::VReg(rhs) = rhs {
                     uses.push(*rhs);
                 }
-            }
+            },
 
             Self::Mul { lhs, .. }
             | Self::SDiv { lhs, .. }
@@ -456,38 +456,38 @@ impl Instruction<AArch64> for A64Instr {
                     | Self::FDiv { rhs, .. } => uses.push(*rhs),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
-            }
+            },
 
             Self::FCmp { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 uses.push(*rhs);
-            }
+            },
 
             Self::Call { uses: instruction_uses, .. }
             | Self::Syscall { uses: instruction_uses, .. } => {
                 uses.extend_from_slice(instruction_uses)
-            }
+            },
 
             Self::FieldStore { origin, src: A64Operand::VReg(v), .. } => {
                 uses.push(*origin);
                 uses.push(*v);
-            }
+            },
             Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
 
             Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => {
                 uses.push(*origin)
-            }
+            },
             Self::PtrStore { ptr, src: A64Operand::VReg(v), .. } => {
                 uses.push(*ptr);
                 uses.push(*v);
-            }
+            },
             Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::MovImm { .. }
             | Self::LdrParam { .. }
             | Self::FLiteral { .. }
             | Self::Adr { .. }
-            | Self::Cset { .. } => {}
+            | Self::Cset { .. } => {},
         }
     }
 

@@ -204,7 +204,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             Some(Ok(token)) => (token.kind, token.is_fn_start()),
             _ => {
                 return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
-            }
+            },
         };
 
         if parser.is_const_decl() {
@@ -222,13 +222,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Interface) => {
                 Ok(Statement::Interface(parser.parse_node()?))
-            }
+            },
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
                 Ok(Statement::Struct(parser.parse_node()?))
-            }
+            },
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_interface() => {
                 Ok(Statement::Interface(parser.parse_node()?))
-            }
+            },
             TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
@@ -238,18 +238,18 @@ impl<'i> Parsable<'i> for Statement<'i> {
                         if token.is_kind(Punct::CloseBrace) | token.is_kind(TokenKind::Eof) =>
                     {
                         expr.span().end
-                    }
+                    },
                     Some(Err(err)) => return Err(err.into()),
                     _ => {
                         parser.expect_token(Punct::Semicolon)?;
                         expr.span().end
-                    }
+                    },
                 };
 
                 let span = Span::new(expr.span().start, end_position);
 
                 Ok(Statement::Expr(expr, span))
-            }
+            },
         }
     }
 }
@@ -331,7 +331,7 @@ impl<'i> Parsable<'i> for Const<'i> {
             Some(Err(err)) => return Err((&err).into()),
             None => {
                 return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
-            }
+            },
         };
 
         let is_pub = parser.consume_keyword(Keyword::Pub)?;
@@ -378,7 +378,7 @@ impl<'i> Parsable<'i> for If<'i> {
                 let end = block.span.end;
 
                 (block, end)
-            }
+            },
             false => {
                 let (statement, end) = match parser.peek() {
                     Some(Ok(token)) if token.is_kind(Keyword::Return) => {
@@ -386,7 +386,7 @@ impl<'i> Parsable<'i> for If<'i> {
                         let end = ret.span.end;
 
                         Ok((Statement::Return(ret), end))
-                    }
+                    },
 
                     Some(Ok(_)) => {
                         let expr = Expression::parse(parser)?;
@@ -394,7 +394,7 @@ impl<'i> Parsable<'i> for If<'i> {
                         let span = expr.span() + semi.span;
 
                         Ok((Statement::Expr(expr, span), semi.span.end))
-                    }
+                    },
 
                     Some(Err(err)) => Err(err.into()),
 
@@ -405,7 +405,7 @@ impl<'i> Parsable<'i> for If<'i> {
                 let block = Block { span, statements: vec![statement] };
 
                 (block, span.end)
-            }
+            },
         };
 
         let mut else_branch = None;
@@ -421,13 +421,13 @@ impl<'i> Parsable<'i> for If<'i> {
                     let else_if = If::parse(parser)?;
                     end_pos = else_if.span.end;
                     else_branch = Some(Box::new(Else::If(else_if)));
-                }
+                },
 
                 TokenKind::Punct(Punct::OpenBrace) => {
                     let else_block = Block::parse(parser)?;
                     end_pos = else_block.span.end;
                     else_branch = Some(Box::new(Else::Block(else_block)));
-                }
+                },
 
                 _ => {
                     let expr = Expression::parse(parser)?;
@@ -435,7 +435,7 @@ impl<'i> Parsable<'i> for If<'i> {
 
                     end_pos = semi.span.end;
                     else_branch = Some(Box::new(Else::Expr(expr)));
-                }
+                },
             }
         }
 
@@ -477,7 +477,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                 Ok(token) if token.is_kind(Punct::CloseParen) => {
                     parser.expect_token(Punct::CloseParen)?;
                     break;
-                }
+                },
 
                 Ok(_) => {
                     if !params.is_empty() || receiver.is_some() {
@@ -493,7 +493,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                     }
 
                     params.push(parser.parse_node()?);
-                }
+                },
 
                 Err(err) => return Err(err.into()),
             }
@@ -541,22 +541,22 @@ impl<'i> Parsable<'i> for Impl<'i> {
                     let span = impl_token.span + close.span;
 
                     return Ok(Self { name, methods, constants, span, interface });
-                }
+                },
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                }
+                },
 
                 Some(Ok(_)) if parser.is_const_decl() => {
                     let constant = parser.parse_node::<Const>()?;
                     constants.push(constant);
-                }
+                },
 
                 Some(Ok(token)) if token.is_fn_start() => {
                     let mut method = parser.parse_node::<Function>()?;
                     method.impl_type = Some(name);
                     methods.push(method);
-                }
+                },
 
                 Some(Ok(token)) => {
                     return Err(ParserError::new(
@@ -566,12 +566,12 @@ impl<'i> Parsable<'i> for Impl<'i> {
                         },
                         token.span,
                     ));
-                }
+                },
 
                 Some(Err(err)) => return Err((&err).into()),
                 None => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, impl_token.span));
-                }
+                },
             }
         }
     }
@@ -621,14 +621,14 @@ impl<'i> Parsable<'i> for Struct<'i> {
                     let span = struct_token.span + close.span;
 
                     return Ok(Self { name, fields, is_pub, span });
-                }
+                },
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                }
+                },
 
                 Some(Err(err)) => return Err(err.into()),
-                _ => {}
+                _ => {},
             }
 
             if !fields.is_empty() {
@@ -637,8 +637,8 @@ impl<'i> Parsable<'i> for Struct<'i> {
                 match parser.peek() {
                     Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                         continue;
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
 
@@ -684,7 +684,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
                         methods,
                         is_pub,
                     });
-                }
+                },
                 Some(Err(err)) => return Err(err.into()),
                 _ => methods.push(InterfaceMethod::parse(parser)?),
             }
@@ -706,7 +706,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                 Some(Ok(token)) if token.is_kind(Punct::CloseParen) => {
                     parser.expect_token(Punct::CloseParen)?;
                     break;
-                }
+                },
 
                 Some(Ok(_)) => {
                     if !params.is_empty() || receiver.is_some() {
@@ -722,13 +722,13 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                     }
 
                     params.push(parser.parse_node()?);
-                }
+                },
 
                 Some(Err(err)) => return Err(err.into()),
 
                 None => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, fn_token.span));
-                }
+                },
             }
         }
 
@@ -743,7 +743,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                 let b = parser.parse_node::<Block>()?;
                 let b_span = b.span;
                 (Some(b), fn_token.span + b_span)
-            }
+            },
         };
 
         Ok(Self { span, name, receiver, params, return_type, body })
@@ -789,13 +789,13 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::ColonColon) => {
                     parser.expect_token(Punct::ColonColon)?;
-                }
+                },
                 _ => break,
             }
 
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::OpenBrace) => break,
-                _ => {}
+                _ => {},
             }
 
             let (segment, _) = parser.expect_identifier()?;
@@ -813,9 +813,9 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
                         Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                             parser.expect_token(Punct::CloseBrace)?;
                             break;
-                        }
+                        },
 
-                        _ => {}
+                        _ => {},
                     }
 
                     if !first {
@@ -828,8 +828,8 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
                         Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                             parser.expect_token(Punct::CloseBrace)?;
                             break;
-                        }
-                        _ => {}
+                        },
+                        _ => {},
                     }
 
                     let (name, span) = parser.expect_identifier()?;
@@ -837,7 +837,7 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
                 }
 
                 UseItems::Named(names)
-            }
+            },
 
             _ => UseItems::Namespace,
         };

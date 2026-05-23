@@ -330,7 +330,7 @@ impl<'sc> Scope<'sc> {
                         kind: HirErrorKind::OrphanImpl { name: implementation.name.to_string() },
                         span: implementation.span,
                     });
-                }
+                },
 
                 _ => {
                     let is_local =
@@ -363,7 +363,7 @@ impl<'sc> Scope<'sc> {
                             span: implementation.span,
                         })?;
                     Type::Struct(struct_id)
-                }
+                },
             };
 
             if let Some(interface_name) = implementation.interface {
@@ -381,7 +381,7 @@ impl<'sc> Scope<'sc> {
                     )),
                     None => {
                         symbols.insert(&self.mangler.scoped_item(implementation.name, method.name))
-                    }
+                    },
                 };
 
                 match method.receiver {
@@ -430,7 +430,7 @@ impl<'sc> Scope<'sc> {
                                 mutable: receiver.mutable,
                             }),
                         });
-                    }
+                    },
 
                     None => {
                         if self.functions.contains_key(&mangled) {
@@ -462,7 +462,7 @@ impl<'sc> Scope<'sc> {
                             intrinsic: None,
                             method: None,
                         });
-                    }
+                    },
                 }
             }
         }
@@ -483,7 +483,7 @@ impl<'sc> Scope<'sc> {
                         Ok(to) => Type::Ref { mutable, to },
                         _ => typ,
                     }
-                }
+                },
                 other => other,
             }
         }
@@ -508,7 +508,7 @@ impl<'sc> Scope<'sc> {
                         .get(&struct_sym)
                         .expect("impl struct must exist in scope after extend_structs");
                     Type::Struct(struct_id)
-                }
+                },
             };
 
             let impl_methods: HashMap<_, _> =
@@ -567,7 +567,7 @@ impl<'sc> Scope<'sc> {
                             unreachable!("method signature must start with a receiver reference");
                         };
                         (mutable, &signature.params[1..])
-                    }
+                    },
                     _ => (false, signature.params.as_slice()),
                 };
 
@@ -650,7 +650,7 @@ impl<'sc> Scope<'sc> {
                                 span: function.span,
                             })?;
                         Type::Struct(struct_id)
-                    }
+                    },
                 };
 
                 let method_symbol = symbols.insert(function.name);
@@ -661,7 +661,7 @@ impl<'sc> Scope<'sc> {
                         kind: error_kind(function.name.to_string()),
                         span: function.span,
                     })
-            }
+            },
 
             (Some(_), None) => Err(HirError {
                 kind: error_kind(function.name.to_string()),
@@ -681,7 +681,7 @@ impl<'sc> Scope<'sc> {
                                 let struct_symbol = symbols.insert(impl_type);
                                 let struct_id = *self.struct_map.get(&struct_symbol)?;
                                 Type::Struct(struct_id)
-                            }
+                            },
                         };
                         self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
                             |&(_, interface_sym)| {
@@ -700,14 +700,14 @@ impl<'sc> Scope<'sc> {
                         kind: error_kind(format!("{impl_type}::{}", function.name)),
                         span: function.span,
                     })
-            }
+            },
             (None, None) => {
                 let sym = symbols.insert(&self.mangler.item(function.name));
                 self.functions.get(&sym).copied().ok_or_else(|| HirError {
                     kind: error_kind(function.name.to_string()),
                     span: function.span,
                 })
-            }
+            },
         }
     }
 
@@ -920,7 +920,7 @@ impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
                         self.deps.push(symbol_id);
                     }
                 }
-            }
+            },
             Expr::QualifiedName { qualifier, name, .. } => {
                 let mangled = self.mangler.scoped_item(qualifier, name);
                 if let Some(symbol_id) = self.symbols.get_id(&mangled) {
@@ -928,7 +928,7 @@ impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
                         self.deps.push(symbol_id);
                     }
                 }
-            }
+            },
             _ => visitor::walk_expression(self, expr),
         }
     }

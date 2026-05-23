@@ -69,11 +69,11 @@ impl<'i> Parser<'i> {
             Some(Ok(token)) => {
                 self.last = Some(token.span);
                 Ok(Some(token))
-            }
+            },
             Some(Err(e)) => {
                 let span = e.span();
                 Err(ParserError::new(e.into(), span))
-            }
+            },
             None => Ok(None),
         }
     }
@@ -145,7 +145,7 @@ impl<'i> Parser<'i> {
             Some(Ok(token)) if token.is_kind(kind) => {
                 self.next_token()?;
                 Ok(true)
-            }
+            },
             Some(Err(err)) => return Err(err.into()),
             _ => Ok(false),
         }
@@ -172,7 +172,7 @@ impl<'i> Parser<'i> {
                     self.peek_nth(1),
                     Some(Ok(t2)) if matches!(t2.kind, TokenKind::Identifier(id) if id != "fn")
                 )
-            }
+            },
             Some(Ok(t)) if t.is_kind(Keyword::Pub) => {
                 matches!(
                     self.peek_nth(1),
@@ -181,7 +181,7 @@ impl<'i> Parser<'i> {
                     self.peek_nth(2),
                     Some(Ok(t3)) if matches!(t3.kind, TokenKind::Identifier(id) if id != "fn")
                 )
-            }
+            },
             _ => false,
         }
     }
@@ -395,7 +395,7 @@ mod tests {
             Statement::Let(Let { name, value, .. }) => {
                 assert_eq!(*name, "x");
                 assert!(matches!(value, Some(Expression::Integer(10, _))));
-            }
+            },
             _ => unreachable!(),
         };
 
@@ -403,7 +403,7 @@ mod tests {
             Statement::Let(Let { name, value, .. }) => {
                 assert_eq!(*name, "y");
                 assert!(matches!(value, Some(Expression::Integer(20, _))));
-            }
+            },
             _ => unreachable!(),
         };
 
@@ -414,7 +414,7 @@ mod tests {
                     value,
                     Some(Expression::Binary { operator: BinaryOperator::Add, .. })
                 ));
-            }
+            },
             _ => unreachable!(),
         };
     }

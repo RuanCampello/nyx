@@ -214,13 +214,13 @@ impl Target for X86_64 {
                 const REGS: [R; 6] = [R::Rdi, R::Rsi, R::Rdx, R::Rcx, R::R8, R::R9];
 
                 REGS.get(idx).copied()
-            }
+            },
             RegClass::Float => {
                 const REGS: [R; 8] =
                     [R::Xmm0, R::Xmm1, R::Xmm2, R::Xmm3, R::Xmm4, R::Xmm5, R::Xmm6, R::Xmm7];
 
                 REGS.get(idx).copied()
-            }
+            },
         }
     }
 
@@ -324,7 +324,7 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
-            }
+            },
             Self::Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
             Self::Syscall { ret: None, .. } => &[],
         }

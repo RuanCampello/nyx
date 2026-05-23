@@ -46,7 +46,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
                         kind: super::error::HirErrorKind::TopLevelNonFunction,
                         span: other.span(),
                     });
-                }
+                },
             }
         }
 

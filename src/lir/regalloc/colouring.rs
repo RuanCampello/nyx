@@ -173,7 +173,7 @@ impl Interference {
                     let slot = slot_bytes(v, vreg_types) as i32;
                     *spill_offset -= slot;
                     Location::Stack(*spill_offset)
-                }
+                },
             };
 
             locations[v.0 as usize] = Some(location);

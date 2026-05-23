@@ -135,11 +135,11 @@ fn lookup_declaration_id(
                 let name = scope.mangler.scoped_item(impl_type, function.name);
                 symbols.get_id(&name).and_then(|sym| scope.functions.get(&sym).copied())
             }
-        }
+        },
         None => {
             let name = scope.mangler.item(function.name);
             symbols.get_id(&name).and_then(|sym| scope.functions.get(&sym).copied())
-        }
+        },
     }
 }
 
@@ -155,7 +155,7 @@ fn find_interface_for_method(
             let struct_symbol = symbols.get_id(impl_type)?;
             let struct_id = scope.struct_map.get(&struct_symbol)?;
             hir::Type::Struct(*struct_id)
-        }
+        },
     };
     let method_name = symbols.get_id(function.name)?;
 
@@ -186,16 +186,16 @@ impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                         if let Some(id) = resolve_top_level(name, self.scope, self.symbols) {
                             self.found.push(id);
                         }
-                    }
+                    },
                     Expression::Field { .. } => {
                         self.found.extend(self.scope.methods.values().copied())
-                    }
+                    },
                     _ => self.visit_expression(callee),
                 }
                 for arg in args {
                     self.visit_expression(arg);
                 }
-            }
+            },
             Expression::QualifiedCall { qualifier, name, args, .. } => {
                 if let Some(id) = resolve_qualified(qualifier, name, self.scope, self.symbols) {
                     self.found.push(id);
@@ -203,7 +203,7 @@ impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                 for arg in args {
                     self.visit_expression(arg);
                 }
-            }
+            },
             Expression::TypeIntrinsic { kind, qualifier, .. } => {
                 let name: &str = kind.into();
                 let id = qualifier
@@ -212,7 +212,7 @@ impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                 if let Some(id) = id {
                     self.found.push(id);
                 }
-            }
+            },
             _ => visitor::walk_expression(self, expr),
         }
     }
@@ -241,7 +241,7 @@ fn resolve_qualified(
                     let struct_symbol = symbols.get_id(qualifier)?;
                     let struct_id = scope.struct_map.get(&struct_symbol)?;
                     hir::Type::Struct(*struct_id)
-                }
+                },
             };
 
             scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(

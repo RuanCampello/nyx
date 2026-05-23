@@ -153,7 +153,7 @@ impl Diagnosticable for LexError {
                         "\\r".fg(SECONDARY),
                         "\\0".fg(SECONDARY),
                     ))
-            }
+            },
 
             K::InvalidNumber(detail) => Builder::new(format!("invalid number literal: {detail}"))
                 .primary(self.span, "could not parse this as a number"),
@@ -187,7 +187,7 @@ impl Diagnosticable for LexError {
                 ) =>
             {
                 b.help(h.clone())
-            }
+            },
             _ => b,
         };
 
@@ -287,14 +287,14 @@ impl<'h> Diagnosticable for HirError<'h> {
                         "fn main()".fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
 
             K::DuplicateFunction { name } => {
                 Builder::new(format!("duplicate function {}", hi(name)))
                     .primary(self.span, format!("{} is defined here again", hi(name)))
                     .help(format!("rename one of the {} functions", hi(name)))
                     .build()
-            }
+            },
 
             K::DuplicateMethod { struct_name, name } => {
                 Builder::new(format!("duplicate method {} for {}", hi(name), hi(struct_name)))
@@ -304,7 +304,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                     )
                     .help(format!("remove or rename one of the {} methods", hi(name)))
                     .build()
-            }
+            },
 
             K::UndeclaredIdentifier { name } => {
                 Builder::new(format!("use of undeclared identifier {}", hi(name)))
@@ -315,7 +315,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         format!("let {name} = …").fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
 
             K::UnknownFunction { name } => {
                 Builder::new(format!("call to unknown function {}", hi(name)))
@@ -325,7 +325,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         format!("fn {name}(…)").fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
 
             K::UnknownMethod { struct_name, name } => {
                 Builder::new(format!("call to unknown method {} on {}", hi(name), hi(struct_name)))
@@ -339,7 +339,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         hi(struct_name)
                     ))
                     .build()
-            }
+            },
 
             K::UnknownType { name } => Builder::new(format!("unknown type {}", hi(name)))
                 .primary(self.span, format!("{} is not a known type", hi(name)))
@@ -361,7 +361,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         "impl blocks can only be defined in the type's defining module",
                     )
                     .build()
-            }
+            },
 
             K::DuplicateStruct { name } => Builder::new(format!("duplicate struct {}", hi(name)))
                 .primary(self.span, format!("{} is defined here again", hi(name)))
@@ -380,7 +380,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         format!("{} has no field named {}", hi(struct_name), hi(field)),
                     )
                     .build()
-            }
+            },
 
             K::MissingField { struct_name, field } => {
                 Builder::new(format!("missing field {} in {} literal", hi(field), hi(struct_name)))
@@ -390,7 +390,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         hi(struct_name)
                     ))
                     .build()
-            }
+            },
 
             K::CircularStruct { name } => Builder::new(format!(
                 "circular struct definition involving {}",
@@ -434,7 +434,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         ),
                     )
                     .build()
-            }
+            },
 
             K::DuplicateBind { name } => Builder::new(format!("duplicate binding {}", hi(name)))
                 .primary(self.span, format!("{} is already bound in this scope", hi(name)))
@@ -451,7 +451,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         format!("let {name}: <type>;").fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
 
             K::MissingReceiver { name } => {
                 Builder::new(format!("method {} is missing a receiver", hi(name)))
@@ -466,7 +466,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                     )
                     .help(format!("write {}", format!("fn {name}(&self, …)").fg(SECONDARY)))
                     .build()
-            }
+            },
 
             K::ReceiverOutsideImpl => Builder::new("self receiver outside impl block")
                 .primary(self.span, "receivers are only valid inside method definitions")
@@ -492,7 +492,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         "casting is only supported between primitive integer, bool, and char types",
                     )
                     .build()
-            }
+            },
 
             K::ImmutableBind { name } => {
                 Builder::new(format!("cannot assign to immutable binding {}", hi(name)))
@@ -506,7 +506,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                         format!("let mut {name} = …").fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
 
             K::ConstFnViolation(ConstFnViolationKind::NonConstCall { name }) => Builder::new(
                 format!("cannot call non-const function {} in a const context", hi(name)),
@@ -529,7 +529,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                     .primary(self.span, format!("{} is defined here again", hi(name)))
                     .help(format!("rename one of the {} interfaces", hi(name)))
                     .build()
-            }
+            },
 
             K::UnknownInterface { name } => Builder::new(format!("unknown interface {}", hi(name)))
                 .primary(self.span, format!("{} is not a known interface", hi(name)))
@@ -560,7 +560,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                     format!("impl {struct_name} with {interface_name}").fg(SECONDARY)
                 ))
                 .build()
-            }
+            },
 
             K::MissingSuperinterfaceImpl { struct_name, interface_name, superinterface_name } => {
                 Builder::new(format!(
@@ -583,7 +583,7 @@ impl<'h> Diagnosticable for HirError<'h> {
                     format!("impl {struct_name} with {superinterface_name} {{ … }}").fg(SECONDARY)
                 ))
                 .build()
-            }
+            },
 
             K::InterfaceSignatureMismatch {
                 struct_name,
@@ -614,14 +614,14 @@ impl<'h> Diagnosticable for HirError<'h> {
                 Builder::new(format!("circular dependency in constant {}", hi(name)))
                     .primary(self.span, format!("constant {} depends on itself", hi(name)))
                     .build()
-            }
+            },
 
             K::DuplicateConstant { name } => {
                 Builder::new(format!("duplicate constant {}", hi(name)))
                     .primary(self.span, format!("{} is defined here again", hi(name)))
                     .help(format!("rename one of the {} constants", hi(name)))
                     .build()
-            }
+            },
         }
     }
 }
@@ -644,7 +644,7 @@ impl From<ModuleError> for Diagnostic {
                     .primary(span.unwrap_or_default(), "imported here")
                     .help(format!("make sure the file {} exists", path.display().fg(HIGHLIGHT)))
                     .build()
-            }
+            },
 
             ModuleError::CircularImport { path, span } => Builder::new(format!(
                 "circular import: {} is already being loaded",
@@ -664,7 +664,7 @@ impl From<ModuleError> for Diagnostic {
                     .primary(span, format!("{} is not a known module root", hi(&name)))
                     .help("the root segment must match your project name")
                     .build()
-            }
+            },
 
             ModuleError::UnknownExport { path, name, span } => Builder::new(format!(
                 "module {} has no exported symbol {}",
@@ -687,7 +687,7 @@ impl From<ModuleError> for Diagnostic {
                         "fn main()".fg(SECONDARY)
                     ))
                     .build()
-            }
+            },
         }
     }
 }
@@ -785,7 +785,7 @@ impl std::fmt::Display for NyxError {
             Self::Linker(code) => writeln!(f, "linker failed with exit code: {code}"),
             Self::ToolNotFound(msg) => {
                 writeln!(f, "tool not found — is binutils installed? ({msg})")
-            }
+            },
         }
     }
 }

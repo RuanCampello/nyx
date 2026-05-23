@@ -102,7 +102,7 @@ impl<'f> Lower<'f> {
                 };
 
                 self.lir.push_instr(id, instruction);
-            }
+            },
 
             InstructionKind::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
@@ -136,7 +136,7 @@ impl<'f> Lower<'f> {
                                 bytes,
                             },
                         );
-                    }
+                    },
                     U::Neg => self.lir.push_instr(id, X86Instr::Neg { dest, bytes }),
                     U::Not => match typ == Type::Bool {
                         true => self.lir.push_instr(
@@ -150,7 +150,7 @@ impl<'f> Lower<'f> {
                         "UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"
                     ),
                 }
-            }
+            },
 
             #[rustfmt::skip]
             InstructionKind::Binary {
@@ -251,7 +251,7 @@ impl<'f> Lower<'f> {
                         self.lir.push_instr(id, arith);
                     }
                 };
-            }
+            },
 
             InstructionKind::FieldLoad { src, offset, typ } => {
                 if let Type::Struct(sid) = typ {
@@ -292,10 +292,10 @@ impl<'f> Lower<'f> {
                             signed,
                         );
                         self.lir.push_instr(id, instruction);
-                    }
+                    },
                     Operand::Const(_) => unreachable!("struct constant in field access"),
                 }
-            }
+            },
 
             InstructionKind::FieldStore { value, offset } => {
                 if let Type::Struct(sid) = value.typ() {
@@ -332,7 +332,7 @@ impl<'f> Lower<'f> {
                     is_float,
                 );
                 self.lir.push_instr(id, instruction);
-            }
+            },
 
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
@@ -348,7 +348,7 @@ impl<'f> Lower<'f> {
                         X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8 },
                     );
                 }
-            }
+            },
 
             InstructionKind::Call { callee, args } => {
                 let callee_id = *callee;
@@ -410,32 +410,32 @@ impl<'f> Lower<'f> {
                                 Some(abi_reg) => {
                                     let vreg = self.operand(&arg, id);
                                     moves.push((vreg, abi_reg));
-                                }
+                                },
 
                                 None => {
                                     let operand = self.lower_operand(arg);
                                     stack_args.push((operand, mt));
-                                }
+                                },
                             }
 
                             int_idx += 1;
-                        }
+                        },
 
                         RegClass::Float => {
                             match X86_64::param(float_idx, RegClass::Float) {
                                 Some(abi_reg) => {
                                     let vreg = self.operand(&arg, id);
                                     moves.push((vreg, abi_reg));
-                                }
+                                },
 
                                 None => {
                                     let operand = self.lower_operand(arg);
                                     stack_args.push((operand, mt));
-                                }
+                                },
                             }
 
                             float_idx += 1;
-                        }
+                        },
                     }
                 }
 
@@ -459,7 +459,7 @@ impl<'f> Lower<'f> {
                     let instr = X86Instr::FieldStore { origin: dest, src, offset, bytes, is_float: false };
                     self.lir.push_instr(id, instr);
                 }
-            }
+            },
 
             InstructionKind::Syscall { code, args, returns } => {
                 let mut moves = Vec::with_capacity(args.len());
@@ -482,7 +482,7 @@ impl<'f> Lower<'f> {
                     id,
                     X86Instr::Syscall { id: X86_64::syscall_code(*code) as u32, moves, uses, ret },
                 );
-            }
+            },
 
             InstructionKind::Cast { src, typ } => {
                 let src_mt = src.typ().machine_type(self.layouts);
@@ -507,7 +507,7 @@ impl<'f> Lower<'f> {
                 };
 
                 self.lir.push_instr(id, instr);
-            }
+            },
         }
     }
 
@@ -530,7 +530,7 @@ impl<'f> Lower<'f> {
                     panic!("float lhs must be a virtual register");
                 };
                 self.lir.push_instr(id, X86Instr::cmp::<2>(lhs, rhs, bytes));
-            }
+            },
 
             _ => {
                 let lhs = match lhs {
@@ -540,11 +540,11 @@ impl<'f> Lower<'f> {
                         self.lir.push_instr(id, X86Instr::Mov { dest, src: lhs, bytes });
 
                         dest
-                    }
+                    },
                 };
 
                 self.lir.push_instr(id, X86Instr::cmp::<0>(lhs, rhs, bytes));
-            }
+            },
         }
 
         self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
@@ -586,7 +586,7 @@ impl<'f> Lower<'f> {
                             self.lir.add_precolour(ret, reg);
                             self.lir.push_instr(id, load);
                         }
-                    }
+                    },
 
                     None => {
                         let sret_ptr = self
@@ -596,11 +596,11 @@ impl<'f> Lower<'f> {
 
                         #[rustfmt::skip]
                         aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
-                    }
+                    },
                 }
 
                 Term::Return(None)
-            }
+            },
             T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
             T::Jump(block) => Term::Jump(block.into()),
             T::Branch { condition, then_block, else_block } => Term::Branch {
@@ -657,7 +657,7 @@ impl<'f> Lower<'f> {
                             X86Instr::MovFromStack { dest: ptr, rbp_offset: offset, bytes: 8 },
                         );
                         int_stack_idx += 1;
-                    }
+                    },
                 }
 
                 let size = self.struct_size(*sid);
@@ -686,7 +686,7 @@ impl<'f> Lower<'f> {
                                     bytes: mt.bytes(),
                                 },
                             );
-                        }
+                        },
 
                         None => {
                             let offset = X86_64::param_stack_offset(int_stack_idx, RegClass::Int)
@@ -704,11 +704,11 @@ impl<'f> Lower<'f> {
                                 },
                             );
                             int_stack_idx += 1;
-                        }
+                        },
                     }
 
                     int_idx += 1;
-                }
+                },
 
                 RegClass::Float => {
                     match X86_64::param(float_idx, RegClass::Float) {
@@ -725,7 +725,7 @@ impl<'f> Lower<'f> {
                                     bytes: mt.bytes(),
                                 },
                             );
-                        }
+                        },
 
                         None => {
                             let offset = X86_64::param_stack_offset(
@@ -744,11 +744,11 @@ impl<'f> Lower<'f> {
                                 },
                             );
                             float_stack_idx += 1;
-                        }
+                        },
                     }
 
                     float_idx += 1;
-                }
+                },
             }
         }
     }
@@ -795,7 +795,7 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(block, instruction);
 
                 vreg
-            }
+            },
         }
     }
 
@@ -812,7 +812,7 @@ impl<'f> Lower<'f> {
                 let label = self.lir.new_float(bits, is_32);
 
                 X86Operand::RipRel(format!("{label}(%rip)"))
-            }
+            },
             Operand::Const(Const::Int(n, _)) => X86Operand::Imm(*n),
             Operand::Const(Const::Bool(b)) => X86Operand::Imm(if *b {
                 1
@@ -821,7 +821,7 @@ impl<'f> Lower<'f> {
             }),
             Operand::Const(Const::Str { id, .. }) => {
                 X86Operand::RipRel(format!(".L_str_{id}(%rip)"))
-            }
+            },
             Operand::Const(Const::Unit) => unreachable!("unit operand"),
         }
     }
@@ -836,7 +836,7 @@ impl<'f> Lower<'f> {
             Const::Float(_, _) => X86Instr::MovFloat { dest, src, bytes: bytes },
             Const::Str { id, .. } => {
                 X86Instr::Lea { dest, src: X86Operand::RipRel(format!(".L_str_{id}(%rip)")) }
-            }
+            },
             Const::Unit => unreachable!("unit operand"),
         }
     }

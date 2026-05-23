@@ -330,7 +330,7 @@ impl Type {
                     structs[id.0 as usize].as_ref().expect("dependent struct is already lowered");
 
                 (definition.size, definition.align)
-            }
+            },
             Type::SelfType => unreachable!(),
         }
     }
@@ -472,7 +472,7 @@ impl std::fmt::Display for Type {
                     RefTarget::SelfType => write!(f, "Self"),
                     other => write!(f, "{}", Type::from(*other)),
                 };
-            }
+            },
             Type::Unit => "unit",
         };
 
@@ -745,7 +745,7 @@ mod tests {
             ExpressionKind::Call { args, .. } => {
                 assert_eq!(args.len(), 1);
                 &args[0]
-            }
+            },
             other => panic!("expected Call expression, got {other:?}"),
         };
         assert_eq!(arg.typ, Type::I64);
@@ -1339,7 +1339,7 @@ mod tests {
                 assert_eq!(*operator, BinaryOperator::Add);
                 assert!(matches!(left.kind, ExpressionKind::Integer(10)));
                 assert!(matches!(right.kind, ExpressionKind::Integer(2)));
-            }
+            },
             other => panic!("expected Binary expression, got {other:?}"),
         };
     }

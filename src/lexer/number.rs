@@ -24,7 +24,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
                 cursor.advance();
                 consume_digits(cursor);
                 true
-            }
+            },
             _ => false,
         };
 
@@ -36,7 +36,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
             true => {
                 clean = text.replace('_', "");
                 &clean
-            }
+            },
             _ => text,
         };
 
@@ -49,7 +49,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
                     )
                 })?;
                 TokenKind::Float(value)
-            }
+            },
 
             false => {
                 let value: i64 = parse_str.parse().map_err(|_| {
@@ -61,7 +61,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
                     )
                 })?;
                 TokenKind::Integer(value)
-            }
+            },
         };
 
         Ok(Token::new(kind, span))

@@ -113,14 +113,14 @@ fn main() -> Result<(), NyxError> {
             let arch = resolve_target(target)?;
 
             cmd_build(&entry, output.as_deref(), &emit, &name, arch)
-        }
+        },
 
         Commands::Run { path, entry, project } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
             cmd_run(&entry, &name)
-        }
+        },
     };
 
     match result {

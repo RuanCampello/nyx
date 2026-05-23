@@ -16,14 +16,14 @@ impl<'src> Tokenize<'src> for CharLiteral {
                 let span = Span::new(start, cursor.position());
                 return Err(LexError::new(LexErrorKind::UnterminatedChar, span)
                     .with_help("add a closing `'` at the end of the character literal"));
-            }
+            },
 
             Some('\'') => {
                 cursor.advance(); // consume closing `'`
                 let span = Span::new(start, cursor.position());
                 return Err(LexError::new(LexErrorKind::EmptyChar, span)
                     .with_help("character literals cannot be empty"));
-            }
+            },
 
             Some('\\') => {
                 let esc_pos = cursor.position();
@@ -32,31 +32,31 @@ impl<'src> Tokenize<'src> for CharLiteral {
                     Some('n') => {
                         cursor.advance();
                         '\n'
-                    }
+                    },
                     Some('r') => {
                         cursor.advance();
                         '\r'
-                    }
+                    },
                     Some('t') => {
                         cursor.advance();
                         '\t'
-                    }
+                    },
                     Some('0') => {
                         cursor.advance();
                         '\0'
-                    }
+                    },
                     Some('\\') => {
                         cursor.advance();
                         '\\'
-                    }
+                    },
                     Some('\'') => {
                         cursor.advance();
                         '\''
-                    }
+                    },
                     Some('"') => {
                         cursor.advance();
                         '"'
-                    }
+                    },
                     Some('x') => {
                         cursor.advance(); // consume 'x'
                         let mut hex = String::with_capacity(2);
@@ -66,7 +66,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
                                 Some(c) if c.is_ascii_hexdigit() => {
                                     hex.push(c);
                                     cursor.advance();
-                                }
+                                },
                                 _ => {
                                     let span = Span::new(esc_pos, cursor.position());
                                     return Err(LexError::new(
@@ -74,7 +74,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
                                         span,
                                     )
                                     .with_help("invalid hex escape: \\x must be followed by two hex digits"));
-                                }
+                                },
                             }
                         }
 
@@ -85,9 +85,9 @@ impl<'src> Tokenize<'src> for CharLiteral {
                                 let span = Span::new(esc_pos, cursor.position());
                                 return Err(LexError::new(LexErrorKind::InvalidEscape('x'), span)
                                     .with_help("invalid hex escape scalar value"));
-                            }
+                            },
                         }
-                    }
+                    },
                     Some('u') => {
                         cursor.advance(); // consume 'u'
                         if cursor.peek() == Some('{') {
@@ -127,26 +127,26 @@ impl<'src> Tokenize<'src> for CharLiteral {
                             return Err(LexError::new(LexErrorKind::InvalidEscape('u'), span)
                                 .with_help("invalid unicode escape: \\u must be followed by {"));
                         }
-                    }
+                    },
                     Some(c) => {
                         cursor.advance();
                         let span = Span::new(esc_pos, cursor.position());
                         return Err(LexError::new(LexErrorKind::InvalidEscape(c), span)
                             .with_help("valid character escapes are: \\\\, \\', \\n, \\t, \\r, \\0, \\xXX, \\u{XXXXXX}"));
-                    }
+                    },
                     None => {
                         let span = Span::new(start, cursor.position());
                         return Err(LexError::new(LexErrorKind::UnterminatedChar, span)
                             .with_help("add a closing `'` at the end of the character literal"));
-                    }
+                    },
                 };
                 escaped
-            }
+            },
 
             Some(c) => {
                 cursor.advance();
                 c
-            }
+            },
         };
 
         match cursor.peek() {
@@ -154,7 +154,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
                 cursor.advance(); // consume closing `'`
                 let span = Span::new(start, cursor.position());
                 Ok(Token::new(TokenKind::Char(content_char), span))
-            }
+            },
             _ => {
                 // read until we see a closing quote or newline, so we can report an overlong char literal
                 let mut overlong_span_end = cursor.position();
@@ -173,7 +173,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
                 let span = Span::new(start, overlong_span_end);
                 Err(LexError::new(LexErrorKind::OverlongChar, span)
                     .with_help("character literals must contain exactly one character"))
-            }
+            },
         }
     }
 }
