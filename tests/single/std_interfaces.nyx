@@ -1,3 +1,6 @@
+use std::default::{Default};
+use std::cmp::{PartialEq};
+
 struct Point {
     x: i32,
     y: i32,
