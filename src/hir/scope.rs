@@ -5,7 +5,7 @@ use crate::{
         Constant, Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId,
         SymbolTable, Type,
         declarations::Declarations,
-        error::{HirError, HirErrorKind},
+        error::{HirError, HirErrorKind, hir_error},
         lower::{self},
         mangle::Mangler,
     },
@@ -149,10 +149,10 @@ impl<'sc> Scope<'sc> {
         for struct_decl in &declarations.structs {
             let symbol = symbols.insert(struct_decl.name);
             if self.struct_map.contains_key(&symbol) || local_map.contains_key(&symbol) {
-                return Err(HirError {
-                    kind: HirErrorKind::DuplicateStruct { name: struct_decl.name.to_string() },
-                    span: struct_decl.span,
-                });
+                return Err(hir_error!(
+                    struct_decl.span,
+                    DuplicateStruct { name: struct_decl.name.to_string() }
+                ));
             }
             let local_id = StructId(local_declarations.len() as u32);
             local_map.insert(symbol, local_id);
@@ -189,10 +189,10 @@ impl<'sc> Scope<'sc> {
         for interface in &declarations.interfaces {
             let name = symbols.insert(interface.name);
             if self.interfaces.contains_key(&name) {
-                return Err(HirError {
-                    kind: HirErrorKind::DuplicateInterface { name: interface.name.to_string() },
-                    span: interface.span,
-                });
+                return Err(hir_error!(
+                    interface.span,
+                    DuplicateInterface { name: interface.name.into() }
+                ));
             }
 
             let superinterfaces =
@@ -237,10 +237,10 @@ impl<'sc> Scope<'sc> {
                 let symbol = symbols.insert(superinterface);
 
                 if !self.interfaces.contains_key(&symbol) {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownInterface { name: superinterface.to_string() },
-                        span: interface.span,
-                    });
+                    return Err(hir_error!(
+                        interface.span,
+                        UnknownInterface { name: superinterface.to_string() }
+                    ));
                 }
             }
         }
@@ -256,32 +256,23 @@ impl<'sc> Scope<'sc> {
     ) -> Result<(), HirError<'h>> {
         for function in &declarations.functions {
             if function.receiver.is_some() {
-                return Err(HirError {
-                    kind: HirErrorKind::ReceiverOutsideImpl,
-                    span: function.span,
-                });
+                return Err(hir_error!(function.span, ReceiverOutsideImpl));
             }
 
             let symbol = symbols.insert(&self.mangler.item(function.name));
             if self.functions.contains_key(&symbol) {
-                return Err(HirError {
-                    kind: HirErrorKind::DuplicateFunction { name: function.name.to_string() },
-                    span: function.span,
-                });
+                return Err(hir_error!(
+                    function.span,
+                    DuplicateFunction { name: function.name.to_string() }
+                ));
             }
-
-            let id = FunctionId(self.signatures.len() as u32);
-            self.functions.insert(symbol, id);
 
             let params = self.resolve_params(&function.params, symbols, None)?;
             let return_type =
                 self.resolve_return_type(function.return_type.as_ref(), symbols, None)?;
-            let intrinsic = match in_std {
-                true => Intrinsic::from_str(function.name).ok(),
-                false => None,
-            };
+            let intrinsic = in_std.then(|| Intrinsic::from_str(function.name).ok()).flatten();
 
-            self.signatures.push(FunctionSignature {
+            let sig = FunctionSignature {
                 name: symbol,
                 params,
                 return_type,
@@ -289,7 +280,9 @@ impl<'sc> Scope<'sc> {
                 method: None,
                 is_const: function.is_const,
                 inline: function.inline,
-            });
+            };
+            let id = self.push_signature(sig);
+            self.functions.insert(symbol, id);
         }
 
         // when compiling std, inject a built-in 'syscall' signature so std modules
@@ -326,10 +319,10 @@ impl<'sc> Scope<'sc> {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) if in_std => primitive,
                 Some(primitive) => {
-                    return Err(HirError {
-                        kind: HirErrorKind::OrphanImpl { name: implementation.name.to_string() },
-                        span: implementation.span,
-                    });
+                    return Err(hir_error!(
+                        implementation.span,
+                        OrphanImpl { name: implementation.name.to_string() }
+                    ));
                 },
 
                 _ => {
@@ -338,19 +331,15 @@ impl<'sc> Scope<'sc> {
                     if !is_local {
                         let struct_symbol = symbols.insert(implementation.name);
                         return match self.struct_map.contains_key(&struct_symbol) {
-                            true => Err(HirError {
-                                kind: HirErrorKind::OrphanImpl {
-                                    name: implementation.name.to_string(),
-                                },
-                                span: implementation.span,
-                            }),
+                            true => Err(hir_error!(
+                                implementation.span,
+                                OrphanImpl { name: implementation.name.to_string() }
+                            )),
 
-                            _ => Err(HirError {
-                                kind: HirErrorKind::UnknownType {
-                                    name: implementation.name.to_string(),
-                                },
-                                span: implementation.span,
-                            }),
+                            _ => Err(hir_error!(
+                                implementation.span,
+                                UnknownType { name: implementation.name.to_string() }
+                            )),
                         };
                     }
 
@@ -387,13 +376,13 @@ impl<'sc> Scope<'sc> {
                 match method.receiver {
                     Some(receiver) => {
                         if self.methods.contains_key(&(receiver_type, method_symbol)) {
-                            return Err(HirError {
-                                kind: HirErrorKind::DuplicateMethod {
+                            return Err(hir_error!(
+                                method.span,
+                                DuplicateMethod {
                                     struct_name: implementation.name.to_string(),
                                     name: method.name.to_string(),
-                                },
-                                span: method.span,
-                            });
+                                }
+                            ));
                         }
 
                         let id = FunctionId(self.signatures.len() as u32);
@@ -434,12 +423,8 @@ impl<'sc> Scope<'sc> {
 
                     None => {
                         if self.functions.contains_key(&mangled) {
-                            return Err(HirError {
-                                kind: HirErrorKind::DuplicateFunction {
-                                    name: format!("{}::{}", implementation.name, method.name),
-                                },
-                                span: method.span,
-                            });
+                            let name = format!("{}::{}", implementation.name, method.name);
+                            return Err(hir_error!(method.span, DuplicateFunction { name }));
                         }
 
                         let id = FunctionId(self.signatures.len() as u32);
@@ -494,9 +479,8 @@ impl<'sc> Scope<'sc> {
             };
 
             let interface_sym = symbols.insert(interface_name);
-            let interface = self.interfaces.get(&interface_sym).ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownInterface { name: interface_name.to_string() },
-                span: implementation.span,
+            let interface = self.interfaces.get(&interface_sym).ok_or_else(|| {
+                hir_error!(implementation.span, UnknownInterface { name: interface_name.into() })
             })?;
 
             let receiver_type = match resolve_primitive_type(implementation.name) {
@@ -516,37 +500,35 @@ impl<'sc> Scope<'sc> {
 
             for required in &interface.superinterfaces {
                 if !self.interfaces.contains_key(required) {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownInterface {
-                            name: symbols.get(*required).to_string(),
-                        },
-                        span: implementation.span,
-                    });
+                    return Err(hir_error!(
+                        implementation.span,
+                        UnknownInterface { name: symbols.get(*required).to_string() }
+                    ));
                 }
 
                 if !self.interface_impls.contains(&(receiver_type, *required)) {
-                    return Err(HirError {
-                        kind: HirErrorKind::MissingSuperinterfaceImpl {
+                    return Err(hir_error!(
+                        implementation.span,
+                        MissingSuperinterfaceImpl {
                             struct_name: implementation.name.to_string(),
                             interface_name: interface_name.to_string(),
                             superinterface_name: symbols.get(*required).to_string(),
-                        },
-                        span: implementation.span,
-                    });
+                        }
+                    ));
                 }
             }
 
             for required in &interface.methods {
                 let method_name = symbols.get(required.name).to_string();
                 let Some(impl_method) = impl_methods.get(method_name.as_str()) else {
-                    return Err(HirError {
-                        kind: HirErrorKind::MissingInterfaceMethod {
-                            struct_name: implementation.name.to_string(),
-                            interface_name: interface_name.to_string(),
+                    return Err(hir_error!(
+                        implementation.span,
+                        MissingInterfaceMethod {
+                            struct_name: implementation.name.into(),
+                            interface_name: interface_name.into(),
                             method_name: method_name,
-                        },
-                        span: implementation.span,
-                    });
+                        }
+                    ));
                 };
 
                 let impl_has_receiver = impl_method.receiver.is_some();
@@ -611,17 +593,17 @@ impl<'sc> Scope<'sc> {
                         impl_explicit_params, signature.return_type,
                     );
 
-                    return Err(HirError {
-                        kind: HirErrorKind::InterfaceSignatureMismatch {
+                    return Err(hir_error!(
+                        impl_method.span,
+                        InterfaceSignatureMismatch {
                             struct_name: implementation.name.to_string(),
                             interface_name: interface_name.to_string(),
                             method_name: method_name.to_string(),
                             expected,
                             found,
                             impl_span: implementation.span,
-                        },
-                        span: impl_method.span,
-                    });
+                        }
+                    ));
                 }
             }
         }
@@ -765,10 +747,7 @@ impl<'sc> Scope<'sc> {
         for c in &declarations.constants {
             let symbol_id = symbols.insert(&self.mangler.item(c.name));
             if decls.contains_key(&symbol_id) {
-                return Err(HirError {
-                    kind: HirErrorKind::DuplicateConstant { name: c.name.to_string() },
-                    span: c.span,
-                });
+                return Err(hir_error!(c.span, DuplicateConstant { name: c.name.to_string() }));
             }
 
             decls.insert(symbol_id, ConstDecl { mangled_name: symbol_id, impl_type: None, ast: c });
@@ -780,12 +759,10 @@ impl<'sc> Scope<'sc> {
                 let mangled = self.mangler.scoped_item(imp.name, c.name);
                 let symbol_id = symbols.insert(&mangled);
                 if decls.contains_key(&symbol_id) {
-                    return Err(HirError {
-                        kind: HirErrorKind::DuplicateConstant {
-                            name: format!("{}::{}", imp.name, c.name),
-                        },
-                        span: c.span,
-                    });
+                    return Err(hir_error!(
+                        c.span,
+                        DuplicateConstant { name: format!("{}::{}", imp.name, c.name) }
+                    ));
                 }
 
                 decls.insert(
@@ -816,10 +793,7 @@ impl<'sc> Scope<'sc> {
                     Some(impl_type) => format!("{}::{}", impl_type, decl.ast.name),
                     _ => decl.ast.name.to_string(),
                 };
-                return Err(HirError {
-                    kind: HirErrorKind::CircularConstant { name },
-                    span: decl.ast.span,
-                });
+                return Err(hir_error!(decl.ast.span, CircularConstant { name }));
             }
             if !visited.contains(&symbol_id) {
                 visiting.insert(symbol_id);
@@ -883,6 +857,14 @@ impl<'sc> Scope<'sc> {
         }
 
         Ok(())
+    }
+
+    /// push a new function signature and returns its assigned [`FunctionId`]
+    #[inline]
+    fn push_signature(&mut self, signature: FunctionSignature) -> FunctionId {
+        let id = FunctionId(self.signatures.len() as u32);
+        self.signatures.push(signature);
+        id
     }
 }
 
