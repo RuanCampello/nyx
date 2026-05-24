@@ -1,0 +1,5 @@
+fn main(): i32 {
+    let x = i32::MAX;
+    let y = x + 1; // this should panic
+    y
+}
