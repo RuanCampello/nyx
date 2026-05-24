@@ -10,6 +10,8 @@ mod x86_64;
 pub use aarch64::AArch64;
 pub use x86_64::X86_64;
 
+const PANIC_EXIT_CODE: u8 = 101;
+
 /// The trait that a target architecture must implement.
 ///
 /// Defines the register file layout, calling convention, and associated types

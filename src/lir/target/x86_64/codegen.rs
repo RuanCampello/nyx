@@ -11,7 +11,8 @@ use crate::{
         self, CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
+            resolve_parallel_moves,
             x86_64::{X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
@@ -69,7 +70,7 @@ impl Emittable<X86_64> for Function<X86_64> {
             label!(out, ".globl {symbol}");
             label!(out, "{symbol}:");
             emit!(out, "movq    $60, %rax");
-            emit!(out, "movq    $1, %rdi");
+            emit!(out, "movq    ${PANIC_EXIT_CODE}, %rdi");
             emit!(out, "syscall");
         };
 

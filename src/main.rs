@@ -126,7 +126,9 @@ fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Build { path, entry, output, emit, project, target, .. } => {
+        Commands::Build { path, entry, output, emit, project, target, opt } => {
+            optimisation::set(opt);
+
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
             let arch = resolve_target(target)?;
@@ -134,7 +136,9 @@ fn main() -> Result<(), NyxError> {
             cmd_build(&entry, output.as_deref(), &emit, &name, arch)
         },
 
-        Commands::Run { path, entry, project, .. } => {
+        Commands::Run { path, entry, project, opt } => {
+            optimisation::set(opt);
+
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 

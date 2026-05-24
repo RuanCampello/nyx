@@ -16,7 +16,7 @@ use crate::{
         CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, ParallelMove, PhysicalReg, RegClass, Target,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
             aarch64::{A64Instr, A64Operand, A64Reg, AArch64},
             resolve_parallel_moves,
         },
@@ -72,7 +72,7 @@ impl Emittable<AArch64> for Function<AArch64> {
             label!(out, ".globl {symbol}");
             label!(out, "{symbol}:");
             emit!(out, "mov     x8, #93");
-            emit!(out, "mov     x0, #1");
+            emit!(out, "mov     x0, #{PANIC_EXIT_CODE}");
             emit!(out, "svc     #0");
         };
 

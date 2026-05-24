@@ -165,7 +165,7 @@ const CASES: &[Case] = &[
     Case {
         name: "overflow",
         file: "tests/single/overflow.nyx",
-        exit_code: Some(1),
+        exit_code: Some(101),
     },
 ];
 
