@@ -1,7 +1,7 @@
 use crate::{
     hir::SyscallCode,
     lir::{
-        MachineType, VReg,
+        CheckedOperation, MachineType, VReg,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
     parser::expression::BinaryOperator,
@@ -540,6 +540,17 @@ impl PhysicalReg for X86Reg {
             Self::R15 => ["r15", "r15d", "r15w", "r15b"][size_idx],
 
             _ => unreachable!("invalid register and operand size combination"),
+        }
+    }
+}
+
+impl CheckedOperation for X86Instr {
+    fn flag(&self) -> Option<u8> {
+        match self {
+            Self::Add { checked: true, .. } => Some(Self::ADD),
+            Self::Sub { checked: true, .. } => Some(Self::SUB),
+            Self::Imul { checked: true, .. } => Some(Self::MUL),
+            _ => None,
         }
     }
 }

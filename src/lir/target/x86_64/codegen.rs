@@ -8,7 +8,7 @@
 use crate::{
     emit, label,
     lir::{
-        self, Function, MachineType, Term, VReg,
+        self, CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
@@ -379,9 +379,9 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::Add { dest, src, bytes, checked }
-            | Inst::Sub { dest, src, bytes, checked }
-            | Inst::Imul { dest, src, bytes, checked } => {
+            Inst::Add { dest, src, bytes, .. }
+            | Inst::Sub { dest, src, bytes, .. }
+            | Inst::Imul { dest, src, bytes, .. } => {
                 let dest_vreg = dest;
                 let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
@@ -394,14 +394,7 @@ impl Function<X86_64> {
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
-                if *checked {
-                    let symbol = match instruction {
-                        Inst::Add { .. } => "__nyx_panic_add_overflow",
-                        Inst::Sub { .. } => "__nyx_panic_sub_overflow",
-                        Inst::Imul { .. } => "__nyx_panic_mul_overflow",
-                        _ => unsafe { std::hint::unreachable_unchecked() },
-                    };
-
+                if let Some(symbol) = instruction.mark() {
                     match (instruction, self.is_signed(dest_vreg)) {
                         (Inst::Imul { .. }, _) | (_, true) => emit!(out, "jo      {symbol}"),
                         (_, false) => emit!(out, "jc      {symbol}"),

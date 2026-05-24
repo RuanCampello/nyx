@@ -76,6 +76,10 @@ pub enum MachineType {
     Struct { size: u32, align: u32 },
 }
 
+thread_local! {
+    static PANIC_HANDLERS: std::cell::Cell<u8> = Default::default();
+}
+
 const DEFAULT_SIZE: usize = 1 << 10;
 
 #[macro_export]
@@ -134,6 +138,31 @@ where
     }
 
     out
+}
+
+pub trait CheckedOperation {
+    const ADD: u8 = 1 << 0;
+    const SUB: u8 = 1 << 1;
+    const MUL: u8 = 1 << 2;
+
+    fn flag(&self) -> Option<u8>;
+
+    #[inline]
+    #[rustfmt::skip]
+    fn symbol<'s>(&self) -> Option<&'s str> {
+        let flag = self.flag()?;
+        if flag == Self::ADD { Some("__nyx_panic_add_overflow") }
+        else if flag == Self::SUB { Some("__nyx_panic_sub_overflow") }
+        else if flag == Self::MUL { Some("__nyx_panic_mul_overflow") }
+        else { None }
+    }
+
+    fn mark<'s>(&self) -> Option<&'s str> {
+        let flag = self.flag()?;
+        PANIC_HANDLERS.with(|h| h.set(h.get() | flag));
+
+        self.symbol()
+    }
 }
 
 impl<T: Target> Function<T> {

@@ -13,7 +13,7 @@
 use crate::{
     emit, label,
     lir::{
-        Function, MachineType, Term, VReg,
+        CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, ParallelMove, PhysicalReg, RegClass, Target,
@@ -363,14 +363,7 @@ impl Function<AArch64> {
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
-                if *checked {
-                    let symbol = match instruction {
-                        A64Instr::Add { .. } => "__nyx_panic_add_overflow",
-                        A64Instr::Sub { .. } => "__nyx_panic_sub_overflow",
-                        A64Instr::Mul { .. } => "__nyx_panic_mul_overflow",
-                        _ => unsafe { std::hint::unreachable_unchecked() },
-                    };
-
+                if let Some(symbol) = instruction.mark() {
                     match (instruction, self.is_signed(dest_vreg)) {
                         (_, true) => emit!(out, "b.vs    {symbol}"),
                         (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),

@@ -1,5 +1,5 @@
 use crate::lir::{
-    MachineType, VReg,
+    CheckedOperation, MachineType, VReg,
     target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
 };
 use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
@@ -588,6 +588,17 @@ impl PhysicalReg for A64Reg {
             Self::D26 => r!("d26", "s26"), Self::D27 => r!("d27", "s27"),
             Self::D28 => r!("d28", "s28"), Self::D29 => r!("d29", "s29"),
             Self::D30 => r!("d30", "s30"), Self::D31 => r!("d31", "s31"),
+        }
+    }
+}
+
+impl CheckedOperation for A64Instr {
+    fn flag(&self) -> Option<u8> {
+        match self {
+            Self::Add { checked: true, .. } => Some(Self::ADD),
+            Self::Sub { checked: true, .. } => Some(Self::SUB),
+            Self::Mul { checked: true, .. } => Some(Self::MUL),
+            _ => None,
         }
     }
 }
