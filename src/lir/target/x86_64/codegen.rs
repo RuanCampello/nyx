@@ -351,13 +351,17 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::AddFloat { dest, src, bytes }
+            Inst::Add { dest, src, bytes, .. }
+            | Inst::Sub { dest, src, bytes, .. }
+            | Inst::Imul { dest, src, bytes, .. }
+            | Inst::AddFloat { dest, src, bytes }
             | Inst::SubFloat { dest, src, bytes }
             | Inst::MulFloat { dest, src, bytes }
             | Inst::DivFloat { dest, src, bytes }
             | Inst::And { dest, src, bytes }
             | Inst::Or { dest, src, bytes }
             | Inst::Xor { dest, src, bytes } => {
+                let dest_vreg = dest;
                 let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
@@ -376,22 +380,6 @@ impl Function<X86_64> {
                     Inst::Or { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
                     Inst::Xor { .. } => emit!(out, "xor{suffix}    {src}, {dest}"),
 
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
-            },
-
-            Inst::Add { dest, src, bytes, .. }
-            | Inst::Sub { dest, src, bytes, .. }
-            | Inst::Imul { dest, src, bytes, .. } => {
-                let dest_vreg = dest;
-                let suffix = typed_suffix(bytes, self.is_float(dest));
-                let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes);
-
-                match instruction {
-                    Inst::Add { .. } => emit!(out, "add{suffix}    {src}, {dest}"),
-                    Inst::Sub { .. } => emit!(out, "sub{suffix}    {src}, {dest}"),
-                    Inst::Imul { .. } => emit!(out, "imul{suffix}    {src}, {dest}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
