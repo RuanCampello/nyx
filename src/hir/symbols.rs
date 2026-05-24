@@ -1,11 +1,19 @@
 use crate::hir::SymbolId;
 use lasso::Rodeo;
 
+/// Interns all identifiers strings encountered during compilation and maps them
+/// to stable numeric [`SymbolId`]s
 #[derive(Clone)]
 pub(in crate::hir) struct SymbolTable {
     interner: Rodeo,
 }
 
+/// Constructs the canonical fully-qualified names used throughout the [HIR](crate::hir)
+///
+/// Every function, method and constant gets a mangled name of the form:
+/// - `module::name`
+/// - `module::Type::name`
+/// - `module::Type::Interface::name`
 pub(in crate::hir) struct Mangler<'m> {
     module: &'m str,
 }
