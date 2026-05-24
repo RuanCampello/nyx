@@ -29,7 +29,7 @@ pub fn current_source() -> (String, String) {
     SOURCE.with_borrow(|s| s.clone())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub(crate) rendered: String,
 }
@@ -123,19 +123,54 @@ pub trait IntoBuilder {
     fn into_builder(self, span: Span) -> Builder;
 }
 
+impl IntoBuilder for Diagnostic {
+    fn into_builder(self, _span: Span) -> Builder {
+        unreachable!("IntoBuilder called on an already built Diagnostic")
+    }
+}
+
 pub trait Diagnosticable {
     fn into_diagnostic(self) -> Diagnostic;
 }
 
 impl Diagnosticable for LexError {
     fn into_diagnostic(self) -> Diagnostic {
-        todo!()
+        let span = self.span;
+        self.into_builder(span).build()
+    }
+}
+
+impl IntoBuilder for LexError {
+    fn into_builder(self, span: Span) -> Builder {
+        let mut b = self.kind.clone().into_builder(span);
+        if let Some(h) = self.help {
+            use crate::lexer::error::LexErrorKind as K;
+            if !matches!(
+                &self.kind,
+                K::UnterminatedString
+                    | K::UnterminatedComment
+                    | K::InvalidEscape(_)
+                    | K::UnterminatedChar
+                    | K::EmptyChar
+                    | K::OverlongChar
+            ) {
+                b = b.help(h);
+            }
+        }
+        b
     }
 }
 
 impl<'i> Diagnosticable for ParserError<'i> {
     fn into_diagnostic(self) -> Diagnostic {
-        self.kind.clone().into_builder(self.span).build()
+        let span = self.span;
+        self.into_builder(span).build()
+    }
+}
+
+impl<'i> IntoBuilder for ParserError<'i> {
+    fn into_builder(self, span: Span) -> Builder {
+        self.kind.into_builder(span)
     }
 }
 

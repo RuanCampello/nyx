@@ -66,7 +66,11 @@ pub enum HirErrorKind<'h> {
     )]
     UnknownType { name: String },
 
-    #[diagnostic(transparent)]
+    #[diagnostic(
+        message = "cannot implement methods on {name!}",
+        primary = "{name!} is not a struct declared in this module",
+        help = "methods can only be defined on structs in the same module"
+    )]
     OrphanImpl { name: String },
 
     #[diagnostic(
@@ -156,7 +160,7 @@ pub enum HirErrorKind<'h> {
     #[diagnostic(
         message = "type mismatch: expected {expected!}, found {found!}",
         primary = "this is of type {found!}",
-        secondary(span_field = "span", label = "expected {expected!} here")
+        secondary(label = "expected {expected!} here")
     )]
     TypeMismatch { expected: Type, found: Type },
 
@@ -212,7 +216,13 @@ pub enum HirErrorKind<'h> {
         superinterface_name: String,
     },
 
-    #[diagnostic(custom)]
+    #[diagnostic(
+        message = "method {method_name!} does not match interface {interface_name!}",
+        primary = "found: {found~}",
+        secondary(span_field = "impl_span", label = "{interface_name!} requires: {expected^}"),
+        note = "expected: {expected^}\n  found: {found~}",
+        help = "update {method_name!} in {`impl {struct_name} with {interface_name}`} to match the interface"
+    )]
     InterfaceSignatureMismatch {
         struct_name: String,
         interface_name: String,
@@ -236,8 +246,13 @@ pub enum HirErrorKind<'h> {
     DuplicateConstant { name: String },
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Diagnostic)]
 pub enum ConstFnViolationKind {
+    #[diagnostic(
+        message = "cannot call non-const function {name!} from a const fn",
+        primary = "{name!} is not a const function",
+        help = "add {`const`} to {`fn {name}`}"
+    )]
     NonConstCall { name: String },
 }
 

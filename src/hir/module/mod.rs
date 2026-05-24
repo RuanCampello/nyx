@@ -11,6 +11,7 @@ use crate::{
     hir::{Hir, SymbolTable, scope::Scope},
     lexer::token::Span,
 };
+use nyx_macros::Diagnostic as DeriveDiagnostic;
 use resolver::ModuleResolver;
 use std::path::{Path, PathBuf};
 
@@ -26,20 +27,77 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     fs: F,
 }
 
-#[derive(Debug)]
+#[derive(Debug, DeriveDiagnostic)]
 #[rustfmt::skip]
 pub enum ModuleError {
+    #[diagnostic(
+        message = "module file not found: {path.display()!}",
+        primary = "imported here",
+        help = "make sure the file {path.display()!} exists"
+    )]
     FileNotFound { path: PathBuf, span: Option<Span> },
+
+    #[diagnostic(
+        message = "circular import: {path.display()!} is already being loaded",
+        primary = "this import creates a cycle",
+        help = "remove the circular dependency between modules"
+    )]
     CircularImport { path: PathBuf, span: Span },
+
+    #[diagnostic(
+        message = "empty import path",
+        primary = "this path has no segments",
+        help = "use paths like {`use project::module;`}"
+    )]
     EmptyPath,
+
+    #[diagnostic(
+        message = "unknown module root {name!}",
+        primary = "{name!} is not a known module root",
+        help = "the root segment must match your project name"
+    )]
     UnknownRoot { name: String, span: Span },
+
+    #[diagnostic(
+        message = "module {path.display()!} has no exported symbol {name!}",
+        primary = "{name!} is not exported from this module",
+        help = "add {`pub`} to {`fn {name}`} to export it"
+    )]
     UnknownExport {
         path: PathBuf,
         name: String,
         span: Span,
     },
+
+    #[diagnostic(
+        message = "only function declarations are allowed at the top level",
+        primary = "this is not a function declaration",
+        help = "move this into a function body, or wrap it in {`fn main()`}"
+    )]
     TopLevelNonFunction { path: PathBuf, span: Span },
+
+    #[diagnostic(transparent)]
     Diagnostic(Diagnostic),
+}
+
+impl crate::diagnostic::Diagnosticable for ModuleError {
+    fn into_diagnostic(self) -> Diagnostic {
+        match self {
+            ModuleError::Diagnostic(d) => d,
+            other => {
+                let span = match &other {
+                    ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
+                    ModuleError::CircularImport { span, .. } => *span,
+                    ModuleError::EmptyPath => Span::default(),
+                    ModuleError::UnknownRoot { span, .. } => *span,
+                    ModuleError::UnknownExport { span, .. } => *span,
+                    ModuleError::TopLevelNonFunction { span, .. } => *span,
+                    ModuleError::Diagnostic(_) => unreachable!(),
+                };
+                crate::diagnostic::IntoBuilder::into_builder(other, span).build()
+            }
+        }
+    }
 }
 
 pub(crate) trait FileSystem {

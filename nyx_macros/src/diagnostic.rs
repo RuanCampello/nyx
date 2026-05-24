@@ -82,7 +82,7 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
             },
             Meta::List(list) if list.path.is_ident("secondary") => {
                 struct Secondary {
-                    span_field: LitStr,
+                    span_field: Option<LitStr>,
                     label: LitStr,
                 }
                 impl Parse for Secondary {
@@ -115,12 +115,7 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                             }
                         }
                         Ok(Secondary {
-                            span_field: span_field.ok_or_else(|| {
-                                syn::Error::new(
-                                    proc_macro2::Span::call_site(),
-                                    "missing `span_field`",
-                                )
-                            })?,
+                            span_field,
                             label: label.ok_or_else(|| {
                                 syn::Error::new(proc_macro2::Span::call_site(), "missing `label`")
                             })?,
@@ -128,7 +123,10 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                     }
                 }
                 let sec = syn::parse::Parser::parse2(Secondary::parse, list.tokens.clone())?;
-                let span_field_ident = Ident::new(&sec.span_field.value(), sec.span_field.span());
+                let span_field_ident = sec
+                    .span_field
+                    .map(|lit| Ident::new(&lit.value(), lit.span()))
+                    .unwrap_or_else(|| Ident::new("__span", proc_macro2::Span::call_site()));
                 attr.secondary =
                     Some(SecondaryAttr { span_field: span_field_ident, label: sec.label });
             },
@@ -291,6 +289,7 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
 
     Ok(quote! {
         impl #impl_generics crate::diagnostic::IntoBuilder for #enum_name #ty_generics #where_clause {
+            #[allow(unused_variables, unused_assignments)]
             fn into_builder(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Builder {
                 use crate::diagnostic::{Builder, hi, PRIMARY, SECONDARY, HIGHLIGHT};
                 use ariadne::Fmt as _;

@@ -28,7 +28,8 @@ fn is_valid_identifier(s: &str) -> bool {
     match chars.next() {
         None => false,
         Some(c) => {
-            (c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
+            (c.is_alphabetic() || c == '_')
+                && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '(' || c == ')')
         },
     }
 }
@@ -234,7 +235,6 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
 }
 
 pub fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
-    // Single plain literal — no format! needed
     if let [Segment::Literal(s)] = segments {
         return quote! { #s.to_string() };
     }
@@ -245,17 +245,19 @@ pub fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
             Segment::Literal(s) => quote! { __buf.push_str(#s); },
 
             Segment::Field { name, color } => {
-                let ident = Ident::new(name, call_site);
+                let expr: syn::Expr = syn::parse_str(name).unwrap_or_else(|_| {
+                    panic!("invalid field expression in diagnostic attribute: {}", name)
+                });
                 match color {
-                    FieldColor::Plain => quote! { __buf.push_str(&format!("{}", #ident)); },
-                    FieldColor::Hi => quote! { __buf.push_str(&format!("{}", hi(&#ident))); },
+                    FieldColor::Plain => quote! { __buf.push_str(&format!("{}", #expr)); },
+                    FieldColor::Hi => quote! { __buf.push_str(&format!("{}", hi(&#expr))); },
                     FieldColor::Primary => quote! {
                         use ariadne::Fmt as _;
-                        __buf.push_str(&format!("{}", (#ident).fg(PRIMARY)));
+                        __buf.push_str(&format!("{}", (&#expr).fg(PRIMARY)));
                     },
                     FieldColor::Secondary => quote! {
                         use ariadne::Fmt as _;
-                        __buf.push_str(&format!("{}", (#ident).fg(SECONDARY)));
+                        __buf.push_str(&format!("{}", (&#expr).fg(SECONDARY)));
                     },
                 }
             },
@@ -296,8 +298,10 @@ fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
             SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
             SnippetPart::Field(name) => {
                 fmt_str.push_str("{}");
-                let ident = Ident::new(name, call_site);
-                args.push(quote! { #ident });
+                let expr: syn::Expr = syn::parse_str(name).unwrap_or_else(|_| {
+                    panic!("invalid field expression in diagnostic attribute: {}", name)
+                });
+                args.push(quote! { &#expr });
             },
         }
     }
