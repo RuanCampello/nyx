@@ -58,7 +58,7 @@ impl<'src> Cursor<'src> {
             true => {
                 self.position.line += 1;
                 self.position.column = 1;
-            }
+            },
             _ => self.position.column += 1,
         }
 
@@ -74,7 +74,7 @@ impl<'src> Cursor<'src> {
             true => {
                 self.advance();
                 true
-            }
+            },
             _ => false,
         }
     }

@@ -7,10 +7,14 @@ edition = "2024"
 name = "nyx"
 path = "src/main.rs"
 
+[workspace]
+members = ["nyx_macros"]
+
 [dependencies]
 lasso = "0.7.3"
 ariadne = { version = "0.6.0" }
 clap = { version = "4", features = ["derive"] }
+nyx_macros = { path = "./nyx_macros" }
 
 [dev-dependencies]
 criterion = "0.5"

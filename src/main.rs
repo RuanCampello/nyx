@@ -107,31 +107,20 @@ fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Build {
-            path,
-            entry,
-            output,
-            emit,
-            project,
-            target,
-        } => {
+        Commands::Build { path, entry, output, emit, project, target } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
             let arch = resolve_target(target)?;
 
             cmd_build(&entry, output.as_deref(), &emit, &name, arch)
-        }
+        },
 
-        Commands::Run {
-            path,
-            entry,
-            project,
-        } => {
+        Commands::Run { path, entry, project } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
             cmd_run(&entry, &name)
-        }
+        },
     };
 
     match result {
@@ -252,11 +241,7 @@ fn resolve_entry(path: Option<PathBuf>, entry_filename: &str) -> Result<PathBuf,
 
     Err(NyxError::Io(Error::new(
         ErrorKind::NotFound,
-        format!(
-            "entry file `{}` not found in `{}`",
-            entry_filename,
-            root.display()
-        ),
+        format!("entry file `{}` not found in `{}`", entry_filename, root.display()),
     )))
 }
 

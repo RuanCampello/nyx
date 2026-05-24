@@ -16,7 +16,7 @@ pub trait Visitor<'i>: Sized {
             Statement::Interface(interface) => self.visit_interface(interface),
             Statement::Expr(expr, _) => self.visit_expression(expr),
             Statement::Block(block) => self.visit_block(block),
-            Statement::Struct(_) | Statement::Use(_) => {}
+            Statement::Struct(_) | Statement::Use(_) => {},
         }
     }
 
@@ -53,13 +53,13 @@ pub trait Visitor<'i>: Sized {
             match else_branch.as_ref() {
                 crate::parser::statement::Else::If(nested_if) => {
                     self.visit_if(nested_if);
-                }
+                },
                 crate::parser::statement::Else::Block(block) => {
                     self.visit_block(block);
-                }
+                },
                 crate::parser::statement::Else::Expr(expr) => {
                     self.visit_expression(expr);
-                }
+                },
             }
         }
     }
@@ -95,34 +95,34 @@ pub fn walk_expression<'i, V: Visitor<'i> + ?Sized>(visitor: &mut V, expr: &Expr
     match expr {
         Expression::Unary { expr, .. } | Expression::Cast { expr, .. } => {
             visitor.visit_expression(expr);
-        }
+        },
         Expression::Binary { left, right, .. } => {
             visitor.visit_expression(left);
             visitor.visit_expression(right);
-        }
+        },
         Expression::Assignment { target, value, .. } => {
             visitor.visit_expression(target);
             visitor.visit_expression(value);
-        }
+        },
         Expression::Field { expr, .. } => {
             visitor.visit_expression(expr);
-        }
+        },
         Expression::Struct { fields, .. } => {
             for field in fields {
                 visitor.visit_expression(&field.value);
             }
-        }
+        },
         Expression::Call { callee, args, .. } => {
             visitor.visit_expression(callee);
             for arg in args {
                 visitor.visit_expression(arg);
             }
-        }
+        },
         Expression::QualifiedCall { args, .. } => {
             for arg in args {
                 visitor.visit_expression(arg);
             }
-        }
+        },
         Expression::TypeIntrinsic { .. }
         | Expression::Integer(_, _)
         | Expression::Float(_, _)
@@ -130,6 +130,6 @@ pub fn walk_expression<'i, V: Visitor<'i> + ?Sized>(visitor: &mut V, expr: &Expr
         | Expression::Char(_, _)
         | Expression::Bool(_, _)
         | Expression::Identifier(_, _)
-        | Expression::QualifiedName { .. } => {}
+        | Expression::QualifiedName { .. } => {},
     }
 }

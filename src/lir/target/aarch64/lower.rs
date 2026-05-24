@@ -120,11 +120,11 @@ impl<'f> Lower<'f> {
                         };
 
                         self.lir.push_instr(id, instruction);
-                    }
+                    },
 
                     A64Operand::Imm(imm) => {
                         self.lir.push_instr(id, A64Instr::MovImm { dest, imm, bytes });
-                    }
+                    },
 
                     A64Operand::Label(label) => {
                         let instruction = match is_float {
@@ -133,9 +133,9 @@ impl<'f> Lower<'f> {
                         };
 
                         self.lir.push_instr(id, instruction);
-                    }
+                    },
                 }
-            }
+            },
 
             InstructionKind::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
@@ -154,19 +154,17 @@ impl<'f> Lower<'f> {
                             #[rustfmt::skip]
                             let instr = A64Instr::Eor { dest, lhs: src, rhs: A64Operand::Imm(1), bytes: 4 };
                             self.lir.push_instr(id, instr);
-                        }
+                        },
                         _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
                     },
                     U::Deref => unreachable!(),
-                    U::Ref => unreachable!("UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"),
+                    U::Ref => unreachable!(
+                        "UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"
+                    ),
                 }
-            }
+            },
 
-            InstructionKind::Binary {
-                operation,
-                rhs,
-                lhs,
-            } => {
+            InstructionKind::Binary { operation, rhs, lhs } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();
@@ -187,7 +185,7 @@ impl<'f> Lower<'f> {
                             is_float,
                             A64Cond::new(comp, is_float),
                         );
-                    }
+                    },
 
                     _ => {
                         // for register-only instructions (MUL, SDIV, float ops)
@@ -211,7 +209,7 @@ impl<'f> Lower<'f> {
                                     },
                                 };
                                 self.lir.push_instr(id, instr);
-                            }
+                            },
 
                             B::Sub => {
                                 let instr = match is_float {
@@ -230,7 +228,7 @@ impl<'f> Lower<'f> {
                                 };
 
                                 self.lir.push_instr(id, instr);
-                            }
+                            },
 
                             B::Mul => {
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
@@ -240,7 +238,7 @@ impl<'f> Lower<'f> {
                                     false => A64Instr::Mul { dest, lhs, rhs, bytes },
                                 };
                                 self.lir.push_instr(id, instr);
-                            }
+                            },
 
                             B::Div => {
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
@@ -250,23 +248,23 @@ impl<'f> Lower<'f> {
                                     false => A64Instr::SDiv { dest, lhs, rhs, bytes },
                                 };
                                 self.lir.push_instr(id, instr);
-                            }
+                            },
 
                             #[rustfmt::skip]
                             B::And | B::BitAnd => {
                                 let rhs = self.fit_logical_operand(rhs, rhs_type, id);
                                 self.lir.push_instr(id, A64Instr::And { dest, lhs, rhs, bytes });
-                            }
+                            },
                             #[rustfmt::skip]
                             B::Or | B::BitOr => {
                                 let rhs = self.fit_logical_operand(rhs, rhs_type, id);
                                 self.lir.push_instr(id, A64Instr::Or { dest, lhs, rhs, bytes });
-                            }
+                            },
                             #[rustfmt::skip]
                             B::BitXor => {
                                 let rhs = self.fit_logical_operand(rhs, rhs_type, id);
                                 self.lir.push_instr(id, A64Instr::Eor { dest, lhs, rhs, bytes, });
-                            }
+                            },
                             #[rustfmt::skip]
                             B::Shl | B::Shr => {
                                 let rhs = self.fit_shift_operand(rhs, rhs_type, bytes, id);
@@ -279,13 +277,13 @@ impl<'f> Lower<'f> {
                                     _ => unsafe { std::hint::unreachable_unchecked() },
                                 };
                                 self.lir.push_instr(id, instr);
-                            }
+                            },
 
                             _ => unsafe { std::hint::unreachable_unchecked() },
                         }
-                    }
+                    },
                 }
-            }
+            },
 
             InstructionKind::Call { callee, args } => {
                 let callee_id = *callee;
@@ -324,10 +322,7 @@ impl<'f> Lower<'f> {
                             Some(abi_reg) => moves.push((ptr, abi_reg)),
                             None => stack_args.push((
                                 A64Operand::VReg(ptr),
-                                MachineType::Int {
-                                    bytes: 8,
-                                    signed: false,
-                                },
+                                MachineType::Int { bytes: 8, signed: false },
                             )),
                         }
 
@@ -344,32 +339,32 @@ impl<'f> Lower<'f> {
                                 Some(abi_reg) => {
                                     let vreg = self.operand(arg, id);
                                     moves.push((vreg, abi_reg));
-                                }
+                                },
 
                                 None => {
                                     let operand = self.lower_operand(arg, id);
                                     stack_args.push((operand, mt));
-                                }
+                                },
                             }
 
                             int_idx += 1;
-                        }
+                        },
 
                         RegClass::Float => {
                             match AArch64::param(float_idx, RegClass::Float) {
                                 Some(abi_reg) => {
                                     let vreg = self.operand(arg, id);
                                     moves.push((vreg, abi_reg));
-                                }
+                                },
 
                                 None => {
                                     let operand = self.lower_operand(arg, id);
                                     stack_args.push((operand, mt));
-                                }
+                                },
                             }
 
                             float_idx += 1;
-                        }
+                        },
                     }
                 }
 
@@ -377,7 +372,7 @@ impl<'f> Lower<'f> {
                 let ret = (return_type != Type::Unit && !matches!(return_type, Type::Struct(_)))
                     .then_some(dest);
                 self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
-            }
+            },
 
             InstructionKind::FieldLoad { src, offset, typ } => {
                 if let Type::Struct(sid) = typ {
@@ -417,11 +412,11 @@ impl<'f> Lower<'f> {
                             signed,
                         );
                         self.lir.push_instr(id, instruction);
-                    }
+                    },
 
                     Operand::Const(_) => unreachable!("struct constant in field access"),
                 }
-            }
+            },
 
             InstructionKind::FieldStore { value, offset } => {
                 let offset = *offset as i32;
@@ -460,7 +455,7 @@ impl<'f> Lower<'f> {
                     is_float,
                 );
                 self.lir.push_instr(id, instruction);
-            }
+            },
 
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
@@ -481,13 +476,9 @@ impl<'f> Lower<'f> {
                         },
                     );
                 }
-            }
+            },
 
-            InstructionKind::Syscall {
-                code,
-                args,
-                returns,
-            } => {
+            InstructionKind::Syscall { code, args, returns } => {
                 let mut moves = Vec::with_capacity(args.len());
                 let mut uses = Vec::with_capacity(args.len());
 
@@ -506,14 +497,9 @@ impl<'f> Lower<'f> {
                 let ret = (*returns && typ != Type::Unit).then_some(dest);
                 self.lir.push_instr(
                     id,
-                    A64Instr::Syscall {
-                        id: AArch64::syscall_code(*code),
-                        moves,
-                        uses,
-                        ret,
-                    },
+                    A64Instr::Syscall { id: AArch64::syscall_code(*code), moves, uses, ret },
                 );
-            }
+            },
 
             InstructionKind::Cast { src, typ } => {
                 use std::cmp::Ordering;
@@ -567,7 +553,7 @@ impl<'f> Lower<'f> {
                 };
 
                 self.lir.push_instr(id, instr);
-            }
+            },
         }
     }
 
@@ -590,14 +576,14 @@ impl<'f> Lower<'f> {
                 let rhs = self.ensure_vreg(rhs, Type::F64, id);
 
                 self.lir.push_instr(id, A64Instr::FCmp { lhs, rhs, bytes });
-            }
+            },
 
             false => {
                 let lhs = self.ensure_vreg(lhs, Type::I64, id);
                 let rhs = self.fit_add_sub_operand(rhs, Type::I64, id);
 
                 self.lir.push_instr(id, A64Instr::Cmp { lhs, rhs, bytes });
-            }
+            },
         }
 
         self.lir.push_instr(id, A64Instr::Cset { dest, cond });
@@ -620,26 +606,12 @@ impl<'f> Lower<'f> {
                     self.sret_ptr.expect("struct-returning function must have an sret pointer");
                 let src_vreg = self.vreg(place.id);
                 let size = self.struct_size(sid);
-                aggregate_copy(
-                    &mut self.lir,
-                    id,
-                    false,
-                    true,
-                    src_vreg,
-                    sret_ptr,
-                    0,
-                    0,
-                    size,
-                );
+                aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
                 Term::Return(None)
-            }
+            },
             T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
             T::Jump(block) => Term::Jump(block.into()),
-            T::Branch {
-                condition,
-                then_block,
-                else_block,
-            } => Term::Branch {
+            T::Branch { condition, then_block, else_block } => Term::Branch {
                 cond: self.operand(&condition, id),
                 then_block: then_block.into(),
                 else_block: else_block.into(),
@@ -658,10 +630,7 @@ impl<'f> Lower<'f> {
         let mut float_stack_idx = 0;
 
         if matches!(self.function.return_type, Type::Struct(_)) {
-            let ptr = self.lir.new_vreg(MachineType::Int {
-                bytes: 8,
-                signed: false,
-            });
+            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
             let reg = AArch64::param(int_idx, RegClass::Int)
                 .expect("sret pointer must fit in the first integer argument register");
             self.lir.add_precolour(ptr, reg);
@@ -671,10 +640,7 @@ impl<'f> Lower<'f> {
 
         for (vid, typ) in &self.function.params {
             if let Type::Struct(sid) = typ {
-                let ptr = self.lir.new_vreg(MachineType::Int {
-                    bytes: 8,
-                    signed: false,
-                });
+                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
 
                 match AArch64::param(int_idx, RegClass::Int) {
                     Some(reg) => self.lir.add_precolour(ptr, reg),
@@ -691,22 +657,12 @@ impl<'f> Lower<'f> {
                             },
                         );
                         int_stack_idx += 1;
-                    }
+                    },
                 }
 
                 let size = self.struct_size(*sid);
                 let dest_vreg = self.vreg(*vid);
-                aggregate_copy(
-                    &mut self.lir,
-                    &entry,
-                    true,
-                    false,
-                    ptr,
-                    dest_vreg,
-                    0,
-                    0,
-                    size,
-                );
+                aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest_vreg, 0, 0, size);
                 int_idx += 1;
                 continue;
             }
@@ -724,13 +680,9 @@ impl<'f> Lower<'f> {
 
                             self.lir.push_instr(
                                 &entry,
-                                A64Instr::Mov {
-                                    dest,
-                                    src: abi_vreg,
-                                    bytes: mt.bytes(),
-                                },
+                                A64Instr::Mov { dest, src: abi_vreg, bytes: mt.bytes() },
                             );
-                        }
+                        },
 
                         None => {
                             let offset = AArch64::param_stack_offset(int_stack_idx, RegClass::Int)
@@ -750,11 +702,11 @@ impl<'f> Lower<'f> {
                                 },
                             );
                             int_stack_idx += 1;
-                        }
+                        },
                     }
 
                     int_idx += 1;
-                }
+                },
 
                 RegClass::Float => {
                     match AArch64::param(float_idx, RegClass::Float) {
@@ -765,13 +717,9 @@ impl<'f> Lower<'f> {
 
                             self.lir.push_instr(
                                 &entry,
-                                A64Instr::FMov {
-                                    dest,
-                                    src: abi_vreg,
-                                    bytes: mt.bytes(),
-                                },
+                                A64Instr::FMov { dest, src: abi_vreg, bytes: mt.bytes() },
                             );
-                        }
+                        },
 
                         None => {
                             let offset = AArch64::param_stack_offset(
@@ -791,11 +739,11 @@ impl<'f> Lower<'f> {
                                 },
                             );
                             float_stack_idx += 1;
-                        }
+                        },
                     }
 
                     float_idx += 1;
-                }
+                },
             }
         }
     }
@@ -806,10 +754,7 @@ impl<'f> Lower<'f> {
     }
 
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int {
-            bytes: 8,
-            signed: false,
-        });
+        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
 
         dest
@@ -830,7 +775,7 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(block, instruction);
 
                 vreg
-            }
+            },
         }
     }
 
@@ -839,7 +784,11 @@ impl<'f> Lower<'f> {
         match op {
             Operand::Place(p) => A64Operand::VReg(self.vreg(p.id)),
             Operand::Const(Const::Int(n, _)) => A64Operand::Imm(*n),
-            Operand::Const(Const::Bool(b)) => A64Operand::Imm(if *b { 1 } else { 0 }),
+            Operand::Const(Const::Bool(b)) => A64Operand::Imm(if *b {
+                1
+            } else {
+                0
+            }),
             Operand::Const(Const::Float(v, typ)) => {
                 let is_32 = *typ == Type::F32;
                 let bits = match is_32 {
@@ -849,7 +798,7 @@ impl<'f> Lower<'f> {
                 let label = self.lir.new_float(bits, is_32);
 
                 A64Operand::Label(label)
-            }
+            },
             Operand::Const(Const::Str { id, .. }) => A64Operand::Label(format!(".L_str_{id}")),
             Operand::Const(Const::Unit) => unreachable!("unit operand"),
         }
@@ -860,14 +809,14 @@ impl<'f> Lower<'f> {
         let bytes = c.typ().machine_type(self.layouts).bytes();
 
         match c {
-            Const::Int(n, _) => A64Instr::MovImm {
-                dest,
-                imm: *n,
-                bytes,
-            },
+            Const::Int(n, _) => A64Instr::MovImm { dest, imm: *n, bytes },
             Const::Bool(b) => A64Instr::MovImm {
                 dest,
-                imm: if *b { 1 } else { 0 },
+                imm: if *b {
+                    1
+                } else {
+                    0
+                },
                 bytes: 4,
             },
             Const::Float(v, typ) => {
@@ -879,11 +828,8 @@ impl<'f> Lower<'f> {
                 let label = self.lir.new_float(bits, is_32);
 
                 A64Instr::FLiteral { dest, label, bytes }
-            }
-            Const::Str { id, .. } => A64Instr::Adr {
-                dest,
-                label: format!(".L_str_{id}"),
             },
+            Const::Str { id, .. } => A64Instr::Adr { dest, label: format!(".L_str_{id}") },
             Const::Unit => unreachable!("unit operand"),
         }
     }
@@ -898,17 +844,11 @@ impl<'f> Lower<'f> {
                 let mt = hint_type.machine_type(self.layouts);
                 let vreg = self.lir.new_vreg(mt);
 
-                self.lir.push_instr(
-                    block,
-                    A64Instr::MovImm {
-                        dest: vreg,
-                        imm: n,
-                        bytes: mt.bytes(),
-                    },
-                );
+                self.lir
+                    .push_instr(block, A64Instr::MovImm { dest: vreg, imm: n, bytes: mt.bytes() });
 
                 vreg
-            }
+            },
             A64Operand::Label(label) => {
                 let mt = hint_type.machine_type(self.layouts);
                 let vreg = self.lir.new_vreg(mt);
@@ -916,18 +856,14 @@ impl<'f> Lower<'f> {
                 if hint_type.is_float() {
                     self.lir.push_instr(
                         block,
-                        A64Instr::FLiteral {
-                            dest: vreg,
-                            label,
-                            bytes: mt.bytes(),
-                        },
+                        A64Instr::FLiteral { dest: vreg, label, bytes: mt.bytes() },
                     );
                 } else {
                     self.lir.push_instr(block, A64Instr::Adr { dest: vreg, label });
                 }
 
                 vreg
-            }
+            },
         }
     }
 
@@ -974,12 +910,16 @@ impl<'f> Lower<'f> {
     ) -> A64Operand {
         match op {
             A64Operand::Imm(n) => {
-                let max = if bytes == 8 { 63 } else { 31 };
+                let max = if bytes == 8 {
+                    63
+                } else {
+                    31
+                };
                 match n >= 0 && n <= max {
                     true => A64Operand::Imm(n),
                     _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
                 }
-            }
+            },
             A64Operand::VReg(_) => op,
             _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
         }

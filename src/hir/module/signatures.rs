@@ -1,7 +1,7 @@
-use super::{graph::ModuleGraph, ModuleError};
+use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{scope::Scope, Declarations, SymbolTable},
+    hir::{Declarations, SymbolTable, scope::Scope},
     parser::statement::{Interface, Statement},
 };
 use std::collections::HashMap;

@@ -1,16 +1,17 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
+mod arena;
 mod demand;
 mod graph;
 mod resolver;
 mod signatures;
-mod arena;
 
 use crate::{
     diagnostic::Diagnostic,
     hir::{Hir, SymbolTable, scope::Scope},
     lexer::token::Span,
 };
+use nyx_macros::Diagnostic;
 use resolver::ModuleResolver;
 use std::path::{Path, PathBuf};
 
@@ -26,19 +27,56 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     fs: F,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Diagnostic)]
 #[rustfmt::skip]
 pub enum ModuleError {
+    #[diagnostic(
+        message = "module file not found: {path.display()!}",
+        primary = "imported here",
+        help = "make sure the file {path.display()!} exists"
+    )]
     FileNotFound { path: PathBuf, span: Option<Span> },
+
+    #[diagnostic(
+        message = "circular import: {path.display()!} is already being loaded",
+        primary = "this import creates a cycle",
+        help = "remove the circular dependency between modules"
+    )]
     CircularImport { path: PathBuf, span: Span },
+
+    #[diagnostic(
+        message = "empty import path",
+        primary = "this path has no segments",
+        help = "use paths like {`use project::module;`}"
+    )]
     EmptyPath,
+
+    #[diagnostic(
+        message = "unknown module root {name!}",
+        primary = "{name!} is not a known module root",
+        help = "the root segment must match your project name"
+    )]
     UnknownRoot { name: String, span: Span },
+
+    #[diagnostic(
+        message = "module {path.display()!} has no exported symbol {name!}",
+        primary = "{name!} is not exported from this module",
+        help = "add {`pub`} to {`fn {name}`} to export it"
+    )]
     UnknownExport {
         path: PathBuf,
         name: String,
         span: Span,
     },
+
+    #[diagnostic(
+        message = "only function declarations are allowed at the top level",
+        primary = "this is not a function declaration",
+        help = "move this into a function body, or wrap it in {`fn main()`}"
+    )]
     TopLevelNonFunction { path: PathBuf, span: Span },
+
+    #[diagnostic(transparent)]
     Diagnostic(Diagnostic),
 }
 
@@ -108,6 +146,26 @@ impl From<Diagnostic> for ModuleError {
     }
 }
 
+impl From<ModuleError> for Diagnostic {
+    fn from(value: ModuleError) -> Diagnostic {
+        match value {
+            ModuleError::Diagnostic(d) => d,
+            other => {
+                let span = match &other {
+                    ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
+                    ModuleError::CircularImport { span, .. } => *span,
+                    ModuleError::EmptyPath => Span::default(),
+                    ModuleError::UnknownRoot { span, .. } => *span,
+                    ModuleError::UnknownExport { span, .. } => *span,
+                    ModuleError::TopLevelNonFunction { span, .. } => *span,
+                    ModuleError::Diagnostic(_) => unreachable!(),
+                };
+                crate::diagnostic::AsDiagnostic::as_diagnostic(other, span)
+            },
+        }
+    }
+}
+
 /// Resolves the path to the compiler's built-in `std/` directory
 ///
 /// order:
@@ -160,10 +218,7 @@ mod tests {
                 }
             }
 
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                path.display().to_string(),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
         }
 
         fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
@@ -181,10 +236,7 @@ mod tests {
                 }
             }
 
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                path.display().to_string(),
-            ))
+            Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
         }
     }
 
@@ -263,10 +315,7 @@ mod tests {
     #[test]
     fn import_and_call() {
         let _fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -358,10 +407,7 @@ mod tests {
     #[test]
     fn same_dependency_imported_twice_was_not_duplicated() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/util.nyx",
                 r#"
@@ -386,19 +432,13 @@ mod tests {
                 hir.symbols.get(f.name.0.into_usize()).map(|s| s == "nyx::add").unwrap_or(false)
             })
             .count();
-        assert_eq!(
-            add_count, 1,
-            "add should appear exactly once in the merged HIR"
-        );
+        assert_eq!(add_count, 1, "add should appear exactly once in the merged HIR");
     }
 
     #[test]
     fn arity_mismatch_across_modules() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -438,10 +478,7 @@ mod tests {
     #[test]
     fn duplicate_function_across_modules_rejected() {
         let fs = VirtualFS::default()
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            )
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
                 "/project/main.nyx",
                 r#"
@@ -467,10 +504,7 @@ mod tests {
             }
             "#,
             )
-            .add(
-                "/project/math.nyx",
-                "pub fn add(a: i32, b: i32): i32 { a + b }",
-            );
+            .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
@@ -659,18 +693,14 @@ mod tests {
             .unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
-            Statement::Let {
-                init: Some(expr), ..
-            } => expr,
+            Statement::Let { init: Some(expr), .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(a_init.kind, ExpressionKind::Integer(4));
         assert_eq!(a_init.typ, Type::Uptr);
 
         let b_init = match &main_fn.body.statements[1] {
-            Statement::Let {
-                init: Some(expr), ..
-            } => expr,
+            Statement::Let { init: Some(expr), .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(b_init.kind, ExpressionKind::Integer(8));

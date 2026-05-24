@@ -3,7 +3,7 @@ use crate::{
         Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
         LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
         SymbolId, SymbolTable, SyscallCode, Type,
-        error::{ConstFnViolationKind, HirError, HirErrorKind},
+        error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
         mangle::Mangler,
         scope::{self, Scope, Structs},
     },
@@ -93,12 +93,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             let typ = signatures.params[0];
             let symbol = self.symbols.insert("self");
             let id = self.declare_local(symbol, typ, receiver.mutable)?;
-            params.push(Parameter {
-                typ,
-                id,
-                name: symbol,
-                mutable: receiver.mutable,
-            });
+            params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
         }
 
         let receiver_offset = usize::from(function.receiver.is_some());
@@ -111,12 +106,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     let symbol = self.symbols.insert(parameter.name);
                     let id = self.declare_local(symbol, typ, parameter.mutable)?;
 
-                    Ok(Parameter {
-                        typ,
-                        id,
-                        name: symbol,
-                        mutable: parameter.mutable,
-                    })
+                    Ok(Parameter { typ, id, name: symbol, mutable: parameter.mutable })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );
@@ -159,13 +149,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         )?;
 
         self.pop_scope();
-        Ok((
-            Block {
-                statements,
-                span: block.span,
-            },
-            returns,
-        ))
+        Ok((Block { statements, span: block.span }, returns))
     }
 
     fn lower_statement(
@@ -181,13 +165,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     (Some(typ), _) => self.resolve_type(&typ.value(), typ.span())?,
                     (_, Some(expr)) => self.infer(expr)?,
                     (None, None) => {
-                        return Err(HirError {
-                            kind: HirErrorKind::MissingInitialiser {
-                                name: statement.name.to_string(),
-                            },
-                            span: statement.span,
-                        });
-                    }
+                        return Err(hir_error!(
+                            statement.span,
+                            MissingInitialiser { name: statement.name.into() }
+                        ));
+                    },
                 };
 
                 let symbol = self.symbols.insert(statement.name);
@@ -199,12 +181,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         self.assert_type(typ, expr.typ, expr.span)?;
 
                         Some(expr)
-                    }
+                    },
                     _ => None,
                 };
 
                 Ok((Statement::Let { id, init }, false))
-            }
+            },
 
             Stmt::Return(statement) => {
                 let value = match statement.value {
@@ -212,12 +194,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         Some(expr)
-                    }
+                    },
                     _ => None,
                 };
 
                 Ok((Statement::Return(value), true))
-            }
+            },
 
             Stmt::If(statement) => self.lower_if(statement, is_tail),
 
@@ -229,7 +211,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let (body, _) = self.lower_block(&statement.body, false)?;
 
                 Ok((Statement::While { condition, body }, false))
-            }
+            },
 
             Stmt::Expr(expr, _) => {
                 let hint = match is_tail && self.return_type != Type::Unit {
@@ -244,16 +226,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             self.assert_type(self.return_type, expr.typ, expr.span)?;
                             Ok((Statement::Return(Some(expr)), true))
-                        }
+                        },
                     },
                     _ => Ok((Statement::Expr(expr), false)),
                 }
-            }
+            },
 
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
                 Ok((Statement::Block(block), returns))
-            }
+            },
 
             Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
 
@@ -277,12 +259,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             return Ok(value);
         }
 
-        let symbol = self.symbols.get_id(name).ok_or_else(|| HirError {
-            kind: HirErrorKind::UndeclaredIdentifier {
-                name: name.to_string(),
-            },
-            span,
-        })?;
+        let symbol = self
+            .symbols
+            .get_id(name)
+            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
@@ -295,11 +275,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 
     fn local_expr(&self, id: LocalId, span: Span) -> Expression {
-        Expression {
-            kind: ExpressionKind::Local(id),
-            typ: self[id].typ,
-            span,
-        }
+        Expression { kind: ExpressionKind::Local(id), typ: self[id].typ, span }
     }
 
     fn constant(&self, name: &str) -> Option<&Constant> {
@@ -347,12 +323,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     _ => Type::I32,
                 };
 
-                Ok(Expression {
-                    kind: ExpressionKind::Integer(*value),
-                    typ,
-                    span: *span,
-                })
-            }
+                Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
+            },
 
             Expr::Float(value, span) => {
                 let typ = match hint {
@@ -360,12 +332,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     _ => Type::F64,
                 };
 
-                Ok(Expression {
-                    kind: ExpressionKind::Float(*value),
-                    typ,
-                    span: *span,
-                })
-            }
+                Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
+            },
 
             Expr::String(value, span) => Ok(Expression {
                 kind: ExpressionKind::String((*value).to_string()),
@@ -385,71 +353,49 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 span: *span,
             }),
 
-            Expr::Cast {
-                expr: inner,
-                target_type,
-                span,
-            } => {
+            Expr::Cast { expr: inner, target_type, span } => {
                 let target = self.resolve_type(&target_type.value(), target_type.span())?;
                 let lowered_expr = self.lower_expr(inner, None)?;
                 let src = lowered_expr.typ;
 
                 if !src.is_primitive_castable() || !target.is_primitive_castable() {
-                    return Err(HirError {
-                        kind: HirErrorKind::InvalidCast { src, target },
-                        span: *span,
-                    });
+                    return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
                 Ok(Expression {
-                    kind: ExpressionKind::Cast {
-                        from: Box::new(lowered_expr),
-                        to: target,
-                    },
+                    kind: ExpressionKind::Cast { from: Box::new(lowered_expr), to: target },
                     typ: target,
                     span: *span,
                 })
-            }
+            },
 
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
-            Expr::QualifiedName {
-                qualifier,
-                name,
-                span,
-            } => {
+            Expr::QualifiedName { qualifier, name, span } => {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
-                        return Err(HirError {
-                            kind: HirErrorKind::UndeclaredIdentifier {
-                                name: format!("{qualifier}::{name}"),
-                            },
-                            span: *span,
-                        });
-                    }
+                        return Err(hir_error!(
+                            *span,
+                            UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
+                        ));
+                    },
                 };
 
                 let Some(c) = self.scope.constants.get(&symbol) else {
-                    return Err(HirError {
-                        kind: HirErrorKind::UndeclaredIdentifier {
-                            name: format!("{qualifier}::{name}"),
-                        },
-                        span: *span,
-                    });
+                    return Err(hir_error!(
+                        *span,
+                        UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
+                    ));
                 };
 
                 let mut val = c.value.clone();
                 val.span = *span;
                 Ok(val)
-            }
+            },
 
-            Expr::Unary {
-                operator,
-                expr,
-                span,
-            } => {
+            Expr::Unary { operator, expr, span } => {
                 // for negation the hint flows through to the operand
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
@@ -472,52 +418,45 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     UnaryOperator::Neg => match expr.typ.is_number() {
                         true => expr.typ,
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::I32,
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch { expected: Type::I32, found: expr.typ }
+                            ));
+                        },
                     },
                     UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
                         true => expr.typ,
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::Bool,
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch { expected: Type::Bool, found: expr.typ }
+                            ));
+                        },
                     },
                     UnaryOperator::Deref => match expr.typ {
                         Type::Ref { to, .. } => to.into(),
                         _ => {
-                            return Err(HirError {
-                                kind: HirErrorKind::TypeMismatch {
-                                    expected: Type::Ref {
-                                        mutable: false,
-                                        to: RefTarget::Char,
-                                    },
-                                    found: expr.typ,
-                                },
-                                span: expr.span,
-                            });
-                        }
+                            return Err(hir_error!(
+                                expr.span,
+                                TypeMismatch {
+                                    expected: Type::Ref { mutable: false, to: RefTarget::Char },
+                                    found: expr.typ
+                                }
+                            ));
+                        },
                     },
                     UnaryOperator::Ref => {
-                        let to = RefTarget::try_from(expr.typ).map_err(|_| HirError {
-                            kind: HirErrorKind::TypeMismatch {
-                                expected: Type::Struct(StructId::default()),
-                                found: expr.typ,
-                            },
-                            span: expr.span,
+                        let to = RefTarget::try_from(expr.typ).map_err(|_| {
+                            hir_error!(
+                                expr.span,
+                                TypeMismatch {
+                                    expected: Type::Struct(Default::default()),
+                                    found: expr.typ
+                                }
+                            )
                         })?;
                         Type::Ref { mutable: false, to }
-                    }
+                    },
                 };
 
                 if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
@@ -527,19 +466,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Expression {
                     typ: expected,
                     span: *span,
-                    kind: ExpressionKind::Unary {
-                        operator: *operator,
-                        expr: Box::new(expr),
-                    },
+                    kind: ExpressionKind::Unary { operator: *operator, expr: Box::new(expr) },
                 })
-            }
+            },
 
-            Expr::Binary {
-                left,
-                operator,
-                right,
-                span,
-            } => {
+            Expr::Binary { left, operator, right, span } => {
                 // for arithmetic or comparison, we propagate the hint to the left side first to
                 // resolve the concrete numeric type, then use that resolved type as the hint
                 // for the right side.
@@ -577,67 +508,45 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ: result,
                     span: *span,
                 })
-            }
+            },
 
-            Expr::Assignment {
-                target,
-                value,
-                span,
-            } => {
-                let (local, fields, typ) = self.resolve_access_chain(target, *span).map_err(|err| {
-                    if matches!(err.kind, HirErrorKind::InvalidFieldAccess) {
-                        HirError {
-                            kind: HirErrorKind::InvalidAssignmentTarget,
-                            span: *span,
-                        }
-                    } else {
-                        err
-                    }
-                })?;
+            Expr::Assignment { target, value, span } => {
+                let (local, fields, typ) =
+                    self.resolve_access_chain(target, *span).map_err(|err| match err.kind {
+                        HirErrorKind::InvalidFieldAccess => {
+                            hir_error!(*span, InvalidAssignmentTarget)
+                        },
+                        _ => err,
+                    })?;
 
                 if !self[local].mutable {
-                    let err_span = if fields.is_empty() { *span } else { target.span() };
-                    return Err(HirError {
-                        kind: HirErrorKind::ImmutableBind {
-                            name: self.symbols.get(self[local].name).to_string(),
-                        },
-                        span: err_span,
-                    });
+                    let err_span = *fields.is_empty().then_some(span).unwrap_or(&target.span());
+
+                    return Err(hir_error!(
+                        err_span,
+                        ImmutableBind { name: self.symbols.get(self[local].name).to_string() }
+                    ));
                 }
 
                 let value = self.lower_expr(value, Some(typ))?;
                 self.assert_type(typ, value.typ, *span)?;
 
-                if fields.is_empty() {
-                    Ok(Expression {
-                        kind: ExpressionKind::Assign {
-                            target: local,
-                            value: Box::new(value),
-                        },
-                        typ,
-                        span: *span,
-                    })
-                } else {
-                    Ok(Expression {
-                        kind: ExpressionKind::FieldAssign {
-                            local,
-                            fields,
-                            value: Box::new(value),
-                        },
-                        typ,
-                        span: *span,
-                    })
-                }
+                let kind = match fields.is_empty() {
+                    true => ExpressionKind::Assign { target: local, value: Box::new(value) },
+                    _ => ExpressionKind::FieldAssign { local, fields, value: Box::new(value) },
+                };
+                Ok(Expression { kind, typ, span: *span })
             },
 
             Expr::Struct { name, fields, span } => {
                 let symbol = self.symbols.insert(name);
-                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType {
-                        name: (*name).to_string(),
-                    },
-                    span: *span,
-                })?;
+                let id = self
+                    .scope
+                    .struct_map
+                    .get(&symbol)
+                    .copied()
+                    .ok_or_else(|| hir_error!(*span, UnknownType { name: name.to_string() }))?;
+
                 let definition = &self.scope.structs[id.0 as usize];
                 let struct_name = self.symbols.get(definition.name).to_string();
 
@@ -647,23 +556,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 for field in fields {
                     let field_symbol = self.symbols.insert(field.name);
                     if !seen.insert(field_symbol) {
-                        return Err(HirError {
-                            kind: HirErrorKind::DuplicateField {
-                                name: field.name.to_string(),
-                            },
-                            span: field.span,
-                        });
+                        return Err(hir_error!(
+                            field.span,
+                            DuplicateField { name: field.name.to_string() }
+                        ));
                     }
 
                     let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
                     else {
-                        return Err(HirError {
-                            kind: HirErrorKind::UnknownField {
-                                struct_name: struct_name,
-                                field: field.name.to_string(),
-                            },
-                            span: field.span,
-                        });
+                        return Err(hir_error!(
+                            field.span,
+                            UnknownField { struct_name, field: field.name.to_string() }
+                        ));
                     };
 
                     let value = self.lower_expr(&field.value, Some(expected.typ))?;
@@ -673,25 +577,22 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 for expected in &definition.fields {
                     if !seen.contains(&expected.name) {
-                        return Err(HirError {
-                            kind: HirErrorKind::MissingField {
+                        return Err(hir_error!(
+                            *span,
+                            MissingField {
                                 struct_name,
-                                field: self.symbols.get(expected.name).to_string(),
-                            },
-                            span: *span,
-                        });
+                                field: self.symbols.get(expected.name).to_string()
+                            }
+                        ));
                     }
                 }
 
                 Ok(Expression {
                     typ: Type::Struct(id),
                     span: *span,
-                    kind: ExpressionKind::Struct {
-                        id,
-                        fields: lowered,
-                    },
+                    kind: ExpressionKind::Struct { id, fields: lowered },
                 })
-            }
+            },
 
             Expr::Field { span, .. } => {
                 let (local, fields, typ) = self.resolve_access_chain(expr, *span)?;
@@ -701,15 +602,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ,
                     span: *span,
                 })
-            }
+            },
 
             Expr::Call { callee, args, span } => {
-                if let Expr::Field {
-                    expr: receiver,
-                    field: method_name,
-                    ..
-                } = callee.as_ref()
-                {
+                if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let (local, fields, receiver_expr, receiver_type) =
                         match self.resolve_access_chain(receiver, *span) {
                             Ok((loc, flds, typ)) => (Some(loc), flds, None, typ),
@@ -717,7 +613,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                                 let lowered = self.lower_expr(receiver, None)?;
                                 let typ = lowered.typ;
                                 (None, Vec::new(), Some(Box::new(lowered)), typ)
-                            }
+                            },
                         };
 
                     let receiver_base_type = receiver_type.strip_reference();
@@ -728,12 +624,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     };
                     let function =
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
-                            || HirError {
-                                kind: HirErrorKind::UnknownMethod {
-                                    struct_name,
-                                    name: method_name.to_string(),
-                                },
-                                span: *span,
+                            || {
+                                hir_error!(
+                                    *span,
+                                    UnknownMethod { struct_name, name: method_name.to_string() }
+                                )
                             },
                         )?;
 
@@ -749,23 +644,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                                 None => "temporary".to_string(),
                             };
 
-                            return Err(HirError {
-                                kind: HirErrorKind::ImmutableBind { name },
-                                span: *span,
-                            });
+                            return Err(hir_error!(*span, ImmutableBind { name }));
                         }
                     }
 
                     let explicit_params = &signature.params[1..];
                     if explicit_params.len() != args.len() {
-                        return Err(HirError {
-                            kind: HirErrorKind::ArityMismatch {
+                        return Err(hir_error!(
+                            *span,
+                            ArityMismatch {
                                 name: method_name.to_string(),
                                 expected: explicit_params.len(),
-                                found: args.len(),
-                            },
-                            span: *span,
-                        });
+                                found: args.len()
+                            }
+                        ));
                     }
 
                     let lowered_args = args
@@ -797,33 +689,23 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let function_id = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         let symbol = self.symbols.insert(&self.mangler().item(name));
-                        *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownFunction {
-                                name: name.to_string(),
-                            },
-                            span: *span,
+                        *self.scope.functions.get(&symbol).ok_or_else(|| {
+                            hir_error!(*span, UnknownFunction { name: name.to_string() })
                         })?
-                    }
+                    },
 
                     other => {
-                        return Err(HirError {
-                            kind: HirErrorKind::UnknownFunction {
-                                name: format!("{other:?}"),
-                            },
-                            span: *span,
-                        });
-                    }
+                        return Err(hir_error!(
+                            *span,
+                            UnknownFunction { name: format!("{other:?}") }
+                        ));
+                    },
                 };
 
                 self.lower_direct_call(function_id, args, *span)
-            }
+            },
 
-            Expr::QualifiedCall {
-                qualifier,
-                name,
-                args,
-                span,
-            } => {
+            Expr::QualifiedCall { qualifier, name, args, span } => {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
@@ -834,7 +716,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             let struct_symbol = self.symbols.insert(qualifier);
                             let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
                             Type::Struct(struct_id)
-                        }
+                        },
                     };
 
                     self.scope
@@ -855,22 +737,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let symbol = self.symbols.insert(&self.mangler().item(name));
-                let id = *self.scope.functions.get(&symbol).ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownFunction {
-                        name: format!("{qualifier}::{name}"),
-                    },
-                    span: *span,
+                let id = *self.scope.functions.get(&symbol).ok_or_else(|| {
+                    hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
                 })?;
 
                 self.lower_direct_call(id, args, *span)
-            }
+            },
 
-            Expr::TypeIntrinsic {
-                kind,
-                qualifier,
-                typ,
-                span,
-            } => {
+            Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
                 let name = kind.into();
                 let lookup_symbol = match qualifier {
                     Some(q) => {
@@ -879,20 +753,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             true => mangled,
                             _ => self.symbols.insert(&self.mangler().item(name)),
                         }
-                    }
+                    },
                     None => self.symbols.insert(&self.mangler().item(name)),
                 };
 
                 if !self.scope.functions.contains_key(&lookup_symbol) {
-                    return Err(HirError {
-                        kind: HirErrorKind::UnknownFunction {
-                            name: match qualifier {
-                                Some(q) => format!("{q}::{name}"),
-                                None => name.to_string(),
-                            },
-                        },
-                        span: *span,
-                    });
+                    let name =
+                        qualifier.map_or_else(|| name.to_string(), |q| format!("{q}::{name}"));
+                    return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
                 let typ = resolve_annotation(
@@ -917,7 +785,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     typ: Type::Uptr,
                     span: *span,
                 })
-            }
+            },
         }
     }
 
@@ -937,18 +805,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 match else_branch.as_ref() {
                     Else::If(block) => {
                         let (statement, returns) = self.lower_if(block, is_tail)?;
-                        let block = Block {
-                            span: block.span,
-                            statements: vec![statement],
-                        };
+                        let block = Block { span: block.span, statements: vec![statement] };
 
                         Ok((Some(block), returns))
-                    }
+                    },
 
                     Else::Block(block) => {
                         let (block, returns) = self.lower_block(block, is_tail)?;
                         Ok((Some(block), returns))
-                    }
+                    },
 
                     Else::Expr(expr) => {
                         let hint = match is_tail && self.return_type != Type::Unit {
@@ -962,28 +827,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
                                 Statement::Return(Some(lowered))
-                            }
+                            },
                             _ => Statement::Expr(lowered),
                         };
 
                         let returns = is_tail && self.return_type != Type::Unit;
-                        let block = Block {
-                            statements: vec![stmt],
-                            span,
-                        };
+                        let block = Block { statements: vec![stmt], span };
                         Ok((Some(block), returns))
-                    }
+                    },
                 }
             })
             .transpose()?
             .unwrap_or((None, false));
 
         Ok((
-            Statement::If {
-                condition,
-                then_block,
-                else_block,
-            },
+            Statement::If { condition, then_block, else_block },
             then_returns && else_returns,
         ))
     }
@@ -997,12 +855,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let signature = &self.scope.signatures[function_id.0 as usize];
 
         if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-            return Err(HirError {
-                kind: HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
-                    name: self.symbols.get(signature.name).to_string(),
-                }),
+            let name = self.symbols.get(signature.name).to_string();
+            return Err(hir_error!(
                 span,
-            });
+                ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
+            ));
         }
 
         if signature.intrinsic == Some(Intrinsic::Syscall) {
@@ -1010,14 +867,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
 
         if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: self.symbols.get(signature.name).to_string(),
-                    expected: signature.params.len(),
-                    found: args.len(),
-                },
+            let name = self.symbols.get(signature.name).to_string();
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name, expected: signature.params.len(), found: args.len() }
+            ));
         }
 
         let mut lowered_args = Vec::with_capacity(args.len());
@@ -1026,32 +880,22 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 for arg in args {
                     lowered_args.push(self.lower_expr(arg, None)?);
                 }
-            }
+            },
             _ => {
                 for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
                     let expr = self.lower_expr(expr, Some(param_type))?;
                     self.assert_type(param_type, expr.typ, expr.span)?;
                     lowered_args.push(expr);
                 }
-            }
+            },
         }
 
         let kind = match signature.intrinsic {
-            Some(intrinsic) => ExpressionKind::IntrinsicCall {
-                intrinsic,
-                args: lowered_args,
-            },
-            _ => ExpressionKind::Call {
-                function: function_id,
-                args: lowered_args,
-            },
+            Some(intrinsic) => ExpressionKind::IntrinsicCall { intrinsic, args: lowered_args },
+            _ => ExpressionKind::Call { function: function_id, args: lowered_args },
         };
 
-        Ok(Expression {
-            typ: signature.return_type,
-            span,
-            kind,
-        })
+        Ok(Expression { typ: signature.return_type, span, kind })
     }
 
     fn lower_syscall(
@@ -1061,51 +905,32 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         span: Span,
     ) -> Result<Expression, HirError<'src>> {
         if !self.in_std {
-            return Err(HirError {
-                kind: HirErrorKind::UnknownFunction {
-                    name: "syscall".to_string(),
-                },
-                span,
-            });
+            return Err(hir_error!(span, UnknownFunction { name: "syscall".into() }));
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: "syscall".to_string(),
-                    expected: 1,
-                    found: 0,
-                },
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name: "syscall".to_string(), expected: 1, found: 0 }
+            ));
         };
 
         if value_args.len() > 6 {
-            return Err(HirError {
-                kind: HirErrorKind::ArityMismatch {
-                    name: "syscall".to_string(),
-                    expected: 7,
-                    found: args.len(),
-                },
+            return Err(hir_error!(
                 span,
-            });
+                ArityMismatch { name: "syscall".to_string(), expected: 7, found: args.len() }
+            ));
         }
 
         let expression::Expression::Identifier(name, code_span) = code_arg else {
-            return Err(HirError {
-                kind: HirErrorKind::UndeclaredIdentifier {
-                    name: format!("{code_arg:?}"),
-                },
-                span: code_arg.span(),
-            });
+            return Err(hir_error!(
+                code_arg.span(),
+                UndeclaredIdentifier { name: format!("{code_arg:?}") }
+            ));
         };
 
-        let code = SyscallCode::from_str(name).map_err(|_| HirError {
-            kind: HirErrorKind::UndeclaredIdentifier {
-                name: name.to_string(),
-            },
-            span: *code_span,
-        })?;
+        let code = SyscallCode::from_str(name)
+            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name: name.to_string() }))?;
 
         let args = value_args
             .iter()
@@ -1126,13 +951,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
-        let type_mismatch = |found| HirError {
-            kind: HirErrorKind::TypeMismatch {
-                expected: Type::I32,
-                found,
-            },
-            span,
-        };
+        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::I32, found });
 
         match operator {
             BinaryOperator::Add
@@ -1144,12 +963,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
                 self.assert_type(left, right, span)?;
                 Ok(Type::Bool)
-            }
+            },
 
             BinaryOperator::Lt
             | BinaryOperator::LtEq
@@ -1160,14 +979,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(Type::Bool),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::And | BinaryOperator::Or => {
                 self.assert_type(Type::Bool, left, span)?;
                 self.assert_type(Type::Bool, right, span)?;
 
                 Ok(Type::Bool)
-            }
+            },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
@@ -1176,7 +995,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
-            }
+            },
 
             BinaryOperator::Shl | BinaryOperator::Shr => {
                 if !left.is_integer() {
@@ -1188,7 +1007,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 Ok(left)
-            }
+            },
         }
     }
 
@@ -1207,40 +1026,33 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
-                let id = self.scope.struct_map.get(&symbol).copied().ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType {
-                        name: name.to_string(),
-                    },
-                    span,
-                })?;
+                let id = self
+                    .scope
+                    .struct_map
+                    .get(&symbol)
+                    .copied()
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
 
                 Ok(Type::Struct(id))
-            }
+            },
 
-            statement::Type::SelfType => self.self_type.ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType {
-                    name: "Self".to_string(),
-                },
-                span,
-            }),
+            statement::Type::SelfType => self
+                .self_type
+                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() })),
 
             statement::Type::RefSelf => {
-                let self_ty = self.self_type.ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownType {
-                        name: "Self".to_string(),
-                    },
-                    span,
-                })?;
-                let to = RefTarget::try_from(self_ty).map_err(|_| HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: self_ty,
-                    },
-                    span,
+                let self_ty = self
+                    .self_type
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() }))?;
+                let to = RefTarget::try_from(self_ty).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch { expected: Type::Struct(Default::default()), found: self_ty }
+                    )
                 })?;
 
                 Ok(Type::Ref { mutable: false, to })
-            }
+            },
 
             typ => Ok(typ.into()),
         }
@@ -1251,10 +1063,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
         match expected == found {
             true => Ok(()),
-            false => Err(HirError {
-                kind: HirErrorKind::TypeMismatch { expected, found },
-                span,
-            }),
+            false => Err(hir_error!(span, TypeMismatch { expected, found })),
         }
     }
 
@@ -1267,24 +1076,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateBind {
-                    name: self.symbols.get(name).to_string(),
-                },
-                span: Span::default(),
-            });
+            return Err(hir_error!(
+                Span::default(),
+                DuplicateBind { name: self.symbols.get(name).to_string() }
+            ));
         }
 
         let id = LocalId(self.next_local);
         self.next_local += 1;
 
         scope.insert(name, id);
-        self.locals.push(Local {
-            id,
-            name,
-            typ,
-            mutable,
-        });
+        self.locals.push(Local { id, name, typ, mutable });
 
         Ok(id)
     }
@@ -1295,12 +1097,37 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             .iter()
             .rev()
             .find_map(|scope| scope.get(&name).copied())
-            .ok_or_else(|| HirError {
-                kind: HirErrorKind::UndeclaredIdentifier {
-                    name: self.symbols.get(name).to_string(),
-                },
-                span,
+            .ok_or_else(|| {
+                hir_error!(span, UndeclaredIdentifier { name: self.symbols.get(name).to_string() })
             })
+    }
+
+    /// Resolve a single field step on `current`, returning `(field_symbol, field_type)`
+    fn lookup_field(
+        &mut self,
+        current: Type,
+        name: &str,
+        span: Span,
+    ) -> Result<(SymbolId, Type), HirError<'src>> {
+        #[rustfmt::skip]
+        let sid = match current {
+            Type::Struct(id) => id,
+            Type::Ref { to: RefTarget::Struct(id), .. } => id,
+            found => return Err(hir_error!(span, TypeMismatch {
+                expected: Type::Struct(Default::default()),
+                found
+            })),
+        };
+
+        let sym = self.symbols.insert(name);
+        let def = &self.scope.structs[sid.0 as usize];
+        let struct_name = self.symbols.get(def.name).to_string();
+
+        let field = def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
+            hir_error!(span, UnknownField { struct_name, field: name.to_string() })
+        })?;
+
+        Ok((sym, field.typ))
     }
 
     /// This is used to resolve access chains like `x.y.z` or just `x` into
@@ -1322,21 +1149,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Expr::Identifier(name, ident_span) => {
                     let symbol = self.symbols.insert(name);
                     break self.resolve_local(symbol, *ident_span)?;
-                }
+                },
 
-                Expr::Field {
-                    expr: next, field, ..
-                } => {
+                Expr::Field { expr: next, field, .. } => {
                     fields.push(*field);
                     curr = next;
-                }
+                },
 
-                _ => {
-                    return Err(HirError {
-                        kind: HirErrorKind::InvalidFieldAccess,
-                        span,
-                    });
-                }
+                _ => return Err(hir_error!(span, InvalidFieldAccess)),
             }
         };
 
@@ -1346,51 +1166,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let mut field_symbols = Vec::with_capacity(fields.len());
 
         for (idx, &field_name) in fields.iter().enumerate() {
-            let struct_id = match current_type {
-                Type::Struct(id) => id,
-                Type::Ref {
-                    to: RefTarget::Struct(id),
-                    ..
-                } => id,
-                found => {
-                    return Err(HirError {
-                        kind: HirErrorKind::TypeMismatch {
-                            expected: Type::Struct(StructId::default()),
-                            found,
-                        },
-                        span,
-                    });
-                }
-            };
-
-            let field = self.symbols.insert(field_name);
-            let struct_def = &self[struct_id];
-            let name = self.symbols.get(struct_def.name);
-
-            let field_def = {
-                struct_def.fields.iter().find(|f| f.name == field).ok_or_else(|| HirError {
-                    kind: HirErrorKind::UnknownField {
-                        struct_name: name.to_string(),
-                        field: field_name.to_string(),
-                    },
-                    span,
-                })
-            }?;
-
-            current_type = field_def.typ;
-            field_symbols.push(field);
+            let (sym, typ) = self.lookup_field(current_type, field_name, span)?;
+            current_type = typ;
+            field_symbols.push(sym);
 
             let is_last = idx == fields.len() - 1;
-            #[rustfmt::skip]
-            let is_struct_to_struct = matches!(current_type, Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. });
-            if !is_last && !is_struct_to_struct {
-                return Err(HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(StructId::default()),
-                        found: current_type,
-                    },
-                    span,
-                });
+            let is_struct = matches!(
+                current_type,
+                Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. }
+            );
+
+            if !is_last && !is_struct {
+                let expected = Type::Struct(Default::default());
+                return Err(hir_error!(span, TypeMismatch { expected, found: current_type }));
             }
         }
 
@@ -1450,14 +1238,12 @@ pub(in crate::hir) fn lower_struct<'h>(
         Visit::Visited => return Ok(()),
         Visit::Visiting => {
             let (_, declaration) = declarations[id];
-            return Err(HirError {
-                kind: HirErrorKind::CircularStruct {
-                    name: declaration.name.to_string(),
-                },
-                span: declaration.span,
-            });
-        }
-        Visit::Unvisited => {}
+            return Err(hir_error!(
+                declaration.span,
+                CircularStruct { name: declaration.name.into() }
+            ));
+        },
+        Visit::Unvisited => {},
     }
 
     states[id] = Visit::Visiting;
@@ -1468,12 +1254,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     for (idx, field) in declaration.fields.iter().enumerate() {
         let field_symbol = symbols.get_id(field.name).unwrap();
         if !seen.insert(field_symbol) {
-            return Err(HirError {
-                kind: HirErrorKind::DuplicateField {
-                    name: field.name.to_string(),
-                },
-                span: field.span,
-            });
+            return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
         }
 
         let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
@@ -1490,13 +1271,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     }
 
     let (fields, size, align) = layout_fields(fields, lowered);
-    lowered[id] = Some(Struct {
-        id: StructId(id as u32),
-        name,
-        fields,
-        size,
-        align,
-    });
+    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, size, align });
     states[id] = Visit::Visited;
 
     Ok(())
@@ -1529,25 +1304,19 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             .get_id(name)
             .and_then(|symbol| struct_map.get(&symbol).copied())
             .map(Type::Struct)
-            .ok_or_else(|| HirError {
-                kind: HirErrorKind::UnknownType {
-                    name: name.to_string(),
-                },
-                span,
-            }),
+            .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
         statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
         statement::Type::RefSelf => self_type.map_or(
-            Ok(Type::Ref {
-                mutable: false,
-                to: RefTarget::SelfType,
-            }),
+            Ok(Type::Ref { mutable: false, to: RefTarget::SelfType }),
             |self_typ| {
-                let to = RefTarget::try_from(self_typ).map_err(|_| HirError {
-                    kind: HirErrorKind::TypeMismatch {
-                        expected: Type::Struct(Default::default()),
-                        found: self_typ,
-                    },
-                    span,
+                let to = RefTarget::try_from(self_typ).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::Struct(Default::default()),
+                            found: self_typ,
+                        }
+                    )
                 })?;
 
                 Ok(Type::Ref { mutable: false, to })

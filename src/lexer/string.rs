@@ -26,9 +26,8 @@ impl<'src> Tokenize<'src> for StringLiteral {
                 None | Some('\n') => {
                     // unterminated string.
                     let span = Span::new(start, cursor.position());
-                    return Err(LexError::new(LexErrorKind::UnterminatedString, span)
-                        .with_help("add a closing `\"` at the end of the string"));
-                }
+                    return Err(LexError::new(LexErrorKind::UnterminatedString, span));
+                },
 
                 Some('"') => {
                     let content_end = cursor.position().offset();
@@ -46,12 +45,11 @@ impl<'src> Tokenize<'src> for StringLiteral {
                                     invalid_escape_pos.column + 2,
                                 ),
                             ),
-                        )
-                        .with_help("valid escapes are: \\\\, \\\", \\n, \\t, \\r, \\0")),
+                        )),
 
                         _ => Ok(Token::new(TokenKind::String(content), span)),
                     };
-                }
+                },
 
                 Some('\\') => {
                     let esc_pos = cursor.position();
@@ -59,7 +57,7 @@ impl<'src> Tokenize<'src> for StringLiteral {
                     match cursor.peek() {
                         Some('\\' | '"' | 'n' | 't' | 'r' | '0') => {
                             cursor.advance();
-                        }
+                        },
 
                         Some(c) => {
                             if !has_invalid_escape {
@@ -69,19 +67,18 @@ impl<'src> Tokenize<'src> for StringLiteral {
                             }
 
                             cursor.advance();
-                        }
+                        },
 
                         None => {
                             let span = Span::new(start, cursor.position());
-                            return Err(LexError::new(LexErrorKind::UnterminatedString, span)
-                                .with_help("add a closing `\"` at the end of the string"));
-                        }
+                            return Err(LexError::new(LexErrorKind::UnterminatedString, span));
+                        },
                     }
-                }
+                },
 
                 Some(_) => {
                     cursor.advance();
-                }
+                },
             }
         }
     }

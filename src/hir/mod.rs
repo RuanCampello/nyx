@@ -330,7 +330,7 @@ impl Type {
                     structs[id.0 as usize].as_ref().expect("dependent struct is already lowered");
 
                 (definition.size, definition.align)
-            }
+            },
             Type::SelfType => unreachable!(),
         }
     }
@@ -433,10 +433,7 @@ impl From<&statement::Type<'_>> for Type {
             AstType::String => Type::String,
             AstType::Unit => Type::Unit,
             AstType::SelfType => Type::SelfType,
-            AstType::RefSelf => Type::Ref {
-                mutable: false,
-                to: RefTarget::SelfType,
-            },
+            AstType::RefSelf => Type::Ref { mutable: false, to: RefTarget::SelfType },
             AstType::Named(_) => unreachable!("already resolved by resolve_type"),
         }
     }
@@ -464,14 +461,18 @@ impl std::fmt::Display for Type {
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
             Type::SelfType => "Self",
             Type::Ref { mutable, to } => {
-                let prefix = if *mutable { "&mut " } else { "&" };
+                let prefix = if *mutable {
+                    "&mut "
+                } else {
+                    "&"
+                };
                 f.write_str(prefix)?;
                 return match to {
                     RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
                     RefTarget::SelfType => write!(f, "Self"),
                     other => write!(f, "{}", Type::from(*other)),
                 };
-            }
+            },
             Type::Unit => "unit",
         };
 
@@ -523,12 +524,7 @@ mod tests {
         let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(
-            err.kind,
-            HirErrorKind::UndeclaredIdentifier {
-                name: "x".to_string()
-            }
-        )
+        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "x".to_string() })
     }
 
     #[test]
@@ -575,13 +571,7 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Bool,
-                found: Type::I32
-            }
-        )
+        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 })
     }
 
     #[test]
@@ -644,13 +634,7 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Bool,
-                found: Type::I64
-            }
-        )
+        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I64 })
     }
 
     #[test]
@@ -666,10 +650,7 @@ mod tests {
 
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(
-            err.kind,
-            HirErrorKind::DuplicateFunction { name: "foo".into() }
-        );
+        assert_eq!(err.kind, HirErrorKind::DuplicateFunction { name: "foo".into() });
     }
 
     #[test]
@@ -687,11 +668,7 @@ mod tests {
 
         assert_eq!(
             err.kind,
-            HirErrorKind::ArityMismatch {
-                name: "nyx::add".into(),
-                expected: 2,
-                found: 3,
-            }
+            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 3 }
         );
     }
 
@@ -701,10 +678,7 @@ mod tests {
 
         let err = super::lower(statements).unwrap_err();
 
-        assert_eq!(
-            err.kind,
-            HirErrorKind::UnknownFunction { name: "foo".into() }
-        );
+        assert_eq!(err.kind, HirErrorKind::UnknownFunction { name: "foo".into() });
     }
 
     #[test]
@@ -722,13 +696,7 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Bool,
-                found: Type::I32
-            }
-        )
+        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 })
     }
 
     #[test]
@@ -777,7 +745,7 @@ mod tests {
             ExpressionKind::Call { args, .. } => {
                 assert_eq!(args.len(), 1);
                 &args[0]
-            }
+            },
             other => panic!("expected Call expression, got {other:?}"),
         };
         assert_eq!(arg.typ, Type::I64);
@@ -996,10 +964,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: Type::Iptr,
-                found: Type::Uptr,
-            }
+            HirErrorKind::TypeMismatch { expected: Type::Iptr, found: Type::Uptr }
         );
     }
 
@@ -1027,12 +992,7 @@ mod tests {
         let field_names: Vec<_> = layout
             .fields
             .iter()
-            .map(|field| {
-                (
-                    hir.symbols[field.name.0.into_usize()].as_str(),
-                    field.offset,
-                )
-            })
+            .map(|field| (hir.symbols[field.name.0.into_usize()].as_str(), field.offset))
             .collect();
         assert_eq!(field_names, vec![("b", 0), ("c", 8), ("a", 12)]);
 
@@ -1088,12 +1048,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::CircularStruct {
-                name: "A".to_string()
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::CircularStruct { name: "A".to_string() });
     }
 
     #[test]
@@ -1112,10 +1067,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::MissingField {
-                struct_name: "Point".to_string(),
-                field: "y".to_string(),
-            }
+            HirErrorKind::MissingField { struct_name: "Point".to_string(), field: "y".to_string() }
         );
     }
 
@@ -1126,10 +1078,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::UnknownField {
-                struct_name: "Point".to_string(),
-                field: "z".to_string(),
-            }
+            HirErrorKind::UnknownField { struct_name: "Point".to_string(), field: "z".to_string() }
         );
         assert_eq!(err.span.start.column, 23);
         assert_eq!(err.span.end.column, 26);
@@ -1140,12 +1089,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1,x:2};}";
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::DuplicateField {
-                name: "x".to_string(),
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::DuplicateField { name: "x".to_string() });
         assert_eq!(err.span.start.column, 27);
         assert_eq!(err.span.end.column, 30);
     }
@@ -1155,12 +1099,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1};p.x=2;}";
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::ImmutableBind {
-                name: "p".to_string(),
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "p".to_string() });
         assert_eq!(err.span.start.column, 28);
         assert_eq!(err.span.end.column, 31);
     }
@@ -1252,12 +1191,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::ImmutableBind {
-                name: "counter".to_string(),
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "counter".to_string() });
     }
 
     #[test]
@@ -1273,12 +1207,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::ImmutableBind {
-                name: "self".to_string(),
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "self".to_string() });
     }
 
     #[test]
@@ -1322,12 +1251,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::OrphanImpl {
-                name: "i64".to_string(),
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::OrphanImpl { name: "i64".to_string() });
     }
 
     #[test]
@@ -1411,15 +1335,11 @@ mod tests {
         };
         assert_eq!(ret_expr.typ, Type::I32);
         match &ret_expr.kind {
-            ExpressionKind::Binary {
-                left,
-                operator,
-                right,
-            } => {
+            ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
                 assert!(matches!(left.kind, ExpressionKind::Integer(10)));
                 assert!(matches!(right.kind, ExpressionKind::Integer(2)));
-            }
+            },
             other => panic!("expected Binary expression, got {other:?}"),
         };
     }
@@ -1446,12 +1366,7 @@ mod tests {
             fn main() {}
         "#;
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::DuplicateConstant {
-                name: "X".to_string()
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "X".to_string() });
     }
 
     #[test]
@@ -1465,12 +1380,7 @@ mod tests {
             fn main() {}
         "#;
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::DuplicateConstant {
-                name: "Dummy::VALUE".to_string()
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE".to_string() });
     }
 
     #[test]
@@ -1480,12 +1390,7 @@ mod tests {
             fn main() {}
         "#;
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::UndeclaredIdentifier {
-                name: "UNDEFINED".to_string()
-            }
-        );
+        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "UNDEFINED".to_string() });
     }
 
     #[test]

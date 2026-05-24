@@ -79,14 +79,14 @@ fn run_module_tests() {
                 errors.push(format!("{}: {}", test.name, err));
 
                 continue;
-            }
+            },
         };
 
         match compile_and_run(&entry, &project) {
             Ok(code) if code == test.exit_code => {
                 passed += 1;
                 println!("{}: exit code {}", test.name, code);
-            }
+            },
 
             Ok(code) => {
                 failed += 1;
@@ -95,14 +95,14 @@ fn run_module_tests() {
                     test.name, test.exit_code, code
                 );
                 errors.push(msg);
-            }
+            },
 
             Err(err) => {
                 failed += 1;
                 let msg = format!("{}: {}", test.name, err);
                 eprintln!("{msg}");
                 errors.push(msg);
-            }
+            },
         }
     }
 

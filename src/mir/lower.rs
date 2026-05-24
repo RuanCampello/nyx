@@ -180,11 +180,11 @@ impl<'a> FunctionLower<'a> {
                         self.emit(dest, InstructionKind::Assign(src));
                     }
                 }
-            }
+            },
 
             Stmt::Expr(expr) => {
                 self.lower_expr(expr)?;
-            }
+            },
 
             Stmt::Return(value) => {
                 let operand = value.as_ref().map(|e| self.lower_expr(e)).transpose()?;
@@ -196,13 +196,9 @@ impl<'a> FunctionLower<'a> {
                 } else {
                     self.terminate(Terminator::Return(operand));
                 }
-            }
+            },
 
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            Stmt::If { condition, then_block, else_block } => {
                 let condition = self.lower_expr(condition)?;
 
                 let then_id = self.new_block();
@@ -231,7 +227,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.switch_to(merge_id);
-            }
+            },
 
             Stmt::While { condition, body } => {
                 // cfg shape:
@@ -261,11 +257,11 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.switch_to(exit_id);
-            }
+            },
 
             Stmt::Block(inner) => {
                 self.lower_block(inner)?;
-            }
+            },
         }
 
         Ok(())
@@ -282,11 +278,11 @@ impl<'a> FunctionLower<'a> {
                 let id = self.intern_string(s);
                 let len = s.len();
                 Ok(Operand::Const(Const::Str { id, len }))
-            }
+            },
 
             ExpressionKind::Local(local_id) => {
                 Ok(Operand::Place(self.place_for_local(*local_id, expr.typ)))
-            }
+            },
 
             ExpressionKind::Cast { from, to } => {
                 let src = self.lower_expr(from)?;
@@ -295,12 +291,9 @@ impl<'a> FunctionLower<'a> {
                 self.emit(dest, InstructionKind::Cast { src, typ: *to });
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
-            ExpressionKind::Unary {
-                operator,
-                expr: inner,
-            } => {
+            ExpressionKind::Unary { operator, expr: inner } => {
                 use crate::parser::expression::UnaryOperator;
 
                 let rhs = self.lower_expr(inner)?;
@@ -320,28 +313,17 @@ impl<'a> FunctionLower<'a> {
                 };
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
-            ExpressionKind::Binary {
-                operator,
-                left,
-                right,
-            } => {
+            ExpressionKind::Binary { operator, left, right } => {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Binary {
-                        operation: *operator,
-                        lhs,
-                        rhs,
-                    },
-                );
+                self.emit(dest, InstructionKind::Binary { operation: *operator, lhs, rhs });
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Assign { target, value } => {
                 self.constant_locals[target.0 as usize] = self.capture_constant_expr(value);
@@ -355,7 +337,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 Ok(src)
-            }
+            },
 
             ExpressionKind::Call { function, args, .. } => {
                 let mut lowered_args = Vec::with_capacity(args.len());
@@ -365,13 +347,9 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.emit_call(*function, lowered_args, expr.typ)
-            }
+            },
 
-            ExpressionKind::MethodCall {
-                function,
-                receiver,
-                args,
-            } => {
+            ExpressionKind::MethodCall { function, receiver, args } => {
                 let receiver_place = self.fresh_temporary(receiver.typ);
 
                 if let Some(local_id) = receiver.local {
@@ -395,14 +373,14 @@ impl<'a> FunctionLower<'a> {
                     match matches!(val_type, Type::Ref { .. }) {
                         true => {
                             self.emit(receiver_place, InstructionKind::Assign(lowered_receiver))
-                        }
+                        },
                         _ => {
                             let receiver_val_place = self.fresh_temporary(val_type);
                             #[rustfmt::skip]
                             self.emit(receiver_val_place, InstructionKind::Assign(lowered_receiver));
                             #[rustfmt::skip]
                             self.emit( receiver_place, InstructionKind::AddressOf { src: receiver_val_place, offset: 0 });
-                        }
+                        },
                     }
                 }
 
@@ -414,7 +392,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 self.emit_call(*function, lowered_args, expr.typ)
-            }
+            },
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
                 use crate::hir::Intrinsic;
@@ -436,13 +414,13 @@ impl<'a> FunctionLower<'a> {
                         }
 
                         Ok(Operand::Const(Const::Unit))
-                    }
+                    },
 
                     Intrinsic::Syscall => {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
-                    }
+                    },
                 }
-            }
+            },
 
             ExpressionKind::Syscall { code, args } => {
                 let lowered_args =
@@ -451,15 +429,11 @@ impl<'a> FunctionLower<'a> {
 
                 self.emit(
                     dest,
-                    InstructionKind::Syscall {
-                        code: *code,
-                        args: lowered_args,
-                        returns: true,
-                    },
+                    InstructionKind::Syscall { code: *code, args: lowered_args, returns: true },
                 );
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::Struct { id, fields } => {
                 let dest = self.fresh_temporary(Type::Struct(*id));
@@ -478,7 +452,7 @@ impl<'a> FunctionLower<'a> {
                 }
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
             ExpressionKind::FieldAccess { local, fields, .. } => {
                 let origin = self.place_for_local(*local, self.local_type(*local));
@@ -487,21 +461,13 @@ impl<'a> FunctionLower<'a> {
                 let dest = self.fresh_temporary(typ);
                 self.emit(
                     dest,
-                    InstructionKind::FieldLoad {
-                        src: Operand::Place(origin),
-                        offset,
-                        typ,
-                    },
+                    InstructionKind::FieldLoad { src: Operand::Place(origin), offset, typ },
                 );
 
                 Ok(Operand::Place(dest))
-            }
+            },
 
-            ExpressionKind::FieldAssign {
-                local,
-                fields,
-                value,
-            } => {
+            ExpressionKind::FieldAssign { local, fields, value } => {
                 let value = self.lower_expr(value)?;
                 let origin = self.place_for_local(*local, self.local_type(*local));
                 let (offset, typ) = self.field_path_info(origin.typ, fields);
@@ -510,7 +476,7 @@ impl<'a> FunctionLower<'a> {
                 self.emit(origin, InstructionKind::FieldStore { value, offset });
 
                 Ok(value)
-            }
+            },
         }
     }
 
@@ -527,10 +493,7 @@ impl<'a> FunctionLower<'a> {
         for &sym in fields {
             let sid = match current_type {
                 Type::Struct(sid) => sid,
-                Type::Ref {
-                    to: RefTarget::Struct(sid),
-                    ..
-                } => sid,
+                Type::Ref { to: RefTarget::Struct(sid), .. } => sid,
                 _ => unreachable!("field projection on non-struct"),
             };
 
@@ -559,10 +522,7 @@ impl<'a> FunctionLower<'a> {
 
     #[inline(always)]
     fn place_for_local(&self, local_id: LocalId, typ: Type) -> Place {
-        Place {
-            id: self.local_map[local_id.0 as usize],
-            typ,
-        }
+        Place { id: self.local_map[local_id.0 as usize], typ }
     }
 
     #[inline(always)]
@@ -614,7 +574,7 @@ impl<'a> FunctionLower<'a> {
                 if let Some(text) = self.capture_constant_expr(expr) {
                     output.push_str(&text);
                 }
-            }
+            },
         }
     }
 
@@ -659,7 +619,7 @@ impl<'a> FunctionLower<'a> {
                         output.push('{');
                         output.push_str(&name);
                         output.push('}');
-                    }
+                    },
                 }
             } else {
                 output.push('{');
@@ -711,16 +671,10 @@ impl<'a> FunctionLower<'a> {
             _ => {
                 let dest = self.fresh_temporary(return_type.unwrap_unit());
 
-                self.emit(
-                    dest,
-                    InstructionKind::Call {
-                        callee: callee_id,
-                        args: lowered_args,
-                    },
-                );
+                self.emit(dest, InstructionKind::Call { callee: callee_id, args: lowered_args });
 
                 Ok(Operand::Place(dest))
-            }
+            },
         }
     }
 
@@ -750,10 +704,7 @@ impl<'a> FunctionLower<'a> {
         // emit assignment of arguments to callee parameters
         for (param, arg_operand) in callee.params.iter().zip(lowered_args) {
             let dest_val_id = callee_local_map[param.id.0 as usize];
-            let dest_place = Place {
-                id: dest_val_id,
-                typ: param.typ,
-            };
+            let dest_place = Place { id: dest_val_id, typ: param.typ };
             self.emit(dest_place, InstructionKind::Assign(arg_operand));
         }
 
@@ -768,10 +719,8 @@ impl<'a> FunctionLower<'a> {
             &mut self.local_symbols,
             callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
         );
-        let old_inlined_return_target = replace(
-            &mut self.inlined_return_target,
-            Some((exit_block_id, inline_ret_place)),
-        );
+        let old_inlined_return_target =
+            replace(&mut self.inlined_return_target, Some((exit_block_id, inline_ret_place)));
 
         self.lower_block(&callee.body)?;
 
@@ -803,11 +752,7 @@ impl<'a> FunctionLower<'a> {
 
 impl PartialBlock {
     fn new(id: BlockId) -> Self {
-        Self {
-            id,
-            instructions: Vec::new(),
-            terminator: None,
-        }
+        Self { id, instructions: Vec::new(), terminator: None }
     }
 
     #[inline(always)]
@@ -838,25 +783,21 @@ fn visit_block_runtime_uses(block: &hir::Block, uses: &mut [bool]) {
                 if let Some(init) = init {
                     visit_expr_runtime_uses(init, uses);
                 }
-            }
+            },
             hir::Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
             hir::Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
-            hir::Statement::Return(None) => {}
-            hir::Statement::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+            hir::Statement::Return(None) => {},
+            hir::Statement::If { condition, then_block, else_block } => {
                 visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(then_block, uses);
                 if let Some(else_block) = else_block {
                     visit_block_runtime_uses(else_block, uses);
                 }
-            }
+            },
             hir::Statement::While { condition, body } => {
                 visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(body, uses);
-            }
+            },
             hir::Statement::Block(block) => visit_block_runtime_uses(block, uses),
         }
     }
@@ -867,24 +808,24 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
         ExpressionKind::Local(id) => uses[id.0 as usize] = true,
         ExpressionKind::Unary { expr, .. } | ExpressionKind::Cast { from: expr, .. } => {
             visit_expr_runtime_uses(expr, uses)
-        }
+        },
         ExpressionKind::Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
-        }
+        },
         ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
         ExpressionKind::Struct { fields, .. } => {
             for (_, value) in fields {
                 visit_expr_runtime_uses(value, uses);
             }
-        }
+        },
         ExpressionKind::Call { args, .. }
         | ExpressionKind::IntrinsicCall { args, .. }
         | ExpressionKind::Syscall { args, .. } => {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
-        }
+        },
         ExpressionKind::MethodCall { receiver, args, .. } => {
             if let Some(local_id) = receiver.local {
                 uses[local_id.0 as usize] = true;
@@ -894,18 +835,18 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut [bool]) {
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
-        }
+        },
         ExpressionKind::FieldAccess { local, .. } => uses[local.0 as usize] = true,
         ExpressionKind::FieldAssign { local, value, .. } => {
             uses[local.0 as usize] = true;
             visit_expr_runtime_uses(value, uses);
-        }
+        },
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
         | ExpressionKind::Float(_)
         | ExpressionKind::String(_)
         | ExpressionKind::Char(_)
-        | ExpressionKind::Bool(_) => {}
+        | ExpressionKind::Bool(_) => {},
     }
 }
 

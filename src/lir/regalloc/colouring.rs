@@ -98,11 +98,7 @@ impl Interference {
             .map(|location| location.expect("every VReg must receive a location"))
             .collect();
 
-        Allocation {
-            locations,
-            frame_size,
-            used_callee_saved,
-        }
+        Allocation { locations, frame_size, used_callee_saved }
     }
 
     fn colour_group<T: Target>(
@@ -177,7 +173,7 @@ impl Interference {
                     let slot = slot_bytes(v, vreg_types) as i32;
                     *spill_offset -= slot;
                     Location::Stack(*spill_offset)
-                }
+                },
             };
 
             locations[v.0 as usize] = Some(location);

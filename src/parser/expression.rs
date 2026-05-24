@@ -143,24 +143,20 @@ impl<'i> Expression<'i> {
                             ParseErrorKind::InvalidUnaryOperator { found: token.kind },
                             token.span,
                         ));
-                    }
+                    },
                 };
 
                 let expr = Self::parse_expr(parser, 11)?;
                 let span = token.span + expr.span();
 
-                Ok(Expression::Unary {
-                    operator,
-                    expr: Box::new(expr),
-                    span,
-                })
-            }
+                Ok(Expression::Unary { operator, expr: Box::new(expr), span })
+            },
 
             TokenKind::Punct(Punct::OpenParen) => {
                 let expr = parser.parse_node::<Expression<'i>>()?;
                 parser.expect_token(Punct::CloseParen)?;
                 Ok(expr)
-            }
+            },
 
             _ => Err(ParserError::new(
                 ParseErrorKind::ExpectedExpression { found: token.kind },
@@ -188,12 +184,12 @@ impl<'i> Expression<'i> {
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                     return make_struct(parser, fields);
-                }
+                },
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
                     return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                }
+                },
                 Some(Err(err)) => return Err(err.into()),
-                _ => {}
+                _ => {},
             }
 
             if !fields.is_empty() {
@@ -203,8 +199,8 @@ impl<'i> Expression<'i> {
                 match parser.peek() {
                     Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                         return make_struct(parser, fields);
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
 
@@ -254,12 +250,8 @@ impl<'i> Expression<'i> {
                 let (field, span) = parser.expect_identifier()?;
                 let span = left.span() + span;
 
-                Ok(Expression::Field {
-                    expr: Box::new(left),
-                    field,
-                    span,
-                })
-            }
+                Ok(Expression::Field { expr: Box::new(left), field, span })
+            },
             TokenKind::Punct(Punct::ColonColon) => {
                 let (name, name_span) = parser.expect_identifier()?;
 
@@ -299,7 +291,7 @@ impl<'i> Expression<'i> {
                                         ParseErrorKind::UnexpectedEof,
                                         name_span,
                                     ));
-                                }
+                                },
                             };
 
                             if matches!(peeked.kind, TokenKind::Punct(Punct::CloseParen)) {
@@ -316,13 +308,8 @@ impl<'i> Expression<'i> {
                         }
 
                         let span = left.span() + end_span;
-                        Ok(Expression::QualifiedCall {
-                            qualifier,
-                            name,
-                            args,
-                            span,
-                        })
-                    }
+                        Ok(Expression::QualifiedCall { qualifier, name, args, span })
+                    },
 
                     _ => {
                         let Expression::Identifier(qualifier, _) = left else {
@@ -332,14 +319,10 @@ impl<'i> Expression<'i> {
                             ));
                         };
                         let span = left.span() + name_span;
-                        Ok(Expression::QualifiedName {
-                            qualifier,
-                            name,
-                            span,
-                        })
-                    }
+                        Ok(Expression::QualifiedName { qualifier, name, span })
+                    },
                 }
-            }
+            },
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left {
                     if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
@@ -347,12 +330,7 @@ impl<'i> Expression<'i> {
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
                         let span = left.span() + end_span;
 
-                        return Ok(Expression::TypeIntrinsic {
-                            kind,
-                            qualifier: None,
-                            typ,
-                            span,
-                        });
+                        return Ok(Expression::TypeIntrinsic { kind, qualifier: None, typ, span });
                     }
                 }
 
@@ -368,7 +346,7 @@ impl<'i> Expression<'i> {
                                 ParseErrorKind::UnexpectedEof,
                                 token.span,
                             ));
-                        }
+                        },
                     };
 
                     if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
@@ -380,19 +358,15 @@ impl<'i> Expression<'i> {
                         true => first = false,
                         _ => {
                             parser.expect_token(Punct::Comma)?;
-                        }
+                        },
                     };
 
                     args.push(parser.parse_node::<Expression>()?)
                 }
 
                 let span = Span::new(left.span().start, end_position);
-                Ok(Expression::Call {
-                    callee: Box::new(left),
-                    args,
-                    span,
-                })
-            }
+                Ok(Expression::Call { callee: Box::new(left), args, span })
+            },
 
             TokenKind::Punct(Punct::Eq) => {
                 let right = Self::parse_expr(parser, precedence - 1)?;
@@ -405,25 +379,18 @@ impl<'i> Expression<'i> {
                             value: Box::new(right),
                             span,
                         })
-                    }
+                    },
 
-                    _ => Err(ParserError::new(
-                        ParseErrorKind::UnexpectedIdentifier,
-                        left.span(),
-                    )),
+                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
                 }
-            }
+            },
 
             TokenKind::Keyword(Keyword::As) => {
                 let target_type = Spanned::<Type>::parse(parser)?;
                 let span = left.span() + target_type.span();
 
-                Ok(Expression::Cast {
-                    expr: Box::new(left),
-                    target_type,
-                    span,
-                })
-            }
+                Ok(Expression::Cast { expr: Box::new(left), target_type, span })
+            },
 
             _ => {
                 let operator = match token.kind {
@@ -449,7 +416,7 @@ impl<'i> Expression<'i> {
                             ParseErrorKind::InvalidBinaryOperator { found: token.kind },
                             token.span,
                         ));
-                    }
+                    },
                 };
 
                 let right = Self::parse_expr(parser, precedence)?;
@@ -461,7 +428,7 @@ impl<'i> Expression<'i> {
                     right: Box::new(right),
                     span,
                 })
-            }
+            },
         }
     }
 

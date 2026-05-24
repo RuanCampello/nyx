@@ -46,10 +46,9 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     fs: &F,
     arena: &'src super::arena::SourceArena,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
-    let canonical = fs.canonicalise(entry).map_err(|_| ModuleError::FileNotFound {
-        path: entry.into(),
-        span: None,
-    })?;
+    let canonical = fs
+        .canonicalise(entry)
+        .map_err(|_| ModuleError::FileNotFound { path: entry.into(), span: None })?;
 
     let mut builder = GraphBuilder {
         resolver,
@@ -64,11 +63,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     let entry = builder.discover(canonical, None)?;
     builder.discover_prelude()?;
 
-    Ok(ModuleGraph {
-        nodes: builder.nodes,
-        edges: builder.edges,
-        entry,
-    })
+    Ok(ModuleGraph { nodes: builder.nodes, edges: builder.edges, entry })
 }
 
 impl<'src> ModuleGraph<'src> {

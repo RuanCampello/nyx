@@ -113,7 +113,11 @@ impl Function<X86_64> {
         label!(out, ".section .rodata");
         for (bits, label) in &self.floats {
             let is_32 = label.contains("_f32_");
-            let align = if is_32 { 4 } else { 8 };
+            let align = if is_32 {
+                4
+            } else {
+                8
+            };
 
             label!(out, ".align {align}");
             label!(out, "{label}:");
@@ -144,7 +148,7 @@ impl Function<X86_64> {
                 let src = self.operand(alloc, src, bytes);
 
                 mov_or_scratch(out, &src, &dest, suffix, false);
-            }
+            },
 
             Inst::MovFloat { dest, src, bytes } => {
                 let suffix = float_suffix(bytes);
@@ -152,38 +156,29 @@ impl Function<X86_64> {
                 let src = self.operand(alloc, src, bytes);
 
                 mov_or_scratch(out, &src, &dest, suffix, true);
-            }
+            },
 
-            Inst::MovFromStack {
-                dest,
-                rbp_offset,
-                bytes,
-            } => {
+            Inst::MovFromStack { dest, rbp_offset, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 emit!(out, "mov{suffix}    {rbp_offset}(%rbp), {dest}");
-            }
+            },
 
             Inst::Lea { dest, src } => {
                 let dest = alloc.location(dest, &8);
                 let src = self.operand(alloc, src, &8);
 
                 emit!(out, "leaq   {src}, {dest}");
-            }
+            },
 
             Inst::StackAddr { dest, origin } => {
                 let dest = alloc.location(dest, &8);
                 let offset = alloc.struct_offset(origin);
 
                 emit!(out, "leaq   {offset}(%rbp), {dest}");
-            }
+            },
 
-            Inst::Movzx {
-                dest,
-                src,
-                src_bytes,
-                dest_bytes,
-            } => {
+            Inst::Movzx { dest, src, src_bytes, dest_bytes } => {
                 let dest_loc = alloc.location(dest, dest_bytes);
                 let src_op = self.operand(alloc, src, src_bytes);
 
@@ -194,11 +189,11 @@ impl Function<X86_64> {
                         true => {
                             emit!(out, "movl    {src_op}, %r11d");
                             emit!(out, "movq    %r11, {dest_loc}");
-                        }
+                        },
                         false => {
                             let dest_32 = alloc.location(dest, &4);
                             emit!(out, "movl    {src_op}, {dest_32}");
-                        }
+                        },
                     }
                 } else {
                     let name = zx_instr_name(*src_bytes, *dest_bytes);
@@ -208,18 +203,13 @@ impl Function<X86_64> {
                             emit!(out, "{name}   {src_op}, {scratch}");
                             let dest_suffix = suffix(dest_bytes);
                             emit!(out, "mov{dest_suffix}    {scratch}, {dest_loc}");
-                        }
+                        },
                         _ => emit!(out, "{name}   {src_op}, {dest_loc}"),
                     }
                 }
-            }
+            },
 
-            Inst::Movsx {
-                dest,
-                src,
-                src_bytes,
-                dest_bytes,
-            } => {
+            Inst::Movsx { dest, src, src_bytes, dest_bytes } => {
                 let dest_loc = alloc.location(dest, dest_bytes);
                 let src_op = self.operand(alloc, src, src_bytes);
 
@@ -232,15 +222,9 @@ impl Function<X86_64> {
                 } else {
                     emit!(out, "{name}   {src_op}, {dest_loc}");
                 }
-            }
+            },
 
-            Inst::FieldLoad {
-                dest,
-                origin,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            Inst::FieldLoad { dest, origin, offset, bytes, is_float } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let dest = alloc.location(dest, bytes);
@@ -248,15 +232,9 @@ impl Function<X86_64> {
                 let suffix = typed_suffix(bytes, *is_float);
 
                 emit!(out, "mov{suffix}    {offset}(%rbp), {dest}");
-            }
+            },
 
-            Inst::FieldStore {
-                origin,
-                src,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            Inst::FieldStore { origin, src, offset, bytes, is_float } => {
                 let origin_offset = alloc.struct_offset(origin);
                 let offset = origin_offset + offset;
                 let src = self.operand(alloc, src, bytes);
@@ -269,29 +247,27 @@ impl Function<X86_64> {
                         true => {
                             emit!(out, "mov{suffix}    {src}, %xmm15");
                             emit!(out, "mov{suffix}    %xmm15, {offset}(%rbp)");
-                        }
+                        },
                         false => emit!(out, "mov{suffix}   {src}, {offset}(%rbp)"),
                     },
 
                     false => match need_scratch {
                         true => {
-                            let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                            let scratch = if *bytes == 8 {
+                                "%r11"
+                            } else {
+                                "%r11d"
+                            };
                             emit!(out, "mov{suffix}    {src}, {scratch}");
                             emit!(out, "mov{suffix}    {scratch}, {offset}(%rbp)");
-                        }
+                        },
 
                         false => emit!(out, "mov{suffix}    {src}, {offset}(%rbp)"),
                     },
                 }
-            }
+            },
 
-            Inst::PtrLoad {
-                dest,
-                ptr,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            Inst::PtrLoad { dest, ptr, offset, bytes, is_float } => {
                 let ptr = alloc.location(ptr, &8);
                 let dest = alloc.location(dest, bytes);
                 let suffix = typed_suffix(bytes, *is_float);
@@ -300,18 +276,12 @@ impl Function<X86_64> {
                     true => {
                         emit!(out, "movq    {ptr}, %r11");
                         emit!(out, "mov{suffix}    {offset}(%r11), {dest}");
-                    }
+                    },
                     false => emit!(out, "mov{suffix}    {offset}({ptr}), {dest}"),
                 }
-            }
+            },
 
-            Inst::PtrStore {
-                ptr,
-                src,
-                offset,
-                bytes,
-                is_float,
-            } => {
+            Inst::PtrStore { ptr, src, offset, bytes, is_float } => {
                 let ptr = alloc.location(ptr, &8);
                 let src = self.operand(alloc, src, bytes);
                 let suffix = typed_suffix(bytes, *is_float);
@@ -327,29 +297,37 @@ impl Function<X86_64> {
                         emit!(out, "movq    {ptr}, %r11");
                         emit!(out, "mov{suffix}    {src}, %xmm15");
                         emit!(out, "mov{suffix}    %xmm15, {offset}(%r11)");
-                    }
+                    },
                     (true, true, false) => {
                         emit!(out, "movq    {ptr}, %r10");
-                        let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                        let scratch = if *bytes == 8 {
+                            "%r11"
+                        } else {
+                            "%r11d"
+                        };
                         emit!(out, "mov{suffix}    {src}, {scratch}");
                         emit!(out, "mov{suffix}    {scratch}, {offset}(%r10)");
-                    }
+                    },
                     (true, false, _) => {
                         emit!(out, "movq    {ptr}, %r11");
                         emit!(out, "mov{suffix}    {src}, {offset}(%r11)");
-                    }
+                    },
                     (false, true, true) => {
                         emit!(out, "mov{suffix}    {src}, %xmm15");
                         emit!(out, "mov{suffix}    %xmm15, {offset}({ptr})");
-                    }
+                    },
                     (false, true, false) => {
-                        let scratch = if *bytes == 8 { "%r11" } else { "%r11d" };
+                        let scratch = if *bytes == 8 {
+                            "%r11"
+                        } else {
+                            "%r11d"
+                        };
                         emit!(out, "mov{suffix}    {src}, {scratch}");
                         emit!(out, "mov{suffix}    {scratch}, {offset}({ptr})");
-                    }
+                    },
                     (false, false, _) => emit!(out, "mov{suffix}    {src}, {offset}({ptr})"),
                 }
-            }
+            },
 
             Inst::Add { dest, src, bytes }
             | Inst::Sub { dest, src, bytes }
@@ -368,10 +346,10 @@ impl Function<X86_64> {
                 match instruction {
                     Inst::Add { .. } | Inst::AddFloat { .. } => {
                         emit!(out, "add{suffix}    {src}, {dest}")
-                    }
+                    },
                     Inst::Sub { .. } | Inst::SubFloat { .. } => {
                         emit!(out, "sub{suffix}    {src}, {dest}")
-                    }
+                    },
                     Inst::Imul { .. } => emit!(out, "imul{suffix}    {src}, {dest}"),
                     Inst::MulFloat { .. } => emit!(out, "mul{suffix}    {src}, {dest}"),
                     Inst::DivFloat { .. } => emit!(out, "div{suffix}    {src}, {dest}"),
@@ -381,21 +359,21 @@ impl Function<X86_64> {
 
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
-            }
+            },
 
             Inst::Neg { dest, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
 
                 emit!(out, "neg{suffix}    {dest}");
-            }
+            },
 
             Inst::Not { dest, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
 
                 emit!(out, "not{suffix}    {dest}");
-            }
+            },
 
             #[rustfmt::skip]
             Inst::Shl { dest, src, bytes, .. }
@@ -411,15 +389,9 @@ impl Function<X86_64> {
                     Inst::Sar { .. } => emit!(out, "sar{suffix}    {src}, {dest}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
-            }
+            },
 
-            Inst::IDiv {
-                result,
-                dividend,
-                divisor,
-                bytes,
-                ..
-            } => {
+            Inst::IDiv { result, dividend, divisor, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let rax = format!("%{}", X86Reg::Rax.name(*bytes));
                 let extend = match bytes {
@@ -444,30 +416,32 @@ impl Function<X86_64> {
                         emit!(out, "mov{suffix}    {div}, (%rsp)");
                         emit!(out, "idiv{suffix}    (%rsp)");
                         emit!(out, "addq    $8, %rsp");
-                    }
+                    },
 
                     _ => {
                         let div = self.operand(alloc, divisor, bytes);
                         emit!(out, "idiv{suffix}    {div}");
-                    }
+                    },
                 }
 
                 if result != rax {
                     emit!(out, "mov{suffix}    {rax}, {result}");
                 }
-            }
+            },
 
             Inst::XorFloat { dest, src, bytes } => {
-                let operand = if *bytes == 4 { "xorps" } else { "xorpd" };
+                let operand = if *bytes == 4 {
+                    "xorps"
+                } else {
+                    "xorpd"
+                };
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
 
                 emit!(out, "{operand}   {src}, {dest}");
-            }
+            },
 
-            Inst::Ucomis {
-                lhs, rhs, bytes, ..
-            } => {
+            Inst::Ucomis { lhs, rhs, bytes, .. } => {
                 let suffix = float_suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -475,20 +449,15 @@ impl Function<X86_64> {
                 // xmm15 is reserved scratch; safe to clobber here
                 emit!(out, "mov{suffix}    {lhs}, %xmm15");
                 emit!(out, "ucomi{suffix}  {rhs}, %xmm15");
-            }
+            },
 
             Inst::Setcc { dest, condition } => {
                 let dest = alloc.location(dest, &1);
 
                 emit!(out, "set{}  {dest}", condition.as_str())
-            }
+            },
 
-            Inst::Test {
-                lhs, rhs, bytes, ..
-            }
-            | Inst::Cmp {
-                lhs, rhs, bytes, ..
-            } => {
+            Inst::Test { lhs, rhs, bytes, .. } | Inst::Cmp { lhs, rhs, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -497,15 +466,9 @@ impl Function<X86_64> {
                     true => emit!(out, "cmp{suffix}    {rhs}, {lhs}"),
                     _ => emit!(out, "test{suffix}    {rhs}, {lhs}"),
                 }
-            }
+            },
 
-            Inst::Call {
-                target,
-                moves,
-                ret,
-                stack_args,
-                ..
-            } => {
+            Inst::Call { target, moves, ret, stack_args, .. } => {
                 let n_stack = stack_args.len();
 
                 if n_stack > 0 {
@@ -522,19 +485,19 @@ impl Function<X86_64> {
                                     _ => {
                                         emit!(out, "movabsq ${n}, %r11");
                                         emit!(out, "movq    %r11, {dest}");
-                                    }
+                                    },
                                 }
-                            }
+                            },
                             X86Operand::RipRel(label) => match is_float {
                                 true => {
                                     let suffix = float_suffix(&bytes);
                                     emit!(out, "mov{suffix}    {label}, %xmm15");
                                     emit!(out, "mov{suffix}    %xmm15, {dest}");
-                                }
+                                },
                                 false => {
                                     emit!(out, "leaq    {label}, %r11");
                                     emit!(out, "movq    %r11, {dest}");
-                                }
+                                },
                             },
                             X86Operand::VReg(vreg) => {
                                 let src = alloc.location(vreg, &bytes);
@@ -546,31 +509,31 @@ impl Function<X86_64> {
                                             true => {
                                                 emit!(out, "mov{suffix}    {src}, %xmm15");
                                                 emit!(out, "mov{suffix}    %xmm15, {dest}");
-                                            }
+                                            },
 
                                             _ => emit!(out, "mov{suffix}    {src}, {dest}"),
                                         }
-                                    }
+                                    },
                                     false => {
                                         let suffix = suffix(&bytes);
                                         match bytes < 8 {
                                             true => {
                                                 emit!(out, "movs{suffix}q   {src}, %r11");
                                                 emit!(out, "movq    %r11, {dest}");
-                                            }
+                                            },
                                             _ => match src.contains("(%rbp)") {
                                                 true => {
                                                     emit!(out, "movq    {src}, %r11");
                                                     emit!(out, "movq    %r11, {dest}");
-                                                }
+                                                },
                                                 _ => {
                                                     emit!(out, "movq    {src}, {dest}");
-                                                }
+                                                },
                                             },
                                         }
-                                    }
+                                    },
                                 }
-                            }
+                            },
                         }
                     }
                 }
@@ -627,14 +590,9 @@ impl Function<X86_64> {
                         mov_or_scratch(out, &src, &dest, suffix, is_float);
                     }
                 }
-            }
+            },
 
-            Inst::Syscall {
-                id: syscall_id,
-                moves,
-                ret,
-                ..
-            } => {
+            Inst::Syscall { id: syscall_id, moves, ret, .. } => {
                 for (operand, reg, bytes) in moves {
                     let dest = format!("%{}", reg.name(*bytes));
 
@@ -644,7 +602,7 @@ impl Function<X86_64> {
                             let src = self.operand(alloc, operand, bytes);
                             let suffix = suffix(bytes);
                             mov_or_scratch(out, &src, &dest, suffix, false);
-                        }
+                        },
                     }
                 }
 
@@ -660,7 +618,7 @@ impl Function<X86_64> {
 
                     mov_or_scratch(out, &src, &dest, suffix, is_float);
                 }
-            }
+            },
         }
     }
 
@@ -675,14 +633,10 @@ impl Function<X86_64> {
     ) {
         match term {
             Term::Return(None) if !is_last => emit!(out, "jmp       {epilogue}"),
-            Term::Return(None) => {}
+            Term::Return(None) => {},
             Term::Jump(block) => emit!(out, "jmp      .L_block_{name}_{}", block.0),
 
-            Term::Branch {
-                cond,
-                then_block,
-                else_block,
-            } => {
+            Term::Branch { cond, then_block, else_block } => {
                 let bytes = self.reg_bytes(cond);
                 let condition = alloc.location(cond, &bytes);
                 let suffix = suffix(&bytes);
@@ -697,12 +651,12 @@ impl Function<X86_64> {
                         };
                         emit!(out, "mov{suffix}    {condition}, {scratch}");
                         emit!(out, "test{suffix}    {scratch}, {scratch}");
-                    }
+                    },
                     _ => emit!(out, "test{suffix}    {condition}, {condition}"),
                 }
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
-            }
+            },
 
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
@@ -723,7 +677,7 @@ impl Function<X86_64> {
                 if !is_last {
                     emit!(out, "jmp        {epilogue}");
                 }
-            }
+            },
         }
     }
 
@@ -734,10 +688,7 @@ impl Function<X86_64> {
 
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
-        matches!(
-            self.vreg_types.get(vreg.0 as usize),
-            Some(MachineType::Float { .. })
-        )
+        matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
     }
 
     #[inline(always)]
@@ -760,10 +711,9 @@ impl Allocation<X86_64> {
     fn location(&self, vreg: &VReg, bytes: &u8) -> String {
         match self.location_of(vreg) {
             Location::Reg(reg) => format!("%{}", reg.name(*bytes)),
-            Location::Stack(offset) => format!(
-                "{}(%rbp)",
-                offset - (self.used_callee_saved.len() as i32 * 8)
-            ),
+            Location::Stack(offset) => {
+                format!("{}(%rbp)", offset - (self.used_callee_saved.len() as i32 * 8))
+            },
         }
     }
 
@@ -819,13 +769,13 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
             true => {
                 emit!(out, "mov{suffix}    {src}, %xmm15");
                 emit!(out, "mov{suffix}    %xmm15, {dest}");
-            }
+            },
 
             false => {
                 let scratch = scratch_gpr(suffix);
                 emit!(out, "mov{suffix}    {src}, {scratch}");
                 emit!(out, "mov{suffix}    {scratch}, {dest}");
-            }
+            },
         },
 
         false => emit!(out, "mov{suffix}    {src}, {dest}"),

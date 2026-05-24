@@ -217,12 +217,12 @@ pub fn resolve_parallel_moves<Reg, Ctx, FMove, FCycle>(
             Some(i) => {
                 let m = moves.swap_remove(i);
                 emit_move(ctx, m);
-            }
+            },
             None if moves.is_empty() => break,
             None => {
                 // in cycle, save first source to scratch, breaking the dependency
                 emit_cycle_break(ctx, &mut moves[0]);
-            }
+            },
         }
     }
 }

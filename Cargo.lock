@@ -389,6 +389,16 @@ dependencies = [
  "criterion",
  "lasso",
  "libloading",
+ "nyx_macros",
+]
+
+[[package]]
+name = "nyx_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
