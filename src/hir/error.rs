@@ -15,7 +15,7 @@ pub struct HirError<'h> {
 #[derive(Debug, Clone, PartialEq, Diagnostic)]
 #[rustfmt::skip]
 pub enum HirErrorKind<'h> {
-    #[diagnostic(custom)]
+    #[diagnostic(transparent)]
     Parser(ParserError<'h>),
     #[diagnostic(
         message = "only function declarations are allowed at the top level",
@@ -66,7 +66,7 @@ pub enum HirErrorKind<'h> {
     )]
     UnknownType { name: String },
 
-    #[diagnostic(custom)]
+    #[diagnostic(transparent)]
     OrphanImpl { name: String },
 
     #[diagnostic(
@@ -168,7 +168,7 @@ pub enum HirErrorKind<'h> {
     )]
     ImmutableBind { name: String },
 
-    #[diagnostic(custom)]
+    #[diagnostic(transparent)]
     ConstFnViolation(ConstFnViolationKind),
 
     #[diagnostic(

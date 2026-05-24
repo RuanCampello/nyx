@@ -5,12 +5,7 @@ use syn::Ident;
 #[derive(Debug)]
 enum Segment {
     Literal(String),
-    Field {
-        name: String,
-        color: FieldColor,
-    },
-    /// A backtick-delimited code snippet styled with SECONDARY colour.
-    /// May itself contain plain `{field}` references.
+    Field { name: String, color: FieldColor },
     CodeSnippet(Vec<SnippetPart>),
 }
 
@@ -26,6 +21,16 @@ enum FieldColor {
     Hi,
     Primary,
     Secondary,
+}
+
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => false,
+        Some(c) => {
+            (c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
+        },
+    }
 }
 
 pub fn parse_template(template: &str, call_site: Span) -> syn::Result<TokenStream> {
@@ -160,7 +165,20 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
                     return Err(syn::Error::new(span, "empty interpolation `{}`"));
                 }
 
-                segments.push(Segment::Field { name, color });
+                // Only treat as a field reference if it's a valid identifier.
+                // Literal text like `{ … }` will not be a valid identifier.
+                if !is_valid_identifier(&name) {
+                    // Emit as literal braces
+                    literal.push('{');
+                    literal.push_str(&name);
+                    literal.push('}');
+                    if !literal.is_empty() {
+                        // We already popped literal earlier; push back the brace content
+                    }
+                    segments.push(Segment::Literal(format!("{{{}}}", name)));
+                } else {
+                    segments.push(Segment::Field { name, color });
+                }
             },
         }
     }
@@ -183,7 +201,6 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
             literal.push(ch);
             continue;
         }
-        // peek: if next is '}' it's an empty brace, treat as literal
         let mut name = String::new();
         let mut closed = false;
         for c in chars.by_ref() {
@@ -193,13 +210,14 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
             }
             name.push(c);
         }
-        if closed && !name.is_empty() {
+        // Only treat as field if it's a valid identifier
+        if closed && !name.is_empty() && is_valid_identifier(&name) {
             if !literal.is_empty() {
                 parts.push(SnippetPart::Literal(std::mem::take(&mut literal)));
             }
             parts.push(SnippetPart::Field(name));
         } else {
-            // not a valid interpolation, treat as literal
+            // Not a valid interpolation, treat as literal
             literal.push('{');
             literal.push_str(&name);
             if closed {
@@ -215,7 +233,7 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     parts
 }
 
-fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
+pub fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
     // Single plain literal — no format! needed
     if let [Segment::Literal(s)] = segments {
         return quote! { #s.to_string() };
@@ -255,9 +273,7 @@ fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
     }
 }
 
-/// Emit a code snippet: build the inner string (with field substitutions), then apply `.fg(SECONDARY)`.
 fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
-    // Fast path: no field references, pure literal
     if parts.iter().all(|p| matches!(p, SnippetPart::Literal(_))) {
         let s: String = parts
             .iter()
@@ -272,16 +288,12 @@ fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
         };
     }
 
-    // Build a format string + argument list for the interpolated parts
     let mut fmt_str = String::new();
     let mut args: Vec<TokenStream> = Vec::new();
 
     for part in parts {
         match part {
-            SnippetPart::Literal(s) => {
-                // Escape any `{` or `}` in the literal for format!
-                fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}"));
-            },
+            SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
             SnippetPart::Field(name) => {
                 fmt_str.push_str("{}");
                 let ident = Ident::new(name, call_site);
@@ -346,10 +358,18 @@ mod tests {
     }
 
     #[test]
+    fn ellipsis_literal_braces_not_treated_as_field() {
+        let segs = parse("add {`fn {name}(…)`} before using it");
+        let Segment::CodeSnippet(parts) = &segs[1] else {
+            panic!("expected CodeSnippet")
+        };
+        assert!(parts.iter().any(|p| matches!(p, SnippetPart::Literal(s) if s.contains('…'))));
+    }
+
+    #[test]
     fn primary_and_secondary() {
         let segs = parse("{a~} vs {b^}");
         assert!(matches!(&segs[0], Segment::Field { color: FieldColor::Primary, .. }));
         assert!(matches!(&segs[2], Segment::Field { color: FieldColor::Secondary, .. }));
     }
 }
-

@@ -14,7 +14,7 @@ struct DiagnosticAttr {
     note: Option<LitStr>,
     help: Option<LitStr>,
     secondary: Option<SecondaryAttr>,
-    custom: bool,
+    transparent: bool,
 }
 
 struct SecondaryAttr {
@@ -30,7 +30,7 @@ impl Default for DiagnosticAttr {
             note: None,
             help: None,
             secondary: None,
-            custom: false,
+            transparent: false,
         }
     }
 }
@@ -42,18 +42,6 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
 
     let mut attr = DiagnosticAttr::default();
 
-    struct AttrItem {
-        key: Ident,
-        value: AttrValue,
-    }
-
-    enum AttrValue {
-        Str(LitStr),
-        Nested(TokenStream),
-        Flag,
-    }
-
-    let mut tokens = list.tokens.clone().into_iter().peekable();
     let ts: TokenStream = list.tokens.clone();
     let metas = syn::parse::Parser::parse2(
         |input: ParseStream| Punctuated::<Meta, Token![,]>::parse_terminated(input),
@@ -62,8 +50,8 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
 
     for meta in metas {
         match &meta {
-            Meta::Path(path) if path.is_ident("custom") => {
-                attr.custom = true;
+            Meta::Path(path) if path.is_ident("transparent") => {
+                attr.transparent = true;
             },
             Meta::NameValue(nv) => {
                 let key = nv
@@ -86,14 +74,13 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                         return Err(Error::new_spanned(
                             &nv.path,
                             format!(
-                                "unknown diagnostic key `{other}`, expected one of: message, primary, note, help"
+                                "unknown diagnostic key `{other}`, expected one of: message, primary, note, help, transparent"
                             ),
                         ));
                     },
                 }
             },
             Meta::List(list) if list.path.is_ident("secondary") => {
-                // secondary(span_field = "FIELD", label = "...")
                 struct Secondary {
                     span_field: LitStr,
                     label: LitStr,
@@ -140,7 +127,6 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                         })
                     }
                 }
-
                 let sec = syn::parse::Parser::parse2(Secondary::parse, list.tokens.clone())?;
                 let span_field_ident = Ident::new(&sec.span_field.value(), sec.span_field.span());
                 attr.secondary =
@@ -178,15 +164,38 @@ fn generate_variant_arm(
     variant: &syn::Variant,
     attr: &DiagnosticAttr,
 ) -> Result<TokenStream> {
-    if attr.custom {
-        // Route to user-provided method
-        let field_bindings = field_bindings_pattern(&variant.fields);
-        let field_names = field_names_vec(&variant.fields);
-        let variant_name = &variant.ident;
+    let variant_name = &variant.ident;
+    let field_bindings = field_bindings_pattern(&variant.fields);
+
+    // transparent: delegate to the first field's intobuilder impl
+    if attr.transparent {
+        let first_field = match &variant.fields {
+            Fields::Named(named) => named
+                .named
+                .iter()
+                .next()
+                .and_then(|f| f.ident.as_ref())
+                .map(|id| quote! { #id })
+                .ok_or_else(|| {
+                    Error::new_spanned(
+                        variant,
+                        "#[diagnostic(transparent)] requires at least one named field",
+                    )
+                })?,
+            Fields::Unnamed(_) => {
+                quote! { field_0 }
+            },
+            Fields::Unit => {
+                return Err(Error::new_spanned(
+                    variant,
+                    "#[diagnostic(transparent)] requires at least one field",
+                ));
+            },
+        };
 
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
-                #enum_name::#variant_name { #(#field_names,)* }.into_diagnostic_custom(__span)
+                crate::diagnostic::IntoBuilder::into_builder(#first_field.clone(), __span)
             }
         });
     }
@@ -217,17 +226,13 @@ fn generate_variant_arm(
     let help_chain = help_ts.map(|h| quote! { .help(#h) }).unwrap_or_default();
     let secondary_chain = secondary_ts.unwrap_or_default();
 
-    let field_bindings = field_bindings_pattern(&variant.fields);
-    let variant_name = &variant.ident;
-
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => {
-            Builder::new(#message_ts)
+            crate::diagnostic::Builder::new(#message_ts)
                 .primary(__span, #primary_ts)
                 #secondary_chain
                 #note_chain
                 #help_chain
-                .build()
         }
     })
 }
@@ -265,7 +270,6 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
     };
 
     let mut arms = Vec::new();
-    let mut has_custom = false;
 
     for variant in &data.variants {
         let attr = extract_diagnostic_attr(&variant.attrs)?;
@@ -274,34 +278,20 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
             None => {
                 return Err(Error::new_spanned(
                     &variant.ident,
-                    format!(
-                        "variant `{}` is missing #[diagnostic(...)] or #[diagnostic(custom)]",
-                        variant.ident
-                    ),
+                    format!("variant `{}` is missing #[diagnostic(...)] attribute", variant.ident),
                 ));
             },
             Some(ref a) => {
-                if a.custom {
-                    has_custom = true;
-                }
                 arms.push(generate_variant_arm(enum_name, variant, a)?);
             },
         }
     }
 
-    let custom_bound = if has_custom {
-        quote! {}
-    } else {
-        quote! {}
-    };
-
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
-        #custom_bound
-
-        impl #impl_generics crate::diagnostic::IntoDiagnostic for #enum_name #ty_generics #where_clause {
-            fn into_diagnostic(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Diagnostic {
+        impl #impl_generics crate::diagnostic::IntoBuilder for #enum_name #ty_generics #where_clause {
+            fn into_builder(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Builder {
                 use crate::diagnostic::{Builder, hi, PRIMARY, SECONDARY, HIGHLIGHT};
                 use ariadne::Fmt as _;
 
@@ -312,3 +302,4 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
         }
     })
 }
+
