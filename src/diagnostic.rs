@@ -29,7 +29,7 @@ pub fn current_source() -> (String, String) {
     SOURCE.with_borrow(|s| s.clone())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Diagnostic {
     pub(crate) rendered: String,
 }
@@ -131,9 +131,10 @@ impl AsDiagnostic for Diagnostic {
 
 impl AsDiagnostic for LexError {
     fn as_diagnostic(self, _span: Span) -> Diagnostic {
-        let mut diag = self.kind.clone().as_diagnostic(self.span);
-        // special case for lexerror help hints which are injected dynamically
-        if let Some(h) = self.help {
+        let help = self.help;
+        let mut add_help = false;
+
+        if help.is_some() {
             use crate::lexer::error::LexErrorKind as K;
             if !matches!(
                 &self.kind,
@@ -144,9 +145,16 @@ impl AsDiagnostic for LexError {
                     | K::EmptyChar
                     | K::OverlongChar
             ) {
-                diag.rendered.push_str(&format!("\nHelp: {}", h));
+                add_help = true;
             }
         }
+
+        let mut diag = self.kind.as_diagnostic(self.span);
+
+        if add_help {
+            diag.rendered.push_str(&format!("\nHelp: {}", help.unwrap()));
+        }
+
         diag
     }
 }

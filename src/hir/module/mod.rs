@@ -11,7 +11,7 @@ use crate::{
     hir::{Hir, SymbolTable, scope::Scope},
     lexer::token::Span,
 };
-use nyx_macros::Diagnostic as DeriveDiagnostic;
+use nyx_macros::Diagnostic;
 use resolver::ModuleResolver;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +27,7 @@ pub(crate) struct ModuleLoader<F: FileSystem = FS> {
     fs: F,
 }
 
-#[derive(Debug, DeriveDiagnostic)]
+#[derive(Debug, Diagnostic)]
 #[rustfmt::skip]
 pub enum ModuleError {
     #[diagnostic(

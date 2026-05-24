@@ -1,10 +1,7 @@
-#![allow(dead_code)]
-
 use crate::hir::Type;
 use crate::lexer::token::Span;
 use crate::parser::error::ParserError;
 use nyx_macros::Diagnostic;
-use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct HirError<'h> {
@@ -254,15 +251,6 @@ pub enum ConstFnViolationKind {
         help = "add {`const`} to {`fn {name}`}"
     )]
     NonConstCall { name: String },
-}
-
-#[derive(Debug, PartialEq)]
-pub enum ResolverError {
-    EmptyPath,
-    FileNotFound { path: PathBuf },
-    UnknownExport { module_path: String, name: String },
-    UnknownRoot { name: String },
-    CircularImport { path: PathBuf },
 }
 
 impl<'h> HirError<'h> {

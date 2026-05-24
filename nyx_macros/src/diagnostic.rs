@@ -124,7 +124,7 @@ fn generate_variant_arm(
 
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
-                crate::diagnostic::AsDiagnostic::as_diagnostic(#first_field.clone(), __span)
+                crate::diagnostic::AsDiagnostic::as_diagnostic(#first_field, __span)
             }
         });
     }
