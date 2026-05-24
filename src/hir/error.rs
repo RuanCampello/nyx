@@ -145,6 +145,7 @@ pub enum HirErrorKind<'h> {
         primary = "{name!} must declare {`&self`} or {`&mut self`}",
         help = "write {`fn {name}(&self, …)`}"
     )]
+    #[allow(unused)]
     MissingReceiver { name: String },
 
     #[diagnostic(

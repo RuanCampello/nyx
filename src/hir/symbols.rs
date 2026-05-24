@@ -6,6 +6,10 @@ pub(in crate::hir) struct SymbolTable {
     interner: Rodeo,
 }
 
+pub(in crate::hir) struct Mangler<'m> {
+    module: &'m str,
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         Self { interner: Rodeo::new() }
@@ -29,5 +33,29 @@ impl SymbolTable {
     #[inline(always)]
     pub fn into_symbols(self) -> Vec<String> {
         self.interner.into_iter().map(|(_, s)| s.to_string()).collect()
+    }
+}
+
+impl<'m> Mangler<'m> {
+    pub const DEFAULT_MODULE: &'m str = "nyx";
+
+    pub fn new(module: &'m str) -> Self {
+        Self { module }
+    }
+
+    pub fn default() -> Self {
+        Self::new(Self::DEFAULT_MODULE)
+    }
+
+    pub fn item(&self, name: &str) -> String {
+        format!("{}::{name}", self.module)
+    }
+
+    pub fn scoped_item(&self, scope: &str, name: &str) -> String {
+        format!("{}::{scope}::{name}", self.module)
+    }
+
+    pub fn interface_item(&self, scope: &str, interface: &str, name: &str) -> String {
+        format!("{}::{scope}::{interface}::{name}", self.module)
     }
 }

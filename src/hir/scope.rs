@@ -7,7 +7,7 @@ use crate::{
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         lower::{self},
-        mangle::Mangler,
+        symbols::Mangler,
     },
     lexer::Spanned,
     parser::{expression, statement, visitor},

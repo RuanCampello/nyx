@@ -7,7 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
-    hir::{Type, mangle},
+    hir::Type,
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -117,7 +117,7 @@ where
         .symbols
         .iter()
         .find(|name| name.as_str() == "main" || name.ends_with("::main"))
-        .map(|name| mangle::assembly_label(name));
+        .map(|name| assembly_label(name));
     if let Some(main) = main {
         Function::<T>::start(&mut out, &main);
     }
@@ -308,6 +308,12 @@ pub(in crate::lir) fn aggregate_chunks(size: u32) -> impl Iterator<Item = (i32, 
 
         Some((current, chunk))
     })
+}
+
+/// Converts a fully-qualified [crate::hir] name into a valid *GAS* assembly label
+#[inline(always)]
+fn assembly_label(name: &str) -> String {
+    name.replace("::", ".")
 }
 
 impl Term {

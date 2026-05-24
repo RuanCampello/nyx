@@ -1,3 +1,4 @@
+use crate::fmt::parse_template;
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
@@ -5,8 +6,6 @@ use syn::{
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
-
-use crate::fmt::parse_template;
 
 #[derive(Default)]
 struct DiagnosticAttr {

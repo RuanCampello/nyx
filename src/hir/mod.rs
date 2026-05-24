@@ -22,7 +22,6 @@ use std::str::FromStr;
 mod declarations;
 pub mod error;
 mod lower;
-pub(crate) mod mangle;
 pub(crate) mod module;
 mod scope;
 mod symbols;
@@ -461,11 +460,7 @@ impl std::fmt::Display for Type {
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
             Type::SelfType => "Self",
             Type::Ref { mutable, to } => {
-                let prefix = if *mutable {
-                    "&mut "
-                } else {
-                    "&"
-                };
+                let prefix = mutable.then(|| "&mut ").unwrap_or("&");
                 f.write_str(prefix)?;
                 return match to {
                     RefTarget::Struct(id) => write!(f, "struct#{}", id.0),

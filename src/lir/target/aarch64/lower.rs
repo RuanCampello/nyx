@@ -13,9 +13,9 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{Type, mangle},
+    hir::Type,
     lir::{
-        self, BlockId, MachineType, Term, VReg,
+        self, BlockId, MachineType, Term, VReg, assembly_label,
         target::{
             Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
@@ -45,7 +45,7 @@ impl Lowerable for AArch64 {
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
-            .map(|n| mangle::assembly_label(n))
+            .map(|n| assembly_label(n))
             .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
 
         let mut lir = lir::Function::<AArch64>::new(name);
@@ -295,7 +295,7 @@ impl<'f> Lower<'f> {
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
-                    .map(|n| mangle::assembly_label(n))
+                    .map(|n| assembly_label(n))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());
