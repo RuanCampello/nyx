@@ -1,7 +1,7 @@
 use crate::{
     hir::SyscallCode,
     lir::{
-        MachineType, VReg,
+        CheckedOperation, MachineType, VReg,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
     },
     parser::expression::BinaryOperator,
@@ -44,14 +44,11 @@ pub enum X86Instr {
     Movsx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
 
     // integer arithmetic
-    Add { dest: VReg, src: X86Operand, bytes: u8 },
-    Sub { dest: VReg, src: X86Operand, bytes: u8 },
-    Imul { dest: VReg, src: X86Operand, bytes: u8 },
+    Add { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
+    Sub { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
+    Imul { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
     Neg { dest: VReg, bytes: u8 },
-    /// Allocator constraints:
-    ///   `dividend`  → rax  (fixed_use, stored in `fixed_uses_buf`)
-    ///   `result`    → rax  (fixed_def)
-    ///   rdx         clobbered
+
     IDiv {
         result: VReg,
         dividend: VReg,
@@ -543,6 +540,17 @@ impl PhysicalReg for X86Reg {
             Self::R15 => ["r15", "r15d", "r15w", "r15b"][size_idx],
 
             _ => unreachable!("invalid register and operand size combination"),
+        }
+    }
+}
+
+impl CheckedOperation for X86Instr {
+    fn flag(&self) -> Option<u8> {
+        match self {
+            Self::Add { checked: true, .. } => Some(Self::ADD),
+            Self::Sub { checked: true, .. } => Some(Self::SUB),
+            Self::Imul { checked: true, .. } => Some(Self::MUL),
+            _ => None,
         }
     }
 }

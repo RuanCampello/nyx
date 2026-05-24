@@ -8,10 +8,11 @@
 use crate::{
     emit, label,
     lir::{
-        self, Function, MachineType, Term, VReg,
+        self, CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, ParallelMove, PhysicalReg, RegClass, Target, resolve_parallel_moves,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
+            resolve_parallel_moves,
             x86_64::{X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
@@ -55,6 +56,27 @@ impl Emittable<X86_64> for Function<X86_64> {
         emit!(out, "movl    %eax, %edi"); // exit code = return value
         emit!(out, "movl    $60, %eax"); // syscall: exit
         emit!(out, "syscall");
+    }
+
+    fn emit_panic_handlers(out: &mut String) {
+        let flags = X86Instr::take();
+
+        let mut emit = |flag: u8| {
+            if flags & flag == 0 {
+                return;
+            }
+
+            let symbol = X86Instr::symbol_for_flag(flag).expect("flag must map to a valid symbol");
+            label!(out, ".globl {symbol}");
+            label!(out, "{symbol}:");
+            emit!(out, "movq    $60, %rax");
+            emit!(out, "movq    ${PANIC_EXIT_CODE}, %rdi");
+            emit!(out, "syscall");
+        };
+
+        emit(X86Instr::ADD);
+        emit(X86Instr::SUB);
+        emit(X86Instr::MUL);
     }
 }
 
@@ -329,9 +351,9 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::Add { dest, src, bytes }
-            | Inst::Sub { dest, src, bytes }
-            | Inst::Imul { dest, src, bytes }
+            Inst::Add { dest, src, bytes, .. }
+            | Inst::Sub { dest, src, bytes, .. }
+            | Inst::Imul { dest, src, bytes, .. }
             | Inst::AddFloat { dest, src, bytes }
             | Inst::SubFloat { dest, src, bytes }
             | Inst::MulFloat { dest, src, bytes }
@@ -339,6 +361,7 @@ impl Function<X86_64> {
             | Inst::And { dest, src, bytes }
             | Inst::Or { dest, src, bytes }
             | Inst::Xor { dest, src, bytes } => {
+                let dest_vreg = dest;
                 let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
@@ -358,6 +381,13 @@ impl Function<X86_64> {
                     Inst::Xor { .. } => emit!(out, "xor{suffix}    {src}, {dest}"),
 
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                };
+
+                if let Some(symbol) = instruction.mark() {
+                    match (instruction, self.is_signed(dest_vreg)) {
+                        (Inst::Imul { .. }, _) | (_, true) => emit!(out, "jo      {symbol}"),
+                        (_, false) => emit!(out, "jc      {symbol}"),
+                    }
                 }
             },
 
@@ -689,6 +719,14 @@ impl Function<X86_64> {
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
         matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+    }
+
+    #[inline(always)]
+    fn is_signed(&self, vreg: &VReg) -> bool {
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Int { signed: true, .. })
+        )
     }
 
     #[inline(always)]

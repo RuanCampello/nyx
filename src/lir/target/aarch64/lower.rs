@@ -13,9 +13,9 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{Type, mangle},
+    hir::Type,
     lir::{
-        self, BlockId, MachineType, Term, VReg,
+        self, BlockId, MachineType, Term, VReg, assembly_label,
         target::{
             Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
@@ -45,7 +45,7 @@ impl Lowerable for AArch64 {
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
-            .map(|n| mangle::assembly_label(n))
+            .map(|n| assembly_label(n))
             .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
 
         let mut lir = lir::Function::<AArch64>::new(name);
@@ -164,7 +164,7 @@ impl<'f> Lower<'f> {
                 }
             },
 
-            InstructionKind::Binary { operation, rhs, lhs } => {
+            InstructionKind::Binary { operation, rhs, lhs, checked } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();
@@ -173,6 +173,7 @@ impl<'f> Lower<'f> {
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
+                let checked = *checked;
 
                 match operation {
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
@@ -195,35 +196,29 @@ impl<'f> Lower<'f> {
                         match operation {
                             B::Add => {
                                 let instr = match is_float {
-                                    true => A64Instr::FAdd {
-                                        dest,
-                                        lhs,
-                                        rhs: self.ensure_vreg(rhs, lhs_type, id),
-                                        bytes,
-                                    },
+                                    #[rustfmt::skip]
+                                    true => A64Instr::FAdd { dest, lhs, rhs: self.ensure_vreg(rhs, lhs_type, id), bytes },
                                     false => A64Instr::Add {
                                         dest,
                                         lhs,
                                         rhs: self.fit_add_sub_operand(rhs, lhs_type, id),
                                         bytes,
+                                        checked,
                                     },
                                 };
                                 self.lir.push_instr(id, instr);
                             },
 
                             B::Sub => {
+                                #[rustfmt::skip]
                                 let instr = match is_float {
-                                    true => A64Instr::FSub {
-                                        dest,
-                                        lhs,
-                                        rhs: self.ensure_vreg(rhs, lhs_type, id),
-                                        bytes,
-                                    },
+                                    true => A64Instr::FSub { dest, lhs, rhs: self.ensure_vreg(rhs, lhs_type, id), bytes },
                                     false => A64Instr::Sub {
                                         dest,
                                         lhs,
                                         rhs: self.fit_add_sub_operand(rhs, lhs_type, id),
                                         bytes,
+                                        checked,
                                     },
                                 };
 
@@ -235,7 +230,7 @@ impl<'f> Lower<'f> {
                                 #[rustfmt::skip]
                                 let instr = match is_float {
                                     true => A64Instr::FMul { dest, lhs, rhs, bytes },
-                                    false => A64Instr::Mul { dest, lhs, rhs, bytes },
+                                    false => A64Instr::Mul { dest, lhs, rhs, bytes, checked },
                                 };
                                 self.lir.push_instr(id, instr);
                             },
@@ -295,7 +290,7 @@ impl<'f> Lower<'f> {
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
-                    .map(|n| mangle::assembly_label(n))
+                    .map(|n| assembly_label(n))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());
@@ -473,6 +468,7 @@ impl<'f> Lower<'f> {
                             lhs: dest,
                             rhs: A64Operand::Imm(*offset as i64),
                             bytes: 8,
+                            checked: false,
                         },
                     );
                 }

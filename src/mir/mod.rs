@@ -100,6 +100,7 @@ pub enum InstructionKind {
         operation: BinaryOperator,
         rhs: Operand,
         lhs: Operand,
+        checked: bool,
     },
 
     /// load `typ` bytes from an aggregate place at byte `offset`

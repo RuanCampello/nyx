@@ -13,10 +13,10 @@
 use crate::{
     emit, label,
     lir::{
-        Function, MachineType, Term, VReg,
+        CheckedOperation, Function, MachineType, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, ParallelMove, PhysicalReg, RegClass, Target,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
             aarch64::{A64Instr, A64Operand, A64Reg, AArch64},
             resolve_parallel_moves,
         },
@@ -58,6 +58,27 @@ impl Emittable<AArch64> for Function<AArch64> {
         emit!(out, "bl      {main}");
         emit!(out, "mov     x8, #93");
         emit!(out, "svc     #0");
+    }
+
+    fn emit_panic_handlers(out: &mut String) {
+        let flags = A64Instr::take();
+
+        let mut emit = |flag: u8| {
+            if flags & flag == 0 {
+                return;
+            }
+
+            let symbol = A64Instr::symbol_for_flag(flag).expect("flag must map to a valid symbol");
+            label!(out, ".globl {symbol}");
+            label!(out, "{symbol}:");
+            emit!(out, "mov     x8, #93");
+            emit!(out, "mov     x0, #{PANIC_EXIT_CODE}");
+            emit!(out, "svc     #0");
+        };
+
+        emit(A64Instr::ADD);
+        emit(A64Instr::SUB);
+        emit(A64Instr::MUL);
     }
 }
 
@@ -321,22 +342,38 @@ impl Function<AArch64> {
             },
 
             // integer arithmetic
-            #[rustfmt::skip]
-            A64Instr::Add { dest, lhs, rhs, bytes }
-            | A64Instr::Sub { dest, lhs, rhs, bytes } => {
+            A64Instr::Add { dest, lhs, rhs, bytes, checked }
+            | A64Instr::Sub { dest, lhs, rhs, bytes, checked } => {
+                let dest_vreg = dest;
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
 
+                #[rustfmt::skip]
                 match instruction {
-                    A64Instr::Sub { .. } => emit!(out, "sub     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Add { .. } => emit!(out, "add     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Sub { .. } => {
+                        let op = if *checked { "subs" } else { "sub" };
+                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
+                    },
+                    A64Instr::Add { .. } => {
+                        let op = if *checked { "adds" } else { "add" };
+                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
+                    },
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                };
+
+                if let Some(symbol) = instruction.mark() {
+                    match (instruction, self.is_signed(dest_vreg)) {
+                        (_, true) => emit!(out, "b.vs    {symbol}"),
+                        (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
+                        (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    {symbol}"),
+                        _ => unsafe { std::hint::unreachable_unchecked() },
+                    }
                 }
             },
 
             #[rustfmt::skip]
-            A64Instr::Mul { dest, lhs, rhs, bytes }
+            A64Instr::Mul { dest, lhs, rhs, bytes, .. }
             | A64Instr::SDiv { dest, lhs, rhs, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
@@ -634,6 +671,14 @@ impl Function<AArch64> {
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
         matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+    }
+
+    #[inline(always)]
+    fn is_signed(&self, vreg: &VReg) -> bool {
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Int { signed: true, .. })
+        )
     }
 
     #[inline(always)]

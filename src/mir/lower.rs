@@ -268,6 +268,8 @@ impl<'a> FunctionLower<'a> {
     }
 
     fn lower_expr(&mut self, expr: &Expression) -> Result<Operand, MirError> {
+        use crate::parser::expression::{BinaryOperator, UnaryOperator};
+
         match &expr.kind {
             ExpressionKind::Unit => Ok(Operand::Const(Const::Unit)),
             ExpressionKind::Integer(n) => Ok(Operand::Const(Const::Int(*n, expr.typ))),
@@ -294,8 +296,6 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Unary { operator, expr: inner } => {
-                use crate::parser::expression::UnaryOperator;
-
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
@@ -316,11 +316,24 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Binary { operator, left, right } => {
+                use crate::optimisation;
+
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
 
-                self.emit(dest, InstructionKind::Binary { operation: *operator, lhs, rhs });
+                let is_integer = expr.typ.is_integer();
+                let is_arithmetic = matches!(
+                    operator,
+                    BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul
+                );
+                let is_on_debug = optimisation::Level::Debug == optimisation::get();
+                let checked = is_integer && is_arithmetic && is_on_debug;
+
+                self.emit(
+                    dest,
+                    InstructionKind::Binary { operation: *operator, lhs, rhs, checked },
+                );
 
                 Ok(Operand::Place(dest))
             },
@@ -419,6 +432,8 @@ impl<'a> FunctionLower<'a> {
                     Intrinsic::Syscall => {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     },
+
+                    Intrinsic::Panic => unimplemented!(),
                 }
             },
 

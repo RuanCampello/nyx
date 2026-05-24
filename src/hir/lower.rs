@@ -4,8 +4,8 @@ use crate::{
         LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
         SymbolId, SymbolTable, SyscallCode, Type,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
-        mangle::Mangler,
         scope::{self, Scope, Structs},
+        symbols::Mangler,
     },
     lexer::token::Span,
     parser::{

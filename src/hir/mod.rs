@@ -22,7 +22,6 @@ use std::str::FromStr;
 mod declarations;
 pub mod error;
 mod lower;
-pub(crate) mod mangle;
 pub(crate) mod module;
 mod scope;
 mod symbols;
@@ -215,6 +214,7 @@ pub enum Intrinsic {
     PrintLn,
     Print,
     Syscall,
+    Panic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,11 +280,11 @@ impl Type {
         }
     }
 
-    pub(in crate::hir) const fn is_number(&self) -> bool {
+    pub const fn is_number(&self) -> bool {
         self.is_integer() || self.is_float()
     }
 
-    pub(in crate::hir) const fn is_integer(&self) -> bool {
+    pub const fn is_integer(&self) -> bool {
         matches!(
             self,
             Self::I8
@@ -461,11 +461,7 @@ impl std::fmt::Display for Type {
             Type::Struct(id) => return write!(f, "struct#{}", id.0),
             Type::SelfType => "Self",
             Type::Ref { mutable, to } => {
-                let prefix = if *mutable {
-                    "&mut "
-                } else {
-                    "&"
-                };
+                let prefix = mutable.then(|| "&mut ").unwrap_or("&");
                 f.write_str(prefix)?;
                 return match to {
                     RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
@@ -488,6 +484,7 @@ impl FromStr for Intrinsic {
             "println" => Self::PrintLn,
             "print" => Self::Print,
             "syscall" => Self::Syscall,
+            "panic" => Self::Panic,
 
             _ => return Err(()),
         })

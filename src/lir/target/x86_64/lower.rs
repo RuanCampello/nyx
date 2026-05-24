@@ -10,10 +10,14 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{self, Type, mangle};
-use crate::lir::target::x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg};
-use crate::lir::target::{Lowerable, MemOps, RegClass, Target, aggregate_copy};
-use crate::lir::{self, BlockId, MachineType, Term, VReg};
+use crate::hir::{self, Type};
+use crate::lir::{
+    self, BlockId, MachineType, Term, VReg, assembly_label,
+    target::{
+        Lowerable, MemOps, RegClass, Target, aggregate_copy,
+        x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
+    },
+};
 use crate::mir::{self, Const, Function, Layout, Operand, ValueId};
 
 struct Lower<'f> {
@@ -35,7 +39,7 @@ impl Lowerable for X86_64 {
     ) -> lir::Function<Self> {
         let name = symbols
             .get(function.name_symbol)
-            .map(|n| mangle::assembly_label(n))
+            .map(|n| assembly_label(n))
             .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
 
         let mut lir = lir::Function::<X86_64>::new(name);
@@ -157,6 +161,7 @@ impl<'f> Lower<'f> {
                 operation,
                 rhs,
                 lhs,
+                checked,
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
@@ -167,6 +172,7 @@ impl<'f> Lower<'f> {
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(&lhs);
                 let rhs = self.lower_operand(&rhs);
+                let checked = *checked;
 
                 match operation {
                     B::Div if is_float => {
@@ -199,17 +205,17 @@ impl<'f> Lower<'f> {
                         let arith = match operation {
                             B::Add => match is_float {
                                 true => X86Instr::AddFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Add { dest, src: rhs, bytes },
+                                _ => X86Instr::Add { dest, src: rhs, bytes, checked },
                             },
 
                             B::Sub => match is_float {
                                 true => X86Instr::SubFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Sub { dest, src: rhs, bytes },
+                                _ => X86Instr::Sub { dest, src: rhs, bytes, checked },
                             },
 
                             B::Mul => match is_float {
                                 true => X86Instr::MulFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Imul { dest, src: rhs, bytes },
+                                _ => X86Instr::Imul { dest, src: rhs, bytes, checked },
                             },
 
                             B::And => X86Instr::And { dest, src: rhs, bytes },
@@ -334,10 +340,10 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, instruction);
             },
 
+            #[rustfmt::skip]
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
                 match src.typ {
-                    #[rustfmt::skip]
                     Type::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
                     _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
                 }
@@ -345,7 +351,7 @@ impl<'f> Lower<'f> {
                 if *offset != 0 {
                     self.lir.push_instr(
                         id,
-                        X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8 },
+                        X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8, checked: false },
                     );
                 }
             },
@@ -360,7 +366,7 @@ impl<'f> Lower<'f> {
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
-                    .map(|n| mangle::assembly_label(n))
+                    .map(|n| assembly_label(n))
                     .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
 
                 let mut moves = Vec::with_capacity(args.len());

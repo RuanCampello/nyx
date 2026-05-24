@@ -7,7 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
-    hir::{Type, mangle},
+    hir::Type,
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -76,6 +76,10 @@ pub enum MachineType {
     Struct { size: u32, align: u32 },
 }
 
+thread_local! {
+    static PANIC_HANDLERS: std::cell::Cell<u8> = Default::default();
+}
+
 const DEFAULT_SIZE: usize = 1 << 10;
 
 #[macro_export]
@@ -109,6 +113,8 @@ where
         lir.emit(alloc, &mut out);
     }
 
+    Function::<T>::emit_panic_handlers(&mut out);
+
     // emit a `_start` trampoline if the program defines `fn main`
     //
     // this allows the binary to be linked with `ld` directly
@@ -117,7 +123,7 @@ where
         .symbols
         .iter()
         .find(|name| name.as_str() == "main" || name.ends_with("::main"))
-        .map(|name| mangle::assembly_label(name));
+        .map(|name| assembly_label(name));
     if let Some(main) = main {
         Function::<T>::start(&mut out, &main);
     }
@@ -132,6 +138,36 @@ where
     }
 
     out
+}
+
+pub trait CheckedOperation {
+    const ADD: u8 = 1 << 0;
+    const SUB: u8 = 1 << 1;
+    const MUL: u8 = 1 << 2;
+
+    fn flag(&self) -> Option<u8>;
+
+    #[inline]
+    #[rustfmt::skip]
+    fn symbol_for_flag<'s>(flag: u8) -> Option<&'s str> {
+        if flag == Self::ADD { Some("__nyx_panic_add_overflow") }
+        else if flag == Self::SUB { Some("__nyx_panic_sub_overflow") }
+        else if flag == Self::MUL { Some("__nyx_panic_mul_overflow") }
+        else { None }
+    }
+
+    #[inline]
+    fn mark<'s>(&self) -> Option<&'s str> {
+        let flag = self.flag()?;
+        PANIC_HANDLERS.with(|h| h.set(h.get() | flag));
+
+        Self::symbol_for_flag(flag)
+    }
+
+    #[inline]
+    fn take() -> u8 {
+        PANIC_HANDLERS.with(|h| h.take())
+    }
 }
 
 impl<T: Target> Function<T> {
@@ -308,6 +344,12 @@ pub(in crate::lir) fn aggregate_chunks(size: u32) -> impl Iterator<Item = (i32, 
 
         Some((current, chunk))
     })
+}
+
+/// Converts a fully-qualified [crate::hir] name into a valid *GAS* assembly label
+#[inline(always)]
+fn assembly_label(name: &str) -> String {
+    name.replace("::", ".")
 }
 
 impl Term {
