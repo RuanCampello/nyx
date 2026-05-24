@@ -41,7 +41,7 @@ pub mod optimisation {
     }
 
     pub fn get() -> Level {
-        *LEVEL.get().expect("optimisation level should be always present")
+        *LEVEL.get().unwrap_or(&Level::Debug)
     }
 }
 
