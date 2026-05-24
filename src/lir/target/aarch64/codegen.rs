@@ -59,6 +59,28 @@ impl Emittable<AArch64> for Function<AArch64> {
         emit!(out, "mov     x8, #93");
         emit!(out, "svc     #0");
     }
+
+    #[inline(always)]
+    fn panic_sub(out: &mut String) {
+        const OVERFLOW_MSG: &str = "panic: arithmetic overflow\n";
+
+        label!(out, ".globl __nyx_panic_overflow");
+        label!(out, "__nyx_panic_overflow:");
+        emit!(out, "mov     x8, #64"); // SYS_write
+        emit!(out, "mov     x0, #2"); // fd = stderr
+        emit!(out, "adrp    x1, .L__nyx_overflow_msg");
+        emit!(out, "add     x1, x1, :lo12:.L__nyx_overflow_msg");
+        emit!(out, "mov     x2, #{}", OVERFLOW_MSG.len());
+        emit!(out, "svc     #0");
+        emit!(out, "mov     x8, #93"); // SYS_exit
+        emit!(out, "mov     x0, #1"); // code = 1
+        emit!(out, "svc     #0");
+
+        label!(out, ".section .rodata");
+        label!(out, ".L__nyx_overflow_msg:");
+        label!(out, "    .ascii {:?}", OVERFLOW_MSG);
+        label!(out, ".text");
+    }
 }
 
 impl Function<AArch64> {

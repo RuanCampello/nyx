@@ -99,6 +99,8 @@ where
     let mut out = String::with_capacity(DEFAULT_SIZE);
     label!(out, ".text");
 
+    Function::<T>::panic_sub(&mut out);
+
     for function in &mir.functions {
         if function.intrinsic.is_some() {
             continue;

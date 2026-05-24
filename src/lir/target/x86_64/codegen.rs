@@ -56,6 +56,27 @@ impl Emittable<X86_64> for Function<X86_64> {
         emit!(out, "movl    $60, %eax"); // syscall: exit
         emit!(out, "syscall");
     }
+
+    #[inline(always)]
+    fn panic_sub(out: &mut String) {
+        const OVERFLOW_MSG: &str = "panic: arithmetic overflow\n";
+
+        label!(out, ".globl __nyx_panic_overflow");
+        label!(out, "__nyx_panic_overflow:");
+        emit!(out, "movq    $1, %rax"); // SYS_write
+        emit!(out, "movq    $2, %rdi"); // fd = stderr
+        emit!(out, "leaq    .L__nyx_overflow_msg(%rip), %rsi");
+        emit!(out, "movq    ${}, %rdx", OVERFLOW_MSG.len());
+        emit!(out, "syscall");
+        emit!(out, "movq    $60, %rax"); // SYS_exit
+        emit!(out, "movq    $1, %rdi"); // code = 1
+        emit!(out, "syscall");
+
+        label!(out, ".section .rodata");
+        label!(out, ".L__nyx_overflow_msg:");
+        label!(out, "    .ascii {:?}", OVERFLOW_MSG);
+        label!(out, ".text");
+    }
 }
 
 impl Function<X86_64> {
