@@ -103,8 +103,6 @@ where
     let mut out = String::with_capacity(DEFAULT_SIZE);
     label!(out, ".text");
 
-    Function::<T>::panic_sub(&mut out);
-
     for function in &mir.functions {
         if function.intrinsic.is_some() {
             continue;
@@ -114,6 +112,8 @@ where
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
+
+    Function::<T>::emit_panic_handlers(&mut out);
 
     // emit a `_start` trampoline if the program defines `fn main`
     //
@@ -149,19 +149,24 @@ pub trait CheckedOperation {
 
     #[inline]
     #[rustfmt::skip]
-    fn symbol<'s>(&self) -> Option<&'s str> {
-        let flag = self.flag()?;
+    fn symbol_for_flag<'s>(flag: u8) -> Option<&'s str> {
         if flag == Self::ADD { Some("__nyx_panic_add_overflow") }
         else if flag == Self::SUB { Some("__nyx_panic_sub_overflow") }
         else if flag == Self::MUL { Some("__nyx_panic_mul_overflow") }
         else { None }
     }
 
+    #[inline]
     fn mark<'s>(&self) -> Option<&'s str> {
         let flag = self.flag()?;
         PANIC_HANDLERS.with(|h| h.set(h.get() | flag));
 
-        self.symbol()
+        Self::symbol_for_flag(flag)
+    }
+
+    #[inline]
+    fn take() -> u8 {
+        PANIC_HANDLERS.with(|h| h.take())
     }
 }
 

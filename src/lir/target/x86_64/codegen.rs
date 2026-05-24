@@ -57,25 +57,25 @@ impl Emittable<X86_64> for Function<X86_64> {
         emit!(out, "syscall");
     }
 
-    #[inline(always)]
-    fn panic_sub(out: &mut String) {
-        const OVERFLOW_MSG: &str = "panic: arithmetic overflow\n";
+    fn emit_panic_handlers(out: &mut String) {
+        let flags = X86Instr::take();
 
-        label!(out, ".globl __nyx_panic_overflow");
-        label!(out, "__nyx_panic_overflow:");
-        emit!(out, "movq    $1, %rax"); // SYS_write
-        emit!(out, "movq    $2, %rdi"); // fd = stderr
-        emit!(out, "leaq    .L__nyx_overflow_msg(%rip), %rsi");
-        emit!(out, "movq    ${}, %rdx", OVERFLOW_MSG.len());
-        emit!(out, "syscall");
-        emit!(out, "movq    $60, %rax"); // SYS_exit
-        emit!(out, "movq    $1, %rdi"); // code = 1
-        emit!(out, "syscall");
+        let mut emit = |flag: u8| {
+            if flags & flag == 0 {
+                return;
+            }
 
-        label!(out, ".section .rodata");
-        label!(out, ".L__nyx_overflow_msg:");
-        label!(out, "    .ascii {:?}", OVERFLOW_MSG);
-        label!(out, ".text");
+            let symbol = X86Instr::symbol_for_flag(flag).expect("flag must map to a valid symbol");
+            label!(out, ".globl {symbol}");
+            label!(out, "{symbol}:");
+            emit!(out, "movq    $60, %rax");
+            emit!(out, "movq    $1, %rdi");
+            emit!(out, "syscall");
+        };
+
+        emit(X86Instr::ADD);
+        emit(X86Instr::SUB);
+        emit(X86Instr::MUL);
     }
 }
 
