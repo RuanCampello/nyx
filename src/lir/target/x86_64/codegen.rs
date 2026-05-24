@@ -395,11 +395,16 @@ impl Function<X86_64> {
                 };
 
                 if *checked {
+                    let symbol = match instruction {
+                        Inst::Add { .. } => "__nyx_panic_add_overflow",
+                        Inst::Sub { .. } => "__nyx_panic_sub_overflow",
+                        Inst::Imul { .. } => "__nyx_panic_mul_overflow",
+                        _ => unsafe { std::hint::unreachable_unchecked() },
+                    };
+
                     match (instruction, self.is_signed(dest_vreg)) {
-                        (Inst::Imul { .. }, _) | (_, true) => {
-                            emit!(out, "jo      __nyx_panic_overflow")
-                        },
-                        (_, false) => emit!(out, "jc      __nyx_panic_overflow"),
+                        (Inst::Imul { .. }, _) | (_, true) => emit!(out, "jo      {symbol}"),
+                        (_, false) => emit!(out, "jc      {symbol}"),
                     }
                 }
             },

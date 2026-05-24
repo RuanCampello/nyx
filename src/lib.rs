@@ -19,6 +19,32 @@ pub enum NyxError {
     ToolNotFound(String),
 }
 
+pub mod optimisation {
+    use std::sync::OnceLock;
+
+    // Optimisation level for code generation
+    #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, clap::ValueEnum)]
+    pub enum Level {
+        /// No optimisations, all runtime safety checks enabled
+        #[default]
+        Debug,
+        /// Sensible production optimisations
+        Sane,
+        /// Aggressive optimisations
+        Max,
+    }
+
+    static LEVEL: OnceLock<Level> = OnceLock::new();
+
+    pub fn set(level: Level) {
+        LEVEL.set(level).expect("optimisation level set should never fail");
+    }
+
+    pub fn get() -> Level {
+        *LEVEL.get().expect("optimisation level should be always present")
+    }
+}
+
 /// Target architecture for code generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetArch {

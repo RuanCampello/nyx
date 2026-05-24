@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use nyx::{NyxError, TargetArch};
+use nyx::{NyxError, TargetArch, optimisation};
 use std::{
     collections::HashSet,
     fs,
@@ -70,7 +70,7 @@ enum Commands {
 
         /// Optimisation level
         #[arg(long, value_name = "LEVEL", default_value = "debug")]
-        opt: OptimisationLevel,
+        opt: optimisation::Level,
     },
 
     /// Compile a nyx source file or project and immediately run it
@@ -97,7 +97,7 @@ enum Commands {
 
         /// Optimisation level
         #[arg(long, value_name = "LEVEL", default_value = "debug")]
-        opt: OptimisationLevel,
+        opt: optimisation::Level,
     },
 }
 

@@ -364,10 +364,17 @@ impl Function<AArch64> {
                 };
 
                 if *checked {
+                    let symbol = match instruction {
+                        A64Instr::Add { .. } => "__nyx_panic_add_overflow",
+                        A64Instr::Sub { .. } => "__nyx_panic_sub_overflow",
+                        A64Instr::Mul { .. } => "__nyx_panic_mul_overflow",
+                        _ => unsafe { std::hint::unreachable_unchecked() },
+                    };
+
                     match (instruction, self.is_signed(dest_vreg)) {
-                        (_, true) => emit!(out, "b.vs    __nyx_panic_overflow"),
-                        (A64Instr::Add { .. }, false) => emit!(out, "b.hs    __nyx_panic_overflow"),
-                        (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    __nyx_panic_overflow"),
+                        (_, true) => emit!(out, "b.vs    {symbol}"),
+                        (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
+                        (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    {symbol}"),
                         _ => unsafe { std::hint::unreachable_unchecked() },
                     }
                 }

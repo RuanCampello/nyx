@@ -316,6 +316,8 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Binary { operator, left, right } => {
+                use crate::optimisation;
+
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
@@ -325,7 +327,8 @@ impl<'a> FunctionLower<'a> {
                     operator,
                     BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul
                 );
-                let checked = is_integer && is_arithmetic;
+                let is_on_debug = optimisation::Level::Debug == optimisation::get();
+                let checked = is_integer && is_arithmetic && is_on_debug;
 
                 self.emit(
                     dest,
