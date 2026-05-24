@@ -44,14 +44,11 @@ pub enum X86Instr {
     Movsx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
 
     // integer arithmetic
-    Add { dest: VReg, src: X86Operand, bytes: u8 },
-    Sub { dest: VReg, src: X86Operand, bytes: u8 },
-    Imul { dest: VReg, src: X86Operand, bytes: u8 },
+    Add { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
+    Sub { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
+    Imul { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
     Neg { dest: VReg, bytes: u8 },
-    /// Allocator constraints:
-    ///   `dividend`  → rax  (fixed_use, stored in `fixed_uses_buf`)
-    ///   `result`    → rax  (fixed_def)
-    ///   rdx         clobbered
+
     IDiv {
         result: VReg,
         dividend: VReg,

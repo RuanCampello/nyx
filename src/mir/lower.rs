@@ -319,8 +319,12 @@ impl<'a> FunctionLower<'a> {
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
                 let dest = self.fresh_temporary(expr.typ.unwrap_unit());
+                let checked = false;
 
-                self.emit(dest, InstructionKind::Binary { operation: *operator, lhs, rhs });
+                self.emit(
+                    dest,
+                    InstructionKind::Binary { operation: *operator, lhs, rhs, checked },
+                );
 
                 Ok(Operand::Place(dest))
             },
@@ -419,6 +423,8 @@ impl<'a> FunctionLower<'a> {
                     Intrinsic::Syscall => {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     },
+
+                    Intrinsic::Panic => unimplemented!(),
                 }
             },
 

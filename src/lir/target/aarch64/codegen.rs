@@ -322,8 +322,8 @@ impl Function<AArch64> {
 
             // integer arithmetic
             #[rustfmt::skip]
-            A64Instr::Add { dest, lhs, rhs, bytes }
-            | A64Instr::Sub { dest, lhs, rhs, bytes } => {
+            A64Instr::Add { dest, lhs, rhs, bytes, checked }
+            | A64Instr::Sub { dest, lhs, rhs, bytes, checked } => {
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
@@ -332,11 +332,15 @@ impl Function<AArch64> {
                     A64Instr::Sub { .. } => emit!(out, "sub     {dest}, {lhs}, {rhs}"),
                     A64Instr::Add { .. } => emit!(out, "add     {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                };
+
+                if *checked {
+                    unimplemented!("overflow trap");
                 }
             },
 
             #[rustfmt::skip]
-            A64Instr::Mul { dest, lhs, rhs, bytes }
+            A64Instr::Mul { dest, lhs, rhs, bytes, .. }
             | A64Instr::SDiv { dest, lhs, rhs, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);

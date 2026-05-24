@@ -161,6 +161,7 @@ impl<'f> Lower<'f> {
                 operation,
                 rhs,
                 lhs,
+                checked,
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
@@ -171,6 +172,7 @@ impl<'f> Lower<'f> {
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(&lhs);
                 let rhs = self.lower_operand(&rhs);
+                let checked = *checked;
 
                 match operation {
                     B::Div if is_float => {
@@ -203,17 +205,17 @@ impl<'f> Lower<'f> {
                         let arith = match operation {
                             B::Add => match is_float {
                                 true => X86Instr::AddFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Add { dest, src: rhs, bytes },
+                                _ => X86Instr::Add { dest, src: rhs, bytes, checked },
                             },
 
                             B::Sub => match is_float {
                                 true => X86Instr::SubFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Sub { dest, src: rhs, bytes },
+                                _ => X86Instr::Sub { dest, src: rhs, bytes, checked },
                             },
 
                             B::Mul => match is_float {
                                 true => X86Instr::MulFloat { dest, src: rhs, bytes },
-                                _ => X86Instr::Imul { dest, src: rhs, bytes },
+                                _ => X86Instr::Imul { dest, src: rhs, bytes, checked },
                             },
 
                             B::And => X86Instr::And { dest, src: rhs, bytes },
@@ -338,10 +340,10 @@ impl<'f> Lower<'f> {
                 self.lir.push_instr(id, instruction);
             },
 
+            #[rustfmt::skip]
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
                 match src.typ {
-                    #[rustfmt::skip]
                     Type::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
                     _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
                 }
@@ -349,7 +351,7 @@ impl<'f> Lower<'f> {
                 if *offset != 0 {
                     self.lir.push_instr(
                         id,
-                        X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8 },
+                        X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8, checked: false },
                     );
                 }
             },

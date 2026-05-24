@@ -36,9 +36,9 @@ pub enum A64Instr {
     LdrParam { dest: VReg, fp_offset: i32, bytes: u8, signed: bool },
 
     // integer arithmetic
-    Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Sub { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Mul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
+    Sub { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
+    Mul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8, checked: bool },
     SDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
     Neg { dest: VReg, src: VReg, bytes: u8 },
 
