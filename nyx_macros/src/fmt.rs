@@ -1,6 +1,5 @@
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::Ident;
 
 #[derive(Debug)]
 enum Segment {
@@ -23,20 +22,9 @@ enum FieldColor {
     Secondary,
 }
 
-fn is_valid_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => false,
-        Some(c) => {
-            (c.is_alphabetic() || c == '_')
-                && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '(' || c == ')')
-        },
-    }
-}
-
 pub fn parse_template(template: &str, call_site: Span) -> syn::Result<TokenStream> {
     let segments = parse_segments(template, call_site)?;
-    Ok(emit_segments(&segments, call_site))
+    Ok(emit_segments(&segments))
 }
 
 fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
@@ -54,133 +42,94 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
             segments.push(Segment::Literal(std::mem::take(&mut literal)));
         }
 
-        match chars.peek() {
-            Some((_, '`')) => {
-                chars.next(); // consume '`'
-                let mut content = String::new();
-                let mut closed = false;
-                while let Some((_, c)) = chars.next() {
-                    if c == '`' {
-                        match chars.next() {
-                            Some((_, '}')) => {
-                                closed = true;
-                                break;
-                            },
-                            Some((j, other)) => {
-                                return Err(syn::Error::new(
-                                    span,
-                                    format!(
-                                        "expected `}}` after closing backtick, found `{other}` at offset {j}"
-                                    ),
-                                ));
-                            },
-                            None => break,
-                        }
-                    } else {
-                        content.push(c);
-                    }
-                }
-                if !closed {
-                    return Err(syn::Error::new(span, "unterminated code snippet `{`...`}`"));
-                }
-                segments.push(Segment::CodeSnippet(parse_snippet_parts(&content)));
-            },
+        let Some(&(_, next_ch)) = chars.peek() else {
+            return Err(syn::Error::new(span, "unterminated interpolation `{`"));
+        };
 
-            _ => {
-                // Field interpolation: {name}, {name!}, {name~}, {name^}
-                let mut name = String::new();
-                let mut color = FieldColor::Plain;
-                let mut closed = false;
-
-                while let Some((_, c)) = chars.next() {
-                    match c {
-                        '}' => {
+        if next_ch == '`' {
+            chars.next(); // consume '`'
+            let mut content = String::new();
+            let mut closed = false;
+            while let Some((_, c)) = chars.next() {
+                if c == '`' {
+                    match chars.next() {
+                        Some((_, '}')) => {
                             closed = true;
                             break;
                         },
-                        '!' => {
-                            color = FieldColor::Hi;
-                            match chars.next() {
-                                Some((_, '}')) => {
-                                    closed = true;
-                                    break;
-                                },
-                                Some((j, other)) => {
-                                    return Err(syn::Error::new(
-                                        span,
-                                        format!(
-                                            "expected `}}` after `!`, found `{other}` at offset {j}"
-                                        ),
-                                    ));
-                                },
-                                None => break,
-                            }
+                        Some((j, other)) => {
+                            return Err(syn::Error::new(
+                                span,
+                                format!(
+                                    "expected `}}` after closing backtick, found `{other}` at offset {j}"
+                                ),
+                            ));
                         },
-                        '~' => {
-                            color = FieldColor::Primary;
-                            match chars.next() {
-                                Some((_, '}')) => {
-                                    closed = true;
-                                    break;
-                                },
-                                Some((j, other)) => {
-                                    return Err(syn::Error::new(
-                                        span,
-                                        format!(
-                                            "expected `}}` after `~`, found `{other}` at offset {j}"
-                                        ),
-                                    ));
-                                },
-                                None => break,
-                            }
-                        },
-                        '^' => {
-                            color = FieldColor::Secondary;
-                            match chars.next() {
-                                Some((_, '}')) => {
-                                    closed = true;
-                                    break;
-                                },
-                                Some((j, other)) => {
-                                    return Err(syn::Error::new(
-                                        span,
-                                        format!(
-                                            "expected `}}` after `^`, found `{other}` at offset {j}"
-                                        ),
-                                    ));
-                                },
-                                None => break,
-                            }
-                        },
-                        c => name.push(c),
+                        None => break,
                     }
                 }
+                content.push(c);
+            }
+            if !closed {
+                return Err(syn::Error::new(span, "unterminated code snippet `{`...`}`"));
+            }
+            segments.push(Segment::CodeSnippet(parse_snippet_parts(&content)));
+            continue;
+        }
 
-                if !closed {
-                    return Err(syn::Error::new(
-                        span,
-                        format!("unterminated interpolation `{{{name}...` at offset {i}"),
-                    ));
-                }
-                if name.is_empty() {
-                    return Err(syn::Error::new(span, "empty interpolation `{}`"));
-                }
+        // Field interpolation: {name}, {name!}, {name~}, {name^}
+        let mut name = String::new();
+        let mut color = FieldColor::Plain;
+        let mut closed = false;
 
-                // Only treat as a field reference if it's a valid identifier.
-                // Literal text like `{ … }` will not be a valid identifier.
-                if !is_valid_identifier(&name) {
-                    // Emit as literal braces
-                    literal.push('{');
-                    literal.push_str(&name);
-                    literal.push('}');
-                    if !literal.is_empty() {
-                        // We already popped literal earlier; push back the brace content
+        while let Some((_, c)) = chars.next() {
+            match c {
+                '}' => {
+                    closed = true;
+                    break;
+                },
+                '!' | '~' | '^' => {
+                    color = match c {
+                        '!' => FieldColor::Hi,
+                        '~' => FieldColor::Primary,
+                        '^' => FieldColor::Secondary,
+                        _ => unreachable!(),
+                    };
+                    match chars.next() {
+                        Some((_, '}')) => {
+                            closed = true;
+                            break;
+                        },
+                        Some((j, other)) => {
+                            return Err(syn::Error::new(
+                                span,
+                                format!(
+                                    "expected `}}` after modifier, found `{other}` at offset {j}"
+                                ),
+                            ));
+                        },
+                        None => break,
                     }
-                    segments.push(Segment::Literal(format!("{{{}}}", name)));
-                } else {
-                    segments.push(Segment::Field { name, color });
-                }
-            },
+                },
+                c => name.push(c),
+            }
+        }
+
+        if !closed {
+            return Err(syn::Error::new(
+                span,
+                format!("unterminated interpolation `{{{name}...` at offset {i}"),
+            ));
+        }
+
+        if name.is_empty() {
+            return Err(syn::Error::new(span, "empty interpolation `{}`"));
+        }
+
+        if !is_valid_identifier(&name) {
+            literal.push_str(&format!("{{{name}}}"));
+        } else {
+            segments.push(Segment::Field { name, color });
         }
     }
 
@@ -191,7 +140,6 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
     Ok(segments)
 }
 
-/// Parse the interior of a backtick code snippet for plain `{field}` references.
 fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     let mut parts = Vec::new();
     let mut chars = input.chars().peekable();
@@ -211,14 +159,12 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
             }
             name.push(c);
         }
-        // Only treat as field if it's a valid identifier
         if closed && !name.is_empty() && is_valid_identifier(&name) {
             if !literal.is_empty() {
                 parts.push(SnippetPart::Literal(std::mem::take(&mut literal)));
             }
             parts.push(SnippetPart::Field(name));
         } else {
-            // Not a valid interpolation, treat as literal
             literal.push('{');
             literal.push_str(&name);
             if closed {
@@ -234,37 +180,31 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     parts
 }
 
-pub fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
+fn emit_segments(segments: &[Segment]) -> TokenStream {
     if let [Segment::Literal(s)] = segments {
         return quote! { #s.to_string() };
     }
 
-    let parts: Vec<TokenStream> = segments
-        .iter()
-        .map(|seg| match seg {
-            Segment::Literal(s) => quote! { __buf.push_str(#s); },
-
-            Segment::Field { name, color } => {
-                let expr: syn::Expr = syn::parse_str(name).unwrap_or_else(|_| {
-                    panic!("invalid field expression in diagnostic attribute: {}", name)
-                });
-                match color {
-                    FieldColor::Plain => quote! { __buf.push_str(&format!("{}", #expr)); },
-                    FieldColor::Hi => quote! { __buf.push_str(&format!("{}", hi(&#expr))); },
-                    FieldColor::Primary => quote! {
-                        use ariadne::Fmt as _;
-                        __buf.push_str(&format!("{}", (&#expr).fg(PRIMARY)));
-                    },
-                    FieldColor::Secondary => quote! {
-                        use ariadne::Fmt as _;
-                        __buf.push_str(&format!("{}", (&#expr).fg(SECONDARY)));
-                    },
-                }
-            },
-
-            Segment::CodeSnippet(parts) => emit_snippet(parts, call_site),
-        })
-        .collect();
+    let parts = segments.iter().map(|seg| match seg {
+        Segment::Literal(s) => quote! { __buf.push_str(#s); },
+        Segment::Field { name, color } => {
+            let expr: syn::Expr =
+                syn::parse_str(name).unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+            match color {
+                FieldColor::Plain => quote! { __buf.push_str(&format!("{}", #expr)); },
+                FieldColor::Hi => quote! { __buf.push_str(&format!("{}", hi(&#expr))); },
+                FieldColor::Primary => quote! {
+                    use ariadne::Fmt as _;
+                    __buf.push_str(&format!("{}", (&#expr).fg(PRIMARY)));
+                },
+                FieldColor::Secondary => quote! {
+                    use ariadne::Fmt as _;
+                    __buf.push_str(&format!("{}", (&#expr).fg(SECONDARY)));
+                },
+            }
+        },
+        Segment::CodeSnippet(parts) => emit_snippet(parts),
+    });
 
     quote! {
         {
@@ -275,7 +215,7 @@ pub fn emit_segments(segments: &[Segment], call_site: Span) -> TokenStream {
     }
 }
 
-fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
+fn emit_snippet(parts: &[SnippetPart]) -> TokenStream {
     if parts.iter().all(|p| matches!(p, SnippetPart::Literal(_))) {
         let s: String = parts
             .iter()
@@ -291,16 +231,15 @@ fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
     }
 
     let mut fmt_str = String::new();
-    let mut args: Vec<TokenStream> = Vec::new();
+    let mut args = Vec::new();
 
     for part in parts {
         match part {
             SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
             SnippetPart::Field(name) => {
                 fmt_str.push_str("{}");
-                let expr: syn::Expr = syn::parse_str(name).unwrap_or_else(|_| {
-                    panic!("invalid field expression in diagnostic attribute: {}", name)
-                });
+                let expr: syn::Expr = syn::parse_str(name)
+                    .unwrap_or_else(|_| panic!("invalid field expression: {name}"));
                 args.push(quote! { &#expr });
             },
         }
@@ -310,6 +249,15 @@ fn emit_snippet(parts: &[SnippetPart], call_site: Span) -> TokenStream {
         use ariadne::Fmt as _;
         __buf.push_str(&format!("{}", format!(#fmt_str, #(#args),*).fg(SECONDARY)));
     }
+}
+
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_alphabetic() || first == '_')
+        && chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '(' | ')'))
 }
 
 #[cfg(test)]

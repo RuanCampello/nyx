@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
@@ -8,13 +6,11 @@ use syn::{DeriveInput, parse_macro_input};
 mod diagnostic;
 mod fmt;
 
-/// Derive `IntoDiagnostic` for an error kind enum.
+/// Derive `AsDiagnostic` for an error kind enum.
 ///
 /// Each variant must carry a `#[diagnostic(...)]` attribute specifying how to
-/// render that variant into a human-readable compiler diagnostic. Variants too
-/// complex for the attribute DSL can use `#[diagnostic(custom)]` and supply a
-/// manual `into_diagnostic_custom(self, span: Span) -> Diagnostic` inherent
-/// method on the enum.
+/// render that variant into a human-readable compiler diagnostic. Variants that
+/// simply wrap another `AsDiagnostic` type can use `#[diagnostic(transparent)]`.
 ///
 /// ## Required keys
 /// - `message = "..."` — the top-level error heading
@@ -23,11 +19,13 @@ mod fmt;
 /// ## Optional keys
 /// - `note = "..."`  — a note shown below the diagnostic
 /// - `help = "..."`  — a help suggestion shown below the diagnostic
+/// - `secondary(label = "...")`
+///   — an extra label using the primary span by default
 /// - `secondary(span_field = "FIELD_NAME", label = "...")`
 ///   — an extra label using a span from one of the variant's fields
 ///
 /// ## String interpolation
-/// Inside any string value you can embed field references:
+/// Inside any string value you can embed field references (including simple methods like `.display()`):
 /// - `{field}`   — `field.to_string()` (plain Display)
 /// - `{field!}`  — `hi(&field)` (highlight colour)
 /// - `{field~}`  — `field.fg(PRIMARY)` (primary colour)
@@ -48,18 +46,8 @@ mod fmt;
 ///     )]
 ///     UnknownFunction { name: String },
 ///
-///     #[diagnostic(custom)]
-///     OrphanImpl { name: String },
-/// }
-///
-/// // for the custom variant:
-/// impl<'h> HirErrorKind<'h> {
-///     pub fn into_diagnostic_custom(self, span: Span) -> Diagnostic {
-///         match self {
-///             Self::OrphanImpl { name } => { /* ... */ }
-///             _ => unreachable!("non-custom variant routed to into_diagnostic_custom"),
-///         }
-///     }
+///     #[diagnostic(transparent)]
+///     Diagnostic(Diagnostic),
 /// }
 /// ```
 #[proc_macro_derive(Diagnostic, attributes(diagnostic))]
