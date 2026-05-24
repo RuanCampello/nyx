@@ -280,11 +280,11 @@ impl Type {
         }
     }
 
-    pub(in crate::hir) const fn is_number(&self) -> bool {
+    pub const fn is_number(&self) -> bool {
         self.is_integer() || self.is_float()
     }
 
-    pub(in crate::hir) const fn is_integer(&self) -> bool {
+    pub const fn is_integer(&self) -> bool {
         matches!(
             self,
             Self::I8

@@ -343,21 +343,33 @@ impl Function<AArch64> {
             },
 
             // integer arithmetic
-            #[rustfmt::skip]
             A64Instr::Add { dest, lhs, rhs, bytes, checked }
             | A64Instr::Sub { dest, lhs, rhs, bytes, checked } => {
+                let dest_vreg = dest;
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
 
+                #[rustfmt::skip]
                 match instruction {
-                    A64Instr::Sub { .. } => emit!(out, "sub     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Add { .. } => emit!(out, "add     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Sub { .. } => {
+                        let op = if *checked { "subs" } else { "sub" };
+                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
+                    },
+                    A64Instr::Add { .. } => {
+                        let op = if *checked { "adds" } else { "add" };
+                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
+                    },
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
                 if *checked {
-                    unimplemented!("overflow trap");
+                    match (instruction, self.is_signed(dest_vreg)) {
+                        (_, true) => emit!(out, "b.vs    __nyx_panic_overflow"),
+                        (A64Instr::Add { .. }, false) => emit!(out, "b.hs    __nyx_panic_overflow"),
+                        (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    __nyx_panic_overflow"),
+                        _ => unsafe { std::hint::unreachable_unchecked() },
+                    }
                 }
             },
 
@@ -660,6 +672,14 @@ impl Function<AArch64> {
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
         matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+    }
+
+    #[inline(always)]
+    fn is_signed(&self, vreg: &VReg) -> bool {
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Int { signed: true, .. })
+        )
     }
 
     #[inline(always)]

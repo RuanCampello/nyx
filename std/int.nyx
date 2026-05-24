@@ -21,7 +21,8 @@ impl u8 {
     pub const BITS: u32 = 8;
 
     pub inline const fn is_power_of_two(&self): bool {
-        (*self > 0) && ((*self) & (*self - 1)) == 0
+        if *self == 0 return false;
+        ((*self) & (*self - 1)) == 0
     }
 }
 
@@ -46,7 +47,8 @@ impl u16 {
     pub const BITS: u32 = 16;
 
     pub inline const fn is_power_of_two(&self): bool {
-        (*self > 0) && ((*self) & (*self - 1)) == 0
+        if *self == 0 return false;
+        ((*self) & (*self - 1)) == 0
     }
 }
 
@@ -71,7 +73,8 @@ impl u32 {
     pub const BITS: u32 = 32;
 
     pub inline const fn is_power_of_two(&self): bool {
-        (*self > 0) && ((*self) & (*self - 1)) == 0
+        if *self == 0 return false;
+        ((*self) & (*self - 1)) == 0
     }
 }
 
@@ -96,7 +99,8 @@ impl u64 {
     pub const BITS: u32 = 64;
 
     pub inline const fn is_power_of_two(&self): bool {
-        (*self > 0) && ((*self) & (*self - 1)) == 0
+        if *self == 0 return false;
+        ((*self) & (*self - 1)) == 0
     }
 }
 
@@ -121,6 +125,7 @@ impl uptr {
     pub const MIN: uptr = 0;
 
     pub inline const fn is_power_of_two(&self): bool {
-        (*self > 0) && ((*self) & (*self - 1)) == 0
+        if *self == 0 return false;
+        ((*self) & (*self - 1)) == 0
     }
 }

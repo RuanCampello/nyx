@@ -382,6 +382,7 @@ impl Function<X86_64> {
             Inst::Add { dest, src, bytes, checked }
             | Inst::Sub { dest, src, bytes, checked }
             | Inst::Imul { dest, src, bytes, checked } => {
+                let dest_vreg = dest;
                 let suffix = typed_suffix(bytes, self.is_float(dest));
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
@@ -394,7 +395,12 @@ impl Function<X86_64> {
                 };
 
                 if *checked {
-                    unimplemented!("overflow trap");
+                    match (instruction, self.is_signed(dest_vreg)) {
+                        (Inst::Imul { .. }, _) | (_, true) => {
+                            emit!(out, "jo      __nyx_panic_overflow")
+                        },
+                        (_, false) => emit!(out, "jc      __nyx_panic_overflow"),
+                    }
                 }
             },
 
@@ -726,6 +732,14 @@ impl Function<X86_64> {
     #[inline(always)]
     fn is_float(&self, vreg: &VReg) -> bool {
         matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+    }
+
+    #[inline(always)]
+    fn is_signed(&self, vreg: &VReg) -> bool {
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Int { signed: true, .. })
+        )
     }
 
     #[inline(always)]
