@@ -119,30 +119,20 @@ impl Builder {
     }
 }
 
-pub trait IntoBuilder {
-    fn into_builder(self, span: Span) -> Builder;
+pub trait AsDiagnostic {
+    fn as_diagnostic(self, span: Span) -> Diagnostic;
 }
 
-impl IntoBuilder for Diagnostic {
-    fn into_builder(self, _span: Span) -> Builder {
-        unreachable!("IntoBuilder called on an already built Diagnostic")
+impl AsDiagnostic for Diagnostic {
+    fn as_diagnostic(self, _span: Span) -> Diagnostic {
+        self
     }
 }
 
-pub trait Diagnosticable {
-    fn into_diagnostic(self) -> Diagnostic;
-}
-
-impl Diagnosticable for LexError {
-    fn into_diagnostic(self) -> Diagnostic {
-        let span = self.span;
-        self.into_builder(span).build()
-    }
-}
-
-impl IntoBuilder for LexError {
-    fn into_builder(self, span: Span) -> Builder {
-        let mut b = self.kind.clone().into_builder(span);
+impl AsDiagnostic for LexError {
+    fn as_diagnostic(self, _span: Span) -> Diagnostic {
+        let mut diag = self.kind.clone().as_diagnostic(self.span);
+        // special case for lexerror help hints which are injected dynamically
         if let Some(h) = self.help {
             use crate::lexer::error::LexErrorKind as K;
             if !matches!(
@@ -154,118 +144,41 @@ impl IntoBuilder for LexError {
                     | K::EmptyChar
                     | K::OverlongChar
             ) {
-                b = b.help(h);
+                diag.rendered.push_str(&format!("\nHelp: {}", h));
             }
         }
-        b
-    }
-}
-
-impl<'i> Diagnosticable for ParserError<'i> {
-    fn into_diagnostic(self) -> Diagnostic {
-        let span = self.span;
-        self.into_builder(span).build()
-    }
-}
-
-impl<'i> IntoBuilder for ParserError<'i> {
-    fn into_builder(self, span: Span) -> Builder {
-        self.kind.into_builder(span)
-    }
-}
-
-impl<'h> Diagnosticable for HirError<'h> {
-    fn into_diagnostic(self) -> Diagnostic {
-        self.kind.clone().into_builder(self.span).build()
-    }
-}
-
-impl Diagnosticable for MirError {
-    fn into_diagnostic(self) -> Diagnostic {
-        match self.kind {
-            MirErrorKind::Hir(e) => e.into_diagnostic(),
-        }
+        diag
     }
 }
 
 impl From<LexError> for Diagnostic {
     fn from(e: LexError) -> Self {
-        e.into_diagnostic()
+        e.as_diagnostic(Span::default())
+    }
+}
+
+impl<'i> AsDiagnostic for ParserError<'i> {
+    fn as_diagnostic(self, _span: Span) -> Diagnostic {
+        self.kind.as_diagnostic(self.span)
     }
 }
 
 impl<'i> From<ParserError<'i>> for Diagnostic {
     fn from(e: ParserError<'i>) -> Self {
-        e.into_diagnostic()
+        e.as_diagnostic(Span::default())
     }
 }
 
 impl<'h> From<HirError<'h>> for Diagnostic {
     fn from(e: HirError<'h>) -> Self {
-        e.into_diagnostic()
+        e.kind.as_diagnostic(e.span)
     }
 }
 
 impl From<MirError> for Diagnostic {
     fn from(e: MirError) -> Self {
-        e.into_diagnostic()
-    }
-}
-
-impl From<ModuleError> for Diagnostic {
-    fn from(value: ModuleError) -> Self {
-        match value {
-            ModuleError::Diagnostic(d) => d,
-
-            ModuleError::FileNotFound { path, span } => {
-                Builder::new(format!("module file not found: {}", path.display().fg(PRIMARY)))
-                    .primary(span.unwrap_or_default(), "imported here")
-                    .help(format!("make sure the file {} exists", path.display().fg(HIGHLIGHT)))
-                    .build()
-            },
-
-            ModuleError::CircularImport { path, span } => Builder::new(format!(
-                "circular import: {} is already being loaded",
-                path.display().fg(PRIMARY)
-            ))
-            .primary(span, "this import creates a cycle")
-            .help("remove the circular dependency between modules")
-            .build(),
-
-            ModuleError::EmptyPath => Builder::new("empty import path")
-                .primary(Span::default(), "this path has no segments")
-                .help(format!("use paths like {}", "use project::module;".fg(SECONDARY)))
-                .build(),
-
-            ModuleError::UnknownRoot { name, span } => {
-                Builder::new(format!("unknown module root {}", hi(&name)))
-                    .primary(span, format!("{} is not a known module root", hi(&name)))
-                    .help("the root segment must match your project name")
-                    .build()
-            },
-
-            ModuleError::UnknownExport { path, name, span } => Builder::new(format!(
-                "module {} has no exported symbol {}",
-                path.display().fg(HIGHLIGHT),
-                hi(&name)
-            ))
-            .primary(span, format!("{} is not exported from this module", hi(&name)))
-            .help(format!(
-                "add {} to {} to export it",
-                hi("pub"),
-                format!("fn {name}").fg(SECONDARY)
-            ))
-            .build(),
-
-            ModuleError::TopLevelNonFunction { path: _, span } => {
-                Builder::new("only function declarations are allowed at the top level")
-                    .primary(span, "this is not a function declaration")
-                    .help(format!(
-                        "move this into a function body, or wrap it in {}",
-                        "fn main()".fg(SECONDARY)
-                    ))
-                    .build()
-            },
+        match e.kind {
+            MirErrorKind::Hir(hir_err) => hir_err.into(),
         }
     }
 }

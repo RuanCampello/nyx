@@ -193,7 +193,7 @@ fn generate_variant_arm(
 
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
-                crate::diagnostic::IntoBuilder::into_builder(#first_field.clone(), __span)
+                crate::diagnostic::AsDiagnostic::as_diagnostic(#first_field.clone(), __span)
             }
         });
     }
@@ -231,6 +231,7 @@ fn generate_variant_arm(
                 #secondary_chain
                 #note_chain
                 #help_chain
+                .build()
         }
     })
 }
@@ -288,9 +289,9 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
-        impl #impl_generics crate::diagnostic::IntoBuilder for #enum_name #ty_generics #where_clause {
+        impl #impl_generics crate::diagnostic::AsDiagnostic for #enum_name #ty_generics #where_clause {
             #[allow(unused_variables, unused_assignments)]
-            fn into_builder(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Builder {
+            fn as_diagnostic(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Diagnostic {
                 use crate::diagnostic::{Builder, hi, PRIMARY, SECONDARY, HIGHLIGHT};
                 use ariadne::Fmt as _;
 

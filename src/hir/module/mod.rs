@@ -80,26 +80,6 @@ pub enum ModuleError {
     Diagnostic(Diagnostic),
 }
 
-impl crate::diagnostic::Diagnosticable for ModuleError {
-    fn into_diagnostic(self) -> Diagnostic {
-        match self {
-            ModuleError::Diagnostic(d) => d,
-            other => {
-                let span = match &other {
-                    ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
-                    ModuleError::CircularImport { span, .. } => *span,
-                    ModuleError::EmptyPath => Span::default(),
-                    ModuleError::UnknownRoot { span, .. } => *span,
-                    ModuleError::UnknownExport { span, .. } => *span,
-                    ModuleError::TopLevelNonFunction { span, .. } => *span,
-                    ModuleError::Diagnostic(_) => unreachable!(),
-                };
-                crate::diagnostic::IntoBuilder::into_builder(other, span).build()
-            }
-        }
-    }
-}
-
 pub(crate) trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, std::io::Error>;
     fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
@@ -163,6 +143,26 @@ impl FileSystem for FS {
 impl From<Diagnostic> for ModuleError {
     fn from(value: Diagnostic) -> Self {
         Self::Diagnostic(value)
+    }
+}
+
+impl From<ModuleError> for Diagnostic {
+    fn from(value: ModuleError) -> Diagnostic {
+        match value {
+            ModuleError::Diagnostic(d) => d,
+            other => {
+                let span = match &other {
+                    ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
+                    ModuleError::CircularImport { span, .. } => *span,
+                    ModuleError::EmptyPath => Span::default(),
+                    ModuleError::UnknownRoot { span, .. } => *span,
+                    ModuleError::UnknownExport { span, .. } => *span,
+                    ModuleError::TopLevelNonFunction { span, .. } => *span,
+                    ModuleError::Diagnostic(_) => unreachable!(),
+                };
+                crate::diagnostic::AsDiagnostic::as_diagnostic(other, span)
+            },
+        }
     }
 }
 
