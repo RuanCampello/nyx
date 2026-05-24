@@ -51,10 +51,7 @@ pub enum ParseErrorKind<'i> {
         primary = "a type name was expected here"
     )]
     ExpectedTypeIdentifier { found: String },
-    #[diagnostic(
-        message = "unexpected end of file",
-        primary = "the file ended prematurely"
-    )]
+    #[diagnostic(message = "unexpected end of file", primary = "the file ended prematurely")]
     UnexpectedEof,
 }
 

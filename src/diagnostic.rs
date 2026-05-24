@@ -131,31 +131,7 @@ impl AsDiagnostic for Diagnostic {
 
 impl AsDiagnostic for LexError {
     fn as_diagnostic(self, _span: Span) -> Diagnostic {
-        let help = self.help;
-        let mut add_help = false;
-
-        if help.is_some() {
-            use crate::lexer::error::LexErrorKind as K;
-            if !matches!(
-                &self.kind,
-                K::UnterminatedString
-                    | K::UnterminatedComment
-                    | K::InvalidEscape(_)
-                    | K::UnterminatedChar
-                    | K::EmptyChar
-                    | K::OverlongChar
-            ) {
-                add_help = true;
-            }
-        }
-
-        let mut diag = self.kind.as_diagnostic(self.span);
-
-        if add_help {
-            diag.rendered.push_str(&format!("\nHelp: {}", help.unwrap()));
-        }
-
-        diag
+        self.kind.as_diagnostic(self.span)
     }
 }
 

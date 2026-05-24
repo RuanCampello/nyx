@@ -462,7 +462,6 @@ mod tests {
         let result: Result<Vec<_>, _> = Lexer::new(r#"let x = "hello"#).collect();
         let err = result.unwrap_err();
         assert_eq!(err.kind, error::LexErrorKind::UnterminatedString);
-        assert!(err.help.is_some());
     }
 
     #[test]
@@ -471,7 +470,6 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.kind, error::LexErrorKind::UnterminatedComment);
     }
-
     #[test]
     fn bang_without_eq() {
         let ks = kinds("!x");

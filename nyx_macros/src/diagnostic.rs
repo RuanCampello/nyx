@@ -1,9 +1,9 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
+    Data, DeriveInput, Error, Fields, Ident, LitStr, Meta, Result, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Data, DeriveInput, Error, Fields, Ident, LitStr, Meta, Result, Token,
 };
 
 use crate::fmt::parse_template;
@@ -47,7 +47,9 @@ impl Parse for Secondary {
             match key.as_str() {
                 "span_field" => span_field = Some(s.clone()),
                 "label" => label = Some(s.clone()),
-                other => return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`"))),
+                other => {
+                    return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`")));
+                },
             }
         }
 
@@ -78,7 +80,9 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                     "primary" => attr.primary = Some(s.clone()),
                     "note" => attr.note = Some(s.clone()),
                     "help" => attr.help = Some(s.clone()),
-                    other => return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`"))),
+                    other => {
+                        return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`")));
+                    },
                 }
             },
             Meta::List(list) if list.path.is_ident("secondary") => {
@@ -89,7 +93,9 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                     .unwrap_or_else(|| Ident::new("__span", Span::call_site()));
                 attr.secondary = Some(SecondaryAttr { span_field, label: sec.label });
             },
-            other => return Err(Error::new_spanned(other, "unexpected item in #[diagnostic(...)]")),
+            other => {
+                return Err(Error::new_spanned(other, "unexpected item in #[diagnostic(...)]"));
+            },
         }
     }
 
@@ -100,7 +106,10 @@ fn extract_diagnostic_attr(attrs: &[syn::Attribute]) -> Result<Option<Diagnostic
     let mut diag_attr = None;
     for attr in attrs.iter().filter(|a| a.path().is_ident("diagnostic")) {
         if diag_attr.is_some() {
-            return Err(Error::new_spanned(attr, "only one #[diagnostic(...)] allowed per variant"));
+            return Err(Error::new_spanned(
+                attr,
+                "only one #[diagnostic(...)] allowed per variant",
+            ));
         }
         diag_attr = Some(parse_diagnostic_attr(&attr.meta)?);
     }
@@ -117,10 +126,15 @@ fn generate_variant_arm(
 
     if attr.transparent {
         let first_field = match &variant.fields {
-            Fields::Named(n) => n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id)),
+            Fields::Named(n) => {
+                n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id))
+            },
             Fields::Unnamed(_) => Some(quote!(field_0)),
             Fields::Unit => None,
-        }.ok_or_else(|| Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field"))?;
+        }
+        .ok_or_else(|| {
+            Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
+        })?;
 
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
@@ -129,23 +143,35 @@ fn generate_variant_arm(
         });
     }
 
-    let msg = attr.message.as_ref().ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
-    let prim = attr.primary.as_ref().ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
+    let msg = attr
+        .message
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
+    let prim = attr
+        .primary
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
 
     let msg_ts = parse_template(&msg.value(), msg.span())?;
     let prim_ts = parse_template(&prim.value(), prim.span())?;
 
-    let note_chain = attr.note.as_ref()
+    let note_chain = attr
+        .note
+        .as_ref()
         .map(|n| parse_template(&n.value(), n.span()))
         .transpose()?
         .map(|ts| quote!(.note(#ts)));
 
-    let help_chain = attr.help.as_ref()
+    let help_chain = attr
+        .help
+        .as_ref()
         .map(|h| parse_template(&h.value(), h.span()))
         .transpose()?
         .map(|ts| quote!(.help(#ts)));
 
-    let sec_chain = attr.secondary.as_ref()
+    let sec_chain = attr
+        .secondary
+        .as_ref()
         .map(|sec| {
             let sf = &sec.span_field;
             let lbl = parse_template(&sec.label.value(), sec.label.span())?;
@@ -185,11 +211,19 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
         return Err(Error::new_spanned(&input, "#[derive(Diagnostic)] only works on enums"));
     };
 
-    let arms = data.variants.iter().map(|variant| {
-        let attr = extract_diagnostic_attr(&variant.attrs)?
-            .ok_or_else(|| Error::new_spanned(variant, format!("variant `{}` missing #[diagnostic(...)]", variant.ident)))?;
-        generate_variant_arm(enum_name, variant, &attr)
-    }).collect::<Result<Vec<_>>>()?;
+    let arms = data
+        .variants
+        .iter()
+        .map(|variant| {
+            let attr = extract_diagnostic_attr(&variant.attrs)?.ok_or_else(|| {
+                Error::new_spanned(
+                    variant,
+                    format!("variant `{}` missing #[diagnostic(...)]", variant.ident),
+                )
+            })?;
+            generate_variant_arm(enum_name, variant, &attr)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
