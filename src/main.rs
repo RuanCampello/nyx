@@ -67,6 +67,10 @@ enum Commands {
         /// Values: x86_64, aarch64 (aliases: x86-64, arm64)
         #[arg(long, value_name = "ARCH")]
         target: Option<String>,
+
+        /// Optimisation level
+        #[arg(long, value_name = "LEVEL", default_value = "debug")]
+        opt: OptimisationLevel,
     },
 
     /// Compile a nyx source file or project and immediately run it
@@ -90,6 +94,10 @@ enum Commands {
         /// Defaults to the entry file's parent directory name.
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
+
+        /// Optimisation level
+        #[arg(long, value_name = "LEVEL", default_value = "debug")]
+        opt: OptimisationLevel,
     },
 }
 
@@ -103,11 +111,22 @@ enum Emit {
     Link,
 }
 
+#[derive(Debug, PartialEq, Eq, Default, Clone, Copy, ValueEnum)]
+enum OptimisationLevel {
+    /// No optimisations, all runtime safety checks enabled
+    #[default]
+    Debug,
+    /// Sensible production optimisations
+    Sane,
+    /// Aggressive optimisations
+    Max,
+}
+
 fn main() -> Result<(), NyxError> {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Build { path, entry, output, emit, project, target } => {
+        Commands::Build { path, entry, output, emit, project, target, .. } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
             let arch = resolve_target(target)?;
@@ -115,7 +134,7 @@ fn main() -> Result<(), NyxError> {
             cmd_build(&entry, output.as_deref(), &emit, &name, arch)
         },
 
-        Commands::Run { path, entry, project } => {
+        Commands::Run { path, entry, project, .. } => {
             let entry = resolve_entry(path, &entry)?;
             let name = resolve_project_name(&entry, project);
 
