@@ -9,6 +9,7 @@ use crate::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError,
     },
+    parser::expression::{BinaryOperator, UnaryOperator},
 };
 use lasso::Key;
 use std::collections::HashMap;
@@ -230,11 +231,6 @@ impl<'a> FunctionLower<'a> {
             },
 
             Stmt::While { condition, body } => {
-                // cfg shape:
-                //   <current> ── jump ──► header
-                //   header    ── branch(cond) ──► body | exit
-                //   body      ──…── jump ──► header   (back-edge)
-                //   exit      ← continue emission here
                 let header_id = self.new_block();
                 let body_id = self.new_block();
                 let exit_id = self.new_block();
@@ -268,8 +264,6 @@ impl<'a> FunctionLower<'a> {
     }
 
     fn lower_expr(&mut self, expr: &Expression) -> Result<Operand, MirError> {
-        use crate::parser::expression::{BinaryOperator, UnaryOperator};
-
         match &expr.kind {
             ExpressionKind::Unit => Ok(Operand::Const(Const::Unit)),
             ExpressionKind::Integer(n) => Ok(Operand::Const(Const::Int(*n, expr.typ))),
@@ -317,6 +311,10 @@ impl<'a> FunctionLower<'a> {
 
             ExpressionKind::Binary { operator, left, right } => {
                 use crate::optimisation;
+
+                if matches!(operator, BinaryOperator::And | BinaryOperator::Or) {
+                    return self.lower_short_circuit(*operator, left, right, expr.typ);
+                }
 
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
@@ -493,6 +491,44 @@ impl<'a> FunctionLower<'a> {
                 Ok(value)
             },
         }
+    }
+
+    fn lower_short_circuit(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        typ: Type,
+    ) -> Result<Operand, MirError> {
+        debug_assert_eq!(typ, Type::Bool, "`&&` and `||` should be perfomed only on booleans");
+
+        let result = self.fresh_temporary(Type::Bool);
+        let left_operand = self.lower_expr(left)?;
+
+        let right_id = self.new_block();
+        let short_id = self.new_block();
+        let merge_id = self.new_block();
+
+        let (then_block, else_block, short_value) = match operator {
+            BinaryOperator::And => (right_id, short_id, false),
+            BinaryOperator::Or => (short_id, right_id, true),
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        };
+
+        self.terminate(Terminator::Branch { condition: left_operand, then_block, else_block });
+
+        self.switch_to(right_id);
+        let right_operand = self.lower_expr(right)?;
+        self.emit(result, InstructionKind::Assign(right_operand));
+        self.terminate(Terminator::Jump(merge_id));
+
+        self.switch_to(short_id);
+        self.emit(result, InstructionKind::Assign(Operand::Const(Const::Bool(short_value))));
+        self.terminate(Terminator::Jump(merge_id));
+
+        self.switch_to(merge_id);
+
+        Ok(Operand::Place(result))
     }
 
     #[inline(always)]
