@@ -12,7 +12,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 ## Compiler Optimisations
 
-- [ ] Optimisations flags (**requires** definition of each optimisation level scope)
+- [x] Optimisations flags (**requires** definition of each optimisation level scope)
 - [ ] If-conversion
 - [ ] Constant Folding & Propagation
 - [ ] Dead Code Elimination (DCE)
@@ -55,7 +55,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Methods
       - [x] Reference (`&self`)
       - [x] Mutable reference (`&mut self`)
-  - [ ] Enumerables / Tag Union (`enum`)
+  - [ ] Enumerables / Tag Union
+    - [ ] Sum enumerable (`enum`)
+    - [ ] C-like `union` representation
 
 ### Expressions & Operators
 
@@ -94,7 +96,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [ ] Default parameter values (**requires** definition of _default_ interface)
   - [ ] Modifiers
     - [ ] Constant constraint (`const`)
-    - [ ] Inlining (`inline`)
+    - [x] Inlining (`inline`)
 - [x] Return statements (`return`)
 
 ### Others
@@ -115,3 +117,5 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Memory allocator (**requires** definition of memory layout)
 - [ ] Error handling (**requires** definition of error handling model)
 - [ ] Panic handling
+  - [x] Panicking primitives
+  - [ ] Panicking unwinder

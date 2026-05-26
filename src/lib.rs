@@ -29,8 +29,15 @@ pub mod optimisation {
         #[default]
         Debug,
         /// Sensible production optimisations
+        ///
+        /// - Overflow checks removed
+        /// - Dead code elimination
+        /// - Constant folding and propagation
+        /// - Common subexpression elimination
         Sane,
         /// Aggressive optimisations
+        ///
+        /// - Loop unrolling
         Max,
     }
 
