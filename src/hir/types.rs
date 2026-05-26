@@ -534,3 +534,23 @@ impl std::fmt::Debug for RefTarget {
         write!(f, "{:?}", self.kind())
     }
 }
+
+impl TryFrom<statement::Type<'_>> for EnumRepr {
+    type Error = ();
+    #[inline]
+    fn try_from(value: statement::Type<'_>) -> Result<Self, Self::Error> {
+        Ok(match value {
+            statement::Type::I8 => EnumRepr::I8,
+            statement::Type::U8 => EnumRepr::U8,
+            statement::Type::I16 => EnumRepr::I16,
+            statement::Type::U16 => EnumRepr::U16,
+            statement::Type::I32 => EnumRepr::I32,
+            statement::Type::U32 => EnumRepr::U32,
+            statement::Type::I64 => EnumRepr::I64,
+            statement::Type::U64 => EnumRepr::U64,
+            statement::Type::Iptr => EnumRepr::Iptr,
+            statement::Type::Uptr => EnumRepr::Uptr,
+            _ => return Err(()),
+        })
+    }
+}

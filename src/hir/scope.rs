@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        Constant, Function, FunctionId, Intrinsic, Method, RefTarget, Struct, StructId, SymbolId,
-        SymbolTable, Type,
+        Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, Intrinsic, Method,
+        RefTarget, RefTargetKind, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         lower::{self},
@@ -28,6 +28,9 @@ pub struct Scope<'s> {
     pub methods: Methods,
     pub structs: Vec<Struct>,
     pub struct_map: Structs,
+    pub enums: Vec<Enum>,
+    pub enum_map: Enums,
+    pub enum_variants: EnumVariants,
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
     pub constants: HashMap<SymbolId, Constant>,
@@ -62,6 +65,8 @@ pub(in crate::hir) struct InterfaceMethodSignature {
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
 pub(in crate::hir) type Structs = HashMap<SymbolId, StructId>;
+pub(in crate::hir) type Enums = HashMap<SymbolId, EnumId>;
+pub(in crate::hir) type EnumVariants = HashMap<(SymbolId, SymbolId), (EnumId, i64)>;
 pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
@@ -75,6 +80,9 @@ impl<'sc> Scope<'sc> {
             methods: HashMap::new(),
             structs: Vec::new(),
             struct_map: HashMap::new(),
+            enums: Vec::new(),
+            enum_map: HashMap::new(),
+            enum_variants: HashMap::new(),
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
             constants: HashMap::new(),
@@ -91,6 +99,7 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
     ) -> Result<(), HirError<'s>> {
+        self.extend_enums(declarations, symbols)?;
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols, in_std)?;
@@ -148,7 +157,10 @@ impl<'sc> Scope<'sc> {
 
         for struct_decl in &declarations.structs {
             let symbol = symbols.insert(struct_decl.name);
-            if self.struct_map.contains_key(&symbol) || local_map.contains_key(&symbol) {
+            if self.struct_map.contains_key(&symbol)
+                || self.enum_map.contains_key(&symbol)
+                || local_map.contains_key(&symbol)
+            {
                 return Err(hir_error!(
                     struct_decl.span,
                     DuplicateStruct { name: struct_decl.name.to_string() }
@@ -165,17 +177,77 @@ impl<'sc> Scope<'sc> {
 
         let mut lowered = vec![None; local_declarations.len()];
 
-        lower::lower_structs(&local_declarations, &local_map, symbols, &mut lowered)?;
+        lower::lower_structs(
+            &local_declarations,
+            &local_map,
+            &self.enum_map,
+            symbols,
+            &mut lowered,
+        )?;
 
         for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
             s.id = StructId(s.id.0 + offset);
             for field in &mut s.fields {
-                if let Type::Struct(id) = &mut field.typ {
+                if let TypeKind::Struct(mut id) = field.typ.kind() {
                     id.0 += offset;
+                    field.typ = Type::new(TypeKind::Struct(id));
                 }
             }
             self.struct_map.insert(s.name, s.id);
             self.structs.push(s);
+        }
+
+        Ok(())
+    }
+
+    fn extend_enums<'d, 's>(
+        &mut self,
+        declarations: &Declarations<'d, 's>,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'s>> {
+        for enum_decl in &declarations.enums {
+            let symbol = symbols.insert(enum_decl.name);
+            if self.enum_map.contains_key(&symbol)
+                || self.struct_map.contains_key(&symbol)
+                || declarations.structs.iter().any(|s| s.name == enum_decl.name)
+            {
+                return Err(hir_error!(
+                    enum_decl.span,
+                    DuplicateEnum { name: enum_decl.name.to_string() }
+                ));
+            }
+
+            let repr = enum_decl.repr.value().try_into().map_err(|_| {
+                hir_error!(
+                    enum_decl.repr.span(),
+                    TypeMismatch {
+                        expected: Type::new(TypeKind::I32),
+                        found: Type::from(&enum_decl.repr.value())
+                    }
+                )
+            })?;
+            let id = EnumId(self.enums.len() as u32, repr);
+            let mut seen = HashSet::new();
+            let mut next_value = 0;
+            let mut variants = Vec::with_capacity(enum_decl.variants.len());
+
+            for variant in &enum_decl.variants {
+                let variant_symbol = symbols.insert(variant.name);
+                if !seen.insert(variant_symbol) {
+                    return Err(hir_error!(
+                        variant.span,
+                        DuplicateVariant { name: variant.name.to_string() }
+                    ));
+                }
+
+                let value = variant.value.unwrap_or(next_value);
+                next_value = value + 1;
+                self.enum_variants.insert((symbol, variant_symbol), (id, value));
+                variants.push(EnumVariant { name: variant_symbol, value });
+            }
+
+            self.enum_map.insert(symbol, id);
+            self.enums.push(Enum { id, name: symbol, variants, repr });
         }
 
         Ok(())
@@ -295,7 +367,7 @@ impl<'sc> Scope<'sc> {
                 self.signatures.push(FunctionSignature {
                     name: syscall_sym,
                     params: vec![],
-                    return_type: Type::Iptr,
+                    return_type: Type::new(TypeKind::Iptr),
                     intrinsic: Some(Intrinsic::Syscall),
                     method: None,
                     is_const: false,
@@ -327,11 +399,12 @@ impl<'sc> Scope<'sc> {
 
                 _ => {
                     let is_local =
-                        declarations.structs.iter().any(|s| s.name == implementation.name);
+                        declarations.structs.iter().any(|s| s.name == implementation.name)
+                            || declarations.enums.iter().any(|e| e.name == implementation.name);
                     if !is_local {
-                        let struct_symbol = symbols.insert(implementation.name);
-                        return match self.struct_map.contains_key(&struct_symbol) {
-                            true => Err(hir_error!(
+                        let symbol = symbols.insert(implementation.name);
+                        return match self.nominal_type(symbol) {
+                            Some(_) => Err(hir_error!(
                                 implementation.span,
                                 OrphanImpl { name: implementation.name.to_string() }
                             )),
@@ -343,15 +416,11 @@ impl<'sc> Scope<'sc> {
                         };
                     }
 
-                    let struct_symbol = symbols.insert(implementation.name);
-                    let struct_id =
-                        *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownType {
-                                name: implementation.name.to_string(),
-                            },
-                            span: implementation.span,
-                        })?;
-                    Type::Struct(struct_id)
+                    let symbol = symbols.insert(implementation.name);
+                    self.nominal_type(symbol).ok_or_else(|| HirError {
+                        kind: HirErrorKind::UnknownType { name: implementation.name.to_string() },
+                        span: implementation.span,
+                    })?
                 },
             };
 
@@ -389,11 +458,11 @@ impl<'sc> Scope<'sc> {
                         self.methods.insert((receiver_type, method_symbol), id);
 
                         let mut params = Vec::with_capacity(method.params.len() + 1);
-                        let first_param = Type::Ref {
+                        let first_param = Type::new(TypeKind::Ref {
                             mutable: receiver.mutable,
                             to: RefTarget::try_from(receiver_type)
                                 .expect("receiver must be a reference target"),
-                        };
+                        });
                         params.push(first_param);
                         params.extend(self.resolve_params(
                             &method.params,
@@ -461,15 +530,15 @@ impl<'sc> Scope<'sc> {
     ) -> Result<(), HirError<'h>> {
         #[inline]
         fn substitute_self(typ: Type, self_type: Type) -> Type {
-            match typ {
-                Type::SelfType => self_type,
-                Type::Ref { mutable, to: RefTarget::SelfType } => {
+            match typ.kind() {
+                TypeKind::SelfType => self_type,
+                TypeKind::Ref { mutable, to } if to.kind() == RefTargetKind::SelfType => {
                     match RefTarget::try_from(self_type) {
-                        Ok(to) => Type::Ref { mutable, to },
+                        Ok(to) => Type::new(TypeKind::Ref { mutable, to }),
                         _ => typ,
                     }
                 },
-                other => other,
+                _ => typ,
             }
         }
 
@@ -486,12 +555,9 @@ impl<'sc> Scope<'sc> {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) => primitive,
                 _ => {
-                    let struct_sym = symbols.insert(implementation.name);
-                    let struct_id = *self
-                        .struct_map
-                        .get(&struct_sym)
-                        .expect("impl struct must exist in scope after extend_structs");
-                    Type::Struct(struct_id)
+                    let symbol = symbols.insert(implementation.name);
+                    self.nominal_type(symbol)
+                        .expect("impl type must exist in scope after declaration extension")
                 },
             };
 
@@ -545,7 +611,7 @@ impl<'sc> Scope<'sc> {
 
                 let (impl_receiver_mut, impl_explicit_params) = match impl_has_receiver {
                     true => {
-                        let Type::Ref { mutable, .. } = signature.params[0] else {
+                        let TypeKind::Ref { mutable, .. } = signature.params[0].kind() else {
                             unreachable!("method signature must start with a receiver reference");
                         };
                         (mutable, &signature.params[1..])
@@ -625,13 +691,11 @@ impl<'sc> Scope<'sc> {
                 let receiver_type = match resolve_primitive_type(impl_type) {
                     Some(primitive) => primitive,
                     _ => {
-                        let struct_symbol = symbols.insert(impl_type);
-                        let struct_id =
-                            *self.struct_map.get(&struct_symbol).ok_or_else(|| HirError {
-                                kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
-                                span: function.span,
-                            })?;
-                        Type::Struct(struct_id)
+                        let symbol = symbols.insert(impl_type);
+                        self.nominal_type(symbol).ok_or_else(|| HirError {
+                            kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
+                            span: function.span,
+                        })?
                     },
                 };
 
@@ -660,9 +724,8 @@ impl<'sc> Scope<'sc> {
                         let receiver_type = match resolve_primitive_type(impl_type) {
                             Some(primitive) => primitive,
                             _ => {
-                                let struct_symbol = symbols.insert(impl_type);
-                                let struct_id = *self.struct_map.get(&struct_symbol)?;
-                                Type::Struct(struct_id)
+                                let symbol = symbols.insert(impl_type);
+                                self.nominal_type(symbol)?
                             },
                         };
                         self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
@@ -705,6 +768,7 @@ impl<'sc> Scope<'sc> {
                 lower::resolve_annotation(
                     symbols,
                     &self.struct_map,
+                    &self.enum_map,
                     &s.value(),
                     s.span(),
                     self_type,
@@ -727,6 +791,7 @@ impl<'sc> Scope<'sc> {
                 lower::resolve_annotation(
                     symbols,
                     &self.struct_map,
+                    &self.enum_map,
                     &p.typ.value(),
                     p.typ.span(),
                     self_type,
@@ -839,6 +904,7 @@ impl<'sc> Scope<'sc> {
             let expected_type = lower::resolve_annotation(
                 symbols,
                 &self.struct_map,
+                &self.enum_map,
                 &decl.ast.typ.value(),
                 decl.ast.typ.span(),
                 None,
@@ -865,6 +931,15 @@ impl<'sc> Scope<'sc> {
         let id = FunctionId(self.signatures.len() as u32);
         self.signatures.push(signature);
         id
+    }
+
+    #[inline]
+    fn nominal_type(&self, symbol: SymbolId) -> Option<Type> {
+        self.struct_map
+            .get(&symbol)
+            .copied()
+            .map(|id| Type::new(TypeKind::Struct(id)))
+            .or_else(|| self.enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
     }
 }
 
