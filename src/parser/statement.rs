@@ -3,6 +3,7 @@ use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
 use crate::parser::{Parsable, Parser};
+use std::num::NonZero;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement<'i> {
@@ -13,6 +14,7 @@ pub enum Statement<'i> {
     While(While<'i>),
     Fn(Function<'i>),
     Struct(Struct<'i>),
+    Enum(Enum<'i>),
     Impl(Impl<'i>),
     Interface(Interface<'i>),
     Expr(Expression<'i>, Span),
@@ -83,14 +85,46 @@ pub struct Receiver {
 pub struct Struct<'i> {
     pub name: &'i str,
     pub fields: Vec<StructField<'i>>,
+    pub repr: StructRepr,
     pub is_pub: bool,
     pub span: Span,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub struct StructRepr {
+    pub kind: StructReprKind,
+    pub align: Option<NonZero<u32>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
+pub enum StructReprKind {
+    #[default]
+    Default = 1 << 1,
+    Extern = 1 << 2,
+    Packed = 1 << 3,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructField<'i> {
     pub name: &'i str,
     pub typ: Spanned<Type<'i>>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Enum<'i> {
+    pub name: &'i str,
+    pub variants: Vec<EnumVariant<'i>>,
+    pub repr: Spanned<Type<'i>>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct EnumVariant<'i> {
+    pub name: &'i str,
+    pub value: Option<i64>,
     pub span: Span,
 }
 
@@ -218,6 +252,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Use) => Ok(Statement::Use(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Struct) => Ok(Statement::Struct(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Enum) => Ok(Statement::Enum(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Impl) => Ok(Statement::Impl(parser.parse_node()?)),
             TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Interface) => {
@@ -225,6 +260,9 @@ impl<'i> Parsable<'i> for Statement<'i> {
             },
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
                 Ok(Statement::Struct(parser.parse_node()?))
+            },
+            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_enum() => {
+                Ok(Statement::Enum(parser.parse_node()?))
             },
             TokenKind::Keyword(Keyword::Pub) if parser.is_pub_interface() => {
                 Ok(Statement::Interface(parser.parse_node()?))
@@ -618,9 +656,10 @@ impl<'i> Parsable<'i> for Struct<'i> {
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                     let close = parser.expect_token(Punct::CloseBrace)?;
-                    let span = struct_token.span + close.span;
+                    let repr = parser.parse_node()?;
+                    let span = struct_token.span + parser.last_span().unwrap_or(close.span);
 
-                    return Ok(Self { name, fields, is_pub, span });
+                    return Ok(Self { name, fields, repr, is_pub, span });
                 },
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
@@ -649,6 +688,75 @@ impl<'i> Parsable<'i> for Struct<'i> {
 
             fields.push(StructField { name: field_name, typ, span });
         }
+    }
+}
+
+impl<'i> Parsable<'i> for Enum<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let enum_token = parser.expect_token(Keyword::Enum)?;
+        let (name, _) = parser.expect_identifier()?;
+        parser.expect_token(Punct::OpenBrace)?;
+
+        let mut variants = Vec::new();
+
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                    parser.expect_token(Punct::CloseBrace)?;
+                    break;
+                },
+
+                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+                },
+
+                Some(Err(err)) => return Err(err.into()),
+                _ => {},
+            }
+
+            if !variants.is_empty() {
+                parser.expect_token(Punct::Comma)?;
+
+                match parser.peek() {
+                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                        parser.expect_token(Punct::CloseBrace)?;
+                        break;
+                    },
+                    _ => {},
+                }
+            }
+
+            let (variant_name, variant_span) = parser.expect_identifier()?;
+            let (value, span) = match parser.consume_punct(Punct::Eq)? {
+                true => {
+                    let token = parser.expect_next()?;
+                    match token.kind {
+                        TokenKind::Integer(value) => (Some(value), variant_span + token.span),
+                        _ => {
+                            return Err(ParserError::new(
+                                ParseErrorKind::Expected {
+                                    expected: TokenKind::Integer(0),
+                                    found: token.kind,
+                                },
+                                token.span,
+                            ));
+                        },
+                    }
+                },
+                false => (None, variant_span),
+            };
+
+            variants.push(EnumVariant { name: variant_name, value, span });
+        }
+
+        let repr = match parser.consume_keyword(Keyword::As)? {
+            true => parser.parse_node::<Spanned<Type<'i>>>()?,
+            false => Spanned::new(Type::I32, enum_token.span),
+        };
+        let span = enum_token.span + repr.span();
+
+        Ok(Self { name, variants, repr, is_pub, span })
     }
 }
 
@@ -877,6 +985,61 @@ impl<'i> Parsable<'i> for Parameter<'i> {
     }
 }
 
+impl<'i> Parsable<'i> for StructRepr {
+    fn parse(parser: &mut Parser<'i>) -> Result<StructRepr, ParserError<'i>> {
+        if !parser.consume_keyword(Keyword::As)? {
+            return Ok(StructRepr::default());
+        }
+
+        let mut repr = StructRepr::default();
+        let mut first = true;
+
+        loop {
+            if !first {
+                parser.expect_token(Punct::Comma)?;
+            }
+            first = false;
+
+            let (name, span) = parser.expect_identifier()?;
+            match name {
+                "extern" => repr.kind = StructReprKind::Extern,
+                "packed" => repr.kind = StructReprKind::Packed,
+                "align" => {
+                    parser.expect_token(Punct::OpenParen)?;
+                    let token = parser.expect_next()?;
+                    let value = match token.kind {
+                        TokenKind::Integer(value) => value as u32,
+                        _ => {
+                            return Err(ParserError::new(
+                                ParseErrorKind::Expected {
+                                    expected: TokenKind::Integer(1),
+                                    found: token.kind,
+                                },
+                                token.span,
+                            ));
+                        },
+                    };
+                    parser.expect_token(Punct::CloseParen)?;
+                    repr.align = NonZero::new(value);
+                },
+                _ => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::ExpectedIdentifier { found: TokenKind::Identifier(name) },
+                        span,
+                    ));
+                },
+            }
+
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::Comma) => continue,
+                _ => break,
+            }
+        }
+
+        Ok(repr)
+    }
+}
+
 impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         Spanned::<Type>::parse(parser)
@@ -893,6 +1056,7 @@ impl<'s> Statement<'s> {
             Self::While(s) => s.span,
             Self::Fn(s) => s.span,
             Self::Struct(s) => s.span,
+            Self::Enum(s) => s.span,
             Self::Impl(s) => s.span,
             Self::Interface(i) => i.span,
             Self::Use(s) => s.span,

@@ -16,7 +16,7 @@ pub trait Visitor<'i>: Sized {
             Statement::Interface(interface) => self.visit_interface(interface),
             Statement::Expr(expr, _) => self.visit_expression(expr),
             Statement::Block(block) => self.visit_block(block),
-            Statement::Struct(_) | Statement::Use(_) => {},
+            Statement::Struct(_) | Statement::Enum(_) | Statement::Use(_) => {},
         }
     }
 

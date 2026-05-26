@@ -151,10 +151,22 @@ impl<'i> Parser<'i> {
         }
     }
 
+    // FIXME: refactor out those 'is_pub_*' fn and remove peek_nth
+    // I should be able to do this with a simple match after reading a 'pub' keyword
+    // the problem is that we would have to find another way to indicate
+    // to the parser that the final item is public given that we've already consumed the keyword
+
     pub(crate) fn is_pub_struct(&self) -> bool {
         matches!(
             self.peek_nth(1),
             Some(Ok(t)) if t.is_kind(Keyword::Struct)
+        )
+    }
+
+    pub(crate) fn is_pub_enum(&self) -> bool {
+        matches!(
+            self.peek_nth(1),
+            Some(Ok(t)) if t.is_kind(Keyword::Enum)
         )
     }
 
@@ -460,6 +472,59 @@ mod tests {
             Some(Type::Named("Point"))
         ));
         assert!(matches!(let_statement.value, Some(Expression::Struct { name: "Point", .. })));
+    }
+
+    #[test]
+    fn parses_struct_representation_options() {
+        let statements = Parser::new(
+            r#"
+            struct Flags {
+                a: bool,
+                b: bool,
+            } as packed, align(4)
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Struct(declaration) => declaration,
+            other => panic!("expected struct declaration, got {other:?}"),
+        };
+        assert_eq!(declaration.repr.kind, statement::StructReprKind::Packed);
+        assert_eq!(declaration.repr.align.unwrap().get(), 4);
+    }
+
+    #[test]
+    fn parses_enum_statement_with_repr_and_values() {
+        let statements = Parser::new(
+            r#"
+            pub enum Status {
+                Ok = 0,
+                Err = 1,
+                Timeout,
+            } as u16
+
+            fn main(): Status {
+                Status::Ok
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Enum(declaration) => declaration,
+            other => panic!("expected enum declaration, got {other:?}"),
+        };
+        assert!(declaration.is_pub);
+        assert_eq!(declaration.name, "Status");
+        assert_eq!(declaration.variants.len(), 3);
+        assert_eq!(declaration.variants[0].name, "Ok");
+        assert_eq!(declaration.variants[0].value, Some(0));
+        assert_eq!(declaration.variants[2].name, "Timeout");
+        assert_eq!(declaration.variants[2].value, None);
+        assert!(matches!(declaration.repr.value(), Type::U16));
     }
 
     #[test]
