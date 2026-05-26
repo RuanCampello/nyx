@@ -1,4 +1,9 @@
-pub fn panic(msg: &str) {}
+use std::str;
+
+pub fn panic(msg: &str) {
+    syscall(SYS_WRITE, 2, msg, msg.len());
+    syscall(SYS_EXIT, 101);
+}
 
 pub fn assert(condition: bool) {
     if !condition {

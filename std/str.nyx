@@ -1,0 +1,3 @@
+impl str {
+    pub const fn len(&self): uptr {}
+}
