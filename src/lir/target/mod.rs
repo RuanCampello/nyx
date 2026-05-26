@@ -67,6 +67,7 @@ pub trait Emittable<T: Target> {
     fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
     fn start(out: &mut String, main: &str);
     fn emit_panic_handlers(out: &mut String);
+    fn emit_strlen(out: &mut String);
 }
 
 /// A named physical register on a specific target.

@@ -78,6 +78,19 @@ impl Emittable<X86_64> for Function<X86_64> {
         emit(X86Instr::SUB);
         emit(X86Instr::MUL);
     }
+
+    fn emit_strlen(out: &mut String) {
+        label!(out, ".globl __nyx_strlen");
+        label!(out, "__nyx_strlen:");
+        emit!(out, "xorq    %rax, %rax");
+        label!(out, ".L_strlen_loop:");
+        emit!(out, "cmpb    $0, (%rdi,%rax)");
+        emit!(out, "je      .L_strlen_done");
+        emit!(out, "incq    %rax");
+        emit!(out, "jmp     .L_strlen_loop");
+        label!(out, ".L_strlen_done:");
+        emit!(out, "ret");
+    }
 }
 
 impl Function<X86_64> {

@@ -80,6 +80,20 @@ impl Emittable<AArch64> for Function<AArch64> {
         emit(A64Instr::SUB);
         emit(A64Instr::MUL);
     }
+
+    fn emit_strlen(out: &mut String) {
+        label!(out, ".globl __nyx_strlen");
+        label!(out, "__nyx_strlen:");
+        emit!(out, "mov     x1, x0");
+        label!(out, ".L_strlen_loop:");
+        emit!(out, "ldrb    w2, [x1]");
+        emit!(out, "cbz     w2, .L_strlen_done");
+        emit!(out, "add     x1, x1, #1");
+        emit!(out, "b       .L_strlen_loop");
+        label!(out, ".L_strlen_done:");
+        emit!(out, "sub     x0, x1, x0");
+        emit!(out, "ret");
+    }
 }
 
 impl Function<AArch64> {
@@ -568,12 +582,7 @@ impl Function<AArch64> {
                         let dest = alloc.location(ret, &bytes);
 
                         if src != dest {
-                            let mnemonic = if is_float {
-                                "fmov"
-                            } else {
-                                "mov"
-                            };
-                            emit!(out, "{mnemonic}    {dest}, {src}");
+                            emit_move(out, &dest, src, bytes, is_float);
                         }
                     }
                 }
@@ -591,7 +600,7 @@ impl Function<AArch64> {
                         _ => {
                             let src = self.operand(alloc, operand, bytes);
                             if src != dest {
-                                emit!(out, "mov     {dest}, {src}");
+                                emit_move(out, dest, &src, *bytes, false);
                             }
                         },
                     }
@@ -606,7 +615,7 @@ impl Function<AArch64> {
                     let dest = alloc.location(ret, &bytes);
 
                     if src != dest {
-                        emit!(out, "mov     {dest}, {src}");
+                        emit_move(out, &dest, src, bytes, false);
                     }
                 }
             },
@@ -647,12 +656,7 @@ impl Function<AArch64> {
                     let dest = ret_reg.name(bytes);
 
                     if src != dest {
-                        let mnemonic = if is_float {
-                            "fmov"
-                        } else {
-                            "mov"
-                        };
-                        emit!(out, "{mnemonic}    {dest}, {src}");
+                        emit_move(out, dest, &src, bytes, is_float);
                     }
                 }
 

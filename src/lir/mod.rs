@@ -114,6 +114,7 @@ where
     }
 
     Function::<T>::emit_panic_handlers(&mut out);
+    Function::<T>::emit_strlen(&mut out);
 
     // emit a `_start` trampoline if the program defines `fn main`
     //
@@ -133,7 +134,7 @@ where
         for (idx, string) in mir.strings.iter().enumerate() {
             label!(out, ".align 1");
             label!(out, ".L_str_{}:", idx);
-            label!(out, "    .ascii {:?}", string);
+            label!(out, "    .asciz {:?}", string);
         }
     }
 

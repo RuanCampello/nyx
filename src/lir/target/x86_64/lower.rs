@@ -363,6 +363,31 @@ impl<'f> Lower<'f> {
                     .iter()
                     .find(|f| f.id == callee_id)
                     .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
+
+                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
+                    let receiver_vreg = self.operand(&args[0], id);
+                    let str_ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                    self.lir.push_instr(
+                        id,
+                        X86Instr::PtrLoad { dest: str_ptr, ptr: receiver_vreg, offset: 0, bytes: 8, is_float: false }
+                    );
+                    let arg_reg = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                    self.lir.add_precolour(arg_reg, X86Reg::Rdi);
+                    self.lir.push_instr(id, X86Instr::Mov { dest: arg_reg, src: X86Operand::VReg(str_ptr), bytes: 8 });
+
+                    self.lir.push_instr(
+                        id,
+                        X86Instr::call(
+                            "__nyx_strlen".to_string(),
+                            vec![(arg_reg, X86Reg::Rdi)],
+                            vec![],
+                            Some(dest),
+                            vec![]
+                        )
+                    );
+                    return;
+                }
+
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)

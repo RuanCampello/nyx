@@ -13,12 +13,12 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{Type, TypeKind},
+    hir::{self, Type, TypeKind},
     lir::{
         self, BlockId, MachineType, Term, VReg, assembly_label,
         target::{
             Lowerable, MemOps, RegClass, Target,
-            aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
+            aarch64::{A64Cond, A64Instr, A64Operand, A64Reg, AArch64},
             aggregate_copy,
         },
     },
@@ -287,6 +287,30 @@ impl<'f> Lower<'f> {
                     .iter()
                     .find(|f| f.id == callee_id)
                     .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
+
+                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
+                    let receiver_vreg = self.operand(&args[0], id);
+                    let str_ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                    self.lir.push_instr(
+                        id,
+                        A64Instr::PtrLoad { dest: str_ptr, ptr: receiver_vreg, offset: 0, bytes: 8, is_float: false, signed: false }
+                    );
+                    let arg_reg = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                    self.lir.add_precolour(arg_reg, A64Reg::X0);
+                    self.lir.push_instr(id, A64Instr::Mov { dest: arg_reg, src: str_ptr, bytes: 8 });
+
+                    self.lir.push_instr(
+                        id,
+                        A64Instr::call(
+                            "__nyx_strlen".to_string(),
+                            vec![(arg_reg, A64Reg::X0)],
+                            vec![],
+                            Some(dest)
+                        )
+                    );
+                    return;
+                }
+
                 let callee = self
                     .symbols
                     .get(callee_fn.name_symbol)
