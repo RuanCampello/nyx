@@ -349,7 +349,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Expr::String(value, span) => Ok(Expression {
                 kind: ExpressionKind::String((*value).to_string()),
-                typ: Type::new(TypeKind::String),
+                typ: Type::new(TypeKind::Str),
                 span: *span,
             }),
 
@@ -1416,17 +1416,34 @@ fn layout_fields(
     structs: &[Option<Struct>],
     repr: StructRepr,
 ) -> (Vec<StructField>, u32, u32) {
-    if repr.kind == StructReprKind::Default {
-        // PERFORMANCE: field reordering is a small stable sort by layout class
-        fields.sort_by(|a, b| {
-            let (a_size, a_align) = &a.typ.layout(structs);
-            let (b_size, b_align) = &b.typ.layout(structs);
+    // PERFORMANCE: field reordering is a small stable sort by layout class
+    match repr.kind {
+        StructReprKind::Default => {
+            fields.sort_by(|a, b| {
+                let (a_size, a_align) = &a.typ.layout(structs);
+                let (b_size, b_align) = &b.typ.layout(structs);
 
-            b_align
-                .cmp(&a_align)
-                .then_with(|| b_size.cmp(&a_size))
-                .then_with(|| a.declared_index.cmp(&b.declared_index))
-        });
+                b_align
+                    .cmp(&a_align)
+                    .then_with(|| b_size.cmp(&a_size))
+                    .then_with(|| a.declared_index.cmp(&b.declared_index))
+            });
+        },
+        StructReprKind::Packed => {
+            let max_align = repr.align.map(|a| a.get()).unwrap_or(1);
+            fields.sort_by(|a, b| {
+                let (a_size, mut a_align) = a.typ.layout(structs);
+                let (b_size, mut b_align) = b.typ.layout(structs);
+                a_align = a_align.min(max_align);
+                b_align = b_align.min(max_align);
+
+                b_align
+                    .cmp(&a_align)
+                    .then_with(|| b_size.cmp(&a_size))
+                    .then_with(|| a.declared_index.cmp(&b.declared_index))
+            });
+        },
+        _ => {},
     }
 
     let mut offset = 0;

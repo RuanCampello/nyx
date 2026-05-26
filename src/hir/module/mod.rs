@@ -770,9 +770,9 @@ mod tests {
         assert_eq!(hir.structs[1].align, 8);
         assert_eq!(hir.structs[2].size, 16);
         assert_eq!(hir.structs[2].align, 4);
-        assert_eq!(hir.structs[3].size, 24);
+        assert_eq!(hir.structs[3].size, 16);
         assert_eq!(hir.structs[3].align, 8);
-        assert_eq!(hir.structs[4].size, 24);
+        assert_eq!(hir.structs[4].size, 16);
         assert_eq!(hir.structs[4].align, 8);
         let main_fn = hir
             .functions
