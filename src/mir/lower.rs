@@ -431,7 +431,7 @@ impl<'a> FunctionLower<'a> {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     },
 
-                    Intrinsic::Panic => unimplemented!(),
+                    Intrinsic::Len => unreachable!(),
                 }
             },
 
