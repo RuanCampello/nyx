@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{self, Type};
+use crate::hir::{self, TypeKind};
 use crate::lir::{
     self, BlockId, MachineType, Term, VReg, assembly_label,
     target::{
@@ -80,15 +80,15 @@ impl<'f> Lower<'f> {
 
         let dest = self.vreg(instruction.dest.id);
         let typ = instruction.dest.typ;
-        let bytes = match typ {
-            Type::Unit => 0,
+        let bytes = match typ.kind() {
+            TypeKind::Unit => 0,
             _ => typ.machine_type(self.layouts).bytes(),
         };
         let is_float = typ.is_float();
 
         match &instruction.kind {
             InstructionKind::Assign(op) => {
-                if let Type::Struct(sid) = typ {
+                if let TypeKind::Struct(sid) = typ.kind() {
                     let Operand::Place(src) = op else {
                         unreachable!("aggregate copy source must be a place");
                     };
@@ -142,7 +142,7 @@ impl<'f> Lower<'f> {
                         );
                     },
                     U::Neg => self.lir.push_instr(id, X86Instr::Neg { dest, bytes }),
-                    U::Not => match typ == Type::Bool {
+                    U::Not => match typ.kind() == TypeKind::Bool {
                         true => self.lir.push_instr(
                             id,
                             X86Instr::Xor { dest, src: X86Operand::Imm(1), bytes: 4 },
@@ -260,13 +260,13 @@ impl<'f> Lower<'f> {
             },
 
             InstructionKind::FieldLoad { src, offset, typ } => {
-                if let Type::Struct(sid) = typ {
+                if let TypeKind::Struct(sid) = typ.kind() {
                     let origin = match src {
                         Operand::Place(p) => self.vreg(p.id),
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
-                    let size = self.struct_size(*sid);
-                    let is_src_ref = matches!(src.typ(), Type::Ref { .. });
+                    let size = self.struct_size(sid);
+                    let is_src_ref = matches!(src.typ().kind(), TypeKind::Ref { .. });
 
                     return aggregate_copy(
                         &mut self.lir,
@@ -289,7 +289,7 @@ impl<'f> Lower<'f> {
                     Operand::Place(place) => {
                         let origin = self.vreg(place.id);
                         let instruction = X86_64::scalar_load(
-                            matches!(place.typ, Type::Ref { .. }),
+                            matches!(place.typ.kind(), TypeKind::Ref { .. }),
                             dest,
                             origin,
                             *offset as i32,
@@ -304,7 +304,7 @@ impl<'f> Lower<'f> {
             },
 
             InstructionKind::FieldStore { value, offset } => {
-                if let Type::Struct(sid) = value.typ() {
+                if let TypeKind::Struct(sid) = value.typ().kind() {
                     let Operand::Place(src) = value else {
                         unreachable!("aggregate field store source must be a place");
                     };
@@ -315,7 +315,7 @@ impl<'f> Lower<'f> {
                         &mut self.lir,
                         id,
                         false,
-                        matches!(typ, Type::Ref { .. }),
+                        matches!(typ.kind(), TypeKind::Ref { .. }),
                         src_vreg,
                         dest,
                         0,
@@ -330,7 +330,7 @@ impl<'f> Lower<'f> {
                 let src = self.lower_operand(value);
 
                 let instruction = X86_64::scalar_store(
-                    matches!(typ, Type::Ref { .. }),
+                    matches!(typ.kind(), TypeKind::Ref { .. }),
                     dest,
                     src,
                     *offset as i32,
@@ -343,8 +343,8 @@ impl<'f> Lower<'f> {
             #[rustfmt::skip]
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.vreg(src.id);
-                match src.typ {
-                    Type::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
+                match src.typ.kind() {
+                    TypeKind::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
                     _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
                 }
 
@@ -375,12 +375,12 @@ impl<'f> Lower<'f> {
                 let mut float_idx = 0;
 
                 let return_type = callee_fn.return_type;
-                let aggregate_ret = match return_type {
-                    Type::Struct(sid) => self.small_integer_return(sid).unwrap_or_default(),
+                let aggregate_ret = match return_type.kind() {
+                    TypeKind::Struct(sid) => self.small_integer_return(sid).unwrap_or_default(),
                     _ => Vec::new(),
                 };
 
-                if matches!(return_type, Type::Struct(_)) && aggregate_ret.is_empty() {
+                if matches!(return_type.kind(), TypeKind::Struct(_)) && aggregate_ret.is_empty() {
                     let ptr = self.stack_addr(id, dest);
                     let abi_reg = X86_64::param(int_idx, RegClass::Int)
                         .expect("sret pointer must fit in the first integer argument register");
@@ -389,7 +389,7 @@ impl<'f> Lower<'f> {
                 }
 
                 for arg in args {
-                    if let Type::Struct(_) = arg.typ() {
+                    if let TypeKind::Struct(_) = arg.typ().kind() {
                         let Operand::Place(place) = arg else {
                             unreachable!("aggregate argument source must be a place");
                         };
@@ -445,8 +445,9 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                let ret = (return_type != Type::Unit && !matches!(return_type, Type::Struct(_)))
-                    .then_some(dest);
+                let ret = (return_type.kind() != TypeKind::Unit
+                    && !matches!(return_type.kind(), TypeKind::Struct(_)))
+                .then_some(dest);
                 let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
                 for &(_, bytes, reg) in &aggregate_ret {
                     let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
@@ -483,7 +484,7 @@ impl<'f> Lower<'f> {
                     moves.push((operand, abi_reg, bytes));
                 }
 
-                let ret = (*returns && typ != Type::Unit).then_some(dest);
+                let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
                 self.lir.push_instr(
                     id,
                     X86Instr::Syscall { id: X86_64::syscall_code(*code) as u32, moves, uses, ret },
@@ -573,8 +574,8 @@ impl<'f> Lower<'f> {
 
         let terminator = match terminator {
             T::Return(None) => Term::Return(None),
-            T::Return(Some(operand)) if matches!(operand.typ(), Type::Struct(_)) => {
-                let Type::Struct(sid) = operand.typ() else {
+            T::Return(Some(operand)) if matches!(operand.typ().kind(), TypeKind::Struct(_)) => {
+                let TypeKind::Struct(sid) = operand.typ().kind() else {
                     unreachable!("checked above");
                 };
                 let Operand::Place(place) = operand else {
@@ -636,7 +637,7 @@ impl<'f> Lower<'f> {
         let mut int_stack_idx = 0;
         let mut float_stack_idx = 0;
 
-        if let Type::Struct(sid) = self.function.return_type {
+        if let TypeKind::Struct(sid) = self.function.return_type.kind() {
             if self.small_integer_return(sid).is_some() {
                 // Small integer aggregates are returned directly in RAX/RDX.
             } else {
@@ -650,7 +651,7 @@ impl<'f> Lower<'f> {
         }
 
         for (vid, typ) in &self.function.params {
-            if let Type::Struct(sid) = typ {
+            if let TypeKind::Struct(sid) = typ.kind() {
                 let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
 
                 match X86_64::param(int_idx, RegClass::Int) {
@@ -666,7 +667,7 @@ impl<'f> Lower<'f> {
                     },
                 }
 
-                let size = self.struct_size(*sid);
+                let size = self.struct_size(sid);
                 let dest = self.vreg(*vid);
                 aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest, 0, 0, size);
                 int_idx += 1;
@@ -810,7 +811,7 @@ impl<'f> Lower<'f> {
         match op {
             Operand::Place(p) => X86Operand::VReg(self.vreg(p.id)),
             Operand::Const(Const::Float(v, typ)) => {
-                let is_32 = *typ == Type::F32;
+                let is_32 = typ.kind() == TypeKind::F32;
                 let bits = match is_32 {
                     true => (*v as f32).to_bits() as u64,
                     _ => v.to_bits(),

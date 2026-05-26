@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTarget, Struct, SymbolId,
-        Type,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Struct, SymbolId,
+        Type, TypeKind,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -369,9 +369,9 @@ impl<'a> FunctionLower<'a> {
                         true => (0, origin.typ),
                         false => self.field_path_info(origin.typ, &receiver.fields),
                     };
-                    debug_assert!(!matches!(receiver_type, Type::Unit));
+                    debug_assert!(receiver_type.kind() != TypeKind::Unit);
 
-                    match matches!(receiver_type, Type::Ref { .. }) {
+                    match matches!(receiver_type.kind(), TypeKind::Ref { .. }) {
                         #[rustfmt::skip]
                         true => self.emit(receiver_place, InstructionKind::Assign(Operand::Place(origin))),
                         #[rustfmt::skip]
@@ -381,7 +381,7 @@ impl<'a> FunctionLower<'a> {
                     let lowered_receiver = self.lower_expr(receiver.value.as_ref().unwrap())?;
                     let val_type = receiver.value.as_ref().unwrap().typ;
 
-                    match matches!(val_type, Type::Ref { .. }) {
+                    match matches!(val_type.kind(), TypeKind::Ref { .. }) {
                         true => {
                             self.emit(receiver_place, InstructionKind::Assign(lowered_receiver))
                         },
@@ -449,7 +449,7 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Struct { id, fields } => {
-                let dest = self.fresh_temporary(Type::Struct(*id));
+                let dest = self.fresh_temporary(Type::new(TypeKind::Struct(*id)));
                 let field_offsets: Vec<_> =
                     self.structs[id.0 as usize].fields.iter().map(|f| (f.name, f.offset)).collect();
 
@@ -500,9 +500,9 @@ impl<'a> FunctionLower<'a> {
         right: &Expression,
         typ: Type,
     ) -> Result<Operand, MirError> {
-        debug_assert_eq!(typ, Type::Bool, "`&&` and `||` should be perfomed only on booleans");
+        debug_assert_eq!(typ, Type::new(TypeKind::Bool), "`&&` and `||` should be perfomed only on booleans");
 
-        let result = self.fresh_temporary(Type::Bool);
+        let result = self.fresh_temporary(Type::new(TypeKind::Bool));
         let left_operand = self.lower_expr(left)?;
 
         let right_id = self.new_block();
@@ -542,9 +542,12 @@ impl<'a> FunctionLower<'a> {
 
         // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
         for &sym in fields {
-            let sid = match current_type {
-                Type::Struct(sid) => sid,
-                Type::Ref { to: RefTarget::Struct(sid), .. } => sid,
+            let sid = match current_type.kind() {
+                TypeKind::Struct(sid) => sid,
+                TypeKind::Ref { to, .. } => match to.kind() {
+                    RefTargetKind::Struct(sid) => sid,
+                    _ => unreachable!("field projection on non-struct"),
+                },
                 _ => unreachable!("field projection on non-struct"),
             };
 
@@ -602,16 +605,16 @@ impl<'a> FunctionLower<'a> {
     fn emit_write_string(&mut self, text: String) {
         let len = text.len();
         let id = self.intern_owned_string(text);
-        let dest = self.fresh_temporary(Type::I32);
+        let dest = self.fresh_temporary(Type::new(TypeKind::I32));
 
         self.emit(
             dest,
             InstructionKind::Syscall {
                 code: crate::hir::SyscallCode::Write,
                 args: vec![
-                    Operand::Const(Const::Int(1, Type::I32)),
+                    Operand::Const(Const::Int(1, Type::new(TypeKind::I32))),
                     Operand::Const(Const::Str { id, len }),
-                    Operand::Const(Const::Int(len as i64, Type::I32)),
+                    Operand::Const(Const::Int(len as i64, Type::new(TypeKind::I32))),
                 ],
                 returns: false,
             },
@@ -738,7 +741,7 @@ impl<'a> FunctionLower<'a> {
 
         let callee = self.functions_map.get(&callee_id).expect("callee must exist");
 
-        let inline_ret_place = match callee.return_type != Type::Unit {
+        let inline_ret_place = match callee.return_type.kind() != TypeKind::Unit {
             true => Some(self.fresh_temporary(callee.return_type)),
             _ => None,
         };
@@ -916,9 +919,9 @@ fn struct_layouts(structs: &[Struct]) -> Vec<mir::Layout> {
 
 #[inline]
 fn type_contains_float(typ: Type, structs: &[Struct]) -> bool {
-    match typ {
-        Type::F32 | Type::F64 => true,
-        Type::Struct(id) => structs[id.0 as usize]
+    match typ.kind() {
+        TypeKind::F32 | TypeKind::F64 => true,
+        TypeKind::Struct(id) => structs[id.0 as usize]
             .fields
             .iter()
             .any(|field| type_contains_float(field.typ, structs)),

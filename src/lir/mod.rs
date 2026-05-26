@@ -7,7 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
-    hir::Type,
+    hir::{Type, TypeKind},
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -292,33 +292,34 @@ impl Type {
     #[inline(always)]
     #[rustfmt::skip]
     pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
-        match self {
-            Type::I8 => MachineType::Int { bytes: 1, signed: true },
-            Type::U8 | Type::Bool => MachineType::Int { bytes: 1, signed: false },
-            Type::I16 => MachineType::Int { bytes: 2, signed: true },
-            Type::U16 => MachineType::Int { bytes: 2, signed: false },
-            Type::I32 => MachineType::Int { bytes: 4, signed: true },
-            Type::U32 | Type::Char => MachineType::Int { bytes: 4, signed: false },
-            Type::I64 | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
-            Type::U64 | Type::Uptr | Type::Str | Type::String | Type::Ref { .. } => {
+        match self.kind() {
+            TypeKind::I8 => MachineType::Int { bytes: 1, signed: true },
+            TypeKind::U8 | TypeKind::Bool => MachineType::Int { bytes: 1, signed: false },
+            TypeKind::I16 => MachineType::Int { bytes: 2, signed: true },
+            TypeKind::U16 => MachineType::Int { bytes: 2, signed: false },
+            TypeKind::I32 => MachineType::Int { bytes: 4, signed: true },
+            TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
+            TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
+            TypeKind::U64 | TypeKind::Uptr | TypeKind::Str | TypeKind::String | TypeKind::Ref { .. } => {
                 MachineType::Int { bytes: 8, signed: false, }
             }
-            Type::F32 => MachineType::Float { bytes: 4 },
-            Type::F64 => MachineType::Float { bytes: 8 },
-            Type::Struct(id) => {
+            TypeKind::F32 => MachineType::Float { bytes: 4 },
+            TypeKind::F64 => MachineType::Float { bytes: 8 },
+            TypeKind::Struct(id) => {
                 let (size, align) = layouts[id.0 as usize].into();
                 MachineType::Struct { size, align }
             }
-            Type::Unit => unreachable!("unit doesn't have a machine type"),
-            Type::SelfType => unreachable!("Self type doesn't have a machine type"),
+            TypeKind::Enum(id) => id.1.typ().machine_type(layouts),
+            TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
+            TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
         }
     }
 
     // FIXME: that's a very workaround so future me that's your problem
     #[inline(always)]
     pub(crate) const fn unwrap_unit(self) -> Self {
-        match self {
-            Self::Unit => Self::I32,
+        match self.kind() {
+            TypeKind::Unit => Self::new(TypeKind::I32),
             _ => self,
         }
     }

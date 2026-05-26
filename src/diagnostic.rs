@@ -245,7 +245,7 @@ impl<'h> HasSpan for HirError<'h> {
 mod tests {
     use crate::diagnostic;
     use crate::hir::{
-        self, Type,
+        self, Type, TypeKind,
         error::{ConstFnViolationKind, HirErrorKind},
     };
     use crate::lexer::{self, Lexer, error::LexErrorKind};
@@ -597,25 +597,25 @@ mod tests {
              let x: i32 = true;
          }"
         );
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::I32, found: Type::Bool });
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::I32), found: Type::new(TypeKind::Bool) });
     }
 
     #[test]
     fn hir_type_mismatch_return_type() {
         let kind = hir_check!("fn foo(): i32 { true }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::I32, found: Type::Bool });
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::I32), found: Type::new(TypeKind::Bool) });
     }
 
     #[test]
     fn hir_type_mismatch_if_condition() {
         let kind = hir_check!("fn main() { if 42 { } }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 });
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::Bool), found: Type::new(TypeKind::I32) });
     }
 
     #[test]
     fn hir_type_mismatch_while_condition() {
         let kind = hir_check!("fn main() { while 1 { } }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 });
+        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::Bool), found: Type::new(TypeKind::I32) });
     }
 
     #[test]
