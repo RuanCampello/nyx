@@ -163,6 +163,11 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "enums",
+        file: "tests/single/enums.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "overflow",
         file: "tests/single/overflow.nyx",
         exit_code: Some(101),
