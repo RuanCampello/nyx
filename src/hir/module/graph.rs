@@ -202,6 +202,7 @@ fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
     for statement in statements {
         match statement {
             Statement::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
+            Statement::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
             Statement::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
             Statement::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
             Statement::Const(c) if c.is_pub => exports.insert(c.name.to_string()),

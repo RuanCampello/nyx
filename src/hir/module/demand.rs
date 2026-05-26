@@ -18,6 +18,12 @@ pub(super) struct DemandSet {
     needed: HashSet<FunctionId>,
 }
 
+struct ReachabilityVisitor<'a> {
+    scope: &'a Scope<'static>,
+    symbols: &'a SymbolTable,
+    found: &'a mut Vec<FunctionId>,
+}
+
 impl DemandSet {
     pub(super) fn contains(&self, id: FunctionId) -> bool {
         self.needed.contains(&id)
@@ -34,7 +40,7 @@ pub(super) fn lower_reachable<'src>(
     interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'static>,
     symbols: &mut SymbolTable,
-) -> Result<Vec<crate::hir::Function>, ModuleError> {
+) -> Result<Vec<hir::Function>, ModuleError> {
     let demand = build_demand(graph, order, interfaces, scope, symbols)?;
     let mut functions = Vec::new();
 
@@ -77,13 +83,14 @@ fn build_demand<'src>(
     }
 
     while let Some(id) = stack.pop() {
+        use visitor::Visitor;
+
         let Some(function) = declarations.get(&id) else {
             continue;
         };
 
         let mut found = Vec::new();
         let mut visitor = ReachabilityVisitor { scope, symbols, found: &mut found };
-        use crate::parser::visitor::Visitor;
         visitor.visit_block(&function.body);
 
         for callee in found {
@@ -151,11 +158,7 @@ fn find_interface_for_method(
     let impl_type = function.impl_type?;
     let receiver_type = match scope::resolve_primitive_type(impl_type) {
         Some(primitive) => primitive,
-        _ => {
-            let struct_symbol = symbols.get_id(impl_type)?;
-            let struct_id = scope.struct_map.get(&struct_symbol)?;
-            hir::Type::Struct(*struct_id)
-        },
+        _ => get_non_primitve_receiver(impl_type, scope, symbols)?,
     };
     let method_name = symbols.get_id(function.name)?;
 
@@ -171,13 +174,28 @@ fn find_interface_for_method(
     )
 }
 
-struct ReachabilityVisitor<'a> {
-    scope: &'a Scope<'static>,
-    symbols: &'a SymbolTable,
-    found: &'a mut Vec<FunctionId>,
+#[inline]
+fn get_non_primitve_receiver(
+    impl_type: &str,
+    scope: &Scope<'_>,
+    symbols: &SymbolTable,
+) -> Option<hir::Type> {
+    let symbol = symbols.get_id(impl_type)?;
+    scope
+        .struct_map
+        .get(&symbol)
+        .copied()
+        .map(|id| hir::Type::new(hir::TypeKind::Struct(id)))
+        .or_else(|| {
+            scope
+                .enum_map
+                .get(&symbol)
+                .copied()
+                .map(|id| hir::Type::new(hir::TypeKind::Enum(id)))
+        })
 }
 
-impl<'a, 'i> crate::parser::visitor::Visitor<'i> for ReachabilityVisitor<'a> {
+impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
     fn visit_expression(&mut self, expr: &Expression<'i>) {
         match expr {
             Expression::Call { callee, args, .. } => {
@@ -237,11 +255,7 @@ fn resolve_qualified(
         .or_else(|| {
             let receiver_type = match scope::resolve_primitive_type(qualifier) {
                 Some(primitive) => primitive,
-                _ => {
-                    let struct_symbol = symbols.get_id(qualifier)?;
-                    let struct_id = scope.struct_map.get(&struct_symbol)?;
-                    hir::Type::Struct(*struct_id)
-                },
+                _ => get_non_primitve_receiver(qualifier, scope, symbols)?,
             };
 
             scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
