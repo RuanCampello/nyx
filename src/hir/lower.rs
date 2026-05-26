@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
-        LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
-        StructRepr, SymbolId, SymbolTable, SyscallCode, Type, TypeKind, RefTargetKind,
+        LocalId, Parameter, Receiver, RefTarget, RefTargetKind, Statement, Struct, StructField,
+        StructId, StructRepr, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
         scope::{self, Enums, Scope, Structs},
         symbols::Mangler,
@@ -49,7 +49,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     .get(&struct_symbol)
                     .copied()
                     .map(|id| Type::new(TypeKind::Struct(id)))
-                    .or_else(|| scope.enum_map.get(&struct_symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
+                    .or_else(|| {
+                        scope
+                            .enum_map
+                            .get(&struct_symbol)
+                            .copied()
+                            .map(|id| Type::new(TypeKind::Enum(id)))
+                    })
             })
         });
 
@@ -418,15 +424,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
-                    UnaryOperator::Deref => hint.map(|h| Type::new(TypeKind::Ref {
-                        mutable: false,
-                        to: match h.kind() {
-                            TypeKind::Struct(id) => RefTarget::new(RefTargetKind::Struct(id)),
-                            TypeKind::Char => RefTarget::new(RefTargetKind::Char),
-                            TypeKind::Ref { to, .. } => to,
-                            _ => RefTarget::new(RefTargetKind::Char),
-                        },
-                    })),
+                    UnaryOperator::Deref => hint.map(|h| {
+                        Type::new(TypeKind::Ref {
+                            mutable: false,
+                            to: match h.kind() {
+                                TypeKind::Struct(id) => RefTarget::new(RefTargetKind::Struct(id)),
+                                TypeKind::Char => RefTarget::new(RefTargetKind::Char),
+                                TypeKind::Ref { to, .. } => to,
+                                _ => RefTarget::new(RefTargetKind::Char),
+                            },
+                        })
+                    }),
                     UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
@@ -438,31 +446,45 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
-                                TypeMismatch { expected: Type::new(TypeKind::I32), found: expr.typ }
+                                TypeMismatch {
+                                    expected: Type::new(TypeKind::I32),
+                                    found: expr.typ
+                                }
                             ));
                         },
                     },
-                    UnaryOperator::Not => match expr.typ == Type::new(TypeKind::Bool) || expr.typ.is_integer() {
-                        true => expr.typ,
-                        _ => {
-                            return Err(hir_error!(
-                                expr.span,
-                                TypeMismatch { expected: Type::new(TypeKind::Bool), found: expr.typ }
-                            ));
-                        },
+
+                    UnaryOperator::Not => {
+                        match expr.typ == Type::new(TypeKind::Bool) || expr.typ.is_integer() {
+                            true => expr.typ,
+                            _ => {
+                                return Err(hir_error!(
+                                    expr.span,
+                                    TypeMismatch {
+                                        expected: Type::new(TypeKind::Bool),
+                                        found: expr.typ
+                                    }
+                                ));
+                            },
+                        }
                     },
+
                     UnaryOperator::Deref => match expr.typ.kind() {
                         TypeKind::Ref { to, .. } => to.into(),
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::new(TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::Char) }),
+                                    expected: Type::new(TypeKind::Ref {
+                                        mutable: false,
+                                        to: RefTarget::new(RefTargetKind::Char)
+                                    }),
                                     found: expr.typ
                                 }
                             ));
                         },
                     },
+
                     UnaryOperator::Ref => {
                         let to = RefTarget::try_from(expr.typ).map_err(|_| {
                             hir_error!(
@@ -738,9 +760,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         Some(primitive) => primitive,
                         _ => {
                             let symbol = self.symbols.insert(qualifier);
-                            self.scope.struct_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Struct(id))).or_else(
-                                || self.scope.enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))),
-                            )?
+                            self.scope
+                                .struct_map
+                                .get(&symbol)
+                                .copied()
+                                .map(|id| Type::new(TypeKind::Struct(id)))
+                                .or_else(|| {
+                                    self.scope
+                                        .enum_map
+                                        .get(&symbol)
+                                        .copied()
+                                        .map(|id| Type::new(TypeKind::Enum(id)))
+                                })?
                         },
                     };
 
@@ -977,7 +1008,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
-        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::new(TypeKind::I32), found });
+        let type_mismatch =
+            |found| hir_error!(span, TypeMismatch { expected: Type::new(TypeKind::I32), found });
 
         match operator {
             BinaryOperator::Add
@@ -1075,7 +1107,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let to = RefTarget::try_from(self_ty).map_err(|_| {
                     hir_error!(
                         span,
-                        TypeMismatch { expected: Type::new(TypeKind::Struct(Default::default())), found: self_ty }
+                        TypeMismatch {
+                            expected: Type::new(TypeKind::Struct(Default::default())),
+                            found: self_ty
+                        }
                     )
                 })?;
 
@@ -1348,16 +1383,16 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                     .copied()
                     .map(|id| Type::new(TypeKind::Struct(id)))
                     .or_else(|| {
-                        enum_map
-                            .get(&symbol)
-                            .copied()
-                            .map(|id| Type::new(TypeKind::Enum(id)))
+                        enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id)))
                     })
             })
             .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
         statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
         statement::Type::RefSelf => self_type.map_or(
-            Ok(Type::new(TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) })),
+            Ok(Type::new(TypeKind::Ref {
+                mutable: false,
+                to: RefTarget::new(RefTargetKind::SelfType),
+            })),
             |self_typ| {
                 let to = RefTarget::try_from(self_typ).map_err(|_| {
                     hir_error!(
@@ -1397,21 +1432,32 @@ fn layout_fields(
     let mut offset = 0;
     let mut struct_align = 1;
 
-    for field in &mut fields {
-        let (size, mut align) = field.typ.layout(structs);
-        if repr.kind == StructReprKind::Packed {
-            align = 1;
-        }
+    match repr.kind == StructReprKind::Packed {
+        true => {
+            let max_align = repr.align.map(|a| a.get()).unwrap_or(1);
+            for field in &mut fields {
+                let (size, mut align) = field.typ.layout(structs);
+                align = align.min(max_align);
+                struct_align = struct_align.max(align);
+                offset = align_to(offset, align);
+                field.offset = offset;
+                offset += size;
+            }
+        },
+        _ => {
+            for field in &mut fields {
+                let (size, align) = field.typ.layout(structs);
+                struct_align = struct_align.max(align);
+                offset = align_to(offset, align);
+                field.offset = offset;
+                offset += size;
+            }
 
-        struct_align = struct_align.max(align);
-        offset = align_to(offset, align);
-        field.offset = offset;
-        offset += size;
-    }
-
-    if let Some(align) = repr.align {
-        struct_align = struct_align.max(align.get());
-    }
+            if let Some(align) = repr.align {
+                struct_align = struct_align.max(align.get());
+            }
+        },
+    };
     let size = align_to(offset, struct_align);
 
     (fields, size, struct_align)

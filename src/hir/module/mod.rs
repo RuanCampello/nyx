@@ -751,6 +751,8 @@ mod tests {
                 struct DefaultLayout { a: i8, b: i64, c: i32 }
                 struct ExternLayout { a: i8, b: i64, c: i32 } as extern
                 struct PackedLayout { a: i8, b: i64, c: i32 } as packed, align(4)
+                struct RustLikePacked8 { a: i8, b: i64, c: i32 } as packed, align(8)
+                struct RustLikePacked32 { a: i8, b: i64, c: i32 } as packed, align(32)
 
                 fn main(): uptr {
                     mem::size_of(DefaultLayout)
@@ -768,6 +770,10 @@ mod tests {
         assert_eq!(hir.structs[1].align, 8);
         assert_eq!(hir.structs[2].size, 16);
         assert_eq!(hir.structs[2].align, 4);
+        assert_eq!(hir.structs[3].size, 24);
+        assert_eq!(hir.structs[3].align, 8);
+        assert_eq!(hir.structs[4].size, 24);
+        assert_eq!(hir.structs[4].align, 8);
         let main_fn = hir
             .functions
             .iter()
