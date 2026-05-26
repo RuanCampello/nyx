@@ -120,6 +120,7 @@ impl<F: FileSystem> ModuleLoader<F> {
         Ok(Hir {
             functions,
             structs: self.scope.structs.clone(),
+            enums: self.scope.enums.clone(),
             symbols: self.symbols.clone().into_symbols(),
         })
     }
@@ -192,7 +193,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{ExpressionKind, Statement, Type};
+    use crate::hir::{ExpressionKind, Statement, Type, TypeKind};
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
@@ -309,7 +310,7 @@ mod tests {
             .iter()
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
-        assert_eq!(main.return_type, Type::I32);
+        assert_eq!(main.return_type, Type::new(TypeKind::I32));
     }
 
     #[test]
@@ -546,9 +547,9 @@ mod tests {
                     &args[0],
                     hir::Expression {
                         kind: hir::ExpressionKind::Integer(0),
-                        typ: hir::Type::I32,
+                        typ,
                         ..
-                    }
+                    } if *typ == hir::Type::new(hir::TypeKind::I32)
                 )
             )
         });
@@ -697,14 +698,14 @@ mod tests {
             _ => panic!("expected let statement"),
         };
         assert_eq!(a_init.kind, ExpressionKind::Integer(4));
-        assert_eq!(a_init.typ, Type::Uptr);
+        assert_eq!(a_init.typ, Type::new(TypeKind::Uptr));
 
         let b_init = match &main_fn.body.statements[1] {
             Statement::Let { init: Some(expr), .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(b_init.kind, ExpressionKind::Integer(8));
-        assert_eq!(b_init.typ, Type::Uptr);
+        assert_eq!(b_init.typ, Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -737,7 +738,131 @@ mod tests {
             _ => panic!("expected expression or return statement"),
         };
         assert_eq!(body_expr.kind, ExpressionKind::Integer(16));
-        assert_eq!(body_expr.typ, Type::Uptr);
+        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_struct_representations() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+
+                struct DefaultLayout { a: i8, b: i64, c: i32 }
+                struct ExternLayout { a: i8, b: i64, c: i32 } as extern
+                struct PackedLayout { a: i8, b: i64, c: i32 } as packed, align(4)
+
+                fn main(): uptr {
+                    mem::size_of(DefaultLayout)
+                    + mem::size_of(ExternLayout)
+                    + mem::size_of(PackedLayout)
+                    + mem::align_of(PackedLayout)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.structs[0].size, 16);
+        assert_eq!(hir.structs[0].align, 8);
+        assert_eq!(hir.structs[1].size, 24);
+        assert_eq!(hir.structs[1].align, 8);
+        assert_eq!(hir.structs[2].size, 16);
+        assert_eq!(hir.structs[2].align, 4);
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
+            .unwrap();
+
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+
+        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+    }
+
+    #[test]
+    fn test_size_of_and_align_of_enums() {
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+                use std::mem;
+
+                enum Status { Ok, Err = 7 } as u16
+
+                fn main(): uptr {
+                    mem::size_of(Status) + mem::align_of(Status)
+                }
+                "#,
+        );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.enums.len(), 1);
+        let main_fn = hir
+            .functions
+            .iter()
+            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
+            .unwrap();
+
+        let body_expr = match &main_fn.body.statements[0] {
+            Statement::Expr(expr) => expr,
+            Statement::Return(Some(expr)) => expr,
+            _ => panic!("expected expression or return statement"),
+        };
+        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+    }
+
+    #[test]
+    fn exported_enum_supports_impl_and_self_interface_methods() {
+        let fs = VirtualFS::default()
+            .add(
+                "/project/status.nyx",
+                r#"
+                use std::default::{Default};
+                use std::cmp::{PartialEq};
+
+                pub enum Status { Ready = 1, Done = 2 } as u8
+
+                impl Status {
+                    fn code(&self): u8 { 7 }
+                    fn touch(&mut self): u8 { 9 }
+                }
+
+                impl Status with Default {
+                    fn default(): Self { Status::Ready }
+                }
+
+                impl Status with PartialEq {
+                    fn eq(&self, other: &Self): bool { true }
+                }
+                "#,
+            )
+            .add(
+                "/project/main.nyx",
+                r#"
+                use my_app::status::{Status};
+                use std::mem;
+
+                fn main(): u8 {
+                    let mut status = Status::default();
+
+                    if mem::size_of(Status) != 1 return 1;
+                    if mem::align_of(Status) != 1 return 2;
+                    if !status.eq(&Status::Done) return 3;
+                    status.touch()
+                }
+                "#,
+            );
+
+        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        assert_eq!(hir.enums.len(), 1);
+        assert!(
+            hir.functions
+                .iter()
+                .any(|f| hir.symbols[f.name.0.into_usize()].contains("Status"))
+        );
     }
 
     #[test]
