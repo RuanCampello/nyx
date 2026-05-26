@@ -475,11 +475,19 @@ impl<'sc> Scope<'sc> {
                             Some(receiver_type),
                         )?;
 
+                        // FIXME: that's hardcoded af
+                        // we can do it better but let it be
+                        let intrinsic =
+                            match in_std && implementation.name == "str" && method.name == "len" {
+                                true => Some(Intrinsic::Len),
+                                _ => None,
+                            };
+
                         self.signatures.push(FunctionSignature {
                             name: mangled,
                             params,
                             return_type,
-                            intrinsic: None,
+                            intrinsic,
                             is_const: method.is_const,
                             inline: method.inline,
                             method: Some(Method {

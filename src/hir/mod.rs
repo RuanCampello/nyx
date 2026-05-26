@@ -184,7 +184,7 @@ pub enum Intrinsic {
     PrintLn,
     Print,
     Syscall,
-    Panic,
+    Len,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,7 +250,7 @@ impl FromStr for Intrinsic {
             "println" => Self::PrintLn,
             "print" => Self::Print,
             "syscall" => Self::Syscall,
-            "panic" => Self::Panic,
+            "len" => Self::Len,
 
             _ => return Err(()),
         })
