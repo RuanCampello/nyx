@@ -89,7 +89,11 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Variable declaration
   - [x] Immutable (`let`)
   - [x] Mutable (`let mut`)
-  - [ ] Constants (`const`)
+  - [x] Constants (`const`)
+    - [x] File scoped constants
+    - [ ] Associated constants
+      - [x] `struct` associated
+      - [ ] `interface` associated
 - [ ] Function definition
   - [x] Definition (`fn`)
   - [ ] Mutable parameters
