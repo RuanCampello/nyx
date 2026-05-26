@@ -2,15 +2,15 @@ use crate::{
     hir::{
         Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
         LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
-        SymbolId, SymbolTable, SyscallCode, Type,
+        StructRepr, SymbolId, SymbolTable, SyscallCode, Type, TypeKind, RefTargetKind,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
-        scope::{self, Scope, Structs},
+        scope::{self, Enums, Scope, Structs},
         symbols::Mangler,
     },
     lexer::token::Span,
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else},
+        statement::{self, Else, StructReprKind},
     },
 };
 use std::{
@@ -44,7 +44,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let self_type = function.impl_type.and_then(|impl_type| {
             scope::resolve_primitive_type(impl_type).or_else(|| {
                 let struct_symbol = symbols.get_id(impl_type)?;
-                scope.struct_map.get(&struct_symbol).copied().map(Type::Struct)
+                scope
+                    .struct_map
+                    .get(&struct_symbol)
+                    .copied()
+                    .map(|id| Type::new(TypeKind::Struct(id)))
+                    .or_else(|| scope.enum_map.get(&struct_symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
             })
         });
 
@@ -53,7 +58,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             symbols,
             is_const: function.is_const,
             in_std,
-            return_type: Type::Unit,
+            return_type: Type::new(TypeKind::Unit),
             function: Some(function),
             function_id,
             next_local: 0,
@@ -69,7 +74,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             symbols,
             is_const: true,
             in_std,
-            return_type: Type::Unit,
+            return_type: Type::new(TypeKind::Unit),
             function: None,
             function_id: FunctionId(0),
             next_local: 0,
@@ -205,7 +210,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Stmt::While(statement) => {
                 let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(Type::Bool, condition.typ, statement.span)?;
+                self.assert_type(Type::new(TypeKind::Bool), condition.typ, statement.span)?;
 
                 // PERFORMANCE: remove loops with constant false conditions
                 let (body, _) = self.lower_block(&statement.body, false)?;
@@ -214,14 +219,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
 
             Stmt::Expr(expr, _) => {
-                let hint = match is_tail && self.return_type != Type::Unit {
+                let hint = match is_tail && self.return_type.kind() != TypeKind::Unit {
                     true => Some(self.return_type),
                     _ => None,
                 };
                 let expr = self.lower_expr(expr, hint)?;
 
                 match is_tail {
-                    true => match self.return_type == Type::Unit {
+                    true => match self.return_type.kind() == TypeKind::Unit {
                         true => Ok((Statement::Expr(expr), false)),
                         _ => {
                             self.assert_type(self.return_type, expr.typ, expr.span)?;
@@ -241,6 +246,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
+            Stmt::Enum(_) => unimplemented!("nested enums are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
             Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
             Stmt::Const(_) => unimplemented!("local constants are not supported yet"),
@@ -320,7 +326,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Expr::Integer(value, span) => {
                 let typ = match hint {
                     Some(t) if t.is_number() => t,
-                    _ => Type::I32,
+                    _ => Type::new(TypeKind::I32),
                 };
 
                 Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
@@ -329,7 +335,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Expr::Float(value, span) => {
                 let typ = match hint {
                     Some(t) if t.is_float() => t,
-                    _ => Type::F64,
+                    _ => Type::new(TypeKind::F64),
                 };
 
                 Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
@@ -337,19 +343,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Expr::String(value, span) => Ok(Expression {
                 kind: ExpressionKind::String((*value).to_string()),
-                typ: Type::String,
+                typ: Type::new(TypeKind::String),
                 span: *span,
             }),
 
             Expr::Char(value, span) => Ok(Expression {
                 kind: ExpressionKind::Char(*value),
-                typ: Type::Char,
+                typ: Type::new(TypeKind::Char),
                 span: *span,
             }),
 
             Expr::Bool(value, span) => Ok(Expression {
                 kind: ExpressionKind::Bool(*value),
-                typ: Type::Bool,
+                typ: Type::new(TypeKind::Bool),
                 span: *span,
             }),
 
@@ -372,6 +378,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
             Expr::QualifiedName { qualifier, name, span } => {
+                let enum_symbol = self.symbols.insert(qualifier);
+                let variant_symbol = self.symbols.insert(name);
+                if let Some((id, value)) =
+                    self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
+                {
+                    return Ok(Expression {
+                        kind: ExpressionKind::Integer(value),
+                        typ: Type::new(TypeKind::Enum(id)),
+                        span: *span,
+                    });
+                }
+
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
@@ -400,15 +418,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
-                    UnaryOperator::Deref => hint.map(|h| Type::Ref {
+                    UnaryOperator::Deref => hint.map(|h| Type::new(TypeKind::Ref {
                         mutable: false,
-                        to: match h {
-                            Type::Struct(id) => RefTarget::Struct(id),
-                            Type::Char => RefTarget::Char,
-                            Type::Ref { to, .. } => to,
-                            _ => RefTarget::Char,
+                        to: match h.kind() {
+                            TypeKind::Struct(id) => RefTarget::new(RefTargetKind::Struct(id)),
+                            TypeKind::Char => RefTarget::new(RefTargetKind::Char),
+                            TypeKind::Ref { to, .. } => to,
+                            _ => RefTarget::new(RefTargetKind::Char),
                         },
-                    }),
+                    })),
                     UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
@@ -420,26 +438,26 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
-                                TypeMismatch { expected: Type::I32, found: expr.typ }
+                                TypeMismatch { expected: Type::new(TypeKind::I32), found: expr.typ }
                             ));
                         },
                     },
-                    UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
+                    UnaryOperator::Not => match expr.typ == Type::new(TypeKind::Bool) || expr.typ.is_integer() {
                         true => expr.typ,
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
-                                TypeMismatch { expected: Type::Bool, found: expr.typ }
+                                TypeMismatch { expected: Type::new(TypeKind::Bool), found: expr.typ }
                             ));
                         },
                     },
-                    UnaryOperator::Deref => match expr.typ {
-                        Type::Ref { to, .. } => to.into(),
+                    UnaryOperator::Deref => match expr.typ.kind() {
+                        TypeKind::Ref { to, .. } => to.into(),
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::Ref { mutable: false, to: RefTarget::Char },
+                                    expected: Type::new(TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::Char) }),
                                     found: expr.typ
                                 }
                             ));
@@ -450,12 +468,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::Struct(Default::default()),
+                                    expected: Type::new(TypeKind::Struct(Default::default())),
                                     found: expr.typ
                                 }
                             )
                         })?;
-                        Type::Ref { mutable: false, to }
+                        Type::new(TypeKind::Ref { mutable: false, to })
                     },
                 };
 
@@ -491,7 +509,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
                     | BinaryOperator::BitXor => Some(left.typ),
-                    BinaryOperator::And | BinaryOperator::Or => Some(Type::Bool),
+                    BinaryOperator::And | BinaryOperator::Or => Some(Type::new(TypeKind::Bool)),
                     BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
                 let right = self.lower_expr(right, right_hint)?;
@@ -588,7 +606,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 Ok(Expression {
-                    typ: Type::Struct(id),
+                    typ: Type::new(TypeKind::Struct(id)),
                     span: *span,
                     kind: ExpressionKind::Struct { id, fields: lowered },
                 })
@@ -618,9 +636,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                     let receiver_base_type = receiver_type.strip_reference();
                     let method_symbol = self.symbols.insert(method_name);
-                    let struct_name = match receiver_base_type {
-                        Type::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
-                        other => other.to_string(),
+                    let struct_name = match receiver_base_type.kind() {
+                        TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                        TypeKind::Enum(id) => self
+                            .scope
+                            .enums
+                            .get(id.0 as usize)
+                            .map(|e| self.symbols.get(e.name).to_string())
+                            .unwrap_or_else(|| receiver_base_type.to_string()),
+                        _ => receiver_base_type.to_string(),
                     };
                     let function =
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
@@ -633,7 +657,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         )?;
 
                     let signature = &self.scope.signatures[function.0 as usize];
-                    let Type::Ref { mutable, .. } = signature.params[0] else {
+                    let TypeKind::Ref { mutable, .. } = signature.params[0].kind() else {
                         unreachable!("method signature must start with receiver reference");
                     };
 
@@ -713,9 +737,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     let receiver_type = match scope::resolve_primitive_type(qualifier) {
                         Some(primitive) => primitive,
                         _ => {
-                            let struct_symbol = self.symbols.insert(qualifier);
-                            let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
-                            Type::Struct(struct_id)
+                            let symbol = self.symbols.insert(qualifier);
+                            self.scope.struct_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Struct(id))).or_else(
+                                || self.scope.enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))),
+                            )?
                         },
                     };
 
@@ -766,6 +791,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let typ = resolve_annotation(
                     self.symbols,
                     &self.scope.struct_map,
+                    &self.scope.enum_map,
                     &typ.value(),
                     typ.span(),
                     None,
@@ -782,7 +808,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 Ok(Expression {
                     kind: ExpressionKind::Integer(value),
-                    typ: Type::Uptr,
+                    typ: Type::new(TypeKind::Uptr),
                     span: *span,
                 })
             },
@@ -795,7 +821,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         is_tail: bool,
     ) -> Result<(Statement, bool), HirError<'src>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
-        self.assert_type(Type::Bool, condition.typ, condition.span)?;
+        self.assert_type(Type::new(TypeKind::Bool), condition.typ, condition.span)?;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
         let (else_block, else_returns) = if_stmt
@@ -816,14 +842,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     },
 
                     Else::Expr(expr) => {
-                        let hint = match is_tail && self.return_type != Type::Unit {
+                        let hint = match is_tail && self.return_type.kind() != TypeKind::Unit {
                             true => Some(self.return_type),
                             _ => None,
                         };
                         let lowered = self.lower_expr(expr, hint)?;
                         let span = lowered.span;
 
-                        let stmt = match is_tail && self.return_type != Type::Unit {
+                        let stmt = match is_tail && self.return_type.kind() != TypeKind::Unit {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
                                 Statement::Return(Some(lowered))
@@ -831,7 +857,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             _ => Statement::Expr(lowered),
                         };
 
-                        let returns = is_tail && self.return_type != Type::Unit;
+                        let returns = is_tail && self.return_type.kind() != TypeKind::Unit;
                         let block = Block { statements: vec![stmt], span };
                         Ok((Some(block), returns))
                     },
@@ -951,7 +977,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         right: Type,
         span: Span,
     ) -> Result<Type, HirError<'src>> {
-        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::I32, found });
+        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::new(TypeKind::I32), found });
 
         match operator {
             BinaryOperator::Add
@@ -967,7 +993,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
                 self.assert_type(left, right, span)?;
-                Ok(Type::Bool)
+                Ok(Type::new(TypeKind::Bool))
             },
 
             BinaryOperator::Lt
@@ -975,23 +1001,23 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() || left == Type::Char {
-                    true => Ok(Type::Bool),
+                match left.is_number() || left == Type::new(TypeKind::Char) {
+                    true => Ok(Type::new(TypeKind::Bool)),
                     _ => Err(type_mismatch(left)),
                 }
             },
 
             BinaryOperator::And | BinaryOperator::Or => {
-                self.assert_type(Type::Bool, left, span)?;
-                self.assert_type(Type::Bool, right, span)?;
+                self.assert_type(Type::new(TypeKind::Bool), left, span)?;
+                self.assert_type(Type::new(TypeKind::Bool), right, span)?;
 
-                Ok(Type::Bool)
+                Ok(Type::new(TypeKind::Bool))
             },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
 
-                match left == Type::Bool || left.is_integer() {
+                match left == Type::new(TypeKind::Bool) || left.is_integer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1026,14 +1052,16 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
-                let id = self
-                    .scope
-                    .struct_map
+                if let Some(id) = self.scope.struct_map.get(&symbol).copied() {
+                    return Ok(Type::new(TypeKind::Struct(id)));
+                }
+
+                self.scope
+                    .enum_map
                     .get(&symbol)
                     .copied()
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
-
-                Ok(Type::Struct(id))
+                    .map(|id| Type::new(TypeKind::Enum(id)))
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
             },
 
             statement::Type::SelfType => self
@@ -1047,11 +1075,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let to = RefTarget::try_from(self_ty).map_err(|_| {
                     hir_error!(
                         span,
-                        TypeMismatch { expected: Type::Struct(Default::default()), found: self_ty }
+                        TypeMismatch { expected: Type::new(TypeKind::Struct(Default::default())), found: self_ty }
                     )
                 })?;
 
-                Ok(Type::Ref { mutable: false, to })
+                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
 
             typ => Ok(typ.into()),
@@ -1110,12 +1138,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         span: Span,
     ) -> Result<(SymbolId, Type), HirError<'src>> {
         #[rustfmt::skip]
-        let sid = match current {
-            Type::Struct(id) => id,
-            Type::Ref { to: RefTarget::Struct(id), .. } => id,
-            found => return Err(hir_error!(span, TypeMismatch {
-                expected: Type::Struct(Default::default()),
-                found
+        let sid = match current.kind() {
+            TypeKind::Struct(id) => id,
+            TypeKind::Ref { to, .. } => match to.kind() {
+                RefTargetKind::Struct(id) => id,
+                _ => return Err(hir_error!(span, TypeMismatch {
+                    expected: Type::new(TypeKind::Struct(Default::default())),
+                    found: current
+                })),
+            },
+            _ => return Err(hir_error!(span, TypeMismatch {
+                expected: Type::new(TypeKind::Struct(Default::default())),
+                found: current
             })),
         };
 
@@ -1171,13 +1205,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             field_symbols.push(sym);
 
             let is_last = idx == fields.len() - 1;
-            let is_struct = matches!(
-                current_type,
-                Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. }
-            );
+            let is_struct = match current_type.kind() {
+                TypeKind::Struct(_) => true,
+                TypeKind::Ref { to, .. } => matches!(to.kind(), RefTargetKind::Struct(_)),
+                _ => false,
+            };
 
             if !is_last && !is_struct {
-                let expected = Type::Struct(Default::default());
+                let expected = Type::new(TypeKind::Struct(Default::default()));
                 return Err(hir_error!(span, TypeMismatch { expected, found: current_type }));
             }
         }
@@ -1206,6 +1241,7 @@ pub(in crate::hir) enum Visit {
 pub(in crate::hir) fn lower_structs<'h>(
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
+    enum_map: &Enums,
     symbols: &mut SymbolTable,
     lowered: &mut [Option<Struct>],
 ) -> Result<(), HirError<'h>> {
@@ -1220,7 +1256,7 @@ pub(in crate::hir) fn lower_structs<'h>(
     let mut states = vec![Visit::Unvisited; declarations.len()];
     let symbols = &*symbols; // shadow as shared reference
     for id in 0..declarations.len() {
-        lower_struct(id, declarations, map, symbols, lowered, &mut states)?;
+        lower_struct(id, declarations, map, enum_map, symbols, lowered, &mut states)?;
     }
 
     Ok(())
@@ -1230,6 +1266,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     id: usize,
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
+    enum_map: &Enums,
     symbols: &SymbolTable,
     lowered: &mut [Option<Struct>],
     states: &mut [Visit],
@@ -1257,9 +1294,10 @@ pub(in crate::hir) fn lower_struct<'h>(
             return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
         }
 
-        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
-        if let Type::Struct(dep) = typ {
-            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
+        let typ =
+            resolve_annotation(symbols, map, enum_map, &field.typ.value(), field.typ.span(), None)?;
+        if let TypeKind::Struct(dep) = typ.kind() {
+            lower_struct(dep.0 as usize, declarations, map, enum_map, symbols, lowered, states)?;
         }
 
         fields.push(StructField {
@@ -1270,8 +1308,9 @@ pub(in crate::hir) fn lower_struct<'h>(
         });
     }
 
-    let (fields, size, align) = layout_fields(fields, lowered);
-    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, size, align });
+    let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
+    let (fields, size, align) = layout_fields(fields, lowered, repr);
+    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, size, align, repr });
     states[id] = Visit::Visited;
 
     Ok(())
@@ -1295,6 +1334,7 @@ pub(in crate::hir) fn lower_const<'s, 'src>(
 pub(in crate::hir) fn resolve_annotation<'h>(
     symbols: &SymbolTable,
     struct_map: &Structs,
+    enum_map: &Enums,
     typ: &statement::Type<'h>,
     span: Span,
     self_type: Option<Type>,
@@ -1302,24 +1342,34 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     match typ {
         statement::Type::Named(name) => symbols
             .get_id(name)
-            .and_then(|symbol| struct_map.get(&symbol).copied())
-            .map(Type::Struct)
+            .and_then(|symbol| {
+                struct_map
+                    .get(&symbol)
+                    .copied()
+                    .map(|id| Type::new(TypeKind::Struct(id)))
+                    .or_else(|| {
+                        enum_map
+                            .get(&symbol)
+                            .copied()
+                            .map(|id| Type::new(TypeKind::Enum(id)))
+                    })
+            })
             .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
-        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
+        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
         statement::Type::RefSelf => self_type.map_or(
-            Ok(Type::Ref { mutable: false, to: RefTarget::SelfType }),
+            Ok(Type::new(TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) })),
             |self_typ| {
                 let to = RefTarget::try_from(self_typ).map_err(|_| {
                     hir_error!(
                         span,
                         TypeMismatch {
-                            expected: Type::Struct(Default::default()),
+                            expected: Type::new(TypeKind::Struct(Default::default())),
                             found: self_typ,
                         }
                     )
                 })?;
 
-                Ok(Type::Ref { mutable: false, to })
+                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
         ),
         typ => Ok(typ.into()),
@@ -1329,23 +1379,29 @@ pub(in crate::hir) fn resolve_annotation<'h>(
 fn layout_fields(
     mut fields: Vec<StructField>,
     structs: &[Option<Struct>],
+    repr: StructRepr,
 ) -> (Vec<StructField>, u32, u32) {
-    // PERFORMANCE: field reordering is a small stable sort by layout class
-    fields.sort_by(|a, b| {
-        let (a_size, a_align) = &a.typ.layout(structs);
-        let (b_size, b_align) = &b.typ.layout(structs);
+    if repr.kind == StructReprKind::Default {
+        // PERFORMANCE: field reordering is a small stable sort by layout class
+        fields.sort_by(|a, b| {
+            let (a_size, a_align) = &a.typ.layout(structs);
+            let (b_size, b_align) = &b.typ.layout(structs);
 
-        b_align
-            .cmp(&a_align)
-            .then_with(|| b_size.cmp(&a_size))
-            .then_with(|| a.declared_index.cmp(&b.declared_index))
-    });
+            b_align
+                .cmp(&a_align)
+                .then_with(|| b_size.cmp(&a_size))
+                .then_with(|| a.declared_index.cmp(&b.declared_index))
+        });
+    }
 
     let mut offset = 0;
     let mut struct_align = 1;
 
     for field in &mut fields {
-        let (size, align) = field.typ.layout(structs);
+        let (size, mut align) = field.typ.layout(structs);
+        if repr.kind == StructReprKind::Packed {
+            align = 1;
+        }
 
         struct_align = struct_align.max(align);
         offset = align_to(offset, align);
@@ -1353,6 +1409,9 @@ fn layout_fields(
         offset += size;
     }
 
+    if let Some(align) = repr.align {
+        struct_align = struct_align.max(align.get());
+    }
     let size = align_to(offset, struct_align);
 
     (fields, size, struct_align)

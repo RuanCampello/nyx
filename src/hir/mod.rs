@@ -13,11 +13,14 @@ use crate::{
     lexer::token::Span,
     parser::{
         expression::{BinaryOperator, UnaryOperator},
-        statement,
+        statement::{self, StructRepr},
     },
 };
 use lasso::{Key, Spur};
 use std::str::FromStr;
+
+pub mod types;
+pub use types::*;
 
 mod declarations;
 pub mod error;
@@ -30,6 +33,7 @@ mod symbols;
 pub struct Hir {
     pub symbols: Vec<String>,
     pub structs: Vec<Struct>,
+    pub enums: Vec<Enum>,
     pub functions: Vec<Function>,
 }
 
@@ -41,6 +45,7 @@ pub struct Struct {
     pub(crate) fields: Vec<StructField>,
     pub(crate) size: u32,
     pub(crate) align: u32,
+    pub(crate) repr: StructRepr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,54 +56,19 @@ pub struct StructField {
     declared_index: u32,
 }
 
-/// The target of a reference type (`Type::Ref`)
-///
-/// Since `Type` is designed to be a flat, recursive-free, and `Copy` enum,
-/// we cannot represent references recursively as `&'t Type`. `RefTarget` represents
-/// all valid non-reference types that can be referenced in Nyx, preventing
-/// invalid type states like nested references (e.g. `&&i64`) by construction
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[rustfmt::skip]
-pub enum RefTarget {
-    Struct(StructId),
-    I8, U8,
-    I16, U16,
-    I32, U32,
-    I64, U64,
-    F32, F64,
-    Bool,
-    Uptr, Iptr,
-    Char,
-    Str, String,
-    SelfType,
-    Unit,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Enum {
+    id: EnumId,
+    name: SymbolId,
+    pub(crate) variants: Vec<EnumVariant>,
+    pub(crate) repr: EnumRepr,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-#[rustfmt::skip]
-#[non_exhaustive]
-pub enum Type {
-    #[default]
-    Unit,
-    I8, U8,
-    I16, U16,
-    I32, U32,
-    I64, U64,
-    F32, F64,
-    Bool,
-    Uptr, Iptr,
-    Char,
-    Str, String,
-    Struct(StructId),
-    SelfType,
-    Ref {
-        mutable: bool,
-        to: RefTarget,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub(crate) name: SymbolId,
+    pub(crate) value: i64,
 }
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StructId(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 #[rustfmt::skip]
@@ -253,6 +223,7 @@ pub fn lower<'h>(mut statements: Vec<statement::Statement<'h>>) -> Result<Hir, H
     Ok(Hir {
         symbols: symbols.into_symbols(),
         structs: scope.structs,
+        enums: scope.enums,
         functions,
     })
 }
@@ -268,211 +239,6 @@ impl From<&Function> for FunctionSignature {
             is_const: value.is_const,
             inline: value.inline,
         }
-    }
-}
-
-impl Type {
-    #[inline]
-    pub(in crate::hir) fn strip_reference(self) -> Self {
-        match self {
-            Self::Ref { to, .. } => Self::from(to),
-            other => other,
-        }
-    }
-
-    pub const fn is_number(&self) -> bool {
-        self.is_integer() || self.is_float()
-    }
-
-    pub const fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Self::I8
-                | Self::U8
-                | Self::I16
-                | Self::U16
-                | Self::I32
-                | Self::U32
-                | Self::I64
-                | Self::U64
-                | Self::Iptr
-                | Self::Uptr
-        )
-    }
-
-    pub const fn is_float(&self) -> bool {
-        matches!(self, Self::F32 | Self::F64)
-    }
-
-    pub const fn is_32_bit(&self) -> bool {
-        matches!(self, Self::F32 | Self::I32 | Self::U32)
-    }
-
-    #[inline(always)]
-    /// returns (size, alignment) of the type
-    const fn layout(&self, structs: &[Option<Struct>]) -> (u32, u32) {
-        match self {
-            Type::I8 | Type::U8 | Type::Bool => (1, 1),
-            Type::I16 | Type::U16 => (2, 2),
-            Type::I32 | Type::U32 | Type::F32 | Type::Char => (4, 4),
-            Type::I64
-            | Type::U64
-            | Type::Iptr
-            | Type::Uptr
-            | Type::Str
-            | Type::String
-            | Type::Ref { .. }
-            | Type::F64 => (8, 8),
-            Type::Unit => (0, 1),
-
-            Type::Struct(id) => {
-                let definition =
-                    structs[id.0 as usize].as_ref().expect("dependent struct is already lowered");
-
-                (definition.size, definition.align)
-            },
-            Type::SelfType => unreachable!(),
-        }
-    }
-
-    #[inline(always)]
-    pub(in crate::hir) const fn is_primitive_castable(&self) -> bool {
-        matches!(
-            self,
-            Type::I8
-                | Type::U8
-                | Type::I16
-                | Type::U16
-                | Type::I32
-                | Type::U32
-                | Type::I64
-                | Type::U64
-                | Type::Iptr
-                | Type::Uptr
-                | Type::Bool
-                | Type::Char
-        )
-    }
-}
-
-impl From<RefTarget> for Type {
-    fn from(value: RefTarget) -> Self {
-        match value {
-            RefTarget::Unit => Type::Unit,
-            RefTarget::I8 => Type::I8,
-            RefTarget::U8 => Type::U8,
-            RefTarget::I16 => Type::I16,
-            RefTarget::U16 => Type::U16,
-            RefTarget::I32 => Type::I32,
-            RefTarget::U32 => Type::U32,
-            RefTarget::I64 => Type::I64,
-            RefTarget::U64 => Type::U64,
-            RefTarget::F32 => Type::F32,
-            RefTarget::F64 => Type::F64,
-            RefTarget::Bool => Type::Bool,
-            RefTarget::Uptr => Type::Uptr,
-            RefTarget::Iptr => Type::Iptr,
-            RefTarget::Char => Type::Char,
-            RefTarget::Str => Type::Str,
-            RefTarget::String => Type::String,
-            RefTarget::Struct(id) => Type::Struct(id),
-            RefTarget::SelfType => Type::SelfType,
-        }
-    }
-}
-
-impl TryFrom<Type> for RefTarget {
-    type Error = ();
-
-    fn try_from(typ: Type) -> Result<Self, Self::Error> {
-        match typ {
-            Type::Unit => Ok(Self::Unit),
-            Type::I8 => Ok(Self::I8),
-            Type::U8 => Ok(Self::U8),
-            Type::I16 => Ok(Self::I16),
-            Type::U16 => Ok(Self::U16),
-            Type::I32 => Ok(Self::I32),
-            Type::U32 => Ok(Self::U32),
-            Type::I64 => Ok(Self::I64),
-            Type::U64 => Ok(Self::U64),
-            Type::F32 => Ok(Self::F32),
-            Type::F64 => Ok(Self::F64),
-            Type::Bool => Ok(Self::Bool),
-            Type::Uptr => Ok(Self::Uptr),
-            Type::Iptr => Ok(Self::Iptr),
-            Type::Char => Ok(Self::Char),
-            Type::Str => Ok(Self::Str),
-            Type::String => Ok(Self::String),
-            Type::Struct(id) => Ok(Self::Struct(id)),
-            Type::SelfType => Ok(Self::SelfType),
-            Type::Ref { .. } => Err(()),
-        }
-    }
-}
-
-impl From<&statement::Type<'_>> for Type {
-    fn from(value: &statement::Type<'_>) -> Self {
-        use statement::Type as AstType;
-
-        match value {
-            AstType::I8 => Type::I8,
-            AstType::U8 => Type::U8,
-            AstType::I16 => Type::I16,
-            AstType::U16 => Type::U16,
-            AstType::I32 => Type::I32,
-            AstType::U32 => Type::U32,
-            AstType::I64 => Type::I64,
-            AstType::U64 => Type::U64,
-            AstType::F32 => Type::F32,
-            AstType::F64 => Type::F64,
-            AstType::Bool => Type::Bool,
-            AstType::Uptr => Type::Uptr,
-            AstType::Iptr => Type::Iptr,
-            AstType::Char => Type::Char,
-            AstType::Str => Type::Str,
-            AstType::String => Type::String,
-            AstType::Unit => Type::Unit,
-            AstType::SelfType => Type::SelfType,
-            AstType::RefSelf => Type::Ref { mutable: false, to: RefTarget::SelfType },
-            AstType::Named(_) => unreachable!("already resolved by resolve_type"),
-        }
-    }
-}
-
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Type::I8 => "i8",
-            Type::U8 => "u8",
-            Type::I16 => "i16",
-            Type::U16 => "u16",
-            Type::I32 => "i32",
-            Type::U32 => "u32",
-            Type::I64 => "i64",
-            Type::U64 => "u64",
-            Type::F32 => "f32",
-            Type::F64 => "f64",
-            Type::Bool => "bool",
-            Type::Char => "char",
-            Type::Uptr => "uptr",
-            Type::Iptr => "iptr",
-            Type::Str => "&str",
-            Type::String => "String",
-            Type::Struct(id) => return write!(f, "struct#{}", id.0),
-            Type::SelfType => "Self",
-            Type::Ref { mutable, to } => {
-                let prefix = mutable.then(|| "&mut ").unwrap_or("&");
-                f.write_str(prefix)?;
-                return match to {
-                    RefTarget::Struct(id) => write!(f, "struct#{}", id.0),
-                    RefTarget::SelfType => write!(f, "Self"),
-                    other => write!(f, "{}", Type::from(*other)),
-                };
-            },
-            Type::Unit => "unit",
-        };
-
-        f.write_str(s)
     }
 }
 
@@ -568,7 +334,13 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 })
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Bool),
+                found: Type::new(TypeKind::I32)
+            }
+        )
     }
 
     #[test]
@@ -631,7 +403,13 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I64 })
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Bool),
+                found: Type::new(TypeKind::I64)
+            }
+        )
     }
 
     #[test]
@@ -693,7 +471,13 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::TypeMismatch { expected: Type::Bool, found: Type::I32 })
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Bool),
+                found: Type::new(TypeKind::I32)
+            }
+        )
     }
 
     #[test]
@@ -728,16 +512,16 @@ mod tests {
 
         assert_eq!(hir.functions.len(), 2);
         let foo = &hir.functions[0];
-        assert_eq!(foo.return_type, Type::I64);
+        assert_eq!(foo.return_type, Type::new(TypeKind::I64));
         assert_eq!(foo.params.len(), 1);
-        assert_eq!(foo.params[0].typ, Type::I64);
+        assert_eq!(foo.params[0].typ, Type::new(TypeKind::I64));
 
         let main = &hir.functions[1];
         let call_expr = match &main.body.statements[0] {
             Statement::Expr(expr) => expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(call_expr.typ, Type::I64);
+        assert_eq!(call_expr.typ, Type::new(TypeKind::I64));
         let arg = match &call_expr.kind {
             ExpressionKind::Call { args, .. } => {
                 assert_eq!(args.len(), 1);
@@ -745,7 +529,7 @@ mod tests {
             },
             other => panic!("expected Call expression, got {other:?}"),
         };
-        assert_eq!(arg.typ, Type::I64);
+        assert_eq!(arg.typ, Type::new(TypeKind::I64));
         assert!(matches!(arg.kind, ExpressionKind::Integer(1)));
     }
 
@@ -756,7 +540,7 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::F64);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::F64));
     }
 
     #[test]
@@ -765,7 +549,7 @@ mod tests {
         let hir = super::lower(statements).unwrap();
 
         let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, Type::I32);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I32));
 
         let stmt = &func.body.statements[0];
         assert!(matches!(stmt, Statement::Let { id: LocalId(0), .. }));
@@ -778,7 +562,7 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::F32);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::F32));
     }
 
     #[test]
@@ -797,21 +581,21 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::I64);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
         assert_eq!(func.locals[0].mutable, true);
 
         let assign_expr = match &func.body.statements[1] {
             Statement::Expr(expr) => expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(assign_expr.typ, Type::I64);
+        assert_eq!(assign_expr.typ, Type::new(TypeKind::I64));
         let (target_id, value) = match &assign_expr.kind {
             ExpressionKind::Assign { target, value } => (target, value.as_ref()),
             other => panic!("expected Assign expression, got {other:?}"),
         };
 
         assert_eq!(*target_id, LocalId(0));
-        assert_eq!(value.typ, Type::I64);
+        assert_eq!(value.typ, Type::new(TypeKind::I64));
         assert!(matches!(value.kind, ExpressionKind::Integer(99)));
     }
 
@@ -831,8 +615,8 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 2);
-        assert_eq!(func.locals[0].typ, Type::I64);
-        assert_eq!(func.locals[1].typ, Type::I64);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
+        assert_eq!(func.locals[1].typ, Type::new(TypeKind::I64));
 
         let y_stmt = &func.body.statements[1];
         assert!(matches!(y_stmt, Statement::Let { id: LocalId(1), .. }));
@@ -873,8 +657,8 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.locals[0].typ, Type::Uptr);
-        assert_eq!(func.locals[1].typ, Type::Iptr);
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::Uptr));
+        assert_eq!(func.locals[1].typ, Type::new(TypeKind::Iptr));
     }
 
     #[test]
@@ -893,14 +677,14 @@ mod tests {
             Statement::Let { init: Some(e), .. } => e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(init_a.typ, Type::Uptr);
+        assert_eq!(init_a.typ, Type::new(TypeKind::Uptr));
         assert!(matches!(init_a.kind, ExpressionKind::Integer(100)));
 
         let init_b = match &func.body.statements[1] {
             Statement::Let { init: Some(e), .. } => e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(init_b.typ, Type::Iptr);
+        assert_eq!(init_b.typ, Type::new(TypeKind::Iptr));
         assert!(matches!(init_b.kind, ExpressionKind::Integer(200)));
     }
 
@@ -913,9 +697,9 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.return_type, Type::Uptr);
-        assert_eq!(func.params[0].typ, Type::Uptr);
-        assert_eq!(func.params[1].typ, Type::Uptr);
+        assert_eq!(func.return_type, Type::new(TypeKind::Uptr));
+        assert_eq!(func.params[0].typ, Type::new(TypeKind::Uptr));
+        assert_eq!(func.params[1].typ, Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -927,9 +711,9 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.return_type, Type::Iptr);
-        assert_eq!(func.params[0].typ, Type::Iptr);
-        assert_eq!(func.params[1].typ, Type::Iptr);
+        assert_eq!(func.return_type, Type::new(TypeKind::Iptr));
+        assert_eq!(func.params[0].typ, Type::new(TypeKind::Iptr));
+        assert_eq!(func.params[1].typ, Type::new(TypeKind::Iptr));
     }
 
     #[test]
@@ -961,7 +745,10 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap()).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::TypeMismatch { expected: Type::Iptr, found: Type::Uptr }
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Iptr),
+                found: Type::new(TypeKind::Uptr)
+            }
         );
     }
 
@@ -994,7 +781,7 @@ mod tests {
         assert_eq!(field_names, vec![("b", 0), ("c", 8), ("a", 12)]);
 
         let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, Type::Struct(StructId(0)));
+        assert_eq!(func.locals[0].typ, Type::new(TypeKind::Struct(StructId(0))));
     }
 
     #[test]
@@ -1027,7 +814,7 @@ mod tests {
             .iter()
             .find(|field| hir.symbols[field.name.0.into_usize()] == "inner")
             .unwrap();
-        assert_eq!(outer_inner.typ, Type::Struct(StructId(0)));
+        assert_eq!(outer_inner.typ, Type::new(TypeKind::Struct(StructId(0))));
     }
 
     #[test]
@@ -1265,7 +1052,7 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::I32);
+        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
         assert!(matches!(ret_expr.kind, ExpressionKind::Integer(42)));
     }
 
@@ -1286,7 +1073,7 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert_eq!(ret_expr.typ, Type::new(TypeKind::Uptr));
         assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
     }
 
@@ -1311,7 +1098,7 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::Uptr);
+        assert_eq!(ret_expr.typ, Type::new(TypeKind::Uptr));
         assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
     }
 
@@ -1330,7 +1117,7 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::I32);
+        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
         match &ret_expr.kind {
             ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
@@ -1405,7 +1192,12 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::I32);
+        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
         assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
+    }
+
+    #[test]
+    fn type_size_of() {
+        assert_eq!(size_of::<Type>(), 8);
     }
 }

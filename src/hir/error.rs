@@ -78,11 +78,25 @@ pub enum HirErrorKind<'h> {
     DuplicateStruct { name: String },
 
     #[diagnostic(
+        message = "duplicate enum {name!}",
+        primary = "{name!} is defined here again",
+        help = "rename one of the {name!} enums"
+    )]
+    DuplicateEnum { name: String },
+
+    #[diagnostic(
         message = "duplicate field {name!}",
         primary = "{name!} is already declared",
         note = "struct field names must be unique"
     )]
     DuplicateField { name: String },
+
+    #[diagnostic(
+        message = "duplicate enum variant {name!}",
+        primary = "{name!} is already declared",
+        note = "enum variant names must be unique"
+    )]
+    DuplicateVariant { name: String },
 
     #[diagnostic(
         message = "invalid field access",
