@@ -172,6 +172,11 @@ const CASES: &[Case] = &[
         file: "tests/single/overflow.nyx",
         exit_code: Some(101),
     },
+    Case {
+        name: "string_len",
+        file: "tests/single/string_len.nyx",
+        exit_code: Some(11),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

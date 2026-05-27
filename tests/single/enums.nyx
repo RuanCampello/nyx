@@ -1,6 +1,7 @@
 use std::cmp::{PartialEq};
 use std::default::{Default};
 use std::mem;
+use std::panic;
 
 enum Status {
     Ready = 1,
@@ -35,14 +36,13 @@ fn main(): i32 {
     let mut status = Status::default();
     let other = Status::Done;
 
-    // TODO: correct std::panic::assert to be used in testing instead of those ifs
+    panic::assert(mem::size_of(Status) == 1);
+    panic::assert(mem::align_of(Status) == 1);
+    panic::assert(mem::size_of(PackedFlags) == 16);
+    panic::assert(mem::align_of(PackedFlags) == 4);
+    panic::assert(status.eq(&other));
+    panic::assert(status.touch() == 9);
+    panic::assert(status.code() == 7);
 
-    if mem::size_of(Status) != 1 return 1;
-    if mem::align_of(Status) != 1 return 2;
-    if mem::size_of(PackedFlags) != 16 return 6;
-    if mem::align_of(PackedFlags) != 4 return 7;
-    if !status.eq(&other) return 3;
-    if status.touch() != 9 return 4;
-    if status.code() != 7 return 5;
     0
 }
