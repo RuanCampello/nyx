@@ -698,13 +698,10 @@ impl<'sc> Scope<'sc> {
             (Some(_), Some(impl_type)) => {
                 let receiver_type = match resolve_primitive_type(impl_type) {
                     Some(primitive) => primitive,
-                    _ => {
-                        let symbol = symbols.insert(impl_type);
-                        self.nominal_type(symbol).ok_or_else(|| HirError {
-                            kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
-                            span: function.span,
-                        })?
-                    },
+                    _ => self.nominal_type(symbols.insert(impl_type)).ok_or_else(|| HirError {
+                        kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
+                        span: function.span,
+                    })?,
                 };
 
                 let method_symbol = symbols.insert(function.name);
@@ -731,10 +728,7 @@ impl<'sc> Scope<'sc> {
                     .or_else(|| {
                         let receiver_type = match resolve_primitive_type(impl_type) {
                             Some(primitive) => primitive,
-                            _ => {
-                                let symbol = symbols.insert(impl_type);
-                                self.nominal_type(symbol)?
-                            },
+                            _ => self.nominal_type(symbols.insert(impl_type))?,
                         };
                         self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
                             |&(_, interface_sym)| {
@@ -942,12 +936,8 @@ impl<'sc> Scope<'sc> {
     }
 
     #[inline]
-    fn nominal_type(&self, symbol: SymbolId) -> Option<Type> {
-        self.struct_map
-            .get(&symbol)
-            .copied()
-            .map(|id| Type::new(TypeKind::Struct(id)))
-            .or_else(|| self.enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
+    pub(in crate::hir) fn nominal_type(&self, symbol: SymbolId) -> Option<Type> {
+        nominal_type(&self.struct_map, &self.enum_map, symbol)
     }
 }
 
@@ -1002,4 +992,17 @@ impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
 #[inline(always)]
 pub(in crate::hir) fn resolve_primitive_type(name: &str) -> Option<Type> {
     statement::Type::from_str(name).map(|ast_ty| Type::from(&ast_ty))
+}
+
+#[inline]
+pub(in crate::hir) fn nominal_type(
+    struct_map: &Structs,
+    enum_map: &Enums,
+    symbol: SymbolId,
+) -> Option<Type> {
+    struct_map
+        .get(&symbol)
+        .copied()
+        .map(|id| Type::new(TypeKind::Struct(id)))
+        .or_else(|| enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
 }

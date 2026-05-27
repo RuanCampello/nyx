@@ -44,18 +44,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let self_type = function.impl_type.and_then(|impl_type| {
             scope::resolve_primitive_type(impl_type).or_else(|| {
                 let struct_symbol = symbols.get_id(impl_type)?;
-                scope
-                    .struct_map
-                    .get(&struct_symbol)
-                    .copied()
-                    .map(|id| Type::new(TypeKind::Struct(id)))
-                    .or_else(|| {
-                        scope
-                            .enum_map
-                            .get(&struct_symbol)
-                            .copied()
-                            .map(|id| Type::new(TypeKind::Enum(id)))
-                    })
+                scope.nominal_type(struct_symbol)
             })
         });
 
@@ -752,18 +741,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         Some(primitive) => primitive,
                         _ => {
                             let symbol = self.symbols.insert(qualifier);
-                            self.scope
-                                .struct_map
-                                .get(&symbol)
-                                .copied()
-                                .map(|id| Type::new(TypeKind::Struct(id)))
-                                .or_else(|| {
-                                    self.scope
-                                        .enum_map
-                                        .get(&symbol)
-                                        .copied()
-                                        .map(|id| Type::new(TypeKind::Enum(id)))
-                                })?
+                            self.scope.nominal_type(symbol)?
                         },
                     };
 
@@ -1073,15 +1051,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match typ {
             statement::Type::Named(name) => {
                 let symbol = self.symbols.insert(name);
-                if let Some(id) = self.scope.struct_map.get(&symbol).copied() {
-                    return Ok(Type::new(TypeKind::Struct(id)));
-                }
-
                 self.scope
-                    .enum_map
-                    .get(&symbol)
-                    .copied()
-                    .map(|id| Type::new(TypeKind::Enum(id)))
+                    .nominal_type(symbol)
                     .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
             },
 
@@ -1366,15 +1337,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     match typ {
         statement::Type::Named(name) => symbols
             .get_id(name)
-            .and_then(|symbol| {
-                struct_map
-                    .get(&symbol)
-                    .copied()
-                    .map(|id| Type::new(TypeKind::Struct(id)))
-                    .or_else(|| {
-                        enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id)))
-                    })
-            })
+            .and_then(|symbol| scope::nominal_type(struct_map, enum_map, symbol))
             .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
         statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
         statement::Type::RefSelf => self_type.map_or(

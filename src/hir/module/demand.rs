@@ -158,7 +158,7 @@ fn find_interface_for_method(
     let impl_type = function.impl_type?;
     let receiver_type = match scope::resolve_primitive_type(impl_type) {
         Some(primitive) => primitive,
-        _ => get_non_primitve_receiver(impl_type, scope, symbols)?,
+        _ => scope.nominal_type(symbols.get_id(impl_type)?)?,
     };
     let method_name = symbols.get_id(function.name)?;
 
@@ -172,27 +172,6 @@ fn find_interface_for_method(
                 .then(|| symbols.get(interface_sym).to_string())
         },
     )
-}
-
-#[inline]
-fn get_non_primitve_receiver(
-    impl_type: &str,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-) -> Option<hir::Type> {
-    let symbol = symbols.get_id(impl_type)?;
-    scope
-        .struct_map
-        .get(&symbol)
-        .copied()
-        .map(|id| hir::Type::new(hir::TypeKind::Struct(id)))
-        .or_else(|| {
-            scope
-                .enum_map
-                .get(&symbol)
-                .copied()
-                .map(|id| hir::Type::new(hir::TypeKind::Enum(id)))
-        })
 }
 
 impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
@@ -255,7 +234,7 @@ fn resolve_qualified(
         .or_else(|| {
             let receiver_type = match scope::resolve_primitive_type(qualifier) {
                 Some(primitive) => primitive,
-                _ => get_non_primitve_receiver(qualifier, scope, symbols)?,
+                _ => scope.nominal_type(symbols.get_id(qualifier)?)?,
             };
 
             scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
