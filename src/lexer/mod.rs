@@ -32,14 +32,14 @@ use token::{Punct, Span, Token, TokenKind, Tokenize};
 /// The Nyx lexer.
 ///
 /// Wraps a [`Cursor`] and exposes an [`Iterator`] of `Result<Token, LexError>`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Lexer<'src> {
     cursor: Cursor<'src>,
     /// set to `true` once we've emitted [`TokenKind::Eof`].
     finished: bool,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Spanned<T> {
     span: Span,
     value: T,
@@ -226,19 +226,29 @@ impl<'src> Iterator for Lexer<'src> {
     }
 }
 
-impl<T: Clone + Copy> Spanned<T> {
-    pub const fn value(&self) -> T {
-        self.value
-    }
-
+impl<T> Spanned<T> {
     pub const fn span(&self) -> Span {
         self.span
+    }
+}
+
+impl<T: Clone> Spanned<T> {
+    pub fn value(&self) -> T {
+        self.value.clone()
+    }
+
+    pub fn value_ref(&self) -> &T {
+        &self.value
     }
 }
 
 impl<T> Spanned<T> {
     pub fn new(value: T, span: Span) -> Self {
         Self { span, value }
+    }
+
+    pub fn into_value(self) -> T {
+        self.value
     }
 }
 

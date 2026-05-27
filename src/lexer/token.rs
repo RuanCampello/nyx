@@ -101,14 +101,14 @@ pub enum Punct {
     Arrow,      // ->
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Position {
     pub offset: u32,
     pub line: u16,
     pub column: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
