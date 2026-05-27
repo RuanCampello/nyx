@@ -13,7 +13,7 @@ use std::ops::Add;
 ///
 pub trait Tokenize<'src> {
     /// Lex a single token starting at `start`, advancing `cursor` past it.
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError>;
+    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError<'src>>;
 }
 
 /// A single token produced by the lexer.

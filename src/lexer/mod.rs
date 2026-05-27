@@ -56,7 +56,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Produces the next token, or `None` after EOF has been emitted.
-    fn next_token(&mut self) -> Result<Option<Token<'src>>, LexError> {
+    fn next_token(&mut self) -> Result<Option<Token<'src>>, LexError<'src>> {
         if self.finished {
             return Ok(None);
         }
@@ -174,7 +174,7 @@ impl<'src> Lexer<'src> {
         Ok(Some(token))
     }
 
-    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError> {
+    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError<'src>> {
         loop {
             self.cursor.consume_while(|ch| ch.is_ascii_whitespace());
 
@@ -214,7 +214,7 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'src> Iterator for Lexer<'src> {
-    type Item = Result<Token<'src>, LexError>;
+    type Item = Result<Token<'src>, LexError<'src>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()

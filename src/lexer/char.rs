@@ -7,7 +7,7 @@ use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
 pub struct CharLiteral;
 
 impl<'src> Tokenize<'src> for CharLiteral {
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError> {
+    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError<'src>> {
         // consume the opening `'`
         cursor.advance();
 
@@ -172,7 +172,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
 mod tests {
     use super::*;
 
-    fn tok(src: &str) -> Result<Token<'_>, LexError> {
+    fn tok(src: &str) -> Result<Token<'_>, LexError<'_>> {
         let mut cursor = Cursor::new(src);
         let start = cursor.position();
         CharLiteral.lex(&mut cursor, start)
