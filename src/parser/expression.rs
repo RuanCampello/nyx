@@ -1,7 +1,7 @@
 use crate::lexer::Spanned;
 use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
-use crate::parser::statement::Type;
+use crate::parser::statement::{self, Type};
 use crate::parser::{Parsable, Parser};
 use std::str::FromStr;
 
@@ -23,9 +23,25 @@ pub enum Expression<'i> {
     },
     Assignment { target: Box<Expression<'i>>, value: Box<Expression<'i>>, span: Span },
     Field { expr: Box<Expression<'i>>, field: &'i str, span: Span },
-    Struct { name: &'i str, fields: Vec<StructField<'i>>, span: Span },
-    Call { callee: Box<Expression<'i>>, args: Vec<Expression<'i>>, span: Span },
-    QualifiedCall { qualifier: &'i str, name: &'i str, args: Vec<Expression<'i>>, span: Span },
+    Struct { 
+        name: &'i str,
+        fields: Vec<StructField<'i>>,
+        type_args: Vec<Spanned<Type<'i>>>,
+        span: Span,
+    },
+    Call {
+        callee: Box<Expression<'i>>,
+        args: Vec<Expression<'i>>,
+        type_args: Vec<Spanned<Type<'i>>>,
+        span: Span,
+    },
+    QualifiedCall {
+        qualifier: &'i str,
+        name: &'i str,
+        args: Vec<Expression<'i>>,
+        type_args: Vec<Spanned<Type<'i>>>,
+        span: Span,
+    },
     QualifiedName { qualifier: &'i str, name: &'i str, span: Span },
     /// Special compiler intrinsics that accept a type annotation as an argument
     /// these must be handled at the expression parser level because types are not value-level expressions,
@@ -125,7 +141,7 @@ impl<'i> Expression<'i> {
             TokenKind::Char(c) => Ok(Expression::Char(c, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
             TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
-                true => Self::parse_struct(parser, ident, token.span),
+                true => Self::parse_struct(parser, ident, Vec::new(), token.span),
                 false => Ok(Expression::Identifier(ident, token.span)),
             },
             TokenKind::Punct(Punct::Minus)
@@ -168,6 +184,7 @@ impl<'i> Expression<'i> {
     fn parse_struct(
         parser: &mut Parser<'i>,
         name: &'i str,
+        type_args: Vec<Spanned<Type<'i>>>,
         span: Span,
     ) -> Result<Self, ParserError<'i>> {
         parser.expect_token(Punct::OpenBrace)?;
@@ -177,7 +194,7 @@ impl<'i> Expression<'i> {
             let close = parser.expect_token(Punct::CloseBrace)?;
             let span = span + close.span;
 
-            Ok(Expression::Struct { name, fields, span })
+            Ok(Expression::Struct { name, fields, type_args, span })
         };
 
         loop {
@@ -238,6 +255,45 @@ impl<'i> Expression<'i> {
         }
     }
 
+    fn parse_call_args_after_paren(
+        parser: &mut Parser<'i>,
+        fallback_span: Span,
+    ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
+        let mut args = Vec::new();
+        let mut first = true;
+        let end_span;
+
+        loop {
+            let peeked = match parser.peek() {
+                Some(Ok(t)) => t,
+                _ => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, fallback_span));
+                },
+            };
+
+            if matches!(peeked.kind, TokenKind::Punct(Punct::CloseParen)) {
+                end_span = parser.expect_token(Punct::CloseParen)?.span;
+                break;
+            }
+
+            if !first {
+                parser.expect_token(Punct::Comma)?;
+            }
+
+            first = false;
+            args.push(parser.parse_node::<Expression>()?);
+        }
+        Ok((args, end_span))
+    }
+
+    fn parse_call_args(
+        parser: &mut Parser<'i>,
+        fallback_span: Span,
+    ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
+        parser.expect_token(Punct::OpenParen)?;
+        Self::parse_call_args_after_paren(parser, fallback_span)
+    }
+
     fn parse_infix(
         parser: &mut Parser<'i>,
         left: Expression<'i>,
@@ -253,7 +309,58 @@ impl<'i> Expression<'i> {
                 Ok(Expression::Field { expr: Box::new(left), field, span })
             },
             TokenKind::Punct(Punct::ColonColon) => {
+                let is_simple_turbofish =
+                    matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::Lt));
+                if is_simple_turbofish {
+                    parser.expect_token(Punct::Lt)?;
+                    let type_args = statement::parse_generics::<Spanned<Type>>(parser)?;
+                    if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenBrace)) {
+                        let Expression::Identifier(name, ident_span) = left else {
+                            return Err(ParserError::new(
+                                ParseErrorKind::ExpectedExpression { found: token.kind },
+                                token.span,
+                            ));
+                        };
+                        let struct_expr = Self::parse_struct(parser, name, type_args, ident_span)?;
+                        return Ok(struct_expr);
+                    }
+                    let (args, end_span) = Self::parse_call_args(parser, left.span())?;
+                    let span = left.span() + end_span;
+                    return Ok(Expression::Call { callee: Box::new(left), args, type_args, span });
+                }
+
                 let (name, name_span) = parser.expect_identifier()?;
+
+                let mut type_args = Vec::new();
+                let mut has_turbofish = false;
+
+                if let (Some(Ok(t1)), Some(Ok(t2))) = (parser.peek_nth(0), parser.peek_nth(1)) {
+                    if t1.is_kind(Punct::ColonColon) && t2.is_kind(Punct::Lt) {
+                        parser.expect_token(Punct::ColonColon)?;
+                        parser.expect_token(Punct::Lt)?;
+                        has_turbofish = true;
+                        type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
+                    }
+                }
+
+                if has_turbofish {
+                    let (args, end_span) = Self::parse_call_args(parser, left.span())?;
+                    let Expression::Identifier(qualifier, _) = left else {
+                        return Err(ParserError::new(
+                            ParseErrorKind::ExpectedExpression { found: token.kind },
+                            token.span,
+                        ));
+                    };
+                    let span = left.span() + end_span;
+
+                    return Ok(Expression::QualifiedCall {
+                        qualifier,
+                        name,
+                        args,
+                        type_args,
+                        span,
+                    });
+                }
 
                 match parser.peek() {
                     Some(Ok(t)) if t.is_kind(Punct::OpenParen) => {
@@ -278,37 +385,16 @@ impl<'i> Expression<'i> {
                             });
                         }
 
-                        parser.expect_token(Punct::OpenParen)?;
-                        let mut args = Vec::new();
-                        let mut first = true;
-                        let end_span;
-
-                        loop {
-                            let peeked = match parser.peek() {
-                                Some(Ok(t)) => t,
-                                _ => {
-                                    return Err(ParserError::new(
-                                        ParseErrorKind::UnexpectedEof,
-                                        name_span,
-                                    ));
-                                },
-                            };
-
-                            if matches!(peeked.kind, TokenKind::Punct(Punct::CloseParen)) {
-                                end_span = parser.expect_token(Punct::CloseParen)?.span;
-                                break;
-                            }
-
-                            match first {
-                                true => first = false,
-                                _ => _ = parser.expect_token(Punct::Comma)?,
-                            }
-
-                            args.push(parser.parse_node::<Expression>()?);
-                        }
-
+                        let (args, end_span) = Self::parse_call_args(parser, name_span)?;
                         let span = left.span() + end_span;
-                        Ok(Expression::QualifiedCall { qualifier, name, args, span })
+
+                        Ok(Expression::QualifiedCall {
+                            qualifier,
+                            name,
+                            args,
+                            type_args: Vec::new(),
+                            span,
+                        })
                     },
 
                     _ => {
@@ -334,38 +420,9 @@ impl<'i> Expression<'i> {
                     }
                 }
 
-                let mut args = Vec::new();
-                let end_position;
-                let mut first = true;
-
-                loop {
-                    let token = match parser.peek() {
-                        Some(Ok(token)) => token,
-                        _ => {
-                            return Err(ParserError::new(
-                                ParseErrorKind::UnexpectedEof,
-                                token.span,
-                            ));
-                        },
-                    };
-
-                    if matches!(token.kind, TokenKind::Punct(Punct::CloseParen)) {
-                        end_position = parser.expect_token(Punct::CloseParen)?.span.end;
-                        break;
-                    }
-
-                    match first {
-                        true => first = false,
-                        _ => {
-                            parser.expect_token(Punct::Comma)?;
-                        },
-                    };
-
-                    args.push(parser.parse_node::<Expression>()?)
-                }
-
-                let span = Span::new(left.span().start, end_position);
-                Ok(Expression::Call { callee: Box::new(left), args, span })
+                let (args, end_span) = Self::parse_call_args_after_paren(parser, token.span)?;
+                let span = Span::new(left.span().start, end_span.end);
+                Ok(Expression::Call { callee: Box::new(left), args, type_args: Vec::new(), span })
             },
 
             TokenKind::Punct(Punct::Eq) => {
