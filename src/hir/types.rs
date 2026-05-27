@@ -318,6 +318,12 @@ impl Type {
     }
 
     #[inline(always)]
+    pub const fn is_aggregate(self) -> bool {
+        let tag = tag(self.0);
+        tag == STRUCT || tag == STR || tag == STRING
+    }
+
+    #[inline(always)]
     /// returns (size, alignment) of the type
     pub const fn layout(self, structs: &[Option<Struct>]) -> (u32, u32) {
         let tag = tag(self.0);
