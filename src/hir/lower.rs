@@ -223,26 +223,18 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                 Ok((Statement::While { condition, body }, false))
             },
-
             Stmt::Expr(expr, _) => {
-                let hint = match is_tail && self.return_type.kind() != TypeKind::Unit {
-                    true => Some(self.return_type),
-                    _ => None,
-                };
-                let expr = self.lower_expr(expr, hint)?;
+                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
-                match is_tail {
-                    true => match self.return_type.kind() == TypeKind::Unit {
-                        true => Ok((Statement::Expr(expr), false)),
-                        _ => {
-                            self.assert_type(self.return_type, expr.typ, expr.span)?;
-                            Ok((Statement::Return(Some(expr)), true))
-                        },
+                Ok(match tail_ret {
+                    true => {
+                        self.assert_type(self.return_type, expr.typ, expr.span)?;
+                        (Statement::Return(Some(expr)), true)
                     },
-                    _ => Ok((Statement::Expr(expr), false)),
-                }
+                    _ => (Statement::Expr(expr), false),
+                })
             },
-
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
                 Ok((Statement::Block(block), returns))
@@ -873,14 +865,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     },
 
                     Else::Expr(expr) => {
-                        let hint = match is_tail && self.return_type.kind() != TypeKind::Unit {
-                            true => Some(self.return_type),
-                            _ => None,
-                        };
+                        let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                        let hint = tail_ret.then_some(self.return_type);
                         let lowered = self.lower_expr(expr, hint)?;
                         let span = lowered.span;
 
-                        let stmt = match is_tail && self.return_type.kind() != TypeKind::Unit {
+                        let stmt = match tail_ret {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
                                 Statement::Return(Some(lowered))
@@ -888,9 +878,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                             _ => Statement::Expr(lowered),
                         };
 
-                        let returns = is_tail && self.return_type.kind() != TypeKind::Unit;
                         let block = Block { statements: vec![stmt], span };
-                        Ok((Some(block), returns))
+                        Ok((Some(block), tail_ret))
                     },
                 }
             })
