@@ -88,11 +88,35 @@ impl<'f> Lower<'f> {
 
         match &instruction.kind {
             InstructionKind::Assign(op) => {
-                if let TypeKind::Struct(sid) = typ.kind() {
+                if typ.is_aggregate() {
+                    if typ.kind() == TypeKind::Str
+                        && matches!(op, Operand::Const(Const::Str { .. }))
+                    {
+                        let Operand::Const(Const::Str { id: str_id, len }) = op else {
+                            unreachable!()
+                        };
+                        let (bytes, is_float, signed) = (8, false, false);
+
+                        let ptr = self.lir.new_vreg(MachineType::Int { bytes, signed });
+                        let rodata = X86Operand::RipRel(format!(".L_str_{str_id}(%rip)"));
+                        self.lir.push_instr(id, X86Instr::Lea { dest: ptr, src: rodata });
+
+                        let src = X86Operand::VReg(ptr);
+                        let imm = X86Operand::Imm(*len as i64);
+                        self.lir.push_instr(
+                            id,
+                            X86Instr::FieldStore { origin: dest, src, offset: 0, bytes, is_float },
+                        );
+                        #[rustfmt::skip]
+                        self.lir.push_instr(id, X86Instr::FieldStore { origin: dest, src: imm, offset: 8, bytes, is_float });
+
+                        return;
+                    }
+
                     let Operand::Place(src) = op else {
                         unreachable!("aggregate copy source must be a place");
                     };
-                    let size = self.struct_size(sid);
+                    let size = typ.machine_type(self.layouts).stack_size() as u32;
                     let src_vreg = self.vreg(src.id);
 
                     #[rustfmt::skip]
@@ -260,12 +284,12 @@ impl<'f> Lower<'f> {
             },
 
             InstructionKind::FieldLoad { src, offset, typ } => {
-                if let TypeKind::Struct(sid) = typ.kind() {
+                if typ.is_aggregate() {
                     let origin = match src {
                         Operand::Place(p) => self.vreg(p.id),
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
-                    let size = self.struct_size(sid);
+                    let size = typ.machine_type(self.layouts).stack_size() as u32;
                     let is_src_ref = matches!(src.typ().kind(), TypeKind::Ref { .. });
 
                     return aggregate_copy(
@@ -304,11 +328,11 @@ impl<'f> Lower<'f> {
             },
 
             InstructionKind::FieldStore { value, offset } => {
-                if let TypeKind::Struct(sid) = value.typ().kind() {
+                if value.typ().is_aggregate() {
                     let Operand::Place(src) = value else {
                         unreachable!("aggregate field store source must be a place");
                     };
-                    let size = self.struct_size(sid);
+                    let size = value.typ().machine_type(self.layouts).stack_size() as u32;
                     let src_vreg = self.vreg(src.id);
 
                     return aggregate_copy(
@@ -364,28 +388,14 @@ impl<'f> Lower<'f> {
                     .find(|f| f.id == callee_id)
                     .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
 
-                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
-                    let receiver_vreg = self.operand(&args[0], id);
-                    let str_ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-                    self.lir.push_instr(
-                        id,
-                        X86Instr::PtrLoad { dest: str_ptr, ptr: receiver_vreg, offset: 0, bytes: 8, is_float: false }
-                    );
-                    let arg_reg = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-                    self.lir.add_precolour(arg_reg, X86Reg::Rdi);
-                    self.lir.push_instr(id, X86Instr::Mov { dest: arg_reg, src: X86Operand::VReg(str_ptr), bytes: 8 });
+                let (bytes, signed, is_float) = (8, false, false);
 
-                    self.lir.push_instr(
+                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
+                    let ptr = self.operand(&args[0], id);
+                    return self.lir.push_instr(
                         id,
-                        X86Instr::call(
-                            "__nyx_strlen".to_string(),
-                            vec![(arg_reg, X86Reg::Rdi)],
-                            vec![],
-                            Some(dest),
-                            vec![]
-                        )
+                        X86Instr::PtrLoad { dest, ptr, offset: 8, bytes, is_float },
                     );
-                    return;
                 }
 
                 let callee = self
@@ -400,12 +410,12 @@ impl<'f> Lower<'f> {
                 let mut float_idx = 0;
 
                 let return_type = callee_fn.return_type;
-                let aggregate_ret = match return_type.kind() {
-                    TypeKind::Struct(sid) => self.small_integer_return(sid).unwrap_or_default(),
+                let aggregate_ret = match return_type.is_aggregate() {
+                    true => self.small_integer_return(return_type).unwrap_or_default(),
                     _ => Vec::new(),
                 };
 
-                if matches!(return_type.kind(), TypeKind::Struct(_)) && aggregate_ret.is_empty() {
+                if return_type.is_aggregate() && aggregate_ret.is_empty() {
                     let ptr = self.stack_addr(id, dest);
                     let abi_reg = X86_64::param(int_idx, RegClass::Int)
                         .expect("sret pointer must fit in the first integer argument register");
@@ -414,18 +424,47 @@ impl<'f> Lower<'f> {
                 }
 
                 for arg in args {
-                    if let TypeKind::Struct(_) = arg.typ().kind() {
-                        let Operand::Place(place) = arg else {
-                            unreachable!("aggregate argument source must be a place");
+                    if arg.typ().is_aggregate() {
+                        let ptr = match arg {
+                            Operand::Place(place) => self.stack_addr(id, self.vreg(place.id)),
+                            Operand::Const(Const::Str { id: str_id, len }) => {
+                                let origin =
+                                    self.lir.new_vreg(MachineType::Struct { size: 16, align: 8 });
+                                let ptr = self.lir.new_vreg(MachineType::Int { bytes, signed });
+                                let label = X86Operand::RipRel(format!(".L_str_{str_id}(%rip)"));
+
+                                self.lir.push_instr(id, X86Instr::Lea { dest: ptr, src: label });
+                                self.lir.push_instr(
+                                    id,
+                                    X86Instr::FieldStore {
+                                        origin,
+                                        src: X86Operand::VReg(ptr),
+                                        offset: 0,
+                                        bytes,
+                                        is_float,
+                                    },
+                                );
+
+                                let src = X86Operand::Imm(*len as i64);
+                                self.lir.push_instr(
+                                    id,
+                                    X86Instr::FieldStore {
+                                        origin,
+                                        src,
+                                        offset: 8,
+                                        bytes,
+                                        is_float,
+                                    },
+                                );
+                                self.stack_addr(id, origin)
+                            },
+                            _ => unreachable!("invalid aggregate argument"),
                         };
-                        let ptr = self.stack_addr(id, self.vreg(place.id));
 
                         match X86_64::param(int_idx, RegClass::Int) {
                             Some(abi_reg) => moves.push((ptr, abi_reg)),
-                            None => stack_args.push((
-                                X86Operand::VReg(ptr),
-                                MachineType::Int { bytes: 8, signed: false },
-                            )),
+                            None => stack_args
+                                .push((X86Operand::VReg(ptr), MachineType::Int { bytes, signed })),
                         }
 
                         int_idx += 1;
@@ -470,9 +509,8 @@ impl<'f> Lower<'f> {
                     }
                 }
 
-                let ret = (return_type.kind() != TypeKind::Unit
-                    && !matches!(return_type.kind(), TypeKind::Struct(_)))
-                .then_some(dest);
+                let ret = (return_type.kind() != TypeKind::Unit && !return_type.is_aggregate())
+                    .then_some(dest);
                 let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
                 for &(_, bytes, reg) in &aggregate_ret {
                     let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
@@ -599,17 +637,15 @@ impl<'f> Lower<'f> {
 
         let terminator = match terminator {
             T::Return(None) => Term::Return(None),
-            T::Return(Some(operand)) if matches!(operand.typ().kind(), TypeKind::Struct(_)) => {
-                let TypeKind::Struct(sid) = operand.typ().kind() else {
-                    unreachable!("checked above");
-                };
+            T::Return(Some(operand)) if operand.typ().is_aggregate() => {
+                let typ = operand.typ();
                 let Operand::Place(place) = operand else {
                     unreachable!("aggregate return source must be a place");
                 };
 
                 let src_vreg = self.vreg(place.id);
 
-                match self.small_integer_return(sid) {
+                match self.small_integer_return(typ) {
                     Some(chunks) => {
                         for (offset, bytes, reg) in chunks {
                             let ret = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
@@ -624,7 +660,7 @@ impl<'f> Lower<'f> {
                         let sret_ptr = self
                             .sret_ptr
                             .expect("struct-returning function must have an sret pointer");
-                        let size = self.struct_size(sid);
+                        let size = typ.machine_type(self.layouts).stack_size() as u32;
 
                         #[rustfmt::skip]
                         aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
@@ -662,8 +698,9 @@ impl<'f> Lower<'f> {
         let mut int_stack_idx = 0;
         let mut float_stack_idx = 0;
 
-        if let TypeKind::Struct(sid) = self.function.return_type.kind() {
-            if self.small_integer_return(sid).is_some() {
+        let return_type = self.function.return_type;
+        if return_type.is_aggregate() {
+            if self.small_integer_return(return_type).is_some() {
                 // Small integer aggregates are returned directly in RAX/RDX.
             } else {
                 let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
@@ -676,7 +713,7 @@ impl<'f> Lower<'f> {
         }
 
         for (vid, typ) in &self.function.params {
-            if let TypeKind::Struct(sid) = typ.kind() {
+            if typ.is_aggregate() {
                 let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
 
                 match X86_64::param(int_idx, RegClass::Int) {
@@ -692,7 +729,7 @@ impl<'f> Lower<'f> {
                     },
                 }
 
-                let size = self.struct_size(sid);
+                let size = typ.machine_type(self.layouts).stack_size() as u32;
                 let dest = self.vreg(*vid);
                 aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest, 0, 0, size);
                 int_idx += 1;
@@ -795,10 +832,13 @@ impl<'f> Lower<'f> {
         dest
     }
 
-    fn small_integer_return(&self, sid: hir::StructId) -> Option<Vec<(i32, u8, X86Reg)>> {
-        let layout = self.layouts[sid.0 as usize];
-        let (size, _) = layout.into();
-        if size == 0 || size > 16 || layout.contains_float() {
+    fn small_integer_return(&self, typ: hir::Type) -> Option<Vec<(i32, u8, X86Reg)>> {
+        let size = typ.machine_type(self.layouts).stack_size() as u32;
+        let contains_float = match typ.kind() {
+            TypeKind::Struct(sid) => self.layouts[sid.0 as usize].contains_float(),
+            _ => false,
+        };
+        if size == 0 || size > 16 || contains_float {
             return None;
         }
 
@@ -809,11 +849,6 @@ impl<'f> Lower<'f> {
                 .map(|((offset, bytes), reg)| (offset, bytes, reg))
                 .collect(),
         )
-    }
-
-    fn struct_size(&self, sid: crate::hir::StructId) -> u32 {
-        let (size, _) = self.layouts[sid.0 as usize].into();
-        size
     }
 
     /// materialise a `MIR` operand into a new VReg if it's a constant

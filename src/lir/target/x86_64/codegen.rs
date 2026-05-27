@@ -78,19 +78,6 @@ impl Emittable<X86_64> for Function<X86_64> {
         emit(X86Instr::SUB);
         emit(X86Instr::MUL);
     }
-
-    fn emit_strlen(out: &mut String) {
-        label!(out, ".globl __nyx_strlen");
-        label!(out, "__nyx_strlen:");
-        emit!(out, "xorq    %rax, %rax");
-        label!(out, ".L_strlen_loop:");
-        emit!(out, "cmpb    $0, (%rdi,%rax)");
-        emit!(out, "je      .L_strlen_done");
-        emit!(out, "incq    %rax");
-        emit!(out, "jmp     .L_strlen_loop");
-        label!(out, ".L_strlen_done:");
-        emit!(out, "ret");
-    }
 }
 
 impl Function<X86_64> {
@@ -203,14 +190,26 @@ impl Function<X86_64> {
                 let dest = alloc.location(dest, &8);
                 let src = self.operand(alloc, src, &8);
 
-                emit!(out, "leaq   {src}, {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        emit!(out, "leaq   {src}, %r11");
+                        emit!(out, "movq   %r11, {dest}");
+                    },
+                    _ => emit!(out, "leaq   {src}, {dest}"),
+                }
             },
 
             Inst::StackAddr { dest, origin } => {
                 let dest = alloc.location(dest, &8);
                 let offset = alloc.struct_offset(origin);
 
-                emit!(out, "leaq   {offset}(%rbp), {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        emit!(out, "leaq   {offset}(%rbp), %r11");
+                        emit!(out, "movq   %r11, {dest}");
+                    },
+                    _ => emit!(out, "leaq   {offset}(%rbp), {dest}"),
+                }
             },
 
             Inst::Movzx { dest, src, src_bytes, dest_bytes } => {
