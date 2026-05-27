@@ -219,17 +219,11 @@ pub enum UseItems<'i> {
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 #[non_exhaustive]
+#[rustfmt::skip]
 pub enum Type<'i> {
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
+    I8, U8, I16, U16,
+    I32, U32, I64, U64,
+    F32, F64,
     Bool,
     /// pointer-sized signed integer
     Uptr,
@@ -242,8 +236,7 @@ pub enum Type<'i> {
     /// owned heap string
     String,
     Named(&'i str),
-    SelfType,
-    RefSelf,
+    SelfType, RefSelf,
     Ref(Box<Type<'i>>),
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     #[allow(dead_code)]
@@ -290,9 +283,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
-                    Some(Ok(token))
-                        if token.is_kind(Punct::CloseBrace) | token.is_kind(TokenKind::Eof) =>
-                    {
+                    Some(Ok(t)) if t.is_kind(Punct::CloseBrace) | t.is_kind(TokenKind::Eof) => {
                         expr.span().end
                     },
                     Some(Err(err)) => return Err(err.into()),
@@ -306,58 +297,6 @@ impl<'i> Parsable<'i> for Statement<'i> {
 
                 Ok(Statement::Expr(expr, span))
             },
-        }
-    }
-}
-
-impl<'i> Type<'i> {
-    pub fn from_str(name: &'i str) -> Option<Self> {
-        match name {
-            "i8" => Some(Type::I8),
-            "i16" => Some(Type::I16),
-            "i32" => Some(Type::I32),
-            "i64" => Some(Type::I64),
-            "u8" => Some(Type::U8),
-            "u16" => Some(Type::U16),
-            "u32" => Some(Type::U32),
-            "u64" => Some(Type::U64),
-            "f32" => Some(Type::F32),
-            "f64" => Some(Type::F64),
-            "uptr" => Some(Type::Uptr),
-            "iptr" => Some(Type::Iptr),
-            "bool" => Some(Type::Bool),
-            "char" => Some(Type::Char),
-            "String" => Some(Type::String),
-            "str" => Some(Type::Str),
-            "Self" => Some(Type::SelfType),
-            _ => None,
-        }
-    }
-
-    pub fn base_name(&self) -> Option<&'i str> {
-        match self {
-            Type::Named(name) => Some(name),
-            Type::Generic(name, _) => Some(name),
-            Type::I8 => Some("i8"),
-            Type::I16 => Some("i16"),
-            Type::I32 => Some("i32"),
-            Type::I64 => Some("i64"),
-            Type::U8 => Some("u8"),
-            Type::U16 => Some("u16"),
-            Type::U32 => Some("u32"),
-            Type::U64 => Some("u64"),
-            Type::F32 => Some("f32"),
-            Type::F64 => Some("f64"),
-            Type::Bool => Some("bool"),
-            Type::Char => Some("char"),
-            Type::Uptr => Some("uptr"),
-            Type::Iptr => Some("iptr"),
-            Type::Str => Some("str"),
-            Type::String => Some("String"),
-            Type::SelfType => Some("Self"),
-            Type::RefSelf => Some("Self"),
-            Type::Ref(inner) => inner.base_name(),
-            Type::Unit => Some("unit"),
         }
     }
 }
@@ -392,14 +331,13 @@ impl<'i> Spanned<Type<'i>> {
                     break;
                 }
             }
+
             type_span = span + parser.last_span().unwrap_or(span);
         }
 
-        let value = if !generic_args.is_empty() {
-            Type::Generic(name, generic_args)
-        } else {
-            Type::from_str(name).unwrap_or(Type::Named(name))
-        };
+        let value = (!generic_args.is_empty())
+            .then(|| Type::Generic(name, generic_args))
+            .unwrap_or_else(|| Type::from_str(name).unwrap_or(Type::Named(name)));
 
         Ok(Self::new(value, type_span))
     }
@@ -636,7 +574,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
         let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
 
         let receiver = Spanned::<Type>::parse(parser)?;
-        let name = receiver.value().base_name().ok_or_else(|| {
+        let name = receiver.value().name().ok_or_else(|| {
             ParserError::new(
                 ParseErrorKind::ExpectedTypeIdentifier { found: format!("{:?}", receiver.value()) },
                 receiver.span(),
@@ -647,7 +585,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
         let mut interface = None;
         if parser.consume_keyword(Keyword::With)? {
             let parsed_interface = Spanned::<Type>::parse(parser)?;
-            let interface_name = parsed_interface.value().base_name().ok_or_else(|| {
+            let interface_name = parsed_interface.value().name().ok_or_else(|| {
                 ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
                         found: format!("{:?}", parsed_interface.value()),
@@ -855,10 +793,11 @@ impl<'i> Parsable<'i> for Enum<'i> {
             variants.push(EnumVariant { name: variant_name, value, span });
         }
 
-        let repr = match parser.consume_keyword(Keyword::As)? {
-            true => parser.parse_node::<Spanned<Type<'i>>>()?,
-            false => Spanned::new(Type::I32, enum_token.span),
-        };
+        let repr = parser
+            .consume_keyword(Keyword::As)?
+            .then(|| parser.parse_node())
+            .transpose()?
+            .unwrap_or_else(|| Spanned::new(Type::I32, enum_token.span));
         let span = enum_token.span + repr.span();
 
         Ok(Self { name, variants, repr, is_pub, span })
@@ -951,10 +890,8 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             }
         }
 
-        let return_type = match parser.consume_punct(Punct::Colon)? {
-            true => Some(parser.parse_node()?),
-            _ => None,
-        };
+        let return_type =
+            parser.consume_punct(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
 
         let (body, span) = match parser.consume_punct(Punct::Semicolon)? {
             true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
@@ -1219,6 +1156,58 @@ impl<'s> Statement<'s> {
             Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
+        }
+    }
+}
+
+impl<'i> Type<'i> {
+    pub fn from_str(name: &'i str) -> Option<Self> {
+        match name {
+            "i8" => Some(Type::I8),
+            "i16" => Some(Type::I16),
+            "i32" => Some(Type::I32),
+            "i64" => Some(Type::I64),
+            "u8" => Some(Type::U8),
+            "u16" => Some(Type::U16),
+            "u32" => Some(Type::U32),
+            "u64" => Some(Type::U64),
+            "f32" => Some(Type::F32),
+            "f64" => Some(Type::F64),
+            "uptr" => Some(Type::Uptr),
+            "iptr" => Some(Type::Iptr),
+            "bool" => Some(Type::Bool),
+            "char" => Some(Type::Char),
+            "String" => Some(Type::String),
+            "str" => Some(Type::Str),
+            "Self" => Some(Type::SelfType),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> Option<&'i str> {
+        match self {
+            Type::Named(name) => Some(name),
+            Type::Generic(name, _) => Some(name),
+            Type::I8 => Some("i8"),
+            Type::I16 => Some("i16"),
+            Type::I32 => Some("i32"),
+            Type::I64 => Some("i64"),
+            Type::U8 => Some("u8"),
+            Type::U16 => Some("u16"),
+            Type::U32 => Some("u32"),
+            Type::U64 => Some("u64"),
+            Type::F32 => Some("f32"),
+            Type::F64 => Some("f64"),
+            Type::Bool => Some("bool"),
+            Type::Char => Some("char"),
+            Type::Uptr => Some("uptr"),
+            Type::Iptr => Some("iptr"),
+            Type::Str => Some("str"),
+            Type::String => Some("String"),
+            Type::SelfType => Some("Self"),
+            Type::RefSelf => Some("Self"),
+            Type::Ref(inner) => inner.name(),
+            Type::Unit => Some("unit"),
         }
     }
 }

@@ -17,6 +17,7 @@ pub mod error;
 pub mod expression;
 pub mod statement;
 pub mod visitor;
+pub mod monomorphize;
 
 /// Recursive-descent parser.
 pub struct Parser<'i> {

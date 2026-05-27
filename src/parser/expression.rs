@@ -309,105 +309,92 @@ impl<'i> Expression<'i> {
                 Ok(Expression::Field { expr: Box::new(left), field, span })
             },
             TokenKind::Punct(Punct::ColonColon) => {
-                let is_simple_turbofish =
-                    matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::Lt));
-                if is_simple_turbofish {
+                let invalid_expr = || {
+                    ParserError::new(
+                        ParseErrorKind::ExpectedExpression { found: token.kind },
+                        token.span,
+                    )
+                };
+
+                // turbofish on `left` (e.g., `left::<T>`)
+                if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::Lt)) {
                     parser.expect_token(Punct::Lt)?;
-                    let type_args = statement::parse_generics::<Spanned<Type>>(parser)?;
+                    let type_args = statement::parse_generics(parser)?;
+
+                    // struct literal (e.g., `SomeStruct::<T> { ... }`)
                     if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenBrace)) {
                         let Expression::Identifier(name, ident_span) = left else {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedExpression { found: token.kind },
-                                token.span,
-                            ));
+                            return Err(invalid_expr());
                         };
-                        let struct_expr = Self::parse_struct(parser, name, type_args, ident_span)?;
-                        return Ok(struct_expr);
+
+                        return Self::parse_struct(parser, name, type_args, ident_span);
                     }
+
+                    // generic function call (e.g., `foo::<T>()`)
                     let (args, end_span) = Self::parse_call_args(parser, left.span())?;
-                    let span = left.span() + end_span;
-                    return Ok(Expression::Call { callee: Box::new(left), args, type_args, span });
+                    return Ok(Expression::Call {
+                        span: left.span() + end_span,
+                        callee: Box::new(left),
+                        args,
+                        type_args,
+                    });
                 }
 
+                // path / associated item access (e.g., `left::name...`)
+                let Expression::Identifier(qualifier, _) = left else {
+                    return Err(invalid_expr());
+                };
                 let (name, name_span) = parser.expect_identifier()?;
 
-                let mut type_args = Vec::new();
-                let mut has_turbofish = false;
+                // check for trailing turbofish (e.g., `:: <`)
+                let has_turbofish = matches!(
+                    (parser.peek_nth(0), parser.peek_nth(1)),
+                    (Some(Ok(t1)), Some(Ok(t2))) if t1.is_kind(Punct::ColonColon) && t2.is_kind(Punct::Lt)
+                );
 
-                if let (Some(Ok(t1)), Some(Ok(t2))) = (parser.peek_nth(0), parser.peek_nth(1)) {
-                    if t1.is_kind(Punct::ColonColon) && t2.is_kind(Punct::Lt) {
-                        parser.expect_token(Punct::ColonColon)?;
-                        parser.expect_token(Punct::Lt)?;
-                        has_turbofish = true;
-                        type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
-                    }
-                }
-
+                //associated call with turbofish (e.g., `container::method::<T>()`)
                 if has_turbofish {
-                    let (args, end_span) = Self::parse_call_args(parser, left.span())?;
-                    let Expression::Identifier(qualifier, _) = left else {
-                        return Err(ParserError::new(
-                            ParseErrorKind::ExpectedExpression { found: token.kind },
-                            token.span,
-                        ));
-                    };
-                    let span = left.span() + end_span;
+                    parser.expect_token(Punct::ColonColon)?;
+                    parser.expect_token(Punct::Lt)?;
+                    let type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
 
+                    let (args, end_span) = Self::parse_call_args(parser, left.span())?;
                     return Ok(Expression::QualifiedCall {
+                        span: left.span() + end_span,
                         qualifier,
                         name,
                         args,
                         type_args,
-                        span,
                     });
                 }
 
-                match parser.peek() {
-                    Some(Ok(t)) if t.is_kind(Punct::OpenParen) => {
-                        let Expression::Identifier(qualifier, _) = left else {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedExpression { found: token.kind },
-                                token.span,
-                            ));
-                        };
+                // methods, intrinsic types, or functions (e.g., `Container::method()`)
+                if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenParen)) {
+                    if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
+                        parser.expect_token(Punct::OpenParen)?;
+                        let typ = Spanned::<Type>::parse(parser)?;
+                        let end_span = parser.expect_token(Punct::CloseParen)?.span;
 
-                        if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
-                            parser.expect_token(Punct::OpenParen)?;
-                            let typ = Spanned::<Type>::parse(parser)?;
-                            let end_span = parser.expect_token(Punct::CloseParen)?.span;
-                            let span = left.span() + end_span;
+                        return Ok(Expression::TypeIntrinsic {
+                            kind,
+                            qualifier: Some(qualifier),
+                            typ,
+                            span: left.span() + end_span,
+                        });
+                    }
 
-                            return Ok(Expression::TypeIntrinsic {
-                                kind,
-                                qualifier: Some(qualifier),
-                                typ,
-                                span,
-                            });
-                        }
-
-                        let (args, end_span) = Self::parse_call_args(parser, name_span)?;
-                        let span = left.span() + end_span;
-
-                        Ok(Expression::QualifiedCall {
-                            qualifier,
-                            name,
-                            args,
-                            type_args: Vec::new(),
-                            span,
-                        })
-                    },
-
-                    _ => {
-                        let Expression::Identifier(qualifier, _) = left else {
-                            return Err(ParserError::new(
-                                ParseErrorKind::ExpectedExpression { found: token.kind },
-                                token.span,
-                            ));
-                        };
-                        let span = left.span() + name_span;
-                        Ok(Expression::QualifiedName { qualifier, name, span })
-                    },
+                    let (args, end_span) = Self::parse_call_args(parser, name_span)?;
+                    return Ok(Expression::QualifiedCall {
+                        span: left.span() + end_span,
+                        qualifier,
+                        name,
+                        args,
+                        type_args: Vec::new(),
+                    });
                 }
+
+                // plain associated path / variable (e.g., `Container::CONSTANT`)
+                Ok(Expression::QualifiedName { span: left.span() + name_span, qualifier, name })
             },
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left {
