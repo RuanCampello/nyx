@@ -114,7 +114,6 @@ where
     }
 
     Function::<T>::emit_panic_handlers(&mut out);
-    Function::<T>::emit_strlen(&mut out);
 
     // emit a `_start` trampoline if the program defines `fn main`
     //
@@ -301,9 +300,11 @@ impl Type {
             TypeKind::I32 => MachineType::Int { bytes: 4, signed: true },
             TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
             TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
-            TypeKind::U64 | TypeKind::Uptr | TypeKind::Str | TypeKind::String | TypeKind::Ref { .. } => {
+            TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } => {
                 MachineType::Int { bytes: 8, signed: false, }
             }
+            TypeKind::Str => MachineType::Struct { size: 16, align: 8 },
+            TypeKind::String => MachineType::Struct { size: 24, align: 8 },
             TypeKind::F32 => MachineType::Float { bytes: 4 },
             TypeKind::F64 => MachineType::Float { bytes: 8 },
             TypeKind::Struct(id) => {

@@ -325,7 +325,9 @@ impl Type {
             I8 | U8 | BOOL => (1, 1),
             I16 | U16 => (2, 2),
             I32 | U32 | F32 | CHAR => (4, 4),
-            I64 | U64 | IPTR | UPTR | STR | STRING | REF | F64 => (8, 8),
+            I64 | U64 | IPTR | UPTR | REF | F64 => (8, 8),
+            STR => (16, 8),
+            STRING => (24, 8),
             UNIT => (0, 1),
 
             STRUCT => {
