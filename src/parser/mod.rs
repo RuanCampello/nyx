@@ -4,24 +4,24 @@ use crate::{
     lexer::{
         HasSpan, Lexer,
         error::LexError,
-        token::{Keyword, Punct, Span, Token, TokenKind},
+        token::{Keyword, Position, Punct, Span, Token, TokenKind},
     },
     parser::{
         error::{ParseErrorKind, ParserError},
         statement::Statement,
     },
 };
-use std::iter::Peekable;
+use std::collections::VecDeque;
 
 pub mod error;
 pub mod expression;
 pub mod statement;
 pub mod visitor;
-pub mod monomorphize;
 
 /// Recursive-descent parser.
 pub struct Parser<'i> {
-    cursor: Peekable<Lexer<'i>>,
+    cursor: Lexer<'i>,
+    buffer: VecDeque<Result<Token<'i>, LexError<'i>>>,
     /// Most recently used consumed token, used to place EOF diagnostics.
     last: Option<Span>,
 }
@@ -32,7 +32,11 @@ pub trait Parsable<'i>: Sized {
 
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
-        Self { cursor: Lexer::new(source).peekable(), last: None }
+        Self {
+            cursor: Lexer::new(source),
+            buffer: VecDeque::with_capacity(4),
+            last: None,
+        }
     }
 
     pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError<'i>> {
@@ -55,18 +59,32 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
-    pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError>> {
-        self.cursor.peek()
+    pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError<'i>>> {
+        if self.buffer.is_empty() {
+            if let Some(t) = self.cursor.next() {
+                self.buffer.push_back(t);
+            }
+        }
+
+        self.buffer.front()
     }
 
     #[inline(always)]
-    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
-        self.cursor.clone().nth(n)
+    pub fn peek_nth(&mut self, n: usize) -> Option<Result<Token<'i>, LexError<'i>>> {
+        while self.buffer.len() <= n {
+            match self.cursor.next() {
+                Some(t) => self.buffer.push_back(t),
+                None => break,
+            }
+        }
+
+        self.buffer.get(n).copied()
     }
 
     #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
-        match self.cursor.next() {
+        let token = self.buffer.pop_front().or_else(|| self.cursor.next());
+        match token {
             Some(Ok(token)) => {
                 self.last = Some(token.span);
                 Ok(Some(token))
@@ -141,6 +159,37 @@ impl<'i> Parser<'i> {
         self.consume_token(TokenKind::Punct(punct))
     }
 
+    /// Consume a closing `>` for a generic argument list, splitting a `>>` (Shr) if necessary.
+    ///
+    /// Nested generics like `PartialEq<T>` produce a `>>` token at the boundary
+    /// of the outer list. Rather than teaching the lexer about generic context,
+    /// we split it here: consume `>>`, push the trailing `>` back into the
+    /// buffer, and report success.
+    pub(crate) fn consume_generic_close(&mut self) -> Result<bool, ParserError<'i>> {
+        match self.peek() {
+            Some(Ok(t)) if t.is_kind(Punct::Gt) => {
+                self.next_token()?;
+                Ok(true)
+            },
+            Some(Ok(t)) if t.is_kind(Punct::Shr) => {
+                let shr = self.next_token()?.unwrap();
+                // Split >>: push back a synthetic > for the second character
+                let mid = Position::new(
+                    shr.span.start.offset + 1,
+                    shr.span.start.line,
+                    shr.span.start.column + 1,
+                );
+                self.buffer.push_front(Ok(Token {
+                    kind: TokenKind::Punct(Punct::Gt),
+                    span: Span::new(mid, shr.span.end),
+                }));
+                Ok(true)
+            },
+            Some(Err(err)) => Err(err.into()),
+            _ => Ok(false),
+        }
+    }
+
     fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.is_kind(kind) => {
@@ -152,33 +201,7 @@ impl<'i> Parser<'i> {
         }
     }
 
-    // FIXME: refactor out those 'is_pub_*' fn and remove peek_nth
-    // I should be able to do this with a simple match after reading a 'pub' keyword
-    // the problem is that we would have to find another way to indicate
-    // to the parser that the final item is public given that we've already consumed the keyword
-
-    pub(crate) fn is_pub_struct(&self) -> bool {
-        matches!(
-            self.peek_nth(1),
-            Some(Ok(t)) if t.is_kind(Keyword::Struct)
-        )
-    }
-
-    pub(crate) fn is_pub_enum(&self) -> bool {
-        matches!(
-            self.peek_nth(1),
-            Some(Ok(t)) if t.is_kind(Keyword::Enum)
-        )
-    }
-
-    pub(crate) fn is_pub_interface(&self) -> bool {
-        matches!(
-            self.peek_nth(1),
-            Some(Ok(t)) if t.is_kind(Keyword::Interface)
-        )
-    }
-
-    pub(crate) fn is_const_decl(&self) -> bool {
+    pub(crate) fn is_const_decl(&mut self) -> bool {
         match self.peek_nth(0) {
             Some(Ok(t)) if t.is_kind(Keyword::Const) => {
                 matches!(

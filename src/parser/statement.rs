@@ -269,15 +269,38 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Interface) => {
                 Ok(Statement::Interface(parser.parse_node()?))
             },
-            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_struct() => {
-                Ok(Statement::Struct(parser.parse_node()?))
+
+            TokenKind::Keyword(Keyword::Pub) => {
+                let next_token = match parser.peek_nth(1) {
+                    Some(Ok(t)) => t,
+                    Some(Err(e)) => return Err((&e).into()),
+                    None => {
+                        return Err(ParserError::new(
+                            ParseErrorKind::UnexpectedEof,
+                            Span::default(),
+                        ));
+                    },
+                };
+
+                Ok(match next_token.kind {
+                    TokenKind::Keyword(Keyword::Struct) => Statement::Struct(parser.parse_node()?),
+                    TokenKind::Keyword(Keyword::Enum) => Statement::Enum(parser.parse_node()?),
+                    TokenKind::Keyword(Keyword::Interface) => {
+                        Statement::Interface(parser.parse_node()?)
+                    },
+                    _ if next_token.is_fn_start() => Statement::Fn(parser.parse_node()?),
+                    found_kind => {
+                        return Err(ParserError::new(
+                            ParseErrorKind::Expected {
+                                expected: TokenKind::Keyword(Keyword::Fn),
+                                found: found_kind,
+                            },
+                            next_token.span,
+                        ));
+                    },
+                })
             },
-            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_enum() => {
-                Ok(Statement::Enum(parser.parse_node()?))
-            },
-            TokenKind::Keyword(Keyword::Pub) if parser.is_pub_interface() => {
-                Ok(Statement::Interface(parser.parse_node()?))
-            },
+
             TokenKind::Keyword(_) if is_fn_start => Ok(Statement::Fn(parser.parse_node()?)),
             TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
@@ -323,11 +346,11 @@ impl<'i> Spanned<Type<'i>> {
             loop {
                 let arg = parser.parse_node::<Spanned<Type<'i>>>()?;
                 generic_args.push(arg);
-                if parser.consume_punct(Punct::Gt)? {
+                if parser.consume_generic_close()? {
                     break;
                 }
                 parser.expect_token(Punct::Comma)?;
-                if parser.consume_punct(Punct::Gt)? {
+                if parser.consume_generic_close()? {
                     break;
                 }
             }
@@ -368,9 +391,9 @@ impl<'i> Parsable<'i> for Let<'i> {
 
 impl<'i> Parsable<'i> for Const<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let start_span = match parser.peek_nth(0) {
+        let start_span = match parser.peek() {
             Some(Ok(token)) => token.span,
-            Some(Err(err)) => return Err((&err).into()),
+            Some(Err(err)) => return Err(err.into()),
             None => {
                 return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             },
@@ -1122,11 +1145,11 @@ pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
     if parser.consume_punct(Punct::Lt)? {
         loop {
             items.push(parser.parse_node::<T>()?);
-            if parser.consume_punct(Punct::Gt)? {
+            if parser.consume_generic_close()? {
                 break;
             }
             parser.expect_token(Punct::Comma)?;
-            if parser.consume_punct(Punct::Gt)? {
+            if parser.consume_generic_close()? {
                 break;
             }
         }

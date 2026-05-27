@@ -559,7 +559,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Expression { kind, typ, span: *span })
             },
 
-            Expr::Struct { name, fields, span } => {
+            Expr::Struct { name, fields, span, type_args } => {
                 let symbol = self.symbols.insert(name);
                 let id = self
                     .scope
@@ -625,7 +625,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })
             },
 
-            Expr::Call { callee, args, span } => {
+            Expr::Call { callee, args, span, type_args } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let (local, fields, receiver_expr, receiver_type) =
                         match self.resolve_access_chain(receiver, *span) {
@@ -732,7 +732,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.lower_direct_call(function_id, args, *span)
             },
 
-            Expr::QualifiedCall { qualifier, name, args, span } => {
+            Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 

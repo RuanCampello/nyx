@@ -483,6 +483,7 @@ impl From<&statement::Type<'_>> for Type {
                 TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
             },
             AstType::Named(_) => unreachable!("already resolved by resolve_type"),
+            _ => unimplemented!(),
         };
         Type::new(kind)
     }

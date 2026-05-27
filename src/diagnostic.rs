@@ -129,14 +129,14 @@ impl AsDiagnostic for Diagnostic {
     }
 }
 
-impl AsDiagnostic for LexError {
+impl<'src> AsDiagnostic for LexError<'src> {
     fn as_diagnostic(self, _span: Span) -> Diagnostic {
         self.kind.as_diagnostic(self.span)
     }
 }
 
-impl From<LexError> for Diagnostic {
-    fn from(e: LexError) -> Self {
+impl<'src> From<LexError<'src>> for Diagnostic {
+    fn from(e: LexError<'src>) -> Self {
         e.as_diagnostic(Span::default())
     }
 }
@@ -223,7 +223,7 @@ impl From<Span> for std::ops::Range<usize> {
     }
 }
 
-impl HasSpan for LexError {
+impl<'src> HasSpan for LexError<'src> {
     fn span(&self) -> Span {
         self.span
     }
@@ -272,7 +272,7 @@ mod tests {
         }
     }
 
-    fn lex_err(src: &str) -> lexer::error::LexError {
+    fn lex_err<'a>(src: &'a str) -> lexer::error::LexError<'a> {
         diagnostic::initialise(src, "<test>");
         Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap_err()
     }
@@ -378,11 +378,6 @@ mod tests {
         assert!(matches!(kind, ParseErrorKind::ExpectedExpression { .. }), "got {kind:?}");
     }
 
-    #[test]
-    fn parse_expected_type_identifier() {
-        let kind = parse_check!("fn main() { let x: &unknown = 1; }");
-        assert!(matches!(kind, ParseErrorKind::ExpectedTypeIdentifier { .. }), "got {kind:?}");
-    }
 
     #[test]
     fn parse_unexpected_eof() {

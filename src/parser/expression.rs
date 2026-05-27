@@ -318,7 +318,6 @@ impl<'i> Expression<'i> {
 
                 // turbofish on `left` (e.g., `left::<T>`)
                 if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::Lt)) {
-                    parser.expect_token(Punct::Lt)?;
                     let type_args = statement::parse_generics(parser)?;
 
                     // struct literal (e.g., `SomeStruct::<T> { ... }`)
@@ -355,7 +354,6 @@ impl<'i> Expression<'i> {
                 //associated call with turbofish (e.g., `container::method::<T>()`)
                 if has_turbofish {
                     parser.expect_token(Punct::ColonColon)?;
-                    parser.expect_token(Punct::Lt)?;
                     let type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
 
                     let (args, end_span) = Self::parse_call_args(parser, left.span())?;
@@ -476,8 +474,6 @@ impl<'i> Expression<'i> {
         }
     }
 
-    // FIXME: I wanna find a way of make this without having to clone
-    // the entire lexer, I don't know if it's possible but will dive into this later
     fn next_is_struct(parser: &mut Parser<'i>) -> bool {
         matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
             && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
