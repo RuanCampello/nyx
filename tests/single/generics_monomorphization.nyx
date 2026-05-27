@@ -1,0 +1,29 @@
+use std::panic;
+use std::cmp::{PartialEq};
+
+struct Box<T> {
+    val: T,
+}
+
+impl<T> Box<T> {
+    fn get(&self): T {
+        self.val
+    }
+}
+
+fn compare_boxes<T: PartialEq<T>>(b1: &Box<T>, b2: &Box<T>): bool {
+    let v1 = b1.get();
+    let v2 = b2.get();
+    v1.eq(&v2)
+}
+
+fn main(): i32 {
+    let b1 = Box::<i32> { val: 42 };
+    let b2 = Box::<i32> { val: 42 };
+    let b3 = Box::<i32> { val: 100 };
+
+    panic::assert(compare_boxes::<i32>(&b1, &b2));
+    panic::assert(compare_boxes::<i32>(&b1, &b3) == false);
+
+    0
+}

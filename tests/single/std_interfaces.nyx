@@ -12,8 +12,8 @@ impl Point with Default {
     }
 }
 
-impl Point with PartialEq {
-    fn eq(&self, other: &Self): bool {
+impl Point with PartialEq<Point> {
+    fn eq(&self, other: &Point): bool {
         self.x == other.x && self.y == other.y
     }
 }

@@ -385,6 +385,7 @@ name = "nyx"
 version = "0.2.0"
 dependencies = [
  "ariadne",
+ "bumpalo",
  "clap",
  "criterion",
  "lasso",

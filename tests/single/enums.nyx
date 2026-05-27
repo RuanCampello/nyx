@@ -26,8 +26,8 @@ impl Status with Default {
     }
 }
 
-impl Status with PartialEq {
-    fn eq(&self, other: &Self): bool {
+impl Status with PartialEq<Status> {
+    fn eq(&self, other: &Status): bool {
         true
     }
 }
