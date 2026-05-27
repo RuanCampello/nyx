@@ -217,14 +217,12 @@ impl<'src> Iterator for Lexer<'src> {
     type Item = Result<Token<'src>, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_token() {
-            Ok(Some(token)) => Some(Ok(token)),
-            Ok(None) => None,
-            Err(e) => {
-                self.finished = true; // stop after first error
-                Some(Err(e))
-            },
-        }
+        self.next_token()
+            .map_err(|e| {
+                self.finished = true;
+                e
+            })
+            .transpose()
     }
 }
 

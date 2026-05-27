@@ -34,8 +34,8 @@ impl<'src> Tokenize<'src> for StringLiteral {
                     cursor.advance(); // consume closing `"
                     let span = Span::new(start, cursor.position());
                     let content = &cursor.source()[content_start..content_end];
-                    return match has_invalid_escape {
-                        true => Err(LexError::new(
+                    if has_invalid_escape {
+                        return Err(LexError::new(
                             LexErrorKind::InvalidEscape(invalid_escape_char),
                             Span::new(
                                 invalid_escape_pos,
@@ -45,10 +45,10 @@ impl<'src> Tokenize<'src> for StringLiteral {
                                     invalid_escape_pos.column + 2,
                                 ),
                             ),
-                        )),
+                        ));
+                    }
 
-                        _ => Ok(Token::new(TokenKind::String(content), span)),
-                    };
+                    return Ok(Token::new(TokenKind::String(content), span));
                 },
 
                 Some('\\') => {
