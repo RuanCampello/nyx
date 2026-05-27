@@ -4,7 +4,7 @@ A modern, strict, and compiled programming language.
 
 ## Overview
 
-Nyx is a imperative, statically-typed, compiled language designed for performance and clarity. The compiler implements a multi-pass architecture with distinct intermediate representations before emitting native assembly for `x86_64` and `AArch64`.
+Nyx is an imperative, statically-typed, compiled language designed for performance and clarity. The compiler implements a multi-pass architecture with distinct intermediate representations before emitting native assembly for `x86_64` and `AArch64`.
 
 > [!NOTE]
 > This is primarily a learning project, built while working through books, papers, and online resources on compilers and language design. Things may not always be done in the most optimal way, but the intent is always to improve.
@@ -81,7 +81,7 @@ Inspiration and architectural references for the Nyx compiler and standard libra
 
 ### Algorithms
 
-Foundational papers for compiler implemented or used as research in Nyx
+Foundational papers for algorithms implemented or used as research in Nyx
 
 - [Register Allocation and Spilling via Graph Coloring](https://dl.acm.org/doi/epdf/10.1145/872726.806984) - Gregory J. Chaitin's seminal 1982 paper detailing the graph-colouring approach to register allocation and spilling
 
