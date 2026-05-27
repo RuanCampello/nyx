@@ -18,7 +18,7 @@ use crate::lir::{
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
-use crate::mir::{self, Function, Layout, Operand, ValueId};
+use crate::mir::{self, Function, Layout, Operand};
 
 struct Lower<'f> {
     function: &'f Function,
@@ -78,7 +78,7 @@ impl<'f> Lower<'f> {
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
         use crate::mir::InstructionKind;
 
-        let dest = self.vreg(instruction.dest.id);
+        let dest = self.value[instruction.dest.id];
         let typ = instruction.dest.typ;
         let bytes = match typ.kind() {
             TypeKind::Unit => 0,
@@ -98,10 +98,8 @@ impl<'f> Lower<'f> {
                     typ,
                     op,
                     layouts,
-                    |vid| value[vid.0 as usize],
-                    |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
-                    },
+                    |vid| value[vid],
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -261,7 +259,7 @@ impl<'f> Lower<'f> {
             InstructionKind::FieldLoad { src, offset, typ } => {
                 if typ.is_aggregate() {
                     let origin = match src {
-                        Operand::Place(p) => self.vreg(p.id),
+                        Operand::Place(p) => self.value[p.id],
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
                     let size = typ.machine_type(self.layouts).stack_size() as u32;
@@ -286,7 +284,7 @@ impl<'f> Lower<'f> {
                 let signed = mt.is_signed();
                 match src {
                     Operand::Place(place) => {
-                        let origin = self.vreg(place.id);
+                        let origin = self.value[place.id];
                         let instruction = X86_64::scalar_load(
                             matches!(place.typ.kind(), TypeKind::Ref { .. }),
                             dest,
@@ -308,7 +306,7 @@ impl<'f> Lower<'f> {
                         unreachable!("aggregate field store source must be a place");
                     };
                     let size = value.typ().machine_type(self.layouts).stack_size() as u32;
-                    let src_vreg = self.vreg(src.id);
+                    let src_vreg = self.value[src.id];
 
                     return aggregate_copy(
                         &mut self.lir,
@@ -341,7 +339,7 @@ impl<'f> Lower<'f> {
 
             #[rustfmt::skip]
             InstructionKind::AddressOf { src, offset } => {
-                let origin = self.vreg(src.id);
+                let origin = self.value[src.id];
                 match src.typ.kind() {
                     TypeKind::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
                     _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
@@ -403,13 +401,9 @@ impl<'f> Lower<'f> {
                     id,
                     args,
                     layouts,
-                    |vid| value[vid.0 as usize],
-                    |lir, op, block| {
-                        target::operand(lir, op, block, layouts, |vid| value[vid.0 as usize])
-                    },
-                    |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
-                    },
+                    |vid| value[vid],
+                    |lir, op, block| target::operand(lir, op, block, layouts, |vid| value[vid]),
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
                     |lir, block, origin| {
                         let dest = lir.new_vreg(MachineType::Int { bytes, signed });
                         lir.push_instr(block, X86Instr::StackAddr { dest, origin });
@@ -447,7 +441,7 @@ impl<'f> Lower<'f> {
                 let layouts = self.layouts;
                 let (syscall_moves, syscall_uses) =
                     target::prepare_syscall_args(&mut self.lir, id, args, layouts, |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
+                        target::lower_operand(lir, op, |vid| value[vid], layouts)
                     });
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
@@ -551,7 +545,7 @@ impl<'f> Lower<'f> {
                     unreachable!("aggregate return source must be a place");
                 };
 
-                let src_vreg = self.vreg(place.id);
+                let src_vreg = self.value[place.id];
 
                 match self.small_integer_return(typ) {
                     Some(chunks) => {
@@ -638,7 +632,7 @@ impl<'f> Lower<'f> {
                 }
 
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
-                let dest = self.vreg(*vid);
+                let dest = self.value[*vid];
                 aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest, 0, 0, size);
                 int_idx += 1;
                 continue;
@@ -651,7 +645,7 @@ impl<'f> Lower<'f> {
                 RegClass::Int => {
                     match X86_64::param(int_idx, RegClass::Int) {
                         Some(reg) => {
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             let abi_vreg = self.lir.new_vreg(mt);
                             self.lir.add_precolour(abi_vreg, reg);
 
@@ -671,7 +665,7 @@ impl<'f> Lower<'f> {
                                     "param_stack_offset must be defined when param() returns None",
                                 );
 
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             self.lir.push_instr(
                                 &entry,
                                 X86Instr::MovFromStack {
@@ -690,7 +684,7 @@ impl<'f> Lower<'f> {
                 RegClass::Float => {
                     match X86_64::param(float_idx, RegClass::Float) {
                         Some(reg) => {
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             let abi_vreg = self.lir.new_vreg(mt);
                             self.lir.add_precolour(abi_vreg, reg);
 
@@ -711,7 +705,7 @@ impl<'f> Lower<'f> {
                             )
                             .expect("param_stack_offset must be defined when param() returns None");
 
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             self.lir.push_instr(
                                 &entry,
                                 X86Instr::MovFromStack {
@@ -728,10 +722,6 @@ impl<'f> Lower<'f> {
                 },
             }
         }
-    }
-
-    fn vreg(&self, id: ValueId) -> VReg {
-        self.value[id.0 as usize]
     }
 
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
@@ -762,15 +752,13 @@ impl<'f> Lower<'f> {
     /// materialise a `MIR` operand into a new VReg if it's a constant
     /// otherwise return it's VReg directly
     fn operand(&mut self, op: &Operand, block: &BlockId) -> VReg {
-        let value = &self.value;
         let layouts = self.layouts;
-        target::operand(&mut self.lir, op, block, layouts, |vid| value[vid.0 as usize])
+        target::operand(&mut self.lir, op, block, layouts, |vid| self.value[vid])
     }
 
     // transforms a MIR operand into a x86_64 LIR operand
     fn lower_operand(&mut self, op: &Operand) -> X86Operand {
-        let value = &self.value;
         let layouts = self.layouts;
-        target::lower_operand(&mut self.lir, op, |vid| value[vid.0 as usize], layouts)
+        target::lower_operand(&mut self.lir, op, |vid| self.value[vid], layouts)
     }
 }

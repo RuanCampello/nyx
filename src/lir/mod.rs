@@ -365,6 +365,13 @@ impl Term {
     }
 }
 
+impl std::ops::Index<mir::ValueId> for Vec<VReg> {
+    type Output = VReg;
+    fn index(&self, index: mir::ValueId) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
 impl From<crate::mir::BlockId> for BlockId {
     fn from(value: crate::mir::BlockId) -> Self {
         Self { 0: value.0 }

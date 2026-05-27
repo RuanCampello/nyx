@@ -22,7 +22,7 @@ use crate::{
             aggregate_copy,
         },
     },
-    mir::{self, Function, Layout, Operand, ValueId},
+    mir::{self, Function, Layout, Operand},
 };
 
 struct Lower<'f> {
@@ -92,7 +92,7 @@ impl<'f> Lower<'f> {
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
         use crate::mir::InstructionKind;
 
-        let dest = self.vreg(instruction.dest.id);
+        let dest = self.value[instruction.dest.id];
         let typ = instruction.dest.typ;
         let bytes = match typ.kind() {
             TypeKind::Unit => 0,
@@ -111,10 +111,8 @@ impl<'f> Lower<'f> {
                     typ,
                     operand,
                     layouts,
-                    |vid| value[vid.0 as usize],
-                    |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
-                    },
+                    |vid| value[vid],
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -300,12 +298,12 @@ impl<'f> Lower<'f> {
                     id,
                     args,
                     layouts,
-                    |vid| value[vid.0 as usize],
+                    |vid| value[vid],
                     |lir, op, block| {
-                        lir::target::operand(lir, op, block, layouts, |vid| value[vid.0 as usize])
+                        lir::target::operand(lir, op, block, layouts, |vid| value[vid])
                     },
                     |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
+                        lir::target::lower_operand(lir, op, |vid| value[vid], layouts)
                     },
                     |lir, block, origin| {
                         let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
@@ -332,7 +330,7 @@ impl<'f> Lower<'f> {
                     args,
                     layouts,
                     |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid.0 as usize], layouts)
+                        lir::target::lower_operand(lir, op, |vid| value[vid], layouts)
                     },
                 );
 
@@ -351,7 +349,7 @@ impl<'f> Lower<'f> {
             InstructionKind::FieldLoad { src, offset, typ } => {
                 if typ.is_aggregate() {
                     let origin = match src {
-                        Operand::Place(p) => self.vreg(p.id),
+                        Operand::Place(p) => self.value[p.id],
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
 
@@ -375,7 +373,7 @@ impl<'f> Lower<'f> {
 
                 match src {
                     Operand::Place(place) => {
-                        let origin = self.vreg(place.id);
+                        let origin = self.value[place.id];
                         let instruction = AArch64::scalar_load(
                             matches!(place.typ.kind(), TypeKind::Ref { .. }),
                             dest,
@@ -400,7 +398,7 @@ impl<'f> Lower<'f> {
                         unreachable!("aggregate field store source must be a place");
                     };
 
-                    let src_vreg = self.vreg(src.id);
+                    let src_vreg = self.value[src.id];
                     let size = value.typ().machine_type(self.layouts).stack_size() as u32;
                     return aggregate_copy(
                         &mut self.lir,
@@ -432,7 +430,7 @@ impl<'f> Lower<'f> {
             },
 
             InstructionKind::AddressOf { src, offset } => {
-                let origin = self.vreg(src.id);
+                let origin = self.value[src.id];
                 match src.typ.kind() {
                     #[rustfmt::skip]
                     TypeKind::Ref { .. } => self.lir.push_instr( id, A64Instr::Mov { dest, src: origin, bytes: 8 }),
@@ -554,7 +552,7 @@ impl<'f> Lower<'f> {
                 };
                 let sret_ptr =
                     self.sret_ptr.expect("struct-returning function must have an sret pointer");
-                let src_vreg = self.vreg(place.id);
+                let src_vreg = self.value[place.id];
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
                 aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
                 Term::Return(None)
@@ -611,7 +609,7 @@ impl<'f> Lower<'f> {
                 }
 
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
-                let dest_vreg = self.vreg(*vid);
+                let dest_vreg = self.value[*vid];
                 aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest_vreg, 0, 0, size);
                 int_idx += 1;
                 continue;
@@ -624,7 +622,7 @@ impl<'f> Lower<'f> {
                 RegClass::Int => {
                     match AArch64::param(int_idx, RegClass::Int) {
                         Some(reg) => {
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             let abi_vreg = self.lir.new_vreg(mt);
                             self.lir.add_precolour(abi_vreg, reg);
 
@@ -640,7 +638,7 @@ impl<'f> Lower<'f> {
                                     "param_stack_offset must be defined when param() returns None",
                                 );
 
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             let signed = mt.is_signed();
                             self.lir.push_instr(
                                 &entry,
@@ -661,7 +659,7 @@ impl<'f> Lower<'f> {
                 RegClass::Float => {
                     match AArch64::param(float_idx, RegClass::Float) {
                         Some(reg) => {
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             let abi_vreg = self.lir.new_vreg(mt);
                             self.lir.add_precolour(abi_vreg, reg);
 
@@ -678,7 +676,7 @@ impl<'f> Lower<'f> {
                             )
                             .expect("param_stack_offset must be defined when param() returns None");
 
-                            let dest = self.vreg(*vid);
+                            let dest = self.value[*vid];
                             self.lir.push_instr(
                                 &entry,
                                 A64Instr::LdrParam {
@@ -698,11 +696,6 @@ impl<'f> Lower<'f> {
         }
     }
 
-    #[inline(always)]
-    fn vreg(&self, id: ValueId) -> VReg {
-        self.value[id.0 as usize]
-    }
-
     fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
         let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
         self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
@@ -714,14 +707,14 @@ impl<'f> Lower<'f> {
     fn operand(&mut self, op: &Operand, block: &BlockId) -> VReg {
         let value = &self.value;
         let layouts = self.layouts;
-        lir::target::operand(&mut self.lir, op, block, layouts, |vid| value[vid.0 as usize])
+        lir::target::operand(&mut self.lir, op, block, layouts, |vid| value[vid])
     }
 
     #[inline(always)]
     fn lower_operand(&mut self, op: &Operand, _block: &BlockId) -> A64Operand {
         let value = &self.value;
         let layouts = self.layouts;
-        lir::target::lower_operand(&mut self.lir, op, |vid| value[vid.0 as usize], layouts)
+        lir::target::lower_operand(&mut self.lir, op, |vid| value[vid], layouts)
     }
 
     /// if the operand is already a `VReg`, return it
