@@ -237,6 +237,7 @@ impl<T: Clone> Spanned<T> {
         self.value.clone()
     }
 
+    #[allow(unused)]
     pub fn value_ref(&self) -> &T {
         &self.value
     }
@@ -245,10 +246,6 @@ impl<T: Clone> Spanned<T> {
 impl<T> Spanned<T> {
     pub fn new(value: T, span: Span) -> Self {
         Self { span, value }
-    }
-
-    pub fn into_value(self) -> T {
-        self.value
     }
 }
 

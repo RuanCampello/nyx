@@ -314,6 +314,9 @@ impl Type {
             TypeKind::Enum(id) => id.1.typ().machine_type(layouts),
             TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
             TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
+            TypeKind::GenericParam(_) => {
+                unreachable!("GenericParam must be resolved before LIR lowering")
+            },
         }
     }
 

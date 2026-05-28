@@ -256,6 +256,13 @@ pub enum HirErrorKind<'h> {
         help = "rename one of the {name!} constants"
     )]
     DuplicateConstant { name: String },
+
+    #[diagnostic(
+        message = "type {type_name!} does not satisfy bound {bound_name!}",
+        primary = "{type_name!} is used here as {bound_name!}",
+        help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
+    )]
+    UnsatisfiedBound { type_name: String, bound_name: String },
 }
 
 #[derive(Debug, PartialEq, Clone, Diagnostic)]

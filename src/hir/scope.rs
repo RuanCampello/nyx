@@ -52,6 +52,7 @@ pub(in crate::hir) struct InterfaceSignature {
     pub name: SymbolId,
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
+    pub generic_params: Vec<SymbolId>,
 }
 
 #[derive(Debug)]
@@ -270,6 +271,24 @@ impl<'sc> Scope<'sc> {
             let superinterfaces =
                 interface.superinterfaces.iter().map(|name| symbols.insert(name)).collect();
 
+            let generic_params: Vec<SymbolId> =
+                interface.generics.iter().map(|p| symbols.insert(p)).collect();
+
+            // Build a temporary env mapping each generic param name → GenericParam(i) placeholder.
+            // This lets resolve_annotation succeed without a real type for the param.
+            let param_env: HashMap<String, Type> = interface
+                .generics
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| (name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
+                .collect();
+
+            let env = if param_env.is_empty() {
+                None
+            } else {
+                Some(&param_env)
+            };
+
             let methods = interface
                 .methods
                 .iter()
@@ -278,9 +297,9 @@ impl<'sc> Scope<'sc> {
                     let has_receiver = method.receiver.is_some();
                     let receiver_mut = method.receiver.map(|r| r.mutable).unwrap_or(false);
 
-                    let params = self.resolve_params(&method.params, symbols, None)?;
+                    let params = self.resolve_params(&method.params, symbols, None, env)?;
                     let return_type =
-                        self.resolve_return_type(method.return_type.as_ref(), symbols, None)?;
+                        self.resolve_return_type(method.return_type.as_ref(), symbols, None, env)?;
 
                     Ok(InterfaceMethodSignature {
                         name,
@@ -292,8 +311,10 @@ impl<'sc> Scope<'sc> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            self.interfaces
-                .insert(name, InterfaceSignature { name, superinterfaces, methods });
+            self.interfaces.insert(
+                name,
+                InterfaceSignature { name, superinterfaces, methods, generic_params },
+            );
         }
 
         Ok(())
@@ -339,9 +360,9 @@ impl<'sc> Scope<'sc> {
                 ));
             }
 
-            let params = self.resolve_params(&function.params, symbols, None)?;
+            let params = self.resolve_params(&function.params, symbols, None, None)?;
             let return_type =
-                self.resolve_return_type(function.return_type.as_ref(), symbols, None)?;
+                self.resolve_return_type(function.return_type.as_ref(), symbols, None, None)?;
             let intrinsic = in_std.then(|| Intrinsic::from_str(function.name).ok()).flatten();
 
             let sig = FunctionSignature {
@@ -424,10 +445,62 @@ impl<'sc> Scope<'sc> {
                 },
             };
 
-            if let Some(interface_name) = implementation.interface {
-                let interface = symbols.insert(interface_name);
-                self.interface_impls.insert((receiver_type, interface));
-            }
+            // Build a generic param env if this impl targets a generic interface.
+            // Injected default methods (e.g., `ne` from `PartialEq<Rhs>`) have
+            // params like `&Rhs` that must resolve against the concrete type args.
+            let impl_param_env: Option<HashMap<String, Type>> =
+                if let Some(interface_name) = implementation.interface {
+                    let interface_sym = symbols.insert(interface_name);
+                    self.interface_impls.insert((receiver_type, interface_sym));
+
+                    if let Some(interface) = self.interfaces.get(&interface_sym) {
+                        if !interface.generic_params.is_empty() {
+                            // Extract explicit type args from `impl T with Iface<Arg1, Arg2>`.
+                            // If none provided (e.g., `impl T with PartialEq`), default each
+                            // generic param to the receiver type (i.e., `Self`).
+                            let explicit_args: Vec<Type> =
+                                match implementation.interface_type.as_ref().map(|s| s.value()) {
+                                    Some(statement::Type::Generic(_, args)) => args
+                                        .iter()
+                                        .map(|arg| {
+                                            lower::resolve_annotation(
+                                                symbols,
+                                                &self.struct_map,
+                                                &self.enum_map,
+                                                &arg.value(),
+                                                arg.span(),
+                                                Some(receiver_type),
+                                                None,
+                                            )
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?,
+                                    _ => vec![],
+                                };
+
+                            let param_names: Vec<String> = interface
+                                .generic_params
+                                .iter()
+                                .map(|&sym| symbols.get(sym).to_owned())
+                                .collect();
+                            let env: HashMap<String, Type> = param_names
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, name)| {
+                                    let t = explicit_args.get(i).copied().unwrap_or(receiver_type);
+                                    (name, t)
+                                })
+                                .collect();
+                            Some(env)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            let impl_env_ref = impl_param_env.as_ref().map(|e| e as &HashMap<String, Type>);
 
             for method in &implementation.methods {
                 let method_symbol = symbols.insert(method.name);
@@ -468,11 +541,13 @@ impl<'sc> Scope<'sc> {
                             &method.params,
                             symbols,
                             Some(receiver_type),
+                            impl_env_ref,
                         )?);
                         let return_type = self.resolve_return_type(
                             method.return_type.as_ref(),
                             symbols,
                             Some(receiver_type),
+                            impl_env_ref,
                         )?;
 
                         // FIXME: that's hardcoded af
@@ -507,12 +582,17 @@ impl<'sc> Scope<'sc> {
                         let id = FunctionId(self.signatures.len() as u32);
                         self.functions.insert(mangled, id);
 
-                        let params =
-                            self.resolve_params(&method.params, symbols, Some(receiver_type))?;
+                        let params = self.resolve_params(
+                            &method.params,
+                            symbols,
+                            Some(receiver_type),
+                            impl_env_ref,
+                        )?;
                         let return_type = self.resolve_return_type(
                             method.return_type.as_ref(),
                             symbols,
                             Some(receiver_type),
+                            impl_env_ref,
                         )?;
 
                         self.signatures.push(FunctionSignature {
@@ -550,6 +630,31 @@ impl<'sc> Scope<'sc> {
             }
         }
 
+        // Substitute GenericParam(i) placeholders with the concrete type args[i].
+        // Missing args fall back to SelfType so that the existing substitute_self pass handles them.
+        #[inline]
+        fn substitute_generic_params(typ: Type, concrete: &[Type]) -> Type {
+            match typ.kind() {
+                TypeKind::GenericParam(i) => {
+                    concrete.get(i as usize).copied().unwrap_or(Type::new(TypeKind::SelfType))
+                },
+                TypeKind::Ref { mutable, to } => match to.kind() {
+                    RefTargetKind::GenericParam(i) => {
+                        let inner = concrete
+                            .get(i as usize)
+                            .copied()
+                            .unwrap_or(Type::new(TypeKind::SelfType));
+                        match RefTarget::try_from(inner) {
+                            Ok(new_to) => Type::new(TypeKind::Ref { mutable, to: new_to }),
+                            _ => typ,
+                        }
+                    },
+                    _ => typ,
+                },
+                _ => typ,
+            }
+        }
+
         for implementation in &declarations.impls {
             let Some(interface_name) = implementation.interface else {
                 continue;
@@ -567,6 +672,31 @@ impl<'sc> Scope<'sc> {
                     self.nominal_type(symbol)
                         .expect("impl type must exist in scope after declaration extension")
                 },
+            };
+
+            // Build concrete type args for the interface's generic params from the impl's interface_type.
+            // e.g. `impl i32 with PartialEq<i32>` → concrete_args = [i32]
+            // e.g. `impl Status with PartialEq` → concrete_args = [] (falls back to SelfType)
+            let concrete_args: Vec<Type> = if !interface.generic_params.is_empty() {
+                match implementation.interface_type.as_ref().map(|s| s.value()) {
+                    Some(statement::Type::Generic(_, args)) => args
+                        .iter()
+                        .map(|arg| {
+                            lower::resolve_annotation(
+                                symbols,
+                                &self.struct_map,
+                                &self.enum_map,
+                                &arg.value(),
+                                arg.span(),
+                                Some(receiver_type),
+                                None,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => vec![],
+                }
+            } else {
+                vec![]
             };
 
             let impl_methods: HashMap<_, _> =
@@ -627,9 +757,17 @@ impl<'sc> Scope<'sc> {
                     _ => (false, signature.params.as_slice()),
                 };
 
-                let required_params: Vec<_> =
-                    required.params.iter().map(|&t| substitute_self(t, receiver_type)).collect();
-                let required_return_type = substitute_self(required.return_type, receiver_type);
+                let required_params: Vec<_> = required
+                    .params
+                    .iter()
+                    .map(|&t| {
+                        substitute_self(substitute_generic_params(t, &concrete_args), receiver_type)
+                    })
+                    .collect();
+                let required_return_type = substitute_self(
+                    substitute_generic_params(required.return_type, &concrete_args),
+                    receiver_type,
+                );
 
                 let signature_ok = impl_has_receiver == required.has_receiver
                     && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)
@@ -764,6 +902,7 @@ impl<'sc> Scope<'sc> {
         return_type: Option<&Spanned<statement::Type<'h>>>,
         symbols: &mut SymbolTable,
         self_type: Option<Type>,
+        env: Option<&HashMap<String, Type>>,
     ) -> Result<Type, HirError<'h>> {
         return_type
             .map(|s| {
@@ -774,6 +913,7 @@ impl<'sc> Scope<'sc> {
                     &s.value(),
                     s.span(),
                     self_type,
+                    env,
                 )
             })
             .transpose()
@@ -786,6 +926,7 @@ impl<'sc> Scope<'sc> {
         params: &[statement::Parameter<'h>],
         symbols: &mut SymbolTable,
         self_type: Option<Type>,
+        env: Option<&HashMap<String, Type>>,
     ) -> Result<Vec<Type>, HirError<'h>> {
         params
             .iter()
@@ -797,6 +938,7 @@ impl<'sc> Scope<'sc> {
                     &p.typ.value(),
                     p.typ.span(),
                     self_type,
+                    env,
                 )
             })
             .collect()
@@ -909,6 +1051,7 @@ impl<'sc> Scope<'sc> {
                 &self.enum_map,
                 &decl.ast.typ.value(),
                 decl.ast.typ.span(),
+                None,
                 None,
             )?;
 

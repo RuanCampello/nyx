@@ -59,6 +59,9 @@ pub enum TypeKind {
         mutable: bool,
         to: RefTarget,
     },
+    /// Placeholder for generic type param index `i` in interface method signatures.
+    /// Never valid outside of interface signature validation.
+    GenericParam(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +80,7 @@ pub enum RefTargetKind {
     Struct(StructId),
     Enum(EnumId),
     SelfType,
+    GenericParam(u8),
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,6 +119,9 @@ const STRUCT: u8 = 17;
 const ENUM: u8 = 18;
 const SELF_TYPE: u8 = 19;
 const REF: u8 = 20;
+/// Placeholder for a generic type parameter in interface method signatures.
+/// The param index is stored in bits 15..8. Never escapes interface validation.
+const GENERIC_PARAM: u8 = 21;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -234,6 +241,7 @@ impl Type {
                 let tag_bits = (target_bits & REF_TAG_MASK) << REF_TAG_SHIFT;
                 Self(bits | tag_bits | payload_bits)
             },
+            TypeKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
         }
     }
 
@@ -276,6 +284,7 @@ impl Type {
                 );
                 TypeKind::Ref { mutable, to }
             },
+            GENERIC_PARAM => TypeKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
             _ => panic!("invalid Type tag"),
         }
     }
@@ -394,6 +403,7 @@ impl RefTarget {
             RefTargetKind::Enum(id) => {
                 Self((ENUM as u64) | ((id.0 as u64) << 8) | ((id.1.to_u8() as u64) << 40))
             },
+            RefTargetKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
         }
     }
 
@@ -426,6 +436,7 @@ impl RefTarget {
                 let repr_u8 = ((self.0 >> 40) & 0xFF) as u8;
                 RefTargetKind::Enum(EnumId(id, EnumRepr::from_u8(repr_u8)))
             },
+            GENERIC_PARAM => RefTargetKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
             _ => panic!("invalid RefTarget tag"),
         }
     }
@@ -482,8 +493,11 @@ impl From<&statement::Type<'_>> for Type {
             AstType::RefSelf => {
                 TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
             },
-            AstType::Named(_) => unreachable!("already resolved by resolve_type"),
-            _ => unimplemented!(),
+            AstType::Named(_) => unreachable!("already resolved by resolve_annotation"),
+            AstType::Ref(_) => unreachable!("Ref types must be resolved by resolve_annotation"),
+            AstType::Generic(_, _) => {
+                unreachable!("Type::Generic must be monomorphized before HIR lowering")
+            },
         };
         Type::new(kind)
     }
@@ -523,9 +537,11 @@ impl std::fmt::Display for Type {
                     RefTargetKind::Struct(id) => write!(f, "struct#{}", id.0),
                     RefTargetKind::Enum(id) => write!(f, "enum#{}", id.0),
                     RefTargetKind::SelfType => write!(f, "Self"),
+                    RefTargetKind::GenericParam(i) => write!(f, "T{i}"),
                     _ => write!(f, "{}", Type::from(to)),
                 };
             },
+            TypeKind::GenericParam(i) => return write!(f, "T{i}"),
         };
 
         f.write_str(s)

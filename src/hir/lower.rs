@@ -796,6 +796,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     &typ.value(),
                     typ.span(),
                     None,
+                    None,
                 )?;
 
                 let structs: Vec<Option<Struct>> =
@@ -1077,6 +1078,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
 
+            statement::Type::Ref(inner) => {
+                let inner_type = self.resolve_type(inner, span)?;
+                let to = RefTarget::try_from(inner_type).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::new(TypeKind::Struct(Default::default())),
+                            found: inner_type
+                        }
+                    )
+                })?;
+                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+            },
+
             typ => Ok(typ.into()),
         }
     }
@@ -1289,8 +1304,15 @@ pub(in crate::hir) fn lower_struct<'h>(
             return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
         }
 
-        let typ =
-            resolve_annotation(symbols, map, enum_map, &field.typ.value(), field.typ.span(), None)?;
+        let typ = resolve_annotation(
+            symbols,
+            map,
+            enum_map,
+            &field.typ.value(),
+            field.typ.span(),
+            None,
+            None,
+        )?;
         if let TypeKind::Struct(dep) = typ.kind() {
             lower_struct(dep.0 as usize, declarations, map, enum_map, symbols, lowered, states)?;
         }
@@ -1333,12 +1355,34 @@ pub(in crate::hir) fn resolve_annotation<'h>(
     typ: &statement::Type<'h>,
     span: Span,
     self_type: Option<Type>,
+    env: Option<&HashMap<String, Type>>,
 ) -> Result<Type, HirError<'h>> {
     match typ {
-        statement::Type::Named(name) => symbols
-            .get_id(name)
-            .and_then(|symbol| scope::nominal_type(struct_map, enum_map, symbol))
-            .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
+        statement::Type::Named(name) => {
+            if let Some(env) = env {
+                if let Some(&t) = env.get(*name) {
+                    return Ok(t);
+                }
+            }
+            symbols
+                .get_id(name)
+                .and_then(|symbol| scope::nominal_type(struct_map, enum_map, symbol))
+                .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
+        },
+        statement::Type::Ref(inner) => {
+            let inner_type =
+                resolve_annotation(symbols, struct_map, enum_map, inner, span, self_type, env)?;
+            let to = RefTarget::try_from(inner_type).map_err(|_| {
+                hir_error!(
+                    span,
+                    TypeMismatch {
+                        expected: Type::new(TypeKind::Struct(Default::default())),
+                        found: inner_type,
+                    }
+                )
+            })?;
+            Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+        },
         statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
         statement::Type::RefSelf => self_type.map_or(
             Ok(Type::new(TypeKind::Ref {
