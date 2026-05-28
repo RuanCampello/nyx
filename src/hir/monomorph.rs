@@ -4,7 +4,7 @@ use crate::{
     parser::{
         expression,
         statement::{
-            self, Block, Function, GenericBound, Impl, Parameter, Statement, Struct, Type,
+            self, Block, Else, Function, GenericBound, Impl, Parameter, Statement, Struct, Type,
         },
         subst::{self as s, Env},
     },
@@ -15,6 +15,14 @@ use std::collections::{HashMap, HashSet};
 struct Instantiation<'src> {
     name: &'src str,
     args: Vec<Type<'src>>,
+}
+
+/// Traverses the AST to collect all generic instantiation (turbofish/struct declarations)
+/// that need to be concrete during monomorphisation
+struct Collector<'src, 't> {
+    templates: &'t HashSet<&'src str>,
+    worklist: Vec<Instantiation<'src>>,
+    seen: HashSet<Instantiation<'src>>,
 }
 
 /// Run AST-level monomorphisation on `statements`
@@ -51,17 +59,15 @@ pub(crate) fn monomorphise<'src>(
     }
 
     let template_names = struct_templates.keys().chain(fn_templates.keys()).copied().collect();
-
-    let mut worklist: Vec<Instantiation<'src>> = Vec::new();
-    let mut seen: HashSet<Instantiation<'src>> = HashSet::new();
+    let mut collector = Collector::new(&template_names);
 
     for stmt in statements.iter() {
-        collect_stmt(stmt, &template_names, &mut worklist, &mut seen);
+        collector.collect_stmt(stmt);
     }
 
     let mut new_statements: Vec<Statement<'src>> = Vec::new();
 
-    while let Some(inst) = worklist.pop() {
+    while let Some(inst) = collector.worklist.pop() {
         // env: generic_param_name to concrete type
         if let Some(tmpl) = struct_templates.get(inst.name) {
             let env = build_env(tmpl.generics.iter().map(|s| *s), &inst.args, arena);
@@ -74,12 +80,7 @@ pub(crate) fn monomorphise<'src>(
                 if impl_receiver_name(impl_tmpl) == Some(inst.name) {
                     let concrete_impl = subst_impl(impl_tmpl, mangled_name, &env, arena);
 
-                    collect_impl_instantiations(
-                        &concrete_impl,
-                        &template_names,
-                        &mut worklist,
-                        &mut seen,
-                    );
+                    collector.collect_impl(&concrete_impl);
                     new_statements.push(Statement::Impl(concrete_impl));
                 }
             }
@@ -92,12 +93,7 @@ pub(crate) fn monomorphise<'src>(
             let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
             let concrete_fn = s::subst_fn(tmpl, mangled_name, &env, arena);
 
-            collect_block_instantiations(
-                &concrete_fn.body,
-                &template_names,
-                &mut worklist,
-                &mut seen,
-            );
+            collector.collect_block(&concrete_fn.body);
             new_statements.push(Statement::Fn(concrete_fn));
         }
     }
@@ -113,143 +109,120 @@ pub(crate) fn monomorphise<'src>(
     Ok(())
 }
 
-fn collect_stmt<'src>(
-    stmt: &Statement<'src>,
-    templates: &HashSet<&str>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    match stmt {
-        Statement::Fn(f) => collect_block_instantiations(&f.body, templates, out, seen),
-        Statement::Impl(i) => {
-            for m in &i.methods {
-                collect_block_instantiations(&m.body, templates, out, seen);
-            }
-        },
-        Statement::Let(l) => {
-            if let Some(v) = &l.value {
-                collect_expr(v, templates, out, seen);
-            }
-        },
-        Statement::Return(r) => {
-            if let Some(v) = &r.value {
-                collect_expr(v, templates, out, seen);
-            }
-        },
-        Statement::If(i) => collect_if(i, templates, out, seen),
-        Statement::While(w) => {
-            collect_expr(&w.condition, templates, out, seen);
-            collect_block_instantiations(&w.body, templates, out, seen);
-        },
-        Statement::Expr(e, _) => collect_expr(e, templates, out, seen),
-        Statement::Block(b) => collect_block_instantiations(b, templates, out, seen),
-        _ => {},
-    }
-}
-
-fn collect_if<'src>(
-    i: &statement::If<'src>,
-    templates: &HashSet<&str>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    use statement::Else;
-    collect_expr(&i.condition, templates, out, seen);
-    collect_block_instantiations(&i.then_branch, templates, out, seen);
-
-    if let Some(else_branch) = &i.else_branch {
-        match else_branch.as_ref() {
-            Else::If(nested) => collect_if(nested, templates, out, seen),
-            Else::Block(b) => collect_block_instantiations(b, templates, out, seen),
-            Else::Expr(e) => collect_expr(e, templates, out, seen),
+impl<'src, 'a> Collector<'src, 'a> {
+    fn new(templates: &'a HashSet<&'src str>) -> Self {
+        Self {
+            templates,
+            worklist: Vec::with_capacity(1 << 5),
+            seen: HashSet::with_capacity(1 << 5),
         }
     }
-}
 
-fn collect_block_instantiations<'src>(
-    block: &Block<'src>,
-    templates: &HashSet<&str>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    for stmt in &block.statements {
-        collect_stmt(stmt, templates, out, seen);
+    fn push_instantiation(&mut self, name: &'src str, args: Vec<Type<'src>>) {
+        let inst = Instantiation { name, args };
+        if self.seen.insert(inst.clone()) {
+            self.worklist.push(inst);
+        }
     }
-}
 
-fn collect_impl_instantiations<'src>(
-    imp: &Impl<'src>,
-    templates: &HashSet<&str>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    for m in &imp.methods {
-        collect_block_instantiations(&m.body, templates, out, seen);
+    fn collect_stmt(&mut self, stmt: &Statement<'src>) {
+        match stmt {
+            Statement::Fn(f) => self.collect_block(&f.body),
+            Statement::Impl(i) => {
+                for m in &i.methods {
+                    self.collect_block(&m.body);
+                }
+            },
+            Statement::Let(l) => {
+                if let Some(v) = &l.value {
+                    self.collect_expr(v);
+                }
+            },
+            Statement::Return(r) => {
+                if let Some(v) = &r.value {
+                    self.collect_expr(v);
+                }
+            },
+            Statement::If(i) => self.collect_if(i),
+            Statement::While(w) => {
+                self.collect_expr(&w.condition);
+                self.collect_block(&w.body);
+            },
+            Statement::Expr(e, _) => self.collect_expr(e),
+            Statement::Block(b) => self.collect_block(b),
+            _ => {},
+        }
     }
-}
 
-fn collect_expr<'src>(
-    expr: &expression::Expression<'src>,
-    templates: &HashSet<&str>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    use expression::Expression as E;
-    match expr {
-        // `compare_boxes::<i32>(&b1, &b2)`: call with type_args on identifier callee
-        E::Call { callee, args, type_args, .. } => {
-            if !type_args.is_empty() {
-                if let E::Identifier(name, _) = callee.as_ref() {
-                    if templates.contains(name) {
-                        push_instantiation(name, get_args(type_args), out, seen);
+    fn collect_if(&mut self, i: &statement::If<'src>) {
+        self.collect_expr(&i.condition);
+        self.collect_block(&i.then_branch);
+
+        if let Some(else_branch) = &i.else_branch {
+            match else_branch.as_ref() {
+                Else::If(nested) => self.collect_if(nested),
+                Else::Block(b) => self.collect_block(b),
+                Else::Expr(e) => self.collect_expr(e),
+            }
+        }
+    }
+
+    fn collect_block(&mut self, block: &Block<'src>) {
+        for stmt in &block.statements {
+            self.collect_stmt(stmt);
+        }
+    }
+
+    fn collect_impl(&mut self, imp: &Impl<'src>) {
+        for m in &imp.methods {
+            self.collect_block(&m.body);
+        }
+    }
+
+    fn collect_expr(&mut self, expr: &expression::Expression<'src>) {
+        use expression::Expression as E;
+
+        match expr {
+            E::Call { callee, args, type_args, .. } => {
+                if !type_args.is_empty() {
+                    if let E::Identifier(name, _) = callee.as_ref() {
+                        if self.templates.contains(name) {
+                            self.push_instantiation(name, get_args(type_args));
+                        }
                     }
                 }
-            }
-            collect_expr(callee, templates, out, seen);
-            for a in args {
-                collect_expr(a, templates, out, seen);
-            }
-        },
-        // `box::<i32> { val: 42 }`: struct literal with type_args
-        E::Struct { name, fields, type_args, .. } => {
-            if !type_args.is_empty() && templates.contains(name) {
-                push_instantiation(name, get_args(type_args), out, seen);
-            }
-            for f in fields {
-                collect_expr(&f.value, templates, out, seen);
-            }
-        },
-        E::QualifiedCall { name, args, type_args, .. } => {
-            if !type_args.is_empty() && templates.contains(name) {
-                push_instantiation(name, get_args(type_args), out, seen);
-            }
-            for a in args {
-                collect_expr(a, templates, out, seen);
-            }
-        },
-        E::Binary { left, right, .. } => {
-            collect_expr(left, templates, out, seen);
-            collect_expr(right, templates, out, seen);
-        },
-        E::Unary { expr, .. } => collect_expr(expr, templates, out, seen),
-        E::Assignment { target, value, .. } => {
-            collect_expr(target, templates, out, seen);
-            collect_expr(value, templates, out, seen);
-        },
-        E::Field { expr, .. } => collect_expr(expr, templates, out, seen),
-        _ => {},
-    }
-}
-
-fn push_instantiation<'src>(
-    name: &'src str,
-    args: Vec<Type<'src>>,
-    out: &mut Vec<Instantiation<'src>>,
-    seen: &mut HashSet<Instantiation<'src>>,
-) {
-    let inst = Instantiation { name, args };
-    if seen.insert(inst.clone()) {
-        out.push(inst);
+                self.collect_expr(callee);
+                for a in args {
+                    self.collect_expr(a);
+                }
+            },
+            E::Struct { name, fields, type_args, .. } => {
+                if !type_args.is_empty() && self.templates.contains(name) {
+                    self.push_instantiation(name, get_args(type_args));
+                }
+                for f in fields {
+                    self.collect_expr(&f.value);
+                }
+            },
+            E::QualifiedCall { name, args, type_args, .. } => {
+                if !type_args.is_empty() && self.templates.contains(name) {
+                    self.push_instantiation(name, get_args(type_args));
+                }
+                for a in args {
+                    self.collect_expr(a);
+                }
+            },
+            E::Binary { left, right, .. } => {
+                self.collect_expr(left);
+                self.collect_expr(right);
+            },
+            E::Unary { expr, .. } | E::Field { expr, .. } => self.collect_expr(expr),
+            E::Assignment { target, value, .. } => {
+                self.collect_expr(target);
+                self.collect_expr(value);
+            },
+            _ => {},
+        }
     }
 }
 
@@ -304,6 +277,7 @@ fn spanned_args<'src>(args: &[Type<'src>]) -> Vec<Spanned<Type<'src>>> {
     args.iter().map(|t| Spanned::new(t.clone(), Span::default())).collect()
 }
 
+#[inline]
 fn impl_receiver_name<'src>(imp: &Impl<'src>) -> Option<&'src str> {
     match imp.receiver.value() {
         Type::Generic(name, _) => Some(name),
