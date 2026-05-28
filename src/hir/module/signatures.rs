@@ -19,7 +19,7 @@ pub(super) fn build_signatures<'src>(
     for &idx in order {
         let node = &mut graph.nodes[idx];
         if !node.in_std {
-            monomorph::monomorphize(&mut node.statements, arena).map_err(Diagnostic::from)?;
+            monomorph::monomorphise(&mut node.statements, arena).map_err(Diagnostic::from)?;
         }
     }
 

@@ -26,6 +26,7 @@ mod declarations;
 pub mod error;
 mod lower;
 pub(crate) mod module;
+pub(crate) mod monomorph;
 mod scope;
 mod symbols;
 
@@ -204,6 +205,15 @@ pub struct LocalId(pub u32);
 
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(mut statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
+    let bump = bumpalo::Bump::new();
+    // SAFETY: bump lives until the end of this function
+    // All &'h str refs from it are used only within `lower`. The returned `Hir` has no string references
+    // (only SymbolIds). Dropping `statements` after `bump` is safe since &str::drop is a no-op, no memory is read during the drop.
+    let bump_ref: &'h bumpalo::Bump =
+        unsafe { &*(std::ptr::addr_of!(bump) as *const bumpalo::Bump) };
+
+    monomorph::monomorphise(&mut statements, bump_ref)?;
+
     let interfaces: std::collections::HashMap<_, _> = statements
         .iter()
         .filter_map(|stmt| match stmt {
