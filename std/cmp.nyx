@@ -1,9 +1,73 @@
+use std::panic::{assert};
+
 pub interface PartialEq<Rhs> {
     fn eq(&self, other: &Rhs): bool;
     fn ne(&self, other: &Rhs): bool {
         !self.eq(other)
     }
 }
+
+pub interface Equatable: PartialEq {}
+
+pub interface PartialOrd<Rhs>: PartialEq<Rhs> {
+    fn partial_compare(&self, other: &Rhs): Option<Ordering>;
+
+    inline fn lt(&self, other: &Rhs): bool {
+        match self.partial_compare(other) {
+            Ordering::Less -> true,
+            _ -> false,
+        }
+    }
+
+    inline fn le(&self, other: &Rhs): bool {
+        match self.partial_compare(other) {
+            Ordering::Less | Ordering::Equal -> true,
+            _ -> false,
+        }
+    }
+
+    inline fn gt(&self, other: &Rhs): bool {
+        match self.partial_compare(other) {
+            Ordering::Greater -> true,
+            _ -> false,
+        }
+    }
+
+    inline fn ge(&self, other: &Rhs): bool {
+        match self.partial_compare(other) {
+            Ordering::Greater | Ordering::Equal -> true,
+            _ -> false,
+        }
+    }
+}
+
+pub interface Orderable: Equatable + Comparable {
+    fn compare(&self, other: &Rhs): Ordering;
+
+    inline fn max(self, other: Self): Self {
+        if other < self return self;
+        else return other;
+    }
+
+    inline fn min(self, other: Self): Self {
+        if other < self return other;
+        else return self;
+    }
+
+    inline fn clamp(self, min: Self, max: Self) -> Self {
+        assert(min <= max);
+
+        if self < min return min;
+        else if self > max return max;
+        else return self;
+    }
+}
+
+pub enum Ordering {
+    Less = -1,
+    Equal = 0,
+    Greater = 1,
+} as i8
 
 impl i8 with PartialEq<i8> {
     fn eq(&self, other: &i8): bool {
