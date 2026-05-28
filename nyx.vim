@@ -5,7 +5,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword nyxKeyword fn let mut if else return while for struct enum inline const pub use impl with interface packed align
+syn keyword nyxKeyword fn let mut if else return while for struct enum inline const pub use impl with interface packed align match where
 hi def link nyxKeyword Keyword
 
 " Built-in Types
