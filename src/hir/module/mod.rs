@@ -1,6 +1,5 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
-mod arena;
 mod demand;
 mod graph;
 mod resolver;
@@ -111,10 +110,10 @@ impl<F: FileSystem> ModuleLoader<F> {
     /// ensuring that `main` gets an id that the `_start` can call
     #[rustfmt::skip]
     pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
-        let arena = arena::SourceArena::new();
+        let arena = bumpalo::Bump::new();
         let mut graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, &arena)?;
         let order = graph.all_nodes_order();
-        let interfaces = signatures::build_signatures(&mut graph, &order, &mut self.scope, &mut self.symbols)?;
+        let interfaces = signatures::build_signatures(&mut graph, &order, &mut self.scope, &mut self.symbols, &arena)?;
         let functions = demand::lower_reachable(&mut graph, &order, &interfaces, &self.scope, &mut self.symbols)?;
 
         Ok(Hir {

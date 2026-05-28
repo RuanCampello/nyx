@@ -33,7 +33,7 @@ pub(super) struct ModuleNode<'src> {
 struct GraphBuilder<'a, 'src, F> {
     resolver: &'a ModuleResolver,
     fs: &'a F,
-    arena: &'src super::arena::SourceArena,
+    arena: &'src bumpalo::Bump,
     nodes: Vec<ModuleNode<'src>>,
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
@@ -44,7 +44,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     entry: &Path,
     resolver: &ModuleResolver,
     fs: &F,
-    arena: &'src super::arena::SourceArena,
+    arena: &'src bumpalo::Bump,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
     let canonical = fs
         .canonicalise(entry)
@@ -139,7 +139,7 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             span: triggered_by,
         })?;
 
-        let source = self.arena.alloc(source);
+        let source = self.arena.alloc_str(&source);
 
         diagnostic::initialise(source, canonical.to_str().unwrap_or("<unknown>"));
         let statements = Parser::new(source).parse().map_err(Diagnostic::from)?;
