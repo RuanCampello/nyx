@@ -1,0 +1,4 @@
+pub enum Optional<T> {
+    Some(T),
+    None,
+}
