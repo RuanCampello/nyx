@@ -272,7 +272,7 @@ impl<'sc> Scope<'sc> {
                 interface.superinterfaces.iter().map(|name| symbols.insert(name)).collect();
 
             let generic_params: Vec<SymbolId> =
-                interface.generics.iter().map(|p| symbols.insert(p)).collect();
+                interface.generics.iter().map(|g| symbols.insert(g.name)).collect();
 
             // Build a temporary env mapping each generic param name → GenericParam(i) placeholder.
             // This lets resolve_annotation succeed without a real type for the param.
@@ -280,7 +280,7 @@ impl<'sc> Scope<'sc> {
                 .generics
                 .iter()
                 .enumerate()
-                .map(|(i, &name)| (name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
+                .map(|(i, g)| (g.name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
                 .collect();
 
             let env = if param_env.is_empty() {
@@ -630,29 +630,17 @@ impl<'sc> Scope<'sc> {
             }
         }
 
-        // Substitute GenericParam(i) placeholders with the concrete type args[i].
-        // Missing args fall back to SelfType so that the existing substitute_self pass handles them.
+        // Pad `concrete` with `SelfType` up to `arity` so any declared GenericParam
+        // index missing a concrete type rewrites to SelfType (which the subsequent
+        // substitute_self pass rewrites to the receiver type). Delegates the actual
+        // substitution to [`Type::subst`] — the single substitution implementation.
         #[inline]
-        fn substitute_generic_params(typ: Type, concrete: &[Type]) -> Type {
-            match typ.kind() {
-                TypeKind::GenericParam(i) => {
-                    concrete.get(i as usize).copied().unwrap_or(Type::new(TypeKind::SelfType))
-                },
-                TypeKind::Ref { mutable, to } => match to.kind() {
-                    RefTargetKind::GenericParam(i) => {
-                        let inner = concrete
-                            .get(i as usize)
-                            .copied()
-                            .unwrap_or(Type::new(TypeKind::SelfType));
-                        match RefTarget::try_from(inner) {
-                            Ok(new_to) => Type::new(TypeKind::Ref { mutable, to: new_to }),
-                            _ => typ,
-                        }
-                    },
-                    _ => typ,
-                },
-                _ => typ,
+        fn build_subst_table(concrete: &[Type], arity: usize) -> Vec<Type> {
+            let mut table: Vec<Type> = concrete.to_vec();
+            if table.len() < arity {
+                table.resize(arity, Type::new(TypeKind::SelfType));
             }
+            table
         }
 
         for implementation in &declarations.impls {
@@ -757,17 +745,14 @@ impl<'sc> Scope<'sc> {
                     _ => (false, signature.params.as_slice()),
                 };
 
+                let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
                 let required_params: Vec<_> = required
                     .params
                     .iter()
-                    .map(|&t| {
-                        substitute_self(substitute_generic_params(t, &concrete_args), receiver_type)
-                    })
+                    .map(|&t| substitute_self(t.subst(&subst_table), receiver_type))
                     .collect();
-                let required_return_type = substitute_self(
-                    substitute_generic_params(required.return_type, &concrete_args),
-                    receiver_type,
-                );
+                let required_return_type =
+                    substitute_self(required.return_type.subst(&subst_table), receiver_type);
 
                 let signature_ok = impl_has_receiver == required.has_receiver
                     && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)

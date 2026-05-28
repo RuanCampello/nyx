@@ -59,8 +59,9 @@ pub enum TypeKind {
         mutable: bool,
         to: RefTarget,
     },
-    /// Placeholder for generic type param index `i` in interface method signatures.
-    /// Never valid outside of interface signature validation.
+    /// A generic type parameter, indexed by its position in the enclosing
+    /// declaration's parameter list (impl/struct/enum/fn). Resolved to a
+    /// concrete type by [`Type::subst`] during the monomorphisation pass.
     GenericParam(u8),
 }
 
@@ -119,8 +120,8 @@ const STRUCT: u8 = 17;
 const ENUM: u8 = 18;
 const SELF_TYPE: u8 = 19;
 const REF: u8 = 20;
-/// Placeholder for a generic type parameter in interface method signatures.
-/// The param index is stored in bits 15..8. Never escapes interface validation.
+/// Generic type parameter tag. The param index is stored in bits 15..8.
+/// Resolved by [`Type::subst`] during monomorphisation.
 const GENERIC_PARAM: u8 = 21;
 
 const MUT_BIT_SHIFT: u32 = 8;
@@ -293,6 +294,23 @@ impl Type {
     pub(crate) fn strip_reference(self) -> Self {
         match self.kind() {
             TypeKind::Ref { to, .. } => Self::from(to),
+            _ => self,
+        }
+    }
+
+    pub(in crate::hir) fn subst(self, args: &[Type]) -> Type {
+        match self.kind() {
+            TypeKind::GenericParam(i) => args.get(i as usize).copied().unwrap_or(self),
+            TypeKind::Ref { mutable, to } => match to.kind() {
+                RefTargetKind::GenericParam(i) => match args.get(i as usize).copied() {
+                    Some(replacement) => match RefTarget::try_from(replacement) {
+                        Ok(to) => Type::new(TypeKind::Ref { mutable, to }),
+                        Err(_) => self,
+                    },
+                    None => self,
+                },
+                _ => self,
+            },
             _ => self,
         }
     }

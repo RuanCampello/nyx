@@ -16,7 +16,6 @@ use std::collections::VecDeque;
 pub mod error;
 pub mod expression;
 pub mod statement;
-pub(crate) mod subst;
 pub mod visitor;
 
 /// Recursive-descent parser.

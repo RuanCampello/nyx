@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Struct, SymbolId,
-        Type, TypeKind,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Struct,
+        SymbolId, Type, TypeKind,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -38,6 +38,12 @@ struct FunctionLower<'a> {
 }
 
 pub fn lower(hir: Hir) -> Result<Mir, MirError> {
+    debug_assert!(
+        !hir.functions.iter().any(has_open_generic),
+        r#"MIR lowering received HIR containing unresolved GenericParam
+        monomorphisation should have produced fully concrete signatures"#
+    );
+
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
     let symbols = hir.symbols;
@@ -500,7 +506,11 @@ impl<'a> FunctionLower<'a> {
         right: &Expression,
         typ: Type,
     ) -> Result<Operand, MirError> {
-        debug_assert_eq!(typ, Type::new(TypeKind::Bool), "`&&` and `||` should be perfomed only on booleans");
+        debug_assert_eq!(
+            typ,
+            Type::new(TypeKind::Bool),
+            "`&&` and `||` should be perfomed only on booleans"
+        );
 
         let result = self.fresh_temporary(Type::new(TypeKind::Bool));
         let left_operand = self.lower_expr(left)?;
@@ -927,4 +937,16 @@ fn type_contains_float(typ: Type, structs: &[Struct]) -> bool {
             .any(|field| type_contains_float(field.typ, structs)),
         _ => false,
     }
+}
+
+fn has_open_generic(func: &hir::Function) -> bool {
+    fn is_open(t: Type) -> bool {
+        match t.kind() {
+            TypeKind::GenericParam(_) => true,
+            TypeKind::Ref { to, .. } => matches!(to.kind(), RefTargetKind::GenericParam(_)),
+            _ => false,
+        }
+    }
+
+    is_open(func.return_type) || func.params.iter().any(|p| is_open(p.typ))
 }

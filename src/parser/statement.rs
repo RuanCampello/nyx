@@ -68,8 +68,6 @@ pub struct GenericBound<'i> {
     pub span: Span,
 }
 
-struct GenericParam<'i>(&'i str);
-
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function<'i> {
     pub name: &'i str,
@@ -88,13 +86,14 @@ pub struct Function<'i> {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Receiver {
     pub mutable: bool,
+    pub by_ref: bool,
     pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Struct<'i> {
     pub name: &'i str,
-    pub generics: Vec<&'i str>,
+    pub generics: Vec<GenericBound<'i>>,
     pub fields: Vec<StructField<'i>>,
     pub repr: StructRepr,
     pub is_pub: bool,
@@ -126,7 +125,7 @@ pub struct StructField<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Enum<'i> {
     pub name: &'i str,
-    pub generics: Vec<&'i str>,
+    pub generics: Vec<GenericBound<'i>>,
     pub variants: Vec<EnumVariant<'i>>,
     pub repr: Spanned<Type<'i>>,
     pub is_pub: bool,
@@ -147,7 +146,7 @@ pub struct Impl<'i> {
     pub receiver: Spanned<Type<'i>>,
     pub interface_type: Option<Spanned<Type<'i>>>,
     pub interface: Option<&'i str>,
-    pub generics: Vec<&'i str>,
+    pub generics: Vec<GenericBound<'i>>,
     pub methods: Vec<Function<'i>>,
     pub constants: Vec<Const<'i>>,
     pub span: Span,
@@ -156,7 +155,7 @@ pub struct Impl<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Interface<'i> {
     pub name: &'i str,
-    pub generics: Vec<&'i str>,
+    pub generics: Vec<GenericBound<'i>>,
     pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
     pub is_pub: bool,
@@ -531,7 +530,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericBound>(parser)?;
+        let mut generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
 
@@ -554,12 +553,16 @@ impl<'i> Parsable<'i> for Function<'i> {
                         parser.expect_token(Punct::Comma)?;
                     }
 
-                    if params.is_empty()
-                        && receiver.is_none()
-                        && parser.consume_punct(Punct::Ampersand)?
-                    {
-                        receiver = Some(parser.parse_node()?);
-                        continue;
+                    if params.is_empty() && receiver.is_none() {
+                        if parser.consume_punct(Punct::Ampersand)? {
+                            let amp_span = parser.last_span().unwrap_or_default();
+                            receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
+                            continue;
+                        }
+                        if peek_is_self(parser) {
+                            receiver = Some(Receiver::parse_by_value(parser)?);
+                            continue;
+                        }
                     }
 
                     params.push(parser.parse_node()?);
@@ -573,6 +576,7 @@ impl<'i> Parsable<'i> for Function<'i> {
             true => Some(parser.parse_node()?),
             false => None,
         };
+        parse_where_clause(parser, &mut generics)?;
         let body = Block::parse(parser)?;
         let span = fn_token.span + body.span;
 
@@ -596,7 +600,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let impl_token = parser.expect_token(Keyword::Impl)?;
 
-        let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
+        let generics = parse_generics::<GenericBound>(parser)?;
 
         let receiver = Spanned::<Type>::parse(parser)?;
         let name = receiver.value().name().ok_or_else(|| {
@@ -714,7 +718,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
         let struct_token = parser.expect_token(Keyword::Struct)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
+        let generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenBrace)?;
 
@@ -764,7 +768,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
         let is_pub = parser.consume_keyword(Keyword::Pub)?;
         let enum_token = parser.expect_token(Keyword::Enum)?;
         let (name, _) = parser.expect_identifier()?;
-        let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
+        let generics = parse_generics::<GenericBound>(parser)?;
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut variants = Vec::new();
@@ -843,7 +847,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let interface_token = parser.expect_token(Keyword::Interface)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
+        let generics = parse_generics::<GenericBound>(parser)?;
 
         let mut superinterfaces = Vec::new();
         if parser.consume_punct(Punct::Colon)? {
@@ -885,7 +889,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericBound>(parser)?;
+        let mut generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
 
@@ -904,12 +908,16 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                         parser.expect_token(Punct::Comma)?;
                     }
 
-                    if params.is_empty()
-                        && receiver.is_none()
-                        && parser.consume_punct(Punct::Ampersand)?
-                    {
-                        receiver = Some(parser.parse_node()?);
-                        continue;
+                    if params.is_empty() && receiver.is_none() {
+                        if parser.consume_punct(Punct::Ampersand)? {
+                            let amp_span = parser.last_span().unwrap_or_default();
+                            receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
+                            continue;
+                        }
+                        if peek_is_self(parser) {
+                            receiver = Some(Receiver::parse_by_value(parser)?);
+                            continue;
+                        }
                     }
 
                     params.push(parser.parse_node()?);
@@ -925,6 +933,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
 
         let return_type =
             parser.consume_punct(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
+        parse_where_clause(parser, &mut generics)?;
 
         let (body, span) = match parser.consume_punct(Punct::Semicolon)? {
             true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
@@ -1038,8 +1047,22 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
     }
 }
 
-impl<'i> Parsable<'i> for Receiver {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+impl Receiver {
+    fn parse_after_amp<'i>(parser: &mut Parser<'i>, start: Span) -> Result<Self, ParserError<'i>> {
+        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let (name, span) = parser.expect_identifier()?;
+
+        if name != "self" {
+            return Err(ParserError::new(
+                ParseErrorKind::ExpectedIdentifier { found: TokenKind::Identifier(name) },
+                span,
+            ));
+        }
+
+        Ok(Self { mutable, by_ref: true, span: start + span })
+    }
+
+    fn parse_by_value<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let start = parser.last_span().unwrap_or_default();
         let mutable = parser.consume_keyword(Keyword::Mut)?;
         let (name, span) = parser.expect_identifier()?;
@@ -1051,7 +1074,7 @@ impl<'i> Parsable<'i> for Receiver {
             ));
         }
 
-        Ok(Self { mutable, span: start + span })
+        Ok(Self { mutable, by_ref: false, span: start + span })
     }
 }
 
@@ -1141,11 +1164,55 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
     }
 }
 
-impl<'i> Parsable<'i> for GenericParam<'i> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let (name, _) = parser.expect_identifier()?;
-        Ok(GenericParam(name))
+/// Returns `true` when the next token (or the token after `mut`) is the identifier `self`.
+/// Used to detect a by-value receiver in a parameter list.
+fn peek_is_self<'i>(parser: &mut Parser<'i>) -> bool {
+    let head = match parser.peek_nth(0) {
+        Some(Ok(t)) => t,
+        _ => return false,
+    };
+
+    match head.kind {
+        TokenKind::Identifier("self") => true,
+        TokenKind::Keyword(Keyword::Mut) => {
+            matches!(parser.peek_nth(1), Some(Ok(t)) if t.kind == TokenKind::Identifier("self"))
+        },
+        _ => false,
     }
+}
+
+/// Parse an optional `where` clause and merge each `Name: Bound + Bound` entry into `generics`
+/// (by appending bounds onto the matching declared generic param, or as a fresh entry if absent).
+fn parse_where_clause<'i>(
+    parser: &mut Parser<'i>,
+    generics: &mut Vec<GenericBound<'i>>,
+) -> Result<(), ParserError<'i>> {
+    if !parser.consume_keyword(Keyword::Where)? {
+        return Ok(());
+    }
+
+    loop {
+        let entry = GenericBound::parse(parser)?;
+        match generics.iter_mut().find(|g| g.name == entry.name) {
+            Some(existing) => {
+                existing.span = existing.span + entry.span;
+                existing.bounds.extend(entry.bounds);
+            },
+            None => generics.push(entry),
+        }
+
+        if !parser.consume_punct(Punct::Comma)? {
+            break;
+        }
+
+        // accept a trailing comma before the body's `{`
+        match parser.peek() {
+            Some(Ok(t)) if t.is_kind(Punct::OpenBrace) => break,
+            _ => {},
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
