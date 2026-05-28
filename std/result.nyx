@@ -48,14 +48,14 @@ impl Result<S, F> {
         }
     }
 
-    pub inline fn is_success(&self): bool {
+    pub inline const fn is_success(&self): bool {
         match self {
             Success(_) -> true,
             Failure(_) -> false,
         }
     }
 
-    pub inline fn is_failure(&self): bool {
+    pub inline const fn is_failure(&self): bool {
         !self.is_success() 
     }
 }

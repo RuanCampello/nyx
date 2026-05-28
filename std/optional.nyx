@@ -2,3 +2,33 @@ pub enum Optional<T> {
     Some(T),
     None,
 }
+
+impl Optional<T> {
+    pub const fn unwrap(self): T {
+        match self {
+            Some(value) -> value,
+            None -> panic::panic("called `Optional::unwrap()` on a `None` value"),
+        }
+    }
+
+    pub const fn unwrap_or(self, default: T): T {
+        match self {
+            Some(value) -> value,
+            None -> default,
+        }
+    }
+
+    pub fn unwrap_or_default(self): T where T: Default {
+        match self {
+            Some(value) -> value,
+            None -> T::default(),
+        }
+    }
+
+    pub fn expect(self, msg: &str): T {
+        match self {
+            Some(value) -> value,
+            None -> panic::panic(msg),
+        }
+    }
+}
