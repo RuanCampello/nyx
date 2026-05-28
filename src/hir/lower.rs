@@ -311,19 +311,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match expr {
             // literal coercion: use the hint to widen to the expected numeric type.
             Expr::Integer(value, span) => {
-                let typ = match hint {
-                    Some(t) if t.is_number() => t,
-                    _ => Type::new(TypeKind::I32),
-                };
+                let typ = hint
+                    .and_then(|t| t.is_number().then_some(t))
+                    .unwrap_or(Type::new(TypeKind::I32));
 
                 Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
             },
 
             Expr::Float(value, span) => {
-                let typ = match hint {
-                    Some(t) if t.is_float() => t,
-                    _ => Type::new(TypeKind::F64),
-                };
+                let typ = hint
+                    .and_then(|t| t.is_float().then_some(t))
+                    .unwrap_or(Type::new(TypeKind::F64));
 
                 Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
             },
@@ -559,7 +557,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Expression { kind, typ, span: *span })
             },
 
-            Expr::Struct { name, fields, span, type_args } => {
+            Expr::Struct { name, fields, span, type_args: _ } => {
                 let symbol = self.symbols.insert(name);
                 let id = self
                     .scope
@@ -625,7 +623,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })
             },
 
-            Expr::Call { callee, args, span, type_args } => {
+            Expr::Call { callee, args, span, type_args: _ } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let (local, fields, receiver_expr, receiver_type) =
                         match self.resolve_access_chain(receiver, *span) {
@@ -732,7 +730,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.lower_direct_call(function_id, args, *span)
             },
 
-            Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
+            Expr::QualifiedCall { qualifier, name, args, span, type_args: _ } => {
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let mangled_symbol = self.symbols.insert(&mangled_name);
 
