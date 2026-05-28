@@ -15,11 +15,20 @@ pub(super) fn build_signatures<'src>(
 ) -> Result<HashMap<String, Interface<'src>>, ModuleError> {
     let interfaces = collect_interfaces(graph);
 
+    // FIXME: we can do this better in the future but be it for now :/
+
+    let mut templates = monomorph::Templates::default();
+    for &idx in order {
+        let node = &mut graph.nodes[idx];
+        monomorph::extract_templates(&mut node.statements, &mut templates);
+    }
+
     // run monomorphization on each non-std module before scope-extending
     for &idx in order {
         let node = &mut graph.nodes[idx];
         if !node.in_std {
-            monomorph::monomorphise(&mut node.statements, arena).map_err(Diagnostic::from)?;
+            monomorph::monomorphise_with_templates(&mut node.statements, &templates, arena)
+                .map_err(Diagnostic::from)?;
         }
     }
 

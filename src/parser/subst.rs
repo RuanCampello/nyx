@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::parser::expression::StructField;
 use crate::{
     lexer::Spanned,
@@ -31,27 +33,28 @@ pub fn subst_type<'src>(t: &Type<'src>, env: &Env<'src>, arena: &'src bumpalo::B
 pub fn subst_expr<'src>(
     e: &Expression<'src>,
     env: &Env<'src>,
+    templates: &std::collections::HashSet<&'src str>,
     arena: &'src bumpalo::Bump,
 ) -> Expression<'src> {
     match e {
         Expression::Binary { left, operator, right, span } => Expression::Binary {
-            left: Box::new(subst_expr(left, env, arena)),
+            left: Box::new(subst_expr(left, env, templates, arena)),
             operator: *operator,
-            right: Box::new(subst_expr(right, env, arena)),
+            right: Box::new(subst_expr(right, env, templates, arena)),
             span: *span,
         },
         Expression::Unary { operator, expr, span } => Expression::Unary {
             operator: *operator,
-            expr: Box::new(subst_expr(expr, env, arena)),
+            expr: Box::new(subst_expr(expr, env, templates, arena)),
             span: *span,
         },
         Expression::Assignment { target, value, span } => Expression::Assignment {
-            target: Box::new(subst_expr(target, env, arena)),
-            value: Box::new(subst_expr(value, env, arena)),
+            target: Box::new(subst_expr(target, env, templates, arena)),
+            value: Box::new(subst_expr(value, env, templates, arena)),
             span: *span,
         },
         Expression::Field { expr, field, span } => Expression::Field {
-            expr: Box::new(subst_expr(expr, env, arena)),
+            expr: Box::new(subst_expr(expr, env, templates, arena)),
             field: *field,
             span: *span,
         },
@@ -67,7 +70,7 @@ pub fn subst_expr<'src>(
                 .iter()
                 .map(|f| StructField {
                     name: f.name,
-                    value: subst_expr(&f.value, env, arena),
+                    value: subst_expr(&f.value, env, templates, arena),
                     span: f.span,
                 })
                 .collect();
@@ -89,9 +92,9 @@ pub fn subst_expr<'src>(
                     let mangled = arena.alloc_str(&mangle(name, &new_type_args));
                     Box::new(Expression::Identifier(mangled, *id_span))
                 },
-                _ => Box::new(subst_expr(callee, env, arena)),
+                _ => Box::new(subst_expr(callee, env, templates, arena)),
             };
-            let new_args = args.iter().map(|a| subst_expr(a, env, arena)).collect();
+            let new_args = args.iter().map(|a| subst_expr(a, env, templates, arena)).collect();
             Expression::Call {
                 callee: new_callee,
                 args: new_args,
@@ -102,14 +105,17 @@ pub fn subst_expr<'src>(
         Expression::QualifiedCall { qualifier, name, args, type_args, span } => {
             let new_type_args: Vec<_> =
                 type_args.iter().map(|a| subst_spanned_type(a, env, arena)).collect();
-            let new_name = match !new_type_args.is_empty() {
-                true => arena.alloc_str(&mangle(*name, &new_type_args)),
-                _ => *name,
+            let (new_qualifier, new_name) = match !new_type_args.is_empty() {
+                true if templates.contains(qualifier) => {
+                    (arena.alloc_str(&mangle(*qualifier, &new_type_args)) as &str, *name)
+                },
+                true => (*qualifier, arena.alloc_str(&mangle(*name, &new_type_args)) as &str),
+                _ => (*qualifier, *name),
             };
-            let new_args = args.iter().map(|a| subst_expr(a, env, arena)).collect();
+            let new_args = args.iter().map(|a| subst_expr(a, env, templates, arena)).collect();
 
             Expression::QualifiedCall {
-                qualifier: *qualifier,
+                qualifier: new_qualifier,
                 name: new_name,
                 args: new_args,
                 type_args: vec![],
@@ -117,7 +123,7 @@ pub fn subst_expr<'src>(
             }
         },
         Expression::Cast { expr, target_type, span } => Expression::Cast {
-            expr: Box::new(subst_expr(expr, env, arena)),
+            expr: Box::new(subst_expr(expr, env, templates, arena)),
             target_type: subst_spanned_type(target_type, env, arena),
             span: *span,
         },
@@ -128,10 +134,11 @@ pub fn subst_expr<'src>(
 pub fn subst_block<'src>(
     b: &Block<'src>,
     env: &Env<'src>,
-    bump: &'src bumpalo::Bump,
+    templates: &HashSet<&'src str>,
+    arena: &'src bumpalo::Bump,
 ) -> Block<'src> {
     Block {
-        statements: b.statements.iter().map(|s| subst_stmt(s, env, bump)).collect(),
+        statements: b.statements.iter().map(|s| subst_stmt(s, env, templates, arena)).collect(),
         span: b.span,
     }
 }
@@ -139,41 +146,48 @@ pub fn subst_block<'src>(
 pub fn subst_stmt<'src>(
     s: &Statement<'src>,
     env: &Env<'src>,
-    bump: &'src bumpalo::Bump,
+    templates: &HashSet<&'src str>,
+    arena: &'src bumpalo::Bump,
 ) -> Statement<'src> {
     match s {
         Statement::Let(l) => Statement::Let(Let {
             mutable: l.mutable,
             name: l.name,
-            typ: l.typ.as_ref().map(|t| subst_spanned_type(t, env, bump)),
-            value: l.value.as_ref().map(|v| subst_expr(v, env, bump)),
+            typ: l.typ.as_ref().map(|t| subst_spanned_type(t, env, arena)),
+            value: l.value.as_ref().map(|v| subst_expr(v, env, templates, arena)),
             span: l.span,
         }),
         Statement::Return(r) => Statement::Return(Return {
-            value: r.value.as_ref().map(|v| subst_expr(v, env, bump)),
+            value: r.value.as_ref().map(|v| subst_expr(v, env, templates, arena)),
             span: r.span,
         }),
-        Statement::If(i) => Statement::If(subst_if(i, env, bump)),
+        Statement::If(i) => Statement::If(subst_if(i, env, templates, arena)),
         Statement::While(w) => Statement::While(While {
-            condition: subst_expr(&w.condition, env, bump),
-            body: subst_block(&w.body, env, bump),
+            condition: subst_expr(&w.condition, env, templates, arena),
+            body: subst_block(&w.body, env, templates, arena),
             span: w.span,
         }),
-        Statement::Expr(e, span) => Statement::Expr(subst_expr(e, env, bump), *span),
-        Statement::Block(b) => Statement::Block(subst_block(b, env, bump)),
+        Statement::Expr(e, span) => Statement::Expr(subst_expr(e, env, templates, arena), *span),
+        Statement::Block(b) => Statement::Block(subst_block(b, env, templates, arena)),
+        Statement::Enum(e) => Statement::Enum(subst_enum(e, e.name, env, arena)),
         _ => s.clone(),
     }
 }
 
-fn subst_if<'src>(i: &If<'src>, env: &Env<'src>, bump: &'src bumpalo::Bump) -> If<'src> {
+fn subst_if<'src>(
+    i: &If<'src>,
+    env: &Env<'src>,
+    templates: &HashSet<&'src str>,
+    arena: &'src bumpalo::Bump,
+) -> If<'src> {
     If {
-        condition: subst_expr(&i.condition, env, bump),
-        then_branch: subst_block(&i.then_branch, env, bump),
+        condition: subst_expr(&i.condition, env, templates, arena),
+        then_branch: subst_block(&i.then_branch, env, templates, arena),
         else_branch: i.else_branch.as_ref().map(|e| {
             Box::new(match e.as_ref() {
-                Else::If(nested) => Else::If(subst_if(nested, env, bump)),
-                Else::Block(b) => Else::Block(subst_block(b, env, bump)),
-                Else::Expr(e) => Else::Expr(subst_expr(e, env, bump)),
+                Else::If(nested) => Else::If(subst_if(nested, env, templates, arena)),
+                Else::Block(b) => Else::Block(subst_block(b, env, templates, arena)),
+                Else::Expr(e) => Else::Expr(subst_expr(e, env, templates, arena)),
             })
         }),
         span: i.span,
@@ -184,7 +198,8 @@ pub fn subst_fn<'src>(
     f: &Function<'src>,
     name: &'src str,
     env: &Env<'src>,
-    bump: &'src bumpalo::Bump,
+    templates: &HashSet<&'src str>,
+    arena: &'src bumpalo::Bump,
 ) -> Function<'src> {
     Function {
         name,
@@ -197,16 +212,41 @@ pub fn subst_fn<'src>(
             .map(|p| Parameter {
                 name: p.name,
                 mutable: p.mutable,
-                typ: subst_spanned_type(&p.typ, env, bump),
+                typ: subst_spanned_type(&p.typ, env, arena),
                 span: p.span,
             })
             .collect(),
-        return_type: f.return_type.as_ref().map(|t| subst_spanned_type(t, env, bump)),
-        body: subst_block(&f.body, env, bump),
+        return_type: f.return_type.as_ref().map(|t| subst_spanned_type(t, env, arena)),
+        body: subst_block(&f.body, env, templates, arena),
         is_const: f.is_const,
         is_pub: f.is_pub,
         inline: f.inline,
         span: f.span,
+    }
+}
+
+pub fn subst_enum<'src>(
+    tmpl: &Enum<'src>,
+    mangled_name: &'src str,
+    env: &Env<'src>,
+    arena: &'src bumpalo::Bump,
+) -> Enum<'src> {
+    Enum {
+        name: mangled_name,
+        generics: vec![],
+        variants: tmpl
+            .variants
+            .iter()
+            .map(|v| EnumVariant {
+                name: v.name,
+                payload: v.payload.as_ref().map(|p| subst_spanned_type(p, env, arena)),
+                value: v.value,
+                span: v.span,
+            })
+            .collect(),
+        repr: tmpl.repr.clone(),
+        is_pub: tmpl.is_pub,
+        span: tmpl.span,
     }
 }
 

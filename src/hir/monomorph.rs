@@ -3,7 +3,7 @@ use crate::{
     lexer::{Spanned, token::Span},
     parser::{
         expression,
-        statement::{self, Block, Else, Function, Impl, Parameter, Statement, Struct, Type},
+        statement::{self, Block, Else, Enum, Function, Impl, Parameter, Statement, Struct, Type},
         subst::{self as s, Env},
     },
 };
@@ -27,36 +27,41 @@ struct Collector<'src, 't> {
 ///
 /// Removes generic templates, emits concrete instances, and rewrites all
 /// remaining type references so HIR never sees a `Type::Generic` or turbofish
-pub(crate) fn monomorphise<'src>(
+#[derive(Default)]
+pub(in crate::hir) struct Templates<'src> {
+    pub(crate) structs: HashMap<&'src str, Struct<'src>>,
+    pub(crate) enums: HashMap<&'src str, Enum<'src>>,
+    pub(crate) fns: HashMap<&'src str, Function<'src>>,
+    pub(crate) impls: Vec<Impl<'src>>,
+}
+
+pub(in crate::hir) fn monomorphise<'src>(
     statements: &mut Vec<Statement<'src>>,
     arena: &'src bumpalo::Bump,
 ) -> Result<(), HirError<'src>> {
-    let mut struct_templates: HashMap<&'src str, Struct<'src>> = HashMap::new();
-    let mut fn_templates: HashMap<&'src str, Function<'src>> = HashMap::new();
-    let mut impl_templates: Vec<Impl<'src>> = Vec::new();
+    let mut templates = Templates::default();
 
-    statements.retain(|stmt| match stmt {
-        Statement::Struct(s) if !s.generics.is_empty() => {
-            struct_templates.insert(s.name, s.clone());
-            false
-        },
-        Statement::Fn(f) if !f.generics.is_empty() => {
-            fn_templates.insert(f.name, f.clone());
-            false
-        },
-        Statement::Impl(i) if !i.generics.is_empty() => {
-            impl_templates.push(i.clone());
-            false
-        },
-        _ => true,
-    });
+    extract_templates(statements, &mut templates);
+    monomorphise_with_templates(statements, &templates, arena)
+}
 
-    if struct_templates.is_empty() && fn_templates.is_empty() {
+pub(in crate::hir) fn monomorphise_with_templates<'src>(
+    statements: &mut Vec<Statement<'src>>,
+    templates: &Templates<'src>,
+    arena: &'src bumpalo::Bump,
+) -> Result<(), HirError<'src>> {
+    if templates.structs.is_empty() && templates.fns.is_empty() && templates.enums.is_empty() {
         // no generics in this module, nothing to do :D
         return Ok(());
     }
 
-    let template_names = struct_templates.keys().chain(fn_templates.keys()).copied().collect();
+    let template_names = templates
+        .structs
+        .keys()
+        .chain(templates.fns.keys())
+        .chain(templates.enums.keys())
+        .copied()
+        .collect();
     let mut collector = Collector::new(&template_names);
 
     for stmt in statements.iter() {
@@ -67,7 +72,7 @@ pub(crate) fn monomorphise<'src>(
 
     while let Some(inst) = collector.worklist.pop() {
         // env: generic_param_name to concrete type
-        if let Some(tmpl) = struct_templates.get(inst.name) {
+        if let Some(tmpl) = templates.structs.get(inst.name) {
             let env = build_env(tmpl.generics.iter().map(|s| *s), &inst.args, arena);
             let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
 
@@ -76,9 +81,10 @@ pub(crate) fn monomorphise<'src>(
 
             // emit associated impl templates whose receiver matches this struct
             for impl_tmpl in
-                impl_templates.iter().filter(|i| impl_receiver_name(i) == Some(inst.name))
+                templates.impls.iter().filter(|i| impl_receiver_name(i) == Some(inst.name))
             {
-                let concrete_impl = subst_impl(impl_tmpl, mangled_name, &env, arena);
+                let concrete_impl =
+                    subst_impl(impl_tmpl, mangled_name, &env, &template_names, arena);
                 collector.collect_impl(&concrete_impl);
                 new_statements.push(Statement::Impl(concrete_impl));
             }
@@ -86,11 +92,31 @@ pub(crate) fn monomorphise<'src>(
             continue;
         }
 
-        if let Some(tmpl) = fn_templates.get(inst.name) {
+        if let Some(tmpl) = templates.enums.get(inst.name) {
+            let env = build_env(tmpl.generics.iter().map(|s| *s), &inst.args, arena);
+            let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
+
+            let concrete_enum = s::subst_enum(tmpl, mangled_name, &env, arena);
+            new_statements.push(Statement::Enum(concrete_enum));
+
+            // emit associated impl templates whose receiver matches this enum
+            for impl_tmpl in
+                templates.impls.iter().filter(|i| impl_receiver_name(i) == Some(inst.name))
+            {
+                let concrete_impl =
+                    subst_impl(impl_tmpl, mangled_name, &env, &template_names, arena);
+                collector.collect_impl(&concrete_impl);
+                new_statements.push(Statement::Impl(concrete_impl));
+            }
+
+            continue;
+        }
+
+        if let Some(tmpl) = templates.fns.get(inst.name) {
             let env = build_env(tmpl.generics.iter().map(|gb| gb.name), &inst.args, arena);
             let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
 
-            let concrete_fn = s::subst_fn(tmpl, mangled_name, &env, arena);
+            let concrete_fn = s::subst_fn(tmpl, mangled_name, &env, &template_names, arena);
             collector.collect_block(&concrete_fn.body);
             new_statements.push(Statement::Fn(concrete_fn));
 
@@ -100,13 +126,38 @@ pub(crate) fn monomorphise<'src>(
 
     let empty = HashMap::new();
     for stmt in statements.iter_mut() {
-        *stmt = rewrite_stmt(stmt, &empty, arena);
+        *stmt = rewrite_stmt(stmt, &empty, &template_names, arena);
     }
 
     // append concrete instances
     statements.extend(new_statements);
 
     Ok(())
+}
+
+pub(in crate::hir) fn extract_templates<'src>(
+    statements: &mut Vec<Statement<'src>>,
+    templates: &mut Templates<'src>,
+) {
+    statements.retain(|stmt| match stmt {
+        Statement::Struct(s) if !s.generics.is_empty() => {
+            templates.structs.insert(s.name, s.clone());
+            false
+        },
+        Statement::Enum(e) if !e.generics.is_empty() => {
+            templates.enums.insert(e.name, e.clone());
+            false
+        },
+        Statement::Fn(f) if !f.generics.is_empty() => {
+            templates.fns.insert(f.name, f.clone());
+            false
+        },
+        Statement::Impl(i) if !i.generics.is_empty() => {
+            templates.impls.push(i.clone());
+            false
+        },
+        _ => true,
+    });
 }
 
 impl<'src, 'a> Collector<'src, 'a> {
@@ -204,9 +255,13 @@ impl<'src, 'a> Collector<'src, 'a> {
                     self.collect_expr(&f.value);
                 }
             },
-            E::QualifiedCall { name, args, type_args, .. } => {
-                if !type_args.is_empty() && self.templates.contains(name) {
-                    self.push_instantiation(name, get_args(type_args));
+            E::QualifiedCall { qualifier, name, args, type_args, .. } => {
+                if !type_args.is_empty() {
+                    if self.templates.contains(qualifier) {
+                        self.push_instantiation(qualifier, get_args(type_args));
+                    } else if self.templates.contains(name) {
+                        self.push_instantiation(name, get_args(type_args));
+                    }
                 }
                 for a in args {
                     self.collect_expr(a);
@@ -230,6 +285,7 @@ impl<'src, 'a> Collector<'src, 'a> {
 fn rewrite_stmt<'src>(
     s: &Statement<'src>,
     env: &Env<'src>,
+    templates: &HashSet<&'src str>,
     arena: &'src bumpalo::Bump,
 ) -> Statement<'src> {
     match s {
@@ -249,13 +305,13 @@ fn rewrite_stmt<'src>(
                 })
                 .collect(),
             return_type: f.return_type.as_ref().map(|t| s::subst_spanned_type(t, env, arena)),
-            body: s::subst_block(&f.body, env, arena),
+            body: s::subst_block(&f.body, env, templates, arena),
             is_const: f.is_const,
             is_pub: f.is_pub,
             inline: f.inline,
             span: f.span,
         }),
-        _ => s::subst_stmt(s, env, arena),
+        _ => s::subst_stmt(s, env, templates, arena),
     }
 }
 
@@ -314,13 +370,14 @@ fn subst_impl<'src>(
     tmpl: &Impl<'src>,
     mangled_receiver: &'src str,
     env: &Env<'src>,
+    templates: &HashSet<&'src str>,
     arena: &'src bumpalo::Bump,
 ) -> Impl<'src> {
     let methods = tmpl
         .methods
         .iter()
         .map(|m| {
-            let mut substed = s::subst_fn(m, m.name, env, arena);
+            let mut substed = s::subst_fn(m, m.name, env, templates, arena);
             substed.impl_type = Some(mangled_receiver);
             substed
         })
