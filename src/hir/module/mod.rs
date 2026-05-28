@@ -693,14 +693,14 @@ mod tests {
             .unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
-            Statement::Let { init: Some(expr), .. } => expr,
+            Statement::LetInit { init: expr, .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(a_init.kind, ExpressionKind::Integer(4));
         assert_eq!(a_init.typ, Type::new(TypeKind::Uptr));
 
         let b_init = match &main_fn.body.statements[1] {
-            Statement::Let { init: Some(expr), .. } => expr,
+            Statement::LetInit { init: expr, .. } => expr,
             _ => panic!("expected let statement"),
         };
         assert_eq!(b_init.kind, ExpressionKind::Integer(8));

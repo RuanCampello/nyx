@@ -11,31 +11,35 @@ use crate::{
 };
 use std::collections::HashMap;
 
+pub(in crate::hir) struct ResolveCtx<'a> {
+    pub symbols: &'a SymbolTable,
+    pub struct_map: &'a Structs,
+    pub enum_map: &'a Enums,
+    pub self_type: Option<Type>,
+    pub env: Option<&'a HashMap<String, Type>>,
+}
+
 /// Resolve an AST type annotation against the current type namespace.
 pub(in crate::hir) fn resolve_annotation<'h>(
-    symbols: &SymbolTable,
-    struct_map: &Structs,
-    enum_map: &Enums,
+    ctx: &ResolveCtx<'_>,
     typ: &statement::Type<'h>,
     span: Span,
-    self_type: Option<Type>,
-    env: Option<&HashMap<String, Type>>,
 ) -> Result<Type, HirError<'h>> {
     match typ {
         statement::Type::Named(name) => {
-            if let Some(env) = env {
+            if let Some(env) = ctx.env {
                 if let Some(&t) = env.get(*name) {
                     return Ok(t);
                 }
             }
-            symbols
+            ctx.symbols
                 .get_id(name)
-                .and_then(|symbol| scope::nominal_type(struct_map, enum_map, symbol))
+                .and_then(|symbol| scope::nominal_type(ctx.struct_map, ctx.enum_map, symbol))
                 .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
         },
 
         statement::Type::Ref(typ) => {
-            let typ = resolve_annotation(symbols, struct_map, enum_map, typ, span, self_type, env)?;
+            let typ = resolve_annotation(ctx, typ, span)?;
             let to = RefTarget::try_from(typ).map_err(|_| {
                 hir_error!(
                     span,
@@ -48,8 +52,8 @@ pub(in crate::hir) fn resolve_annotation<'h>(
 
             Ok(Type::new(TypeKind::Ref { mutable: false, to }))
         },
-        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
-        statement::Type::RefSelf => self_type.map_or(
+        statement::Type::SelfType => Ok(ctx.self_type.unwrap_or(Type::new(TypeKind::SelfType))),
+        statement::Type::RefSelf => ctx.self_type.map_or(
             Ok(Type::new(TypeKind::Ref {
                 mutable: false,
                 to: RefTarget::new(RefTargetKind::SelfType),
@@ -70,5 +74,21 @@ pub(in crate::hir) fn resolve_annotation<'h>(
         ),
         other => Type::from_primitive_ast(other)
             .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
+    }
+}
+
+impl<'a> ResolveCtx<'a> {
+    pub fn root(symbols: &'a SymbolTable, struct_map: &'a Structs, enum_map: &'a Enums) -> Self {
+        Self { symbols, struct_map, enum_map, self_type: None, env: None }
+    }
+
+    pub fn with_self(mut self, t: Type) -> Self {
+        self.self_type = Some(t);
+        self
+    }
+
+    pub fn with_env_opt(mut self, env: Option<&'a HashMap<String, Type>>) -> Self {
+        self.env = env;
+        self
     }
 }

@@ -47,14 +47,11 @@ pub(in crate::hir) fn extend<'d, 's>(
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
+        let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map);
         let expected_type = type_resolver::resolve_annotation(
-            symbols,
-            &scope.struct_map,
-            &scope.enum_map,
+            &ctx,
             &decl.ast.typ.value(),
             decl.ast.typ.span(),
-            None,
-            None,
         )?;
 
         let lowered = lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std)?;

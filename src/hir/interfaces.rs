@@ -77,20 +77,15 @@ fn validate_impls<'d, 'h>(
             interface.generic_params.is_empty(),
             implementation.interface_type.as_ref().map(|s| s.value()),
         ) {
-            (false, Some(statement::Type::Generic(_, args))) => args
-                .iter()
-                .map(|arg| {
-                    type_resolver::resolve_annotation(
-                        symbols,
-                        &scope.struct_map,
-                        &scope.enum_map,
-                        &arg.value(),
-                        arg.span(),
-                        Some(receiver_type),
-                        None,
-                    )
-                })
-                .collect::<Result<_, _>>()?,
+            (false, Some(statement::Type::Generic(_, args))) => {
+                let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map)
+                    .with_self(receiver_type);
+                args.iter()
+                    .map(|arg| {
+                        type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span())
+                    })
+                    .collect::<Result<_, _>>()?
+            },
             _ => Vec::new(),
         };
 
@@ -140,7 +135,7 @@ fn validate_impls<'d, 'h>(
                     }
                 })?;
 
-            let signature = &scope.signatures[function_id.0 as usize];
+            let signature = &scope.signatures[function_id];
             let impl_receiver_mut = signature.receiver_mutable();
             let impl_explicit_params = signature.explicit_params();
 

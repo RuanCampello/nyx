@@ -80,15 +80,9 @@ pub(in crate::hir) fn lower_struct<'h>(
             return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
         }
 
-        let typ = type_resolver::resolve_annotation(
-            symbols,
-            map,
-            enum_map,
-            &field.typ.value(),
-            field.typ.span(),
-            None,
-            None,
-        )?;
+        let ctx = type_resolver::ResolveCtx::root(symbols, map, enum_map);
+        let typ =
+            type_resolver::resolve_annotation(&ctx, &field.typ.value(), field.typ.span())?;
         if let TypeKind::Struct(dep) = typ.kind() {
             lower_struct(dep.0 as usize, declarations, map, enum_map, symbols, lowered, states)?;
         }

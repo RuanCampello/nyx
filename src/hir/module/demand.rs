@@ -1,7 +1,7 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{self, Declarations, FunctionId, SymbolTable, scope::Scope},
+    hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
     parser::{
         expression::Expression,
         statement::{Function, Interface},
@@ -37,9 +37,9 @@ pub(super) fn lower_reachable<'src>(
     interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'static>,
     symbols: &mut SymbolTable,
-) -> Result<Vec<hir::Function>, ModuleError> {
+) -> Result<IndexVec<hir::FunctionId, hir::Function>, ModuleError> {
     let demand = build_demand(graph, order, interfaces, scope, symbols)?;
-    let mut functions = Vec::new();
+    let mut functions = IndexVec::new();
 
     for &idx in order {
         let node = &mut graph.nodes[idx];
@@ -166,8 +166,7 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
             Expression::Call { callee, args, .. } => {
                 match callee.as_ref() {
                     Expression::Identifier(name, _) => {
-                        if let Some(id) =
-                            self.scope.resolve_function_call(None, name, self.symbols)
+                        if let Some(id) = self.scope.resolve_function_call(None, name, self.symbols)
                         {
                             self.found.push(id);
                         }

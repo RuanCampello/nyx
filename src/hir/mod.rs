@@ -7,6 +7,7 @@ use crate::{
     hir::{
         declarations::Declarations,
         error::HirError,
+        index_vec::{Idx, IndexVec},
         scope::{FunctionSignature, Scope},
         symbols::SymbolTable,
     },
@@ -17,6 +18,7 @@ use crate::{
     },
 };
 use lasso::{Key, Spur};
+use std::ops::Index;
 use std::str::FromStr;
 
 pub mod types;
@@ -25,6 +27,7 @@ pub use types::*;
 mod constants;
 mod declarations;
 pub mod error;
+pub mod index_vec;
 mod interfaces;
 mod lower;
 pub(crate) mod module;
@@ -37,9 +40,9 @@ mod type_resolver;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {
     pub symbols: Vec<String>,
-    pub structs: Vec<Struct>,
-    pub enums: Vec<Enum>,
-    pub functions: Vec<Function>,
+    pub structs: IndexVec<StructId, Struct>,
+    pub enums: IndexVec<EnumId, Enum>,
+    pub functions: IndexVec<FunctionId, Function>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +81,8 @@ pub struct EnumVariant {
 #[derive(Debug, Clone, PartialEq)]
 #[rustfmt::skip]
 pub enum Statement {
-    Let { id: LocalId, init: Option<Expression> },
+    LetInit { id: LocalId, init: Expression },
+    LetUninit { id: LocalId },
     Expr(Expression),
     Return(Option<Expression>),
     If { condition: Expression, then_block: Block, else_block: Option<Block> },
@@ -97,14 +101,13 @@ pub struct Expression {
 pub struct Function {
     pub id: FunctionId,
     pub name: SymbolId,
-    pub method: Option<Method>,
+    pub kind: FunctionKind,
     pub params: Vec<Parameter>,
-    pub locals: Vec<Local>,
+    pub locals: IndexVec<LocalId, Local>,
     pub return_type: Type,
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
-    pub intrinsic: Option<Intrinsic>,
     pub body: Block,
 }
 
@@ -152,7 +155,7 @@ pub enum ExpressionKind {
     Unit,
     Integer(i64),
     Float(f64),
-    String(String),
+    String(SymbolId),
     Char(char),
     Bool(bool),
     Local(LocalId),
@@ -178,10 +181,22 @@ pub enum ExpressionKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Receiver {
-    pub(crate) local: Option<LocalId>,
-    pub(crate) fields: Vec<SymbolId>,
-    pub(crate) value: Option<Box<Expression>>,
+    pub(crate) kind: ReceiverKind,
     pub(crate) typ: Type,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionKind {
+    Free,
+    Method(Method),
+    Intrinsic(Intrinsic),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReceiverKind {
+    Local(LocalId),
+    Field { base: LocalId, path: Vec<SymbolId> },
+    Computed(Box<Expression>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +221,18 @@ pub struct SymbolId(pub Spur);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
+
+impl Idx for FunctionId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Idx for LocalId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
 
 /// Lowers the program AST to a HIR program.
 pub fn lower<'h>(mut statements: Vec<statement::Statement<'h>>) -> Result<Hir, HirError<'h>> {
@@ -242,14 +269,72 @@ pub fn lower<'h>(mut statements: Vec<statement::Statement<'h>>) -> Result<Hir, H
     })
 }
 
+impl FunctionKind {
+    pub fn intrinsic(&self) -> Option<Intrinsic> {
+        match self {
+            Self::Intrinsic(i) => Some(*i),
+            _ => None,
+        }
+    }
+}
+
+impl ReceiverKind {
+    pub fn base_local(&self) -> Option<LocalId> {
+        match self {
+            Self::Local(id) => Some(*id),
+            Self::Field { base, .. } => Some(*base),
+            Self::Computed(_) => None,
+        }
+    }
+}
+
+impl Idx for StructId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Idx for EnumId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Index<FunctionId> for Hir {
+    type Output = Function;
+    fn index(&self, id: FunctionId) -> &Function {
+        &self.functions[id]
+    }
+}
+
+impl Index<StructId> for Hir {
+    type Output = Struct;
+    fn index(&self, id: StructId) -> &Struct {
+        &self.structs[id]
+    }
+}
+
+impl Index<EnumId> for Hir {
+    type Output = Enum;
+    fn index(&self, id: EnumId) -> &Enum {
+        &self.enums[id]
+    }
+}
+
+impl Index<LocalId> for Function {
+    type Output = Local;
+    fn index(&self, id: LocalId) -> &Local {
+        &self.locals[id]
+    }
+}
+
 impl From<&Function> for FunctionSignature {
     fn from(value: &Function) -> Self {
         Self {
             params: value.params.iter().map(|param| param.typ).collect(),
             return_type: value.return_type,
             name: value.name,
-            intrinsic: value.intrinsic,
-            method: value.method,
+            kind: value.kind,
             is_const: value.is_const,
             inline: value.inline,
         }
@@ -566,7 +651,7 @@ mod tests {
         assert_eq!(func.locals[0].typ, Type::new(TypeKind::I32));
 
         let stmt = &func.body.statements[0];
-        assert!(matches!(stmt, Statement::Let { id: LocalId(0), .. }));
+        assert!(matches!(stmt, Statement::LetInit { id: LocalId(0), .. }));
     }
 
     #[test]
@@ -633,7 +718,7 @@ mod tests {
         assert_eq!(func.locals[1].typ, Type::new(TypeKind::I64));
 
         let y_stmt = &func.body.statements[1];
-        assert!(matches!(y_stmt, Statement::Let { id: LocalId(1), .. }));
+        assert!(matches!(y_stmt, Statement::LetInit { id: LocalId(1), .. }));
     }
 
     #[test]
@@ -688,14 +773,14 @@ mod tests {
         let func = &hir.functions[0];
 
         let init_a = match &func.body.statements[0] {
-            Statement::Let { init: Some(e), .. } => e,
+            Statement::LetInit { init: e, .. } => e,
             other => panic!("expected Let with init, got {other:?}"),
         };
         assert_eq!(init_a.typ, Type::new(TypeKind::Uptr));
         assert!(matches!(init_a.kind, ExpressionKind::Integer(100)));
 
         let init_b = match &func.body.statements[1] {
-            Statement::Let { init: Some(e), .. } => e,
+            Statement::LetInit { init: e, .. } => e,
             other => panic!("expected Let with init, got {other:?}"),
         };
         assert_eq!(init_b.typ, Type::new(TypeKind::Iptr));
@@ -943,7 +1028,7 @@ mod tests {
 
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         assert_eq!(hir.functions.len(), 3);
-        assert!(hir.functions.iter().any(|function| function.method.is_some()));
+        assert!(hir.functions.iter().any(|f| matches!(f.kind, FunctionKind::Method(_))));
     }
 
     #[test]

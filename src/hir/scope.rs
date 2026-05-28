@@ -2,10 +2,12 @@
 
 use crate::{
     hir::{
-        Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, Intrinsic, Method,
-        RefTarget, RefTargetKind, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
+        Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
+        Intrinsic, Method, RefTarget, RefTargetKind, Struct, StructId, SymbolId, SymbolTable, Type,
+        TypeKind,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
+        index_vec::IndexVec,
         lower::{self},
         symbols::Mangler,
         type_resolver,
@@ -15,6 +17,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ops::Index,
     str::FromStr,
 };
 
@@ -24,12 +27,12 @@ use std::{
 /// signatures are assigned monotonically increasing IDs across all modules
 pub struct Scope<'s> {
     pub(in crate::hir) mangler: Mangler<'s>,
-    pub signatures: Vec<FunctionSignature>,
+    pub signatures: IndexVec<FunctionId, FunctionSignature>,
     pub functions: Functions,
     pub methods: Methods,
-    pub structs: Vec<Struct>,
+    pub structs: IndexVec<StructId, Struct>,
     pub struct_map: Structs,
-    pub enums: Vec<Enum>,
+    pub enums: IndexVec<EnumId, Enum>,
     pub enum_map: Enums,
     pub enum_variants: EnumVariants,
     pub interfaces: Interfaces,
@@ -42,8 +45,7 @@ pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    pub intrinsic: Option<Intrinsic>,
-    pub method: Option<Method>,
+    pub kind: super::FunctionKind,
     pub is_const: bool,
     pub inline: bool,
 }
@@ -77,12 +79,12 @@ impl<'sc> Scope<'sc> {
     pub fn new() -> Self {
         Self {
             mangler: Mangler::default(),
-            signatures: Vec::new(),
+            signatures: IndexVec::new(),
             functions: HashMap::new(),
             methods: HashMap::new(),
-            structs: Vec::new(),
+            structs: IndexVec::new(),
             struct_map: HashMap::new(),
-            enums: Vec::new(),
+            enums: IndexVec::new(),
             enum_map: HashMap::new(),
             enum_variants: HashMap::new(),
             interfaces: HashMap::new(),
@@ -107,6 +109,7 @@ impl<'sc> Scope<'sc> {
         self.extend_signatures(declarations, symbols, in_std)?;
         super::constants::extend(self, declarations, symbols, in_std)?;
         super::interfaces::validate(self, declarations, symbols)?;
+
         Ok(())
     }
 
@@ -115,7 +118,7 @@ impl<'sc> Scope<'sc> {
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
         in_std: bool,
-    ) -> Result<Vec<Function>, HirError<'s>> {
+    ) -> Result<IndexVec<FunctionId, Function>, HirError<'s>> {
         self.lower_matching_functions(declarations, symbols, in_std, |_| true)
     }
 
@@ -125,7 +128,7 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
         mut should_lower: impl FnMut(FunctionId) -> bool,
-    ) -> Result<Vec<Function>, HirError<'s>> {
+    ) -> Result<IndexVec<FunctionId, Function>, HirError<'s>> {
         declarations
             .functions()
             .filter_map(|function| {
@@ -282,12 +285,7 @@ impl<'sc> Scope<'sc> {
                 .map(|(i, g)| (g.name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
                 .collect();
 
-            let env = if param_env.is_empty() {
-                None
-            } else {
-                Some(&param_env)
-            };
-
+            let env = param_env.is_empty().then_some(&param_env);
             let methods = interface
                 .methods
                 .iter()
@@ -342,13 +340,16 @@ impl<'sc> Scope<'sc> {
             let return_type =
                 self.resolve_return_type(function.return_type.as_ref(), symbols, None, None)?;
             let intrinsic = in_std.then(|| Intrinsic::from_str(function.name).ok()).flatten();
+            let kind = match intrinsic {
+                Some(i) => FunctionKind::Intrinsic(i),
+                None => FunctionKind::Free,
+            };
 
             let sig = FunctionSignature {
                 name: symbol,
                 params,
                 return_type,
-                intrinsic,
-                method: None,
+                kind,
                 is_const: function.is_const,
                 inline: function.inline,
             };
@@ -367,8 +368,7 @@ impl<'sc> Scope<'sc> {
                     name: syscall_sym,
                     params: vec![],
                     return_type: Type::new(TypeKind::Iptr),
-                    intrinsic: Some(Intrinsic::Syscall),
-                    method: None,
+                    kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
                     is_const: false,
                     inline: false,
                 });
@@ -483,18 +483,21 @@ impl<'sc> Scope<'sc> {
                                 _ => None,
                             };
 
-                        self.signatures.push(FunctionSignature {
-                            name: mangled,
-                            params,
-                            return_type,
-                            intrinsic,
-                            is_const: method.is_const,
-                            inline: method.inline,
-                            method: Some(Method {
+                        let kind = match intrinsic {
+                            Some(i) => FunctionKind::Intrinsic(i),
+                            None => FunctionKind::Method(Method {
                                 receiver: receiver_type,
                                 name: method_symbol,
                                 mutable: receiver.mutable,
                             }),
+                        };
+                        self.signatures.push(FunctionSignature {
+                            name: mangled,
+                            params,
+                            return_type,
+                            kind,
+                            is_const: method.is_const,
+                            inline: method.inline,
                         });
                     },
 
@@ -526,8 +529,7 @@ impl<'sc> Scope<'sc> {
                             return_type,
                             is_const: method.is_const,
                             inline: method.inline,
-                            intrinsic: None,
-                            method: None,
+                            kind: super::FunctionKind::Free,
                         });
                     },
                 }
@@ -561,20 +563,14 @@ impl<'sc> Scope<'sc> {
 
         let explicit_args: Vec<_> = match implementation.interface_type.as_ref().map(|s| s.value())
         {
-            Some(statement::Type::Generic(_, args)) => args
-                .iter()
-                .map(|arg| {
-                    type_resolver::resolve_annotation(
-                        symbols,
-                        &self.struct_map,
-                        &self.enum_map,
-                        &arg.value(),
-                        arg.span(),
-                        Some(receiver_type),
-                        None,
-                    )
-                })
-                .collect::<Result<_, _>>()?,
+            Some(statement::Type::Generic(_, args)) => {
+                let ctx =
+                    type_resolver::ResolveCtx::root(symbols, &self.struct_map, &self.enum_map)
+                        .with_self(receiver_type);
+                args.iter()
+                    .map(|arg| type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span()))
+                    .collect::<Result<_, _>>()?
+            },
             _ => Vec::new(),
         };
 
@@ -644,22 +640,18 @@ impl<'sc> Scope<'sc> {
     fn resolve_return_type<'h>(
         &self,
         return_type: Option<&Spanned<statement::Type<'h>>>,
-        symbols: &mut SymbolTable,
+        symbols: &SymbolTable,
         self_type: Option<Type>,
         env: Option<&HashMap<String, Type>>,
     ) -> Result<Type, HirError<'h>> {
+        let ctx = type_resolver::ResolveCtx::root(symbols, &self.struct_map, &self.enum_map)
+            .with_env_opt(env);
+        let ctx = match self_type {
+            Some(t) => ctx.with_self(t),
+            None => ctx,
+        };
         return_type
-            .map(|s| {
-                type_resolver::resolve_annotation(
-                    symbols,
-                    &self.struct_map,
-                    &self.enum_map,
-                    &s.value(),
-                    s.span(),
-                    self_type,
-                    env,
-                )
-            })
+            .map(|s| type_resolver::resolve_annotation(&ctx, &s.value(), s.span()))
             .transpose()
             .map(|opt| opt.unwrap_or_default())
     }
@@ -668,23 +660,19 @@ impl<'sc> Scope<'sc> {
     fn resolve_params<'h>(
         &self,
         params: &[statement::Parameter<'h>],
-        symbols: &mut SymbolTable,
+        symbols: &SymbolTable,
         self_type: Option<Type>,
         env: Option<&HashMap<String, Type>>,
     ) -> Result<Vec<Type>, HirError<'h>> {
+        let ctx = type_resolver::ResolveCtx::root(symbols, &self.struct_map, &self.enum_map)
+            .with_env_opt(env);
+        let ctx = match self_type {
+            Some(t) => ctx.with_self(t),
+            None => ctx,
+        };
         params
             .iter()
-            .map(|p| {
-                type_resolver::resolve_annotation(
-                    symbols,
-                    &self.struct_map,
-                    &self.enum_map,
-                    &p.typ.value(),
-                    p.typ.span(),
-                    self_type,
-                    env,
-                )
-            })
+            .map(|p| type_resolver::resolve_annotation(&ctx, &p.typ.value(), p.typ.span()))
             .collect()
     }
 
@@ -764,7 +752,7 @@ impl<'sc> Scope<'sc> {
 impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn has_receiver(&self) -> bool {
-        self.method.is_some()
+        matches!(self.kind, super::FunctionKind::Method(_))
     }
 
     #[inline]
@@ -783,6 +771,20 @@ impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn explicit_params(&self) -> &[Type] {
         &self.params[self.has_receiver() as usize..]
+    }
+}
+
+impl<'s> Index<StructId> for Scope<'s> {
+    type Output = Struct;
+    fn index(&self, id: StructId) -> &Struct {
+        &self.structs[id]
+    }
+}
+
+impl<'s> Index<EnumId> for Scope<'s> {
+    type Output = Enum;
+    fn index(&self, id: EnumId) -> &Enum {
+        &self.enums[id]
     }
 }
 
