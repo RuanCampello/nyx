@@ -126,6 +126,7 @@ pub struct StructField<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Enum<'i> {
     pub name: &'i str,
+    pub generics: Vec<&'i str>,
     pub variants: Vec<EnumVariant<'i>>,
     pub repr: Spanned<Type<'i>>,
     pub is_pub: bool,
@@ -135,6 +136,7 @@ pub struct Enum<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumVariant<'i> {
     pub name: &'i str,
+    pub payload: Option<Spanned<Type<'i>>>,
     pub value: Option<i64>,
     pub span: Span,
 }
@@ -762,6 +764,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
         let is_pub = parser.consume_keyword(Keyword::Pub)?;
         let enum_token = parser.expect_token(Keyword::Enum)?;
         let (name, _) = parser.expect_identifier()?;
+        let generics = parse_generics::<GenericParam>(parser)?.into_iter().map(|p| p.0).collect();
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut variants = Vec::new();
@@ -794,6 +797,13 @@ impl<'i> Parsable<'i> for Enum<'i> {
             }
 
             let (variant_name, variant_span) = parser.expect_identifier()?;
+
+            let mut payload = None;
+            if parser.consume_punct(Punct::OpenParen)? {
+                payload = Some(parser.parse_node::<Spanned<Type<'i>>>()?);
+                parser.expect_token(Punct::CloseParen)?;
+            }
+
             let (value, span) = match parser.consume_punct(Punct::Eq)? {
                 true => {
                     let token = parser.expect_next()?;
@@ -813,7 +823,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
                 false => (None, variant_span),
             };
 
-            variants.push(EnumVariant { name: variant_name, value, span });
+            variants.push(EnumVariant { name: variant_name, payload, value, span });
         }
 
         let repr = parser
@@ -823,7 +833,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
             .unwrap_or_else(|| Spanned::new(Type::I32, enum_token.span));
         let span = enum_token.span + repr.span();
 
-        Ok(Self { name, variants, repr, is_pub, span })
+        Ok(Self { name, generics, variants, repr, is_pub, span })
     }
 }
 
