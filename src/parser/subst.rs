@@ -31,43 +31,43 @@ pub fn subst_type<'src>(t: &Type<'src>, env: &Env<'src>, arena: &'src bumpalo::B
 pub fn subst_expr<'src>(
     e: &Expression<'src>,
     env: &Env<'src>,
-    bump: &'src bumpalo::Bump,
+    arena: &'src bumpalo::Bump,
 ) -> Expression<'src> {
     match e {
         Expression::Binary { left, operator, right, span } => Expression::Binary {
-            left: Box::new(subst_expr(left, env, bump)),
+            left: Box::new(subst_expr(left, env, arena)),
             operator: *operator,
-            right: Box::new(subst_expr(right, env, bump)),
+            right: Box::new(subst_expr(right, env, arena)),
             span: *span,
         },
         Expression::Unary { operator, expr, span } => Expression::Unary {
             operator: *operator,
-            expr: Box::new(subst_expr(expr, env, bump)),
+            expr: Box::new(subst_expr(expr, env, arena)),
             span: *span,
         },
         Expression::Assignment { target, value, span } => Expression::Assignment {
-            target: Box::new(subst_expr(target, env, bump)),
-            value: Box::new(subst_expr(value, env, bump)),
+            target: Box::new(subst_expr(target, env, arena)),
+            value: Box::new(subst_expr(value, env, arena)),
             span: *span,
         },
         Expression::Field { expr, field, span } => Expression::Field {
-            expr: Box::new(subst_expr(expr, env, bump)),
+            expr: Box::new(subst_expr(expr, env, arena)),
             field: *field,
             span: *span,
         },
+
         Expression::Struct { name, fields, type_args, span } => {
-            let new_type_args: Vec<Spanned<Type<'src>>> =
-                type_args.iter().map(|a| subst_spanned_type(a, env, bump)).collect();
-            let new_name: &'src str = if !new_type_args.is_empty() {
-                bump.alloc_str(&mangle(*name, &new_type_args))
-            } else {
-                *name
+            let new_type_args: Vec<_> =
+                type_args.iter().map(|a| subst_spanned_type(a, env, arena)).collect();
+            let new_name = match !new_type_args.is_empty() {
+                true => arena.alloc_str(&mangle(*name, &new_type_args)),
+                _ => *name,
             };
             let new_fields = fields
                 .iter()
                 .map(|f| StructField {
                     name: f.name,
-                    value: subst_expr(&f.value, env, bump),
+                    value: subst_expr(&f.value, env, arena),
                     span: f.span,
                 })
                 .collect();
@@ -78,21 +78,20 @@ pub fn subst_expr<'src>(
                 span: *span,
             }
         },
+
         Expression::Call { callee, args, type_args, span } => {
-            // If the callee is an identifier and we have type_args, mangle the name
-            let new_type_args: Vec<Spanned<Type<'src>>> =
-                type_args.iter().map(|a| subst_spanned_type(a, env, bump)).collect();
-            let new_callee = if !new_type_args.is_empty() {
-                if let Expression::Identifier(name, id_span) = callee.as_ref() {
-                    let mangled: &'src str = bump.alloc_str(&mangle(name, &new_type_args));
+            // if the callee is an identifier and we have type_args, mangle the name
+            let new_type_args: Vec<_> =
+                type_args.iter().map(|a| subst_spanned_type(a, env, arena)).collect();
+
+            let new_callee = match callee.as_ref() {
+                Expression::Identifier(name, id_span) if !new_type_args.is_empty() => {
+                    let mangled = arena.alloc_str(&mangle(name, &new_type_args));
                     Box::new(Expression::Identifier(mangled, *id_span))
-                } else {
-                    Box::new(subst_expr(callee, env, bump))
-                }
-            } else {
-                Box::new(subst_expr(callee, env, bump))
+                },
+                _ => Box::new(subst_expr(callee, env, arena)),
             };
-            let new_args = args.iter().map(|a| subst_expr(a, env, bump)).collect();
+            let new_args = args.iter().map(|a| subst_expr(a, env, arena)).collect();
             Expression::Call {
                 callee: new_callee,
                 args: new_args,
@@ -101,14 +100,14 @@ pub fn subst_expr<'src>(
             }
         },
         Expression::QualifiedCall { qualifier, name, args, type_args, span } => {
-            let new_type_args: Vec<Spanned<Type<'src>>> =
-                type_args.iter().map(|a| subst_spanned_type(a, env, bump)).collect();
-            let new_name: &'src str = if !new_type_args.is_empty() {
-                bump.alloc_str(&mangle(*name, &new_type_args))
-            } else {
-                *name
+            let new_type_args: Vec<_> =
+                type_args.iter().map(|a| subst_spanned_type(a, env, arena)).collect();
+            let new_name = match !new_type_args.is_empty() {
+                true => arena.alloc_str(&mangle(*name, &new_type_args)),
+                _ => *name,
             };
-            let new_args = args.iter().map(|a| subst_expr(a, env, bump)).collect();
+            let new_args = args.iter().map(|a| subst_expr(a, env, arena)).collect();
+
             Expression::QualifiedCall {
                 qualifier: *qualifier,
                 name: new_name,
@@ -118,8 +117,8 @@ pub fn subst_expr<'src>(
             }
         },
         Expression::Cast { expr, target_type, span } => Expression::Cast {
-            expr: Box::new(subst_expr(expr, env, bump)),
-            target_type: subst_spanned_type(target_type, env, bump),
+            expr: Box::new(subst_expr(expr, env, arena)),
+            target_type: subst_spanned_type(target_type, env, arena),
             span: *span,
         },
         _ => e.clone(),

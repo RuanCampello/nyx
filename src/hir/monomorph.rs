@@ -3,9 +3,7 @@ use crate::{
     lexer::{Spanned, token::Span},
     parser::{
         expression,
-        statement::{
-            self, Block, Else, Function, GenericBound, Impl, Parameter, Statement, Struct, Type,
-        },
+        statement::{self, Block, Else, Function, Impl, Parameter, Statement, Struct, Type},
         subst::{self as s, Env},
     },
 };
@@ -72,29 +70,31 @@ pub(crate) fn monomorphise<'src>(
         if let Some(tmpl) = struct_templates.get(inst.name) {
             let env = build_env(tmpl.generics.iter().map(|s| *s), &inst.args, arena);
             let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
+
             let concrete_struct = subst_struct(tmpl, mangled_name, &env, arena);
             new_statements.push(Statement::Struct(concrete_struct));
 
             // emit associated impl templates whose receiver matches this struct
-            for impl_tmpl in &impl_templates {
-                if impl_receiver_name(impl_tmpl) == Some(inst.name) {
-                    let concrete_impl = subst_impl(impl_tmpl, mangled_name, &env, arena);
-
-                    collector.collect_impl(&concrete_impl);
-                    new_statements.push(Statement::Impl(concrete_impl));
-                }
+            for impl_tmpl in
+                impl_templates.iter().filter(|i| impl_receiver_name(i) == Some(inst.name))
+            {
+                let concrete_impl = subst_impl(impl_tmpl, mangled_name, &env, arena);
+                collector.collect_impl(&concrete_impl);
+                new_statements.push(Statement::Impl(concrete_impl));
             }
-        } else if let Some(tmpl) = fn_templates.get(inst.name) {
-            let env = build_env(
-                tmpl.generics.iter().map(|gb: &GenericBound<'src>| gb.name),
-                &inst.args,
-                arena,
-            );
-            let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
-            let concrete_fn = s::subst_fn(tmpl, mangled_name, &env, arena);
 
+            continue;
+        }
+
+        if let Some(tmpl) = fn_templates.get(inst.name) {
+            let env = build_env(tmpl.generics.iter().map(|gb| gb.name), &inst.args, arena);
+            let mangled_name = arena.alloc_str(&s::mangle(inst.name, &spanned_args(&inst.args)));
+
+            let concrete_fn = s::subst_fn(tmpl, mangled_name, &env, arena);
             collector.collect_block(&concrete_fn.body);
             new_statements.push(Statement::Fn(concrete_fn));
+
+            continue;
         }
     }
 
