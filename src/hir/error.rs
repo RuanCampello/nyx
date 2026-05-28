@@ -262,6 +262,7 @@ pub enum HirErrorKind<'h> {
         primary = "{type_name!} is used here as {bound_name!}",
         help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
     )]
+    #[allow(unused)]
     UnsatisfiedBound { type_name: String, bound_name: String },
 }
 

@@ -378,7 +378,6 @@ mod tests {
         assert!(matches!(kind, ParseErrorKind::ExpectedExpression { .. }), "got {kind:?}");
     }
 
-
     #[test]
     fn parse_unexpected_eof() {
         let kind = parse_check!("fn main() {");
@@ -592,25 +591,49 @@ mod tests {
              let x: i32 = true;
          }"
         );
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::I32), found: Type::new(TypeKind::Bool) });
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::I32),
+                found: Type::new(TypeKind::Bool)
+            }
+        );
     }
 
     #[test]
     fn hir_type_mismatch_return_type() {
         let kind = hir_check!("fn foo(): i32 { true }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::I32), found: Type::new(TypeKind::Bool) });
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::I32),
+                found: Type::new(TypeKind::Bool)
+            }
+        );
     }
 
     #[test]
     fn hir_type_mismatch_if_condition() {
         let kind = hir_check!("fn main() { if 42 { } }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::Bool), found: Type::new(TypeKind::I32) });
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Bool),
+                found: Type::new(TypeKind::I32)
+            }
+        );
     }
 
     #[test]
     fn hir_type_mismatch_while_condition() {
         let kind = hir_check!("fn main() { while 1 { } }");
-        assert_eq!(kind, HirErrorKind::TypeMismatch { expected: Type::new(TypeKind::Bool), found: Type::new(TypeKind::I32) });
+        assert_eq!(
+            kind,
+            HirErrorKind::TypeMismatch {
+                expected: Type::new(TypeKind::Bool),
+                found: Type::new(TypeKind::I32)
+            }
+        );
     }
 
     #[test]
