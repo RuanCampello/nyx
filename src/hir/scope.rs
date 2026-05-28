@@ -223,7 +223,8 @@ impl<'sc> Scope<'sc> {
                     enum_decl.repr.span(),
                     TypeMismatch {
                         expected: Type::new(TypeKind::I32),
-                        found: Type::from(&enum_decl.repr.value())
+                        found: Type::from_primitive_ast(&enum_decl.repr.value())
+                            .unwrap_or_default(),
                     }
                 )
             })?;
@@ -653,14 +654,9 @@ impl<'sc> Scope<'sc> {
                 hir_error!(implementation.span, UnknownInterface { name: interface_name.into() })
             })?;
 
-            let receiver_type = match resolve_primitive_type(implementation.name) {
-                Some(primitive) => primitive,
-                _ => {
-                    let symbol = symbols.insert(implementation.name);
-                    self.nominal_type(symbol)
-                        .expect("impl type must exist in scope after declaration extension")
-                },
-            };
+            let receiver_type = self
+                .lookup_named_type(implementation.name, symbols)
+                .expect("impl type must exist in scope after declaration extension");
 
             // Build concrete type args for the interface's generic params from the impl's interface_type.
             // e.g. `impl i32 with PartialEq<i32>` → concrete_args = [i32]
@@ -735,15 +731,8 @@ impl<'sc> Scope<'sc> {
 
                 let signature = &self.signatures[function_id.0 as usize];
 
-                let (impl_receiver_mut, impl_explicit_params) = match impl_has_receiver {
-                    true => {
-                        let TypeKind::Ref { mutable, .. } = signature.params[0].kind() else {
-                            unreachable!("method signature must start with a receiver reference");
-                        };
-                        (mutable, &signature.params[1..])
-                    },
-                    _ => (false, signature.params.as_slice()),
-                };
+                let impl_receiver_mut = signature.receiver_mutable();
+                let impl_explicit_params = signature.explicit_params();
 
                 let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
                 let required_params: Vec<_> = required
@@ -819,13 +808,11 @@ impl<'sc> Scope<'sc> {
 
         match (function.receiver, impl_type) {
             (Some(_), Some(impl_type)) => {
-                let receiver_type = match resolve_primitive_type(impl_type) {
-                    Some(primitive) => primitive,
-                    _ => self.nominal_type(symbols.insert(impl_type)).ok_or_else(|| HirError {
+                let receiver_type =
+                    self.lookup_named_type(impl_type, symbols).ok_or_else(|| HirError {
                         kind: HirErrorKind::UnknownType { name: impl_type.to_string() },
                         span: function.span,
-                    })?,
-                };
+                    })?;
 
                 let method_symbol = symbols.insert(function.name);
                 self.methods
@@ -842,38 +829,14 @@ impl<'sc> Scope<'sc> {
                 span: function.span,
             }),
 
-            (None, Some(impl_type)) => {
-                let mangled = symbols.insert(&self.mangler.scoped_item(impl_type, function.name));
-
-                self.functions
-                    .get(&mangled)
-                    .copied()
-                    .or_else(|| {
-                        let receiver_type = match resolve_primitive_type(impl_type) {
-                            Some(primitive) => primitive,
-                            _ => self.nominal_type(symbols.insert(impl_type))?,
-                        };
-                        self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
-                            |&(_, interface_sym)| {
-                                let interface_name = symbols.get(interface_sym);
-                                let interface_mangled =
-                                    symbols.insert(&self.mangler.interface_item(
-                                        impl_type,
-                                        interface_name,
-                                        function.name,
-                                    ));
-                                self.functions.get(&interface_mangled).copied()
-                            },
-                        )
-                    })
-                    .ok_or_else(|| HirError {
-                        kind: error_kind(format!("{impl_type}::{}", function.name)),
-                        span: function.span,
-                    })
-            },
+            (None, Some(impl_type)) => self
+                .resolve_qualified_call(impl_type, function.name, symbols)
+                .ok_or_else(|| HirError {
+                    kind: error_kind(format!("{impl_type}::{}", function.name)),
+                    span: function.span,
+                }),
             (None, None) => {
-                let sym = symbols.insert(&self.mangler.item(function.name));
-                self.functions.get(&sym).copied().ok_or_else(|| HirError {
+                self.resolve_top_level_function(function.name, symbols).ok_or_else(|| HirError {
                     kind: error_kind(function.name.to_string()),
                     span: function.span,
                 })
@@ -1067,6 +1030,93 @@ impl<'sc> Scope<'sc> {
     pub(in crate::hir) fn nominal_type(&self, symbol: SymbolId) -> Option<Type> {
         nominal_type(&self.struct_map, &self.enum_map, symbol)
     }
+
+    #[inline]
+    pub(in crate::hir) fn lookup_named_type(
+        &self,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<Type> {
+        resolve_primitive_type(name)
+            .or_else(|| symbols.get_id(name).and_then(|s| self.nominal_type(s)))
+    }
+
+    #[inline]
+    pub(in crate::hir) fn resolve_top_level_function(
+        &self,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<FunctionId> {
+        let mangled = self.mangler.item(name);
+        symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
+    }
+
+    #[inline]
+    pub(in crate::hir) fn resolve_scoped_function(
+        &self,
+        scope: &str,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<FunctionId> {
+        let mangled = self.mangler.scoped_item(scope, name);
+        symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
+    }
+
+    #[inline]
+    pub(in crate::hir) fn resolve_interface_method(
+        &self,
+        scope: &str,
+        interface: &str,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<FunctionId> {
+        let mangled = self.mangler.interface_item(scope, interface, name);
+        symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
+    }
+
+    pub(in crate::hir) fn resolve_qualified_call(
+        &self,
+        qualifier: &str,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<FunctionId> {
+        if let Some(id) = self.resolve_scoped_function(qualifier, name, symbols) {
+            return Some(id);
+        }
+
+        let receiver_type = self.lookup_named_type(qualifier, symbols)?;
+        self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
+            |&(_, interface_sym)| {
+                let interface_name = symbols.get(interface_sym);
+                self.resolve_interface_method(qualifier, interface_name, name, symbols)
+            },
+        )
+    }
+}
+
+impl FunctionSignature {
+    #[inline]
+    pub(in crate::hir) fn has_receiver(&self) -> bool {
+        self.method.is_some()
+    }
+
+    #[inline]
+    pub(in crate::hir) fn receiver_type(&self) -> Option<Type> {
+        self.has_receiver().then(|| self.params[0])
+    }
+
+    #[inline]
+    pub(in crate::hir) fn receiver_mutable(&self) -> bool {
+        match self.receiver_type().map(|t| t.kind()) {
+            Some(TypeKind::Ref { mutable, .. }) => mutable,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub(in crate::hir) fn explicit_params(&self) -> &[Type] {
+        &self.params[self.has_receiver() as usize..]
+    }
 }
 
 struct ConstVisitor<'a, 'd, 'i, 'sc> {
@@ -1119,7 +1169,7 @@ impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
 
 #[inline(always)]
 pub(in crate::hir) fn resolve_primitive_type(name: &str) -> Option<Type> {
-    statement::Type::from_str(name).map(|ast_ty| Type::from(&ast_ty))
+    statement::Type::from_str(name).and_then(|ast_ty| Type::from_primitive_ast(&ast_ty))
 }
 
 #[inline]

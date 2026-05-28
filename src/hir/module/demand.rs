@@ -1,10 +1,7 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{
-        self, Declarations, FunctionId, SymbolTable,
-        scope::{self, Scope},
-    },
+    hir::{self, Declarations, FunctionId, SymbolTable, scope::Scope},
     parser::{
         expression::Expression,
         statement::{Function, Interface},
@@ -70,9 +67,7 @@ fn build_demand<'src>(
     symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
     let declarations = collect_functions(graph, order, interfaces, scope, symbols)?;
-    let main = symbols
-        .get_id(&scope.mangler.item("main"))
-        .and_then(|symbol| scope.functions.get(&symbol).copied());
+    let main = scope.resolve_top_level_function("main", symbols);
 
     let mut demand = DemandSet::default();
     let mut stack = Vec::new();
@@ -134,19 +129,13 @@ fn lookup_declaration_id(
     symbols: &SymbolTable,
 ) -> Option<FunctionId> {
     match function.impl_type {
-        Some(impl_type) => {
-            if let Some(interface) = find_interface_for_method(function, scope, symbols) {
-                let name = scope.mangler.interface_item(impl_type, &interface, function.name);
-                symbols.get_id(&name).and_then(|sym| scope.functions.get(&sym).copied())
-            } else {
-                let name = scope.mangler.scoped_item(impl_type, function.name);
-                symbols.get_id(&name).and_then(|sym| scope.functions.get(&sym).copied())
-            }
+        Some(impl_type) => match find_interface_for_method(function, scope, symbols) {
+            Some(interface) => {
+                scope.resolve_interface_method(impl_type, &interface, function.name, symbols)
+            },
+            None => scope.resolve_scoped_function(impl_type, function.name, symbols),
         },
-        None => {
-            let name = scope.mangler.item(function.name);
-            symbols.get_id(&name).and_then(|sym| scope.functions.get(&sym).copied())
-        },
+        None => scope.resolve_top_level_function(function.name, symbols),
     }
 }
 
@@ -156,10 +145,7 @@ fn find_interface_for_method(
     symbols: &SymbolTable,
 ) -> Option<String> {
     let impl_type = function.impl_type?;
-    let receiver_type = match scope::resolve_primitive_type(impl_type) {
-        Some(primitive) => primitive,
-        _ => scope.nominal_type(symbols.get_id(impl_type)?)?,
-    };
+    let receiver_type = scope.lookup_named_type(impl_type, symbols)?;
     let method_name = symbols.get_id(function.name)?;
 
     scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
@@ -180,7 +166,8 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
             Expression::Call { callee, args, .. } => {
                 match callee.as_ref() {
                     Expression::Identifier(name, _) => {
-                        if let Some(id) = resolve_top_level(name, self.scope, self.symbols) {
+                        if let Some(id) = self.scope.resolve_top_level_function(name, self.symbols)
+                        {
                             self.found.push(id);
                         }
                     },
@@ -205,7 +192,8 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                 let name: &str = kind.into();
                 let id = qualifier
                     .and_then(|q| resolve_qualified(q, name, self.scope, self.symbols))
-                    .or_else(|| resolve_top_level(name, self.scope, self.symbols));
+                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols));
+
                 if let Some(id) = id {
                     self.found.push(id);
                 }
@@ -216,36 +204,13 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
 }
 
 #[inline]
-fn resolve_top_level(name: &str, scope: &Scope<'_>, symbols: &SymbolTable) -> Option<FunctionId> {
-    let symbol = symbols.get_id(&scope.mangler.item(name))?;
-    scope.functions.get(&symbol).copied()
-}
-
-#[inline]
 fn resolve_qualified(
     qualifier: &str,
     name: &str,
     scope: &Scope<'_>,
     symbols: &SymbolTable,
 ) -> Option<FunctionId> {
-    let scoped = symbols.get_id(&scope.mangler.scoped_item(qualifier, name));
-    scoped
-        .and_then(|symbol| scope.functions.get(&symbol).copied())
-        .or_else(|| {
-            let receiver_type = match scope::resolve_primitive_type(qualifier) {
-                Some(primitive) => primitive,
-                _ => scope.nominal_type(symbols.get_id(qualifier)?)?,
-            };
-
-            scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
-                |&(_, interface_sym)| {
-                    let interface_name = symbols.get(interface_sym);
-                    let mangled = scope.mangler.interface_item(qualifier, interface_name, name);
-                    symbols
-                        .get_id(&mangled)
-                        .and_then(|symbol| scope.functions.get(&symbol).copied())
-                },
-            )
-        })
-        .or_else(|| resolve_top_level(name, scope, symbols))
+    scope
+        .resolve_qualified_call(qualifier, name, symbols)
+        .or_else(|| scope.resolve_top_level_function(name, symbols))
 }

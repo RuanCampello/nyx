@@ -12,8 +12,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PRELUDE: &[&str] =
-    &["int.nyx", "float.nyx", "char.nyx", "default.nyx", "result.nyx", "optional.nyx"];
+/// **std** modules loaded eagerly so their inherent methods and interface are always in scope without an explicit `use`
+const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx"];
 
 #[derive(Debug)]
 pub(super) struct ModuleGraph<'src> {

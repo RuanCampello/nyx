@@ -41,12 +41,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         function: &'f statement::Function<'src>,
         in_std: bool,
     ) -> Self {
-        let self_type = function.impl_type.and_then(|impl_type| {
-            scope::resolve_primitive_type(impl_type).or_else(|| {
-                let struct_symbol = symbols.get_id(impl_type)?;
-                scope.nominal_type(struct_symbol)
-            })
-        });
+        let self_type =
+            function.impl_type.and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
 
         Self {
             scope,
@@ -90,18 +86,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let mut params = Vec::with_capacity(signatures.params.len());
 
         if let Some(receiver) = function.receiver {
-            let typ = signatures.params[0];
+            let typ = signatures.receiver_type().expect("receiver in AST without one in signature");
             let symbol = self.symbols.insert("self");
             let id = self.declare_local(symbol, typ, receiver.mutable)?;
             params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
         }
 
-        let receiver_offset = usize::from(function.receiver.is_some());
         params.extend(
             function
                 .params
                 .iter()
-                .zip(signatures.params.iter().skip(receiver_offset))
+                .zip(signatures.explicit_params().iter())
                 .map(|(parameter, &typ)| -> Result<_, HirError> {
                     let symbol = self.symbols.insert(parameter.name);
                     let id = self.declare_local(symbol, typ, parameter.mutable)?;
@@ -658,22 +653,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         )?;
 
                     let signature = &self.scope.signatures[function.0 as usize];
-                    let TypeKind::Ref { mutable, .. } = signature.params[0].kind() else {
-                        unreachable!("method signature must start with receiver reference");
-                    };
+                    let receiver_typ = signature
+                        .receiver_type()
+                        .expect("method call resolved to a free function");
 
-                    if mutable {
-                        if local.filter(|&id| self[id].mutable).is_none() {
-                            let name = match local {
-                                Some(id) => self.symbols.get(self[id].name).to_string(),
-                                None => "temporary".to_string(),
-                            };
+                    if signature.receiver_mutable() && local.filter(|&id| self[id].mutable).is_none()
+                    {
+                        let name = match local {
+                            Some(id) => self.symbols.get(self[id].name).to_string(),
+                            None => "temporary".to_string(),
+                        };
 
-                            return Err(hir_error!(*span, ImmutableBind { name }));
-                        }
+                        return Err(hir_error!(*span, ImmutableBind { name }));
                     }
 
-                    let explicit_params = &signature.params[1..];
+                    let explicit_params = signature.explicit_params();
                     if explicit_params.len() != args.len() {
                         return Err(hir_error!(
                             *span,
@@ -704,7 +698,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                                 local,
                                 fields,
                                 value: receiver_expr,
-                                typ: signature.params[0],
+                                typ: receiver_typ,
                             },
                             args: lowered_args,
                         },
@@ -712,12 +706,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let function_id = match callee.as_ref() {
-                    Expr::Identifier(name, _) => {
-                        let symbol = self.symbols.insert(&self.mangler().item(name));
-                        *self.scope.functions.get(&symbol).ok_or_else(|| {
+                    Expr::Identifier(name, _) => self
+                        .scope
+                        .resolve_top_level_function(name, self.symbols)
+                        .ok_or_else(|| {
                             hir_error!(*span, UnknownFunction { name: name.to_string() })
-                        })?
-                    },
+                        })?,
 
                     other => {
                         return Err(hir_error!(
@@ -731,57 +725,25 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
 
             Expr::QualifiedCall { qualifier, name, args, span, type_args: _ } => {
-                let mangled_name = self.mangler().scoped_item(qualifier, name);
-                let mangled_symbol = self.symbols.insert(&mangled_name);
-
-                let id = self.scope.functions.get(&mangled_symbol).copied().or_else(|| {
-                    let receiver_type = match scope::resolve_primitive_type(qualifier) {
-                        Some(primitive) => primitive,
-                        _ => {
-                            let symbol = self.symbols.insert(qualifier);
-                            self.scope.nominal_type(symbol)?
-                        },
-                    };
-
-                    self.scope
-                        .interface_impls
-                        .iter()
-                        .filter(|&&(t, _)| t == receiver_type)
-                        .find_map(|&(_, interface_sym)| {
-                            let interface_name = self.symbols.get(interface_sym);
-                            let interface_mangled = self.symbols.insert(
-                                &self.mangler().interface_item(qualifier, interface_name, name),
-                            );
-                            self.scope.functions.get(&interface_mangled).copied()
-                        })
-                });
-
-                if let Some(id) = id {
-                    return self.lower_direct_call(id, args, *span);
-                }
-
-                let symbol = self.symbols.insert(&self.mangler().item(name));
-                let id = *self.scope.functions.get(&symbol).ok_or_else(|| {
-                    hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
-                })?;
+                let id = self
+                    .scope
+                    .resolve_qualified_call(qualifier, name, self.symbols)
+                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols))
+                    .ok_or_else(|| {
+                        hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
+                    })?;
 
                 self.lower_direct_call(id, args, *span)
             },
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
-                let name = kind.into();
-                let lookup_symbol = match qualifier {
-                    Some(q) => {
-                        let mangled = self.symbols.insert(&self.mangler().scoped_item(q, name));
-                        match self.scope.functions.contains_key(&mangled) {
-                            true => mangled,
-                            _ => self.symbols.insert(&self.mangler().item(name)),
-                        }
-                    },
-                    None => self.symbols.insert(&self.mangler().item(name)),
-                };
+                let name: &str = kind.into();
+                let exists = qualifier
+                    .and_then(|q| self.scope.resolve_scoped_function(q, name, self.symbols))
+                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols))
+                    .is_some();
 
-                if !self.scope.functions.contains_key(&lookup_symbol) {
+                if !exists {
                     let name =
                         qualifier.map_or_else(|| name.to_string(), |q| format!("{q}::{name}"));
                     return Err(hir_error!(*span, UnknownFunction { name }));
@@ -1090,7 +1052,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
 
-            typ => Ok(typ.into()),
+            // Named / Ref / Self / RefSelf are handled above; the remainder are primitives.
+            // `Generic` would only land here if monomorphisation skipped this site — that's
+            // a compiler bug, not user-reachable, so error visibly rather than panicking.
+            other => Type::from_primitive_ast(other).ok_or_else(|| {
+                hir_error!(span, UnknownType { name: format!("{other:?}") })
+            }),
         }
     }
 
@@ -1401,7 +1368,9 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
         ),
-        typ => Ok(typ.into()),
+        // See the equivalent arm in `FunctionBuilder::resolve_type`.
+        other => Type::from_primitive_ast(other)
+            .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
     }
 }
 

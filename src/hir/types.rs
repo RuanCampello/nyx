@@ -120,8 +120,7 @@ const STRUCT: u8 = 17;
 const ENUM: u8 = 18;
 const SELF_TYPE: u8 = 19;
 const REF: u8 = 20;
-/// Generic type parameter tag. The param index is stored in bits 15..8.
-/// Resolved by [`Type::subst`] during monomorphisation.
+
 const GENERIC_PARAM: u8 = 21;
 
 const MUT_BIT_SHIFT: u32 = 8;
@@ -485,11 +484,11 @@ impl TryFrom<Type> for RefTarget {
     }
 }
 
-impl From<&statement::Type<'_>> for Type {
-    fn from(value: &statement::Type<'_>) -> Self {
+impl Type {
+    pub fn from_primitive_ast(t: &statement::Type<'_>) -> Option<Self> {
         use statement::Type as AstType;
 
-        let kind = match value {
+        let kind = match t {
             AstType::I8 => TypeKind::I8,
             AstType::U8 => TypeKind::U8,
             AstType::I16 => TypeKind::I16,
@@ -511,13 +510,9 @@ impl From<&statement::Type<'_>> for Type {
             AstType::RefSelf => {
                 TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
             },
-            AstType::Named(_) => unreachable!("already resolved by resolve_annotation"),
-            AstType::Ref(_) => unreachable!("Ref types must be resolved by resolve_annotation"),
-            AstType::Generic(_, _) => {
-                unreachable!("Type::Generic must be monomorphized before HIR lowering")
-            },
+            AstType::Named(_) | AstType::Ref(_) | AstType::Generic(_, _) => return None,
         };
-        Type::new(kind)
+        Some(Type::new(kind))
     }
 }
 
