@@ -8,6 +8,7 @@ use crate::{
         error::{HirError, HirErrorKind, hir_error},
         lower::{self},
         symbols::Mangler,
+        type_resolver,
     },
     lexer::Spanned,
     parser::{expression, statement, visitor},
@@ -60,8 +61,8 @@ pub(in crate::hir) struct InterfaceMethodSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    has_receiver: bool,
-    receiver_mut: bool,
+    pub(in crate::hir) has_receiver: bool,
+    pub(in crate::hir) receiver_mut: bool,
 }
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
@@ -104,11 +105,8 @@ impl<'sc> Scope<'sc> {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols, in_std)?;
-        self.extend_constants(declarations, symbols, in_std)?;
-
-        self.validate_interfaces(declarations, symbols)?;
-        self.validate_interface_hierarchy(declarations, symbols)?;
-
+        super::constants::extend(self, declarations, symbols, in_std)?;
+        super::interfaces::validate(self, declarations, symbols)?;
         Ok(())
     }
 
@@ -178,7 +176,7 @@ impl<'sc> Scope<'sc> {
 
         let mut lowered = vec![None; local_declarations.len()];
 
-        lower::lower_structs(
+        super::structs::lower_structs(
             &local_declarations,
             &local_map,
             &self.enum_map,
@@ -321,27 +319,6 @@ impl<'sc> Scope<'sc> {
         Ok(())
     }
 
-    fn validate_interface_hierarchy<'d, 's>(
-        &self,
-        declarations: &Declarations<'d, 's>,
-        symbols: &mut SymbolTable,
-    ) -> Result<(), HirError<'s>> {
-        for interface in &declarations.interfaces {
-            for superinterface in &interface.superinterfaces {
-                let symbol = symbols.insert(superinterface);
-
-                if !self.interfaces.contains_key(&symbol) {
-                    return Err(hir_error!(
-                        interface.span,
-                        UnknownInterface { name: superinterface.to_string() }
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn extend_signatures<'d, 'h>(
         &mut self,
         declarations: &Declarations<'d, 'h>,
@@ -446,62 +423,9 @@ impl<'sc> Scope<'sc> {
                 },
             };
 
-            // Build a generic param env if this impl targets a generic interface.
-            // Injected default methods (e.g., `ne` from `PartialEq<Rhs>`) have
-            // params like `&Rhs` that must resolve against the concrete type args.
-            let impl_param_env: Option<HashMap<String, Type>> =
-                if let Some(interface_name) = implementation.interface {
-                    let interface_sym = symbols.insert(interface_name);
-                    self.interface_impls.insert((receiver_type, interface_sym));
-
-                    if let Some(interface) = self.interfaces.get(&interface_sym) {
-                        if !interface.generic_params.is_empty() {
-                            // Extract explicit type args from `impl T with Iface<Arg1, Arg2>`.
-                            // If none provided (e.g., `impl T with PartialEq`), default each
-                            // generic param to the receiver type (i.e., `Self`).
-                            let explicit_args: Vec<Type> =
-                                match implementation.interface_type.as_ref().map(|s| s.value()) {
-                                    Some(statement::Type::Generic(_, args)) => args
-                                        .iter()
-                                        .map(|arg| {
-                                            lower::resolve_annotation(
-                                                symbols,
-                                                &self.struct_map,
-                                                &self.enum_map,
-                                                &arg.value(),
-                                                arg.span(),
-                                                Some(receiver_type),
-                                                None,
-                                            )
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                    _ => vec![],
-                                };
-
-                            let param_names: Vec<String> = interface
-                                .generic_params
-                                .iter()
-                                .map(|&sym| symbols.get(sym).to_owned())
-                                .collect();
-                            let env: HashMap<String, Type> = param_names
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, name)| {
-                                    let t = explicit_args.get(i).copied().unwrap_or(receiver_type);
-                                    (name, t)
-                                })
-                                .collect();
-                            Some(env)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-            let impl_env_ref = impl_param_env.as_ref().map(|e| e as &HashMap<String, Type>);
+            let impl_param_env =
+                self.build_impl_param_env(implementation, receiver_type, symbols)?;
+            let impl_env_ref = impl_param_env.as_ref();
 
             for method in &implementation.methods {
                 let method_symbol = symbols.insert(method.name);
@@ -612,192 +536,63 @@ impl<'sc> Scope<'sc> {
         Ok(())
     }
 
-    fn validate_interfaces<'d, 'h>(
-        &self,
-        declarations: &Declarations<'d, 'h>,
+    /// Register a `impl T with Iface` relation and, if `Iface` is generic,
+    /// build the param-name → concrete-type map used when resolving method
+    /// annotations.
+    fn build_impl_param_env<'h>(
+        &mut self,
+        implementation: &statement::Impl<'h>,
+        receiver_type: Type,
         symbols: &mut SymbolTable,
-    ) -> Result<(), HirError<'h>> {
-        #[inline]
-        fn substitute_self(typ: Type, self_type: Type) -> Type {
-            match typ.kind() {
-                TypeKind::SelfType => self_type,
-                TypeKind::Ref { mutable, to } if to.kind() == RefTargetKind::SelfType => {
-                    match RefTarget::try_from(self_type) {
-                        Ok(to) => Type::new(TypeKind::Ref { mutable, to }),
-                        _ => typ,
-                    }
-                },
-                _ => typ,
-            }
-        }
+    ) -> Result<Option<HashMap<String, Type>>, HirError<'h>> {
+        let Some(interface_name) = implementation.interface else {
+            return Ok(None);
+        };
 
-        // Pad `concrete` with `SelfType` up to `arity` so any declared GenericParam
-        // index missing a concrete type rewrites to SelfType (which the subsequent
-        // substitute_self pass rewrites to the receiver type). Delegates the actual
-        // substitution to [`Type::subst`] — the single substitution implementation.
-        #[inline]
-        fn build_subst_table(concrete: &[Type], arity: usize) -> Vec<Type> {
-            let mut table: Vec<Type> = concrete.to_vec();
-            if table.len() < arity {
-                table.resize(arity, Type::new(TypeKind::SelfType));
-            }
-            table
-        }
+        let interface_sym = symbols.insert(interface_name);
+        self.interface_impls.insert((receiver_type, interface_sym));
 
-        for implementation in &declarations.impls {
-            let Some(interface_name) = implementation.interface else {
-                continue;
-            };
+        let generic_params: Vec<SymbolId> = match self.interfaces.get(&interface_sym) {
+            Some(interface) if !interface.generic_params.is_empty() => {
+                interface.generic_params.clone()
+            },
+            _ => return Ok(None),
+        };
 
-            let interface_sym = symbols.insert(interface_name);
-            let interface = self.interfaces.get(&interface_sym).ok_or_else(|| {
-                hir_error!(implementation.span, UnknownInterface { name: interface_name.into() })
-            })?;
+        let explicit_args: Vec<_> = match implementation.interface_type.as_ref().map(|s| s.value())
+        {
+            Some(statement::Type::Generic(_, args)) => args
+                .iter()
+                .map(|arg| {
+                    type_resolver::resolve_annotation(
+                        symbols,
+                        &self.struct_map,
+                        &self.enum_map,
+                        &arg.value(),
+                        arg.span(),
+                        Some(receiver_type),
+                        None,
+                    )
+                })
+                .collect::<Result<_, _>>()?,
+            _ => Vec::new(),
+        };
 
-            let receiver_type = self
-                .lookup_named_type(implementation.name, symbols)
-                .expect("impl type must exist in scope after declaration extension");
+        let env = generic_params
+            .into_iter()
+            .enumerate()
+            .map(|(i, sym)| {
+                let name = symbols.get(sym).to_owned();
+                let typ = explicit_args.get(i).copied().unwrap_or(receiver_type);
+                (name, typ)
+            })
+            .collect();
 
-            // Build concrete type args for the interface's generic params from the impl's interface_type.
-            // e.g. `impl i32 with PartialEq<i32>` → concrete_args = [i32]
-            // e.g. `impl Status with PartialEq` → concrete_args = [] (falls back to SelfType)
-            let concrete_args: Vec<Type> = if !interface.generic_params.is_empty() {
-                match implementation.interface_type.as_ref().map(|s| s.value()) {
-                    Some(statement::Type::Generic(_, args)) => args
-                        .iter()
-                        .map(|arg| {
-                            lower::resolve_annotation(
-                                symbols,
-                                &self.struct_map,
-                                &self.enum_map,
-                                &arg.value(),
-                                arg.span(),
-                                Some(receiver_type),
-                                None,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    _ => vec![],
-                }
-            } else {
-                vec![]
-            };
-
-            let impl_methods: HashMap<_, _> =
-                implementation.methods.iter().map(|method| (method.name, method)).collect();
-
-            for required in &interface.superinterfaces {
-                if !self.interfaces.contains_key(required) {
-                    return Err(hir_error!(
-                        implementation.span,
-                        UnknownInterface { name: symbols.get(*required).to_string() }
-                    ));
-                }
-
-                if !self.interface_impls.contains(&(receiver_type, *required)) {
-                    return Err(hir_error!(
-                        implementation.span,
-                        MissingSuperinterfaceImpl {
-                            struct_name: implementation.name.to_string(),
-                            interface_name: interface_name.to_string(),
-                            superinterface_name: symbols.get(*required).to_string(),
-                        }
-                    ));
-                }
-            }
-
-            for required in &interface.methods {
-                let method_name = symbols.get(required.name).to_string();
-                let Some(impl_method) = impl_methods.get(method_name.as_str()) else {
-                    return Err(hir_error!(
-                        implementation.span,
-                        MissingInterfaceMethod {
-                            struct_name: implementation.name.into(),
-                            interface_name: interface_name.into(),
-                            method_name: method_name,
-                        }
-                    ));
-                };
-
-                let impl_has_receiver = impl_method.receiver.is_some();
-                let function_id =
-                    self.function_id(impl_method, symbols, Some(implementation.name), |_| {
-                        HirErrorKind::MissingInterfaceMethod {
-                            struct_name: implementation.name.to_string(),
-                            interface_name: interface_name.to_string(),
-                            method_name: method_name.to_string(),
-                        }
-                    })?;
-
-                let signature = &self.signatures[function_id.0 as usize];
-
-                let impl_receiver_mut = signature.receiver_mutable();
-                let impl_explicit_params = signature.explicit_params();
-
-                let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
-                let required_params: Vec<_> = required
-                    .params
-                    .iter()
-                    .map(|&t| substitute_self(t.subst(&subst_table), receiver_type))
-                    .collect();
-                let required_return_type =
-                    substitute_self(required.return_type.subst(&subst_table), receiver_type);
-
-                let signature_ok = impl_has_receiver == required.has_receiver
-                    && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)
-                    && required_params == impl_explicit_params
-                    && required_return_type == signature.return_type;
-
-                if !signature_ok {
-                    fn format(
-                        name: &str,
-                        has_receiver: bool,
-                        receiver_mut: bool,
-                        params: &[Type],
-                        return_type: Type,
-                    ) -> String {
-                        let mut parameters = match has_receiver {
-                            true => Vec::from([match receiver_mut {
-                                true => "&mut self".to_string(),
-                                _ => "&self".to_string(),
-                            }]),
-                            _ => Vec::new(),
-                        };
-
-                        parameters.extend(params.iter().map(|t| t.to_string()));
-                        format!("fn {name}({}): {return_type}", parameters.join(", "))
-                    }
-
-                    #[rustfmt::skip]
-                    let expected = format(
-                        method_name.as_str(), required.has_receiver, required.receiver_mut,
-                        &required.params, required.return_type,
-                    );
-                    #[rustfmt::skip]
-                    let found = format(
-                        method_name.as_str(), impl_has_receiver, impl_receiver_mut,
-                        impl_explicit_params, signature.return_type,
-                    );
-
-                    return Err(hir_error!(
-                        impl_method.span,
-                        InterfaceSignatureMismatch {
-                            struct_name: implementation.name.to_string(),
-                            interface_name: interface_name.to_string(),
-                            method_name: method_name.to_string(),
-                            expected,
-                            found,
-                            impl_span: implementation.span,
-                        }
-                    ));
-                }
-            }
-        }
-        Ok(())
+        Ok(Some(env))
     }
 
     #[inline]
-    fn function_id<'s>(
+    pub(in crate::hir) fn function_id<'s>(
         &self,
         function: &statement::Function<'s>,
         symbols: &mut SymbolTable,
@@ -836,10 +631,11 @@ impl<'sc> Scope<'sc> {
                     span: function.span,
                 }),
             (None, None) => {
-                self.resolve_top_level_function(function.name, symbols).ok_or_else(|| HirError {
-                    kind: error_kind(function.name.to_string()),
-                    span: function.span,
-                })
+                self.resolve_function(symbols, |m| m.item(function.name))
+                    .ok_or_else(|| HirError {
+                        kind: error_kind(function.name.to_string()),
+                        span: function.span,
+                    })
             },
         }
     }
@@ -854,7 +650,7 @@ impl<'sc> Scope<'sc> {
     ) -> Result<Type, HirError<'h>> {
         return_type
             .map(|s| {
-                lower::resolve_annotation(
+                type_resolver::resolve_annotation(
                     symbols,
                     &self.struct_map,
                     &self.enum_map,
@@ -879,7 +675,7 @@ impl<'sc> Scope<'sc> {
         params
             .iter()
             .map(|p| {
-                lower::resolve_annotation(
+                type_resolver::resolve_annotation(
                     symbols,
                     &self.struct_map,
                     &self.enum_map,
@@ -890,132 +686,6 @@ impl<'sc> Scope<'sc> {
                 )
             })
             .collect()
-    }
-
-    fn extend_constants<'d, 's>(
-        &mut self,
-        declarations: &Declarations<'d, 's>,
-        symbols: &mut SymbolTable,
-        in_std: bool,
-    ) -> Result<(), HirError<'s>> {
-        let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
-
-        // collect top-level constants
-        for c in &declarations.constants {
-            let symbol_id = symbols.insert(&self.mangler.item(c.name));
-            if decls.contains_key(&symbol_id) {
-                return Err(hir_error!(c.span, DuplicateConstant { name: c.name.to_string() }));
-            }
-
-            decls.insert(symbol_id, ConstDecl { mangled_name: symbol_id, impl_type: None, ast: c });
-        }
-
-        // collect impl constants
-        for imp in &declarations.impls {
-            for c in &imp.constants {
-                let mangled = self.mangler.scoped_item(imp.name, c.name);
-                let symbol_id = symbols.insert(&mangled);
-                if decls.contains_key(&symbol_id) {
-                    return Err(hir_error!(
-                        c.span,
-                        DuplicateConstant { name: format!("{}::{}", imp.name, c.name) }
-                    ));
-                }
-
-                decls.insert(
-                    symbol_id,
-                    ConstDecl { mangled_name: symbol_id, impl_type: Some(imp.name), ast: c },
-                );
-            }
-        }
-
-        let mut visiting = HashSet::new();
-        let mut visited = HashSet::new();
-        let mut sorted = Vec::new();
-
-        fn dfs<'d, 's>(
-            symbol_id: SymbolId,
-            mangler: &Mangler,
-            symbols: &SymbolTable,
-            decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
-            visiting: &mut HashSet<SymbolId>,
-            visited: &mut HashSet<SymbolId>,
-            sorted: &mut Vec<SymbolId>,
-        ) -> Result<(), HirError<'s>> {
-            use visitor::Visitor;
-
-            if visiting.contains(&symbol_id) {
-                let decl = decls.get(&symbol_id).unwrap();
-                let name = match decl.impl_type {
-                    Some(impl_type) => format!("{}::{}", impl_type, decl.ast.name),
-                    _ => decl.ast.name.to_string(),
-                };
-                return Err(hir_error!(decl.ast.span, CircularConstant { name }));
-            }
-            if !visited.contains(&symbol_id) {
-                visiting.insert(symbol_id);
-                if let Some(decl) = decls.get(&symbol_id) {
-                    let mut deps = Vec::new();
-                    let mut visitor = ConstVisitor {
-                        current_impl: decl.impl_type,
-                        mangler,
-                        symbols,
-                        decls,
-                        deps: &mut deps,
-                    };
-                    visitor.visit_expression(&decl.ast.value);
-                    for dep in deps {
-                        if decls.contains_key(&dep) {
-                            dfs(dep, mangler, symbols, decls, visiting, visited, sorted)?;
-                        }
-                    }
-                }
-                visiting.remove(&symbol_id);
-                visited.insert(symbol_id);
-                sorted.push(symbol_id);
-            }
-            Ok(())
-        }
-
-        for &symbol_id in decls.keys() {
-            if !visited.contains(&symbol_id) {
-                dfs(
-                    symbol_id,
-                    &self.mangler,
-                    symbols,
-                    &decls,
-                    &mut visiting,
-                    &mut visited,
-                    &mut sorted,
-                )?;
-            }
-        }
-
-        for symbol_id in sorted {
-            let decl = decls.get(&symbol_id).unwrap();
-            let expected_type = lower::resolve_annotation(
-                symbols,
-                &self.struct_map,
-                &self.enum_map,
-                &decl.ast.typ.value(),
-                decl.ast.typ.span(),
-                None,
-                None,
-            )?;
-
-            let lowered =
-                lower::lower_const(self, symbols, &decl.ast.value, expected_type, in_std)?;
-
-            let constant = Constant {
-                name: symbol_id,
-                typ: expected_type,
-                value: lowered,
-                is_pub: decl.ast.is_pub,
-            };
-            self.constants.insert(symbol_id, constant);
-        }
-
-        Ok(())
     }
 
     /// push a new function signature and returns its assigned [`FunctionId`]
@@ -1041,36 +711,15 @@ impl<'sc> Scope<'sc> {
             .or_else(|| symbols.get_id(name).and_then(|s| self.nominal_type(s)))
     }
 
-    #[inline]
-    pub(in crate::hir) fn resolve_top_level_function(
+    pub(in crate::hir) fn resolve_function<F>(
         &self,
-        name: &str,
         symbols: &SymbolTable,
-    ) -> Option<FunctionId> {
-        let mangled = self.mangler.item(name);
-        symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
-    }
-
-    #[inline]
-    pub(in crate::hir) fn resolve_scoped_function(
-        &self,
-        scope: &str,
-        name: &str,
-        symbols: &SymbolTable,
-    ) -> Option<FunctionId> {
-        let mangled = self.mangler.scoped_item(scope, name);
-        symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
-    }
-
-    #[inline]
-    pub(in crate::hir) fn resolve_interface_method(
-        &self,
-        scope: &str,
-        interface: &str,
-        name: &str,
-        symbols: &SymbolTable,
-    ) -> Option<FunctionId> {
-        let mangled = self.mangler.interface_item(scope, interface, name);
+        operation: F,
+    ) -> Option<FunctionId>
+    where
+        F: FnOnce(&Mangler) -> String,
+    {
+        let mangled = operation(&self.mangler);
         symbols.get_id(&mangled).and_then(|s| self.functions.get(&s).copied())
     }
 
@@ -1080,7 +729,7 @@ impl<'sc> Scope<'sc> {
         name: &str,
         symbols: &SymbolTable,
     ) -> Option<FunctionId> {
-        if let Some(id) = self.resolve_scoped_function(qualifier, name, symbols) {
+        if let Some(id) = self.resolve_function(symbols, |m| m.scoped_item(qualifier, name)) {
             return Some(id);
         }
 
@@ -1088,9 +737,27 @@ impl<'sc> Scope<'sc> {
         self.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
             |&(_, interface_sym)| {
                 let interface_name = symbols.get(interface_sym);
-                self.resolve_interface_method(qualifier, interface_name, name, symbols)
+                self.resolve_function(symbols, |m| {
+                    m.interface_item(qualifier, interface_name, name)
+                })
             },
         )
+    }
+
+    #[inline]
+    pub(in crate::hir) fn resolve_function_call(
+        &self,
+        qualifier: Option<&str>,
+        name: &str,
+        symbols: &SymbolTable,
+    ) -> Option<FunctionId> {
+        if let Some(qualifier) = qualifier {
+            if let Some(id) = self.resolve_qualified_call(qualifier, name, symbols) {
+                return Some(id);
+            }
+        }
+
+        self.resolve_function(symbols, |m| m.item(name))
     }
 }
 
@@ -1116,54 +783,6 @@ impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn explicit_params(&self) -> &[Type] {
         &self.params[self.has_receiver() as usize..]
-    }
-}
-
-struct ConstVisitor<'a, 'd, 'i, 'sc> {
-    current_impl: Option<&'a str>,
-    mangler: &'a Mangler<'sc>,
-    symbols: &'a SymbolTable,
-    decls: &'a HashMap<SymbolId, ConstDecl<'d, 'i>>,
-    deps: &'a mut Vec<SymbolId>,
-}
-
-struct ConstDecl<'d, 's> {
-    mangled_name: SymbolId,
-    impl_type: Option<&'d str>,
-    ast: &'d statement::Const<'s>,
-}
-
-impl<'i, 'sc> visitor::Visitor<'i> for ConstVisitor<'_, '_, 'i, 'sc> {
-    fn visit_expression(&mut self, expr: &expression::Expression<'i>) {
-        use expression::Expression as Expr;
-
-        match expr {
-            Expr::Identifier(name, _) => {
-                if let Some(impl_type) = self.current_impl {
-                    let mangled = self.mangler.scoped_item(impl_type, name);
-                    if let Some(symbol_id) = self.symbols.get_id(&mangled) {
-                        if self.decls.contains_key(&symbol_id) {
-                            self.deps.push(symbol_id);
-                            return;
-                        }
-                    }
-                }
-                if let Some(symbol_id) = self.symbols.get_id(&self.mangler.item(name)) {
-                    if self.decls.contains_key(&symbol_id) {
-                        self.deps.push(symbol_id);
-                    }
-                }
-            },
-            Expr::QualifiedName { qualifier, name, .. } => {
-                let mangled = self.mangler.scoped_item(qualifier, name);
-                if let Some(symbol_id) = self.symbols.get_id(&mangled) {
-                    if self.decls.contains_key(&symbol_id) {
-                        self.deps.push(symbol_id);
-                    }
-                }
-            },
-            _ => visitor::walk_expression(self, expr),
-        }
     }
 }
 

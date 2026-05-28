@@ -1,16 +1,17 @@
 use crate::{
     hir::{
         Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
-        LocalId, Parameter, Receiver, RefTarget, RefTargetKind, Statement, Struct, StructField,
-        StructId, StructRepr, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        LocalId, Parameter, Receiver, RefTarget, RefTargetKind, Statement, Struct, StructId,
+        SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
-        scope::{self, Enums, Scope, Structs},
+        scope::Scope,
         symbols::Mangler,
+        type_resolver::resolve_annotation,
     },
     lexer::token::Span,
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else, StructReprKind},
+        statement::{self, Else},
     },
 };
 use std::{
@@ -41,8 +42,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         function: &'f statement::Function<'src>,
         in_std: bool,
     ) -> Self {
-        let self_type =
-            function.impl_type.and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
+        let self_type = function
+            .impl_type
+            .and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
 
         Self {
             scope,
@@ -225,7 +227,6 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
 
             Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
-
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
             Stmt::Enum(_) => unimplemented!("nested enums are not supported yet"),
@@ -653,11 +654,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         )?;
 
                     let signature = &self.scope.signatures[function.0 as usize];
-                    let receiver_typ = signature
-                        .receiver_type()
-                        .expect("method call resolved to a free function");
+                    let receiver_typ =
+                        signature.receiver_type().expect("method call resolved to a free function");
 
-                    if signature.receiver_mutable() && local.filter(|&id| self[id].mutable).is_none()
+                    if signature.receiver_mutable()
+                        && local.filter(|&id| self[id].mutable).is_none()
                     {
                         let name = match local {
                             Some(id) => self.symbols.get(self[id].name).to_string(),
@@ -706,12 +707,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let function_id = match callee.as_ref() {
-                    Expr::Identifier(name, _) => self
-                        .scope
-                        .resolve_top_level_function(name, self.symbols)
-                        .ok_or_else(|| {
-                            hir_error!(*span, UnknownFunction { name: name.to_string() })
-                        })?,
+                    Expr::Identifier(name, _) => {
+                        self.scope.resolve_function_call(None, name, self.symbols).ok_or_else(
+                            || hir_error!(*span, UnknownFunction { name: name.to_string() }),
+                        )?
+                    },
 
                     other => {
                         return Err(hir_error!(
@@ -727,8 +727,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             Expr::QualifiedCall { qualifier, name, args, span, type_args: _ } => {
                 let id = self
                     .scope
-                    .resolve_qualified_call(qualifier, name, self.symbols)
-                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols))
+                    .resolve_function_call(Some(qualifier), name, self.symbols)
                     .ok_or_else(|| {
                         hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
                     })?;
@@ -738,10 +737,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
                 let name: &str = kind.into();
-                let exists = qualifier
-                    .and_then(|q| self.scope.resolve_scoped_function(q, name, self.symbols))
-                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols))
-                    .is_some();
+                let exists =
+                    self.scope.resolve_function_call(*qualifier, name, self.symbols).is_some();
 
                 if !exists {
                     let name =
@@ -1055,9 +1052,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             // Named / Ref / Self / RefSelf are handled above; the remainder are primitives.
             // `Generic` would only land here if monomorphisation skipped this site — that's
             // a compiler bug, not user-reachable, so error visibly rather than panicking.
-            other => Type::from_primitive_ast(other).ok_or_else(|| {
-                hir_error!(span, UnknownType { name: format!("{other:?}") })
-            }),
+            other => Type::from_primitive_ast(other)
+                .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
         }
     }
 
@@ -1206,98 +1202,6 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::hir) enum Visit {
-    Unvisited,
-    Visiting,
-    Visited,
-}
-
-pub(in crate::hir) fn lower_structs<'h>(
-    declarations: &[(SymbolId, &statement::Struct<'h>)],
-    map: &Structs,
-    enum_map: &Enums,
-    symbols: &mut SymbolTable,
-    lowered: &mut [Option<Struct>],
-) -> Result<(), HirError<'h>> {
-    // pre-insert all field names into the symbol table to avoid mutable borrows of symbols
-    // during the topological sort dfs
-    for (_, declaration) in declarations {
-        for field in &declaration.fields {
-            symbols.insert(field.name);
-        }
-    }
-
-    let mut states = vec![Visit::Unvisited; declarations.len()];
-    let symbols = &*symbols; // shadow as shared reference
-    for id in 0..declarations.len() {
-        lower_struct(id, declarations, map, enum_map, symbols, lowered, &mut states)?;
-    }
-
-    Ok(())
-}
-
-pub(in crate::hir) fn lower_struct<'h>(
-    id: usize,
-    declarations: &[(SymbolId, &statement::Struct<'h>)],
-    map: &Structs,
-    enum_map: &Enums,
-    symbols: &SymbolTable,
-    lowered: &mut [Option<Struct>],
-    states: &mut [Visit],
-) -> Result<(), HirError<'h>> {
-    match states[id] {
-        Visit::Visited => return Ok(()),
-        Visit::Visiting => {
-            let (_, declaration) = declarations[id];
-            return Err(hir_error!(
-                declaration.span,
-                CircularStruct { name: declaration.name.into() }
-            ));
-        },
-        Visit::Unvisited => {},
-    }
-
-    states[id] = Visit::Visiting;
-    let (name, declaration) = declarations[id];
-    let mut seen = HashSet::new();
-    let mut fields = Vec::with_capacity(declaration.fields.len());
-
-    for (idx, field) in declaration.fields.iter().enumerate() {
-        let field_symbol = symbols.get_id(field.name).unwrap();
-        if !seen.insert(field_symbol) {
-            return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
-        }
-
-        let typ = resolve_annotation(
-            symbols,
-            map,
-            enum_map,
-            &field.typ.value(),
-            field.typ.span(),
-            None,
-            None,
-        )?;
-        if let TypeKind::Struct(dep) = typ.kind() {
-            lower_struct(dep.0 as usize, declarations, map, enum_map, symbols, lowered, states)?;
-        }
-
-        fields.push(StructField {
-            name: field_symbol,
-            typ,
-            offset: 0,
-            declared_index: idx as u32,
-        });
-    }
-
-    let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
-    let (fields, size, align) = layout_fields(fields, lowered, repr);
-    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, size, align, repr });
-    states[id] = Visit::Visited;
-
-    Ok(())
-}
-
 pub(in crate::hir) fn lower_const<'s, 'src>(
     scope: &'s Scope,
     symbols: &'s mut SymbolTable,
@@ -1311,141 +1215,6 @@ pub(in crate::hir) fn lower_const<'s, 'src>(
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
 
     Ok(lowered)
-}
-
-pub(in crate::hir) fn resolve_annotation<'h>(
-    symbols: &SymbolTable,
-    struct_map: &Structs,
-    enum_map: &Enums,
-    typ: &statement::Type<'h>,
-    span: Span,
-    self_type: Option<Type>,
-    env: Option<&HashMap<String, Type>>,
-) -> Result<Type, HirError<'h>> {
-    match typ {
-        statement::Type::Named(name) => {
-            if let Some(env) = env {
-                if let Some(&t) = env.get(*name) {
-                    return Ok(t);
-                }
-            }
-            symbols
-                .get_id(name)
-                .and_then(|symbol| scope::nominal_type(struct_map, enum_map, symbol))
-                .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
-        },
-        statement::Type::Ref(inner) => {
-            let inner_type =
-                resolve_annotation(symbols, struct_map, enum_map, inner, span, self_type, env)?;
-            let to = RefTarget::try_from(inner_type).map_err(|_| {
-                hir_error!(
-                    span,
-                    TypeMismatch {
-                        expected: Type::new(TypeKind::Struct(Default::default())),
-                        found: inner_type,
-                    }
-                )
-            })?;
-            Ok(Type::new(TypeKind::Ref { mutable: false, to }))
-        },
-        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
-        statement::Type::RefSelf => self_type.map_or(
-            Ok(Type::new(TypeKind::Ref {
-                mutable: false,
-                to: RefTarget::new(RefTargetKind::SelfType),
-            })),
-            |self_typ| {
-                let to = RefTarget::try_from(self_typ).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::new(TypeKind::Struct(Default::default())),
-                            found: self_typ,
-                        }
-                    )
-                })?;
-
-                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
-            },
-        ),
-        // See the equivalent arm in `FunctionBuilder::resolve_type`.
-        other => Type::from_primitive_ast(other)
-            .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
-    }
-}
-
-fn layout_fields(
-    mut fields: Vec<StructField>,
-    structs: &[Option<Struct>],
-    repr: StructRepr,
-) -> (Vec<StructField>, u32, u32) {
-    // PERFORMANCE: field reordering is a small stable sort by layout class
-    match repr.kind {
-        StructReprKind::Default => {
-            fields.sort_by(|a, b| {
-                let (a_size, a_align) = &a.typ.layout(structs);
-                let (b_size, b_align) = &b.typ.layout(structs);
-
-                b_align
-                    .cmp(&a_align)
-                    .then_with(|| b_size.cmp(&a_size))
-                    .then_with(|| a.declared_index.cmp(&b.declared_index))
-            });
-        },
-        StructReprKind::Packed => {
-            let max_align = repr.align.map(|a| a.get()).unwrap_or(1);
-            fields.sort_by(|a, b| {
-                let (a_size, mut a_align) = a.typ.layout(structs);
-                let (b_size, mut b_align) = b.typ.layout(structs);
-                a_align = a_align.min(max_align);
-                b_align = b_align.min(max_align);
-
-                b_align
-                    .cmp(&a_align)
-                    .then_with(|| b_size.cmp(&a_size))
-                    .then_with(|| a.declared_index.cmp(&b.declared_index))
-            });
-        },
-        _ => {},
-    }
-
-    let mut offset = 0;
-    let mut struct_align = 1;
-
-    match repr.kind == StructReprKind::Packed {
-        true => {
-            let max_align = repr.align.map(|a| a.get()).unwrap_or(1);
-            for field in &mut fields {
-                let (size, mut align) = field.typ.layout(structs);
-                align = align.min(max_align);
-                struct_align = struct_align.max(align);
-                offset = align_to(offset, align);
-                field.offset = offset;
-                offset += size;
-            }
-        },
-        _ => {
-            for field in &mut fields {
-                let (size, align) = field.typ.layout(structs);
-                struct_align = struct_align.max(align);
-                offset = align_to(offset, align);
-                field.offset = offset;
-                offset += size;
-            }
-
-            if let Some(align) = repr.align {
-                struct_align = struct_align.max(align.get());
-            }
-        },
-    };
-    let size = align_to(offset, struct_align);
-
-    (fields, size, struct_align)
-}
-
-#[inline(always)]
-const fn align_to(value: u32, align: u32) -> u32 {
-    (value + align - 1) & !(align - 1)
 }
 
 impl<'s, 'f, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'src> {

@@ -22,13 +22,17 @@ use std::str::FromStr;
 pub mod types;
 pub use types::*;
 
+mod constants;
 mod declarations;
 pub mod error;
+mod interfaces;
 mod lower;
 pub(crate) mod module;
 pub(crate) mod monomorph;
 mod scope;
+mod structs;
 mod symbols;
+mod type_resolver;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {

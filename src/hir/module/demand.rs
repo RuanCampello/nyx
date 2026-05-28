@@ -67,7 +67,7 @@ fn build_demand<'src>(
     symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
     let declarations = collect_functions(graph, order, interfaces, scope, symbols)?;
-    let main = scope.resolve_top_level_function("main", symbols);
+    let main = scope.resolve_function(symbols, |m| m.item("main"));
 
     let mut demand = DemandSet::default();
     let mut stack = Vec::new();
@@ -130,12 +130,12 @@ fn lookup_declaration_id(
 ) -> Option<FunctionId> {
     match function.impl_type {
         Some(impl_type) => match find_interface_for_method(function, scope, symbols) {
-            Some(interface) => {
-                scope.resolve_interface_method(impl_type, &interface, function.name, symbols)
-            },
-            None => scope.resolve_scoped_function(impl_type, function.name, symbols),
+            Some(interface) => scope.resolve_function(symbols, |m| {
+                m.interface_item(impl_type, &interface, function.name)
+            }),
+            None => scope.resolve_function(symbols, |m| m.scoped_item(impl_type, function.name)),
         },
-        None => scope.resolve_top_level_function(function.name, symbols),
+        None => scope.resolve_function(symbols, |m| m.item(function.name)),
     }
 }
 
@@ -166,7 +166,8 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
             Expression::Call { callee, args, .. } => {
                 match callee.as_ref() {
                     Expression::Identifier(name, _) => {
-                        if let Some(id) = self.scope.resolve_top_level_function(name, self.symbols)
+                        if let Some(id) =
+                            self.scope.resolve_function_call(None, name, self.symbols)
                         {
                             self.found.push(id);
                         }
@@ -181,7 +182,9 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
                 }
             },
             Expression::QualifiedCall { qualifier, name, args, .. } => {
-                if let Some(id) = resolve_qualified(qualifier, name, self.scope, self.symbols) {
+                if let Some(id) =
+                    self.scope.resolve_function_call(Some(qualifier), name, self.symbols)
+                {
                     self.found.push(id);
                 }
                 for arg in args {
@@ -190,27 +193,11 @@ impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
             },
             Expression::TypeIntrinsic { kind, qualifier, .. } => {
                 let name: &str = kind.into();
-                let id = qualifier
-                    .and_then(|q| resolve_qualified(q, name, self.scope, self.symbols))
-                    .or_else(|| self.scope.resolve_top_level_function(name, self.symbols));
-
-                if let Some(id) = id {
+                if let Some(id) = self.scope.resolve_function_call(*qualifier, name, self.symbols) {
                     self.found.push(id);
                 }
             },
             _ => visitor::walk_expression(self, expr),
         }
     }
-}
-
-#[inline]
-fn resolve_qualified(
-    qualifier: &str,
-    name: &str,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-) -> Option<FunctionId> {
-    scope
-        .resolve_qualified_call(qualifier, name, symbols)
-        .or_else(|| scope.resolve_top_level_function(name, symbols))
 }
