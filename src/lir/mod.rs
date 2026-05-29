@@ -311,7 +311,7 @@ impl Type {
                 let (size, align) = layouts[id.0 as usize].into();
                 MachineType::Struct { size, align }
             }
-            TypeKind::Enum(id) => id.1.typ().machine_type(layouts),
+            TypeKind::Enum(id) => id.repr().typ().machine_type(layouts),
             TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
             TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
             TypeKind::GenericParam(_) => {

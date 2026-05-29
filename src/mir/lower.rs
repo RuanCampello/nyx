@@ -486,6 +486,8 @@ impl<'a> FunctionLower<'a> {
 
                 Ok(value)
             },
+
+            other => unimplemented!("{other:#?}"),
         }
     }
 
@@ -905,6 +907,7 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut IndexVec<LocalId, bool>
         | ExpressionKind::String(_)
         | ExpressionKind::Char(_)
         | ExpressionKind::Bool(_) => {},
+        other => unimplemented!("{other:#?}"),
     }
 }
 
