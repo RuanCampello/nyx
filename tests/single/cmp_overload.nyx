@@ -1,0 +1,42 @@
+use std::cmp::{PartialEq, PartialOrd, Ordering};
+use std::optional::{Optional};
+use std::panic::{assert};
+
+struct Meters {
+    value: i32,
+}
+
+impl Meters with PartialEq<Meters> {
+    fn eq(&self, other: &Meters): bool {
+        self.value == other.value
+    }
+}
+
+impl Meters with PartialOrd<Meters> {
+    fn partial_compare(&self, other: &Meters): Optional<Ordering> {
+        if self.value < other.value return Optional::Some(Ordering::Less);
+        if self.value > other.value return Optional::Some(Ordering::Greater);
+
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+fn main(): i32 {
+    let a = Meters { value: 3 };
+    let b = Meters { value: 5 };
+    let c = Meters { value: 3 };
+
+    assert(!(a == c));
+    assert(a != c);
+    assert(a == b);
+
+    assert(a < b);
+    assert(b > a);
+    assert(a <= c);
+    assert(a >= c);
+
+    assert(a > b);
+    assert(b < a);
+
+    42
+}
