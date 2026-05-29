@@ -1,2 +1,6 @@
+use std::clone::{Clone};
+
 pub const fn size_of() {}
 pub const fn align_of() {}
+
+pub interface Copy: Clone {}

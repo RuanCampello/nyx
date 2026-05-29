@@ -1,5 +1,4 @@
 use std::panic;
-use std::optional::{Optional};
 
 pub enum Result<S, F> {
     Success(S),

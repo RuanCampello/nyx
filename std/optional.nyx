@@ -1,5 +1,4 @@
 use std::panic;
-use std::result::{Result};
 
 pub enum Optional<T> {
     Some(T),
