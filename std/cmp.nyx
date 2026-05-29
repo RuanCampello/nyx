@@ -54,7 +54,7 @@ pub interface Orderable: Equatable + Comparable {
         else return self;
     }
 
-    inline fn clamp(self, min: Self, max: Self) -> Self {
+    inline fn clamp(self, min: Self, max: Self): Self {
         assert(min <= max);
 
         if self < min return min;
