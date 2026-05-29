@@ -1,6 +1,6 @@
 use crate::parser::expression::Expression;
 use crate::parser::statement::{
-    Block, Const, Function, If, Impl, Interface, Let, Return, Statement, While,
+    Block, Const, Function, If, Impl, Interface, Let, Match, Return, Statement, While,
 };
 
 pub trait Visitor<'i>: Sized {
@@ -16,7 +16,15 @@ pub trait Visitor<'i>: Sized {
             Statement::Interface(interface) => self.visit_interface(interface),
             Statement::Expr(expr, _) => self.visit_expression(expr),
             Statement::Block(block) => self.visit_block(block),
+            Statement::Match(match_stmt) => self.visit_match(match_stmt),
             Statement::Struct(_) | Statement::Enum(_) | Statement::Use(_) => {},
+        }
+    }
+
+    fn visit_match(&mut self, match_stmt: &Match<'i>) {
+        self.visit_expression(&match_stmt.scrutinee);
+        for arm in &match_stmt.arms {
+            self.visit_expression(&arm.body);
         }
     }
 

@@ -20,6 +20,7 @@ pub enum Statement<'i> {
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
     Use(UseDecl<'i>),
+    Match(Match<'i>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -59,6 +60,36 @@ pub struct While<'i> {
     pub condition: Expression<'i>,
     pub body: Block<'i>,
     pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Match<'i> {
+    pub scrutinee: Expression<'i>,
+    pub arms: Vec<MatchArm<'i>>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchArm<'i> {
+    /// the arm fires if any of these patterns matches
+    pub patterns: Vec<Pattern<'i>>,
+    pub body: Expression<'i>,
+    pub span: Span,
+}
+
+/// A match pattern
+///
+/// Bare identifiers (`Ident`) are resolved against the
+/// scrutinee enum during lowering: a known variant name becomes a
+/// fieldless variant match, otherwise it binds the payload
+#[derive(Debug, PartialEq, Clone)]
+pub enum Pattern<'i> {
+    /// `_`
+    Wildcard,
+    /// bare identifier, fieldless variant or a payload binding
+    Ident(&'i str),
+    /// `Qualifier::Name`, `Name(sub)`, or `Qualifier::Name(sub)`
+    Variant { qualifier: Option<&'i str>, name: &'i str, sub: Option<Box<Pattern<'i>>> },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -260,6 +291,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
         match kind {
             TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Match) => Ok(Statement::Match(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
             TokenKind::Keyword(Keyword::Use) => Ok(Statement::Use(parser.parse_node()?)),
@@ -495,6 +527,14 @@ impl<'i> Parsable<'i> for If<'i> {
                     else_branch = Some(Box::new(Else::Block(else_block)));
                 },
 
+                // brace-less `else return x;`
+                TokenKind::Keyword(Keyword::Return) => {
+                    let ret = Return::parse(parser)?;
+                    end_pos = ret.span.end;
+                    let block = Block { span: ret.span, statements: vec![Statement::Return(ret)] };
+                    else_branch = Some(Box::new(Else::Block(block)));
+                },
+
                 _ => {
                     let expr = Expression::parse(parser)?;
                     let semi = parser.expect_token(Punct::Semicolon)?;
@@ -518,6 +558,77 @@ impl<'i> Parsable<'i> for While<'i> {
         let span = while_token.span + body.span;
 
         Ok(While { condition, body, span })
+    }
+}
+
+impl<'i> Parsable<'i> for Match<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let match_token = parser.expect_token(Keyword::Match)?;
+        let scrutinee = Expression::parse(parser)?;
+        parser.expect_token(Punct::OpenBrace)?;
+
+        let mut arms = Vec::new();
+        loop {
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => break,
+                Some(Err(err)) => return Err(err.into()),
+                None => {
+                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, match_token.span));
+                },
+                _ => {},
+            }
+
+            let mut patterns = vec![parser.parse_node()?];
+            while parser.consume_punct(Punct::Pipe)? {
+                patterns.push(parser.parse_node()?)
+            }
+
+            parser.expect_token(Punct::Arrow)?;
+            let body = Expression::parse(parser)?;
+            let span = body.span();
+            arms.push(MatchArm { patterns, body, span });
+
+            // arms are comma-separated, with an optional trailing comma
+            if !parser.consume_punct(Punct::Comma)? {
+                break;
+            }
+        }
+
+        let close = parser.expect_token(Punct::CloseBrace)?;
+        Ok(Match { scrutinee, arms, span: match_token.span + close.span })
+    }
+}
+
+impl<'i> Parsable<'i> for Pattern<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Pattern<'i>, ParserError<'i>> {
+        let pattern_payload = |parser: &mut Parser<'i>| -> Result<_, ParserError<'i>> {
+            if !parser.consume_punct(Punct::OpenParen)? {
+                return Ok(None);
+            }
+
+            let pattern: Pattern = parser.parse_node()?;
+            parser.expect_token(Punct::CloseParen)?;
+            Ok(Some(Box::new(pattern)))
+        };
+
+        let (ident, _) = parser.expect_identifier()?;
+
+        // `Qualifier::Name` (optionally `Qualifier::Name(sub)`)
+        if parser.consume_punct(Punct::ColonColon)? {
+            let (name, _) = parser.expect_identifier()?;
+            let sub = pattern_payload(parser)?;
+            return Ok(Pattern::Variant { qualifier: Some(ident), name, sub });
+        }
+
+        // `Name(sub)`
+        if let Some(sub) = pattern_payload(parser)? {
+            return Ok(Pattern::Variant { qualifier: None, name: ident, sub: Some(sub) });
+        }
+
+        Ok(match ident {
+            "_" => Pattern::Wildcard,
+            _ => Pattern::Ident(ident),
+        })
     }
 }
 
@@ -810,9 +921,17 @@ impl<'i> Parsable<'i> for Enum<'i> {
 
             let (value, span) = match parser.consume_punct(Punct::Eq)? {
                 true => {
+                    let negative = parser.consume_punct(Punct::Minus)?;
                     let token = parser.expect_next()?;
                     match token.kind {
-                        TokenKind::Integer(value) => (Some(value), variant_span + token.span),
+                        TokenKind::Integer(value) => {
+                            let value = if negative {
+                                -value
+                            } else {
+                                value
+                            };
+                            (Some(value), variant_span + token.span)
+                        },
                         _ => {
                             return Err(ParserError::new(
                                 ParseErrorKind::Expected {
@@ -852,7 +971,21 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let mut superinterfaces = Vec::new();
         if parser.consume_punct(Punct::Colon)? {
             loop {
-                superinterfaces.push(parser.expect_identifier()?.0);
+                // parse as a full type so generic args (`PartialEq<Rhs>`) are consumed,
+                // then keep only the bare interface name
+                let bound = Spanned::<Type>::parse(parser)?;
+                let name = match bound.value() {
+                    Type::Named(name) | Type::Generic(name, _) => name,
+                    _ => {
+                        return Err(ParserError::new(
+                            ParseErrorKind::ExpectedIdentifier {
+                                found: TokenKind::Punct(Punct::Colon),
+                            },
+                            bound.span(),
+                        ));
+                    },
+                };
+                superinterfaces.push(name);
 
                 if !parser.consume_punct(Punct::Plus)? {
                     break;
@@ -886,6 +1019,9 @@ impl<'i> Parsable<'i> for Interface<'i> {
 
 impl<'i> Parsable<'i> for InterfaceMethod<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        // accept (and ignore) `inline`/`const` modifiers on interface methods
+        let _inline = parser.consume_keyword(Keyword::Inline)?;
+        let _is_const = parser.consume_keyword(Keyword::Const)?;
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
 
@@ -1256,6 +1392,7 @@ impl<'s> Statement<'s> {
             Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
+            Self::Match(m) => m.span,
         }
     }
 }
