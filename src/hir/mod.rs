@@ -21,7 +21,6 @@ use lasso::{Key, Spur};
 use std::ops::Index;
 use std::str::FromStr;
 
-pub mod types;
 pub use types::*;
 
 mod constants;
@@ -36,6 +35,7 @@ mod scope;
 mod structs;
 mod symbols;
 mod type_resolver;
+pub mod types;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir {
@@ -56,7 +56,7 @@ pub struct Struct {
     pub(crate) repr: StructRepr,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StructField {
     pub(crate) name: SymbolId,
     pub(crate) typ: Type,
@@ -72,10 +72,11 @@ pub struct Enum {
     pub(crate) repr: EnumRepr,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumVariant {
     pub(crate) name: SymbolId,
     pub(crate) value: i64,
+    pub(crate) payload: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +178,10 @@ pub enum ExpressionKind {
     Syscall { code: SyscallCode, args: Vec<Expression> },
     IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
     Cast { from: Box<Expression>, to: Type },
+    /// read the discriminant of an enum value as its backing repr integer
+    EnumTag { value: Box<Expression> },
+    /// read a variant payload out of an enum value (typed as the payload)
+    EnumPayload { value: Box<Expression> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -296,7 +301,7 @@ impl Idx for StructId {
 
 impl Idx for EnumId {
     fn to_usize(self) -> usize {
-        self.0 as usize
+        self.id() as usize
     }
 }
 

@@ -1,13 +1,13 @@
 use crate::{
     hir::{
-        Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
-        LocalId, Parameter, Receiver, ReceiverKind, RefTarget, RefTargetKind, Statement, Struct,
-        StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        Block, Constant, EnumId, EnumVariant, Expression, ExpressionKind, Function, FunctionId,
+        Intrinsic, Local, LocalId, Parameter, Receiver, ReceiverKind, RefTarget, RefTargetKind,
+        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
         scope::Scope,
         symbols::Mangler,
-        type_resolver::resolve_annotation,
+        type_resolver::{self, resolve_annotation},
     },
     lexer::token::Span,
     parser::{
@@ -226,6 +226,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok((Statement::Block(block), returns))
             },
 
+            Stmt::Match(statement) => self.lower_match(statement, is_tail),
+
             Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
@@ -348,9 +350,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let lowered_expr = self.lower_expr(inner, None)?;
                 let src = lowered_expr.typ;
 
-                if !src.is_primitive_castable() || !target.is_primitive_castable() {
+                let src_castable =
+                    src.is_primitive_castable() || matches!(src.kind(), TypeKind::Enum(_));
+                if !src_castable || !target.is_primitive_castable() {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
+
+                let lowered_expr = match src.kind() {
+                    TypeKind::Enum(id) => Expression {
+                        kind: ExpressionKind::EnumTag { value: Box::new(lowered_expr) },
+                        typ: id.repr().typ(),
+                        span: *span,
+                    },
+                    _ => lowered_expr,
+                };
 
                 Ok(Expression {
                     kind: ExpressionKind::Cast { from: Box::new(lowered_expr), to: target },
@@ -750,7 +763,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
-                let ctx = crate::hir::type_resolver::ResolveCtx::root(
+                let ctx = type_resolver::ResolveCtx::root(
                     self.symbols,
                     &self.scope.struct_map,
                     &self.scope.enum_map,
@@ -773,6 +786,78 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 })
             },
         }
+    }
+
+    fn lower_match(
+        &mut self,
+        match_stmt: &statement::Match<'src>,
+        is_tail: bool,
+    ) -> Result<(Statement, bool), HirError<'src>> {
+        let scrutinee = self.lower_expr(&match_stmt.scrutinee, None)?;
+        let scrutinee_enum = self.enum_type(scrutinee.typ, match_stmt.scrutinee.span())?;
+        let temp_name = format!("__match{}", self.next_local);
+        let temp_symbol = self.symbols.insert(&temp_name);
+        let temp = self.declare_local(temp_symbol, scrutinee.typ, false)?;
+        let init = Statement::LetInit { id: temp, init: scrutinee };
+
+        let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+        let hint = tail_ret.then_some(self.return_type);
+        let mut else_block = None;
+        let mut all_return = true;
+
+        for arm in match_stmt.arms.iter().rev() {
+            let condition = self.match_arm_condition(temp, scrutinee_enum, arm)?;
+            let (then_block, returns) =
+                self.lower_match_arm_body(temp, scrutinee_enum, arm, hint)?;
+            all_return &= returns;
+
+            let statement = Statement::If { condition, then_block, else_block };
+            else_block = Some(Block { statements: vec![statement], span: arm.span });
+        }
+
+        let statements = match else_block {
+            Some(block) => vec![init, Statement::Block(block)],
+            None => vec![init],
+        };
+
+        Ok((Statement::Block(Block { statements, span: match_stmt.span }), all_return))
+    }
+
+    fn lower_match_arm_body(
+        &mut self,
+        local: LocalId,
+        id: EnumId,
+        arm: &statement::MatchArm<'src>,
+        hint: Option<Type>,
+    ) -> Result<(Block, bool), HirError<'src>> {
+        self.push_scope();
+        let mut statements = Vec::new();
+
+        if let Some((name, payload_type)) = self.payload_binding(id, &arm.patterns, arm.span)? {
+            let symbol = self.symbols.insert(name);
+            let id = self.declare_local(symbol, payload_type, false)?;
+            let value = Expression {
+                kind: ExpressionKind::EnumPayload {
+                    value: Box::new(self.local_expr(local, arm.span)),
+                },
+                typ: payload_type,
+                span: arm.span,
+            };
+            statements.push(Statement::LetInit { id, init: value });
+        }
+
+        let body = self.lower_expr(&arm.body, hint)?;
+        let returns = hint.is_some();
+        match hint {
+            Some(expected) => {
+                self.assert_type(expected, body.typ, body.span)?;
+                statements.push(Statement::Return(Some(body)));
+            },
+            None => statements.push(Statement::Expr(body)),
+        }
+
+        self.pop_scope();
+        Ok((Block { statements, span: arm.span }, returns))
     }
 
     fn lower_if(
@@ -926,6 +1011,171 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             span,
             kind: ExpressionKind::Syscall { code, args },
         })
+    }
+
+    fn match_arm_condition(
+        &mut self,
+        local: LocalId,
+        id: EnumId,
+        arm: &statement::MatchArm<'src>,
+    ) -> Result<Expression, HirError<'src>> {
+        let mut condition = None;
+
+        for pattern in &arm.patterns {
+            let next = self.pattern_condition(local, id, pattern, arm.span)?;
+            condition = Some(match condition {
+                Some(left) => Expression {
+                    typ: Type::new(TypeKind::Bool),
+                    span: arm.span,
+                    kind: ExpressionKind::Binary {
+                        operator: BinaryOperator::Or,
+                        left: Box::new(left),
+                        right: Box::new(next),
+                    },
+                },
+                None => next,
+            });
+        }
+
+        Ok(condition.unwrap_or(Expression {
+            kind: ExpressionKind::Bool(true),
+            typ: Type::new(TypeKind::Bool),
+            span: arm.span,
+        }))
+    }
+
+    #[inline]
+    fn pattern_condition(
+        &mut self,
+        local: LocalId,
+        id: EnumId,
+        pattern: &statement::Pattern<'src>,
+        span: Span,
+    ) -> Result<Expression, HirError<'src>> {
+        match pattern {
+            statement::Pattern::Wildcard => Ok(Expression {
+                kind: ExpressionKind::Bool(true),
+                typ: Type::new(TypeKind::Bool),
+                span,
+            }),
+            statement::Pattern::Ident(name) => match self.variant(id, None, name) {
+                Some(variant) => self.tag_comparison(local, id, variant.value, span),
+                None => Ok(Expression {
+                    kind: ExpressionKind::Bool(true),
+                    typ: Type::new(TypeKind::Bool),
+                    span,
+                }),
+            },
+            statement::Pattern::Variant { qualifier, name, .. } => {
+                let variant = self.variant(id, *qualifier, name).ok_or_else(|| {
+                    hir_error!(span, UndeclaredIdentifier { name: name.to_string() })
+                })?;
+                self.tag_comparison(local, id, variant.value, span)
+            },
+        }
+    }
+
+    fn payload_binding(
+        &mut self,
+        id: EnumId,
+        patterns: &[statement::Pattern<'src>],
+        span: Span,
+    ) -> Result<Option<(&'src str, Type)>, HirError<'src>> {
+        for pattern in patterns {
+            if let Some(binding) = self.pattern_payload_binding(id, pattern, span)? {
+                return Ok(Some(binding));
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[inline]
+    fn pattern_payload_binding(
+        &mut self,
+        id: EnumId,
+        pattern: &statement::Pattern<'src>,
+        span: Span,
+    ) -> Result<Option<(&'src str, Type)>, HirError<'src>> {
+        let statement::Pattern::Variant { qualifier, name, sub } = pattern else {
+            return Ok(None);
+        };
+        let Some(sub) = sub.as_deref() else {
+            return Ok(None);
+        };
+
+        let variant = self
+            .variant(id, *qualifier, name)
+            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
+        let Some(payload) = variant.payload else {
+            return Ok(None);
+        };
+
+        Ok(match sub {
+            statement::Pattern::Wildcard => None,
+            statement::Pattern::Ident(name) => Some((*name, payload)),
+            _ => None,
+        })
+    }
+
+    #[inline]
+    fn tag_comparison(
+        &self,
+        local: LocalId,
+        id: EnumId,
+        value: i64,
+        span: Span,
+    ) -> Result<Expression, HirError<'src>> {
+        let tag_type = id.repr().typ();
+
+        let left = Expression {
+            kind: ExpressionKind::EnumTag { value: Box::new(self.local_expr(local, span)) },
+            typ: tag_type,
+            span,
+        };
+        let right = Expression { kind: ExpressionKind::Integer(value), typ: tag_type, span };
+
+        Ok(Expression {
+            kind: ExpressionKind::Binary {
+                operator: BinaryOperator::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            typ: Type::new(TypeKind::Bool),
+            span,
+        })
+    }
+
+    #[inline]
+    fn enum_type(&self, typ: Type, span: Span) -> Result<EnumId, HirError<'src>> {
+        let default = TypeKind::Enum(Default::default());
+
+        match typ.kind() {
+            TypeKind::Enum(id) => Ok(id),
+            TypeKind::Ref { to, .. } => match to.kind() {
+                RefTargetKind::Enum(id) => Ok(id),
+                _ => {
+                    Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ }))
+                },
+            },
+            _ => Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ })),
+        }
+    }
+
+    fn variant(&mut self, id: EnumId, qualifier: Option<&str>, name: &str) -> Option<EnumVariant> {
+        if let Some(qualifier) = qualifier {
+            let enum_symbol = self.symbols.insert(qualifier);
+            if self.scope.enum_map.get(&enum_symbol).copied() != Some(id) {
+                return None;
+            }
+        }
+
+        let symbol = self.symbols.insert(name);
+        self.scope.enums[id]
+            .variants
+            .iter()
+            .find(|variant| variant.name == symbol)
+            .copied()
     }
 
     fn type_for_binary(

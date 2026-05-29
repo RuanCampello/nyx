@@ -81,8 +81,7 @@ pub(in crate::hir) fn lower_struct<'h>(
         }
 
         let ctx = type_resolver::ResolveCtx::root(symbols, map, enum_map);
-        let typ =
-            type_resolver::resolve_annotation(&ctx, &field.typ.value(), field.typ.span())?;
+        let typ = type_resolver::resolve_annotation(&ctx, &field.typ.value(), field.typ.span())?;
         if let TypeKind::Struct(dep) = typ.kind() {
             lower_struct(dep.0 as usize, declarations, map, enum_map, symbols, lowered, states)?;
         }
@@ -175,6 +174,6 @@ fn layout_fields(
 }
 
 #[inline(always)]
-const fn align_to(value: u32, align: u32) -> u32 {
+pub(in crate::hir) const fn align_to(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }

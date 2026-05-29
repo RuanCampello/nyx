@@ -1,19 +1,18 @@
-#![allow(unused)]
-
 use crate::{
     hir::{
-        Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
-        Intrinsic, Method, RefTarget, RefTargetKind, Struct, StructId, SymbolId, SymbolTable, Type,
-        TypeKind,
+        Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
+        RefTarget, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
+        interfaces,
         lower::{self},
+        structs,
         symbols::Mangler,
         type_resolver,
     },
     lexer::Spanned,
-    parser::{expression, statement, visitor},
+    parser::statement,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -45,13 +44,15 @@ pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    pub kind: super::FunctionKind,
+    pub kind: FunctionKind,
     pub is_const: bool,
+    #[allow(unused)]
     pub inline: bool,
 }
 
 #[derive(Debug)]
 pub(in crate::hir) struct InterfaceSignature {
+    #[allow(unused)]
     pub name: SymbolId,
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
@@ -107,8 +108,8 @@ impl<'sc> Scope<'sc> {
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols, in_std)?;
-        super::constants::extend(self, declarations, symbols, in_std)?;
-        super::interfaces::validate(self, declarations, symbols)?;
+        constants::extend(self, declarations, symbols, in_std)?;
+        interfaces::validate(self, declarations, symbols)?;
 
         Ok(())
     }
@@ -159,10 +160,12 @@ impl<'sc> Scope<'sc> {
 
         for struct_decl in &declarations.structs {
             let symbol = symbols.insert(struct_decl.name);
-            if self.struct_map.contains_key(&symbol)
+
+            let already_exists = self.struct_map.contains_key(&symbol)
                 || self.enum_map.contains_key(&symbol)
-                || local_map.contains_key(&symbol)
-            {
+                || local_map.contains_key(&symbol);
+
+            if already_exists {
                 return Err(hir_error!(
                     struct_decl.span,
                     DuplicateStruct { name: struct_decl.name.to_string() }
@@ -179,7 +182,7 @@ impl<'sc> Scope<'sc> {
 
         let mut lowered = vec![None; local_declarations.len()];
 
-        super::structs::lower_structs(
+        structs::lower_structs(
             &local_declarations,
             &local_map,
             &self.enum_map,
@@ -229,7 +232,7 @@ impl<'sc> Scope<'sc> {
                     }
                 )
             })?;
-            let id = EnumId(self.enums.len() as u32, repr);
+            let id = EnumId::new(self.enums.len() as u32, repr);
             let mut seen = HashSet::new();
             let mut next_value = 0;
             let mut variants = Vec::with_capacity(enum_decl.variants.len());
@@ -245,8 +248,18 @@ impl<'sc> Scope<'sc> {
 
                 let value = variant.value.unwrap_or(next_value);
                 next_value = value + 1;
+
+                // resolve a tagged-union variant payload (e.g. `Some(T)`)
+                // concrete by now since generic enums are monomorphised before scope extension
+                #[rustfmt::skip]
+                let payload = variant.payload.as_ref().map(|typ| {
+                    let ctx = type_resolver::ResolveCtx::root(symbols, &self.struct_map, &self.enum_map);
+                    type_resolver::resolve_annotation(&ctx, &typ.value(), typ.span())
+                })
+                .transpose()?;
+
                 self.enum_variants.insert((symbol, variant_symbol), (id, value));
-                variants.push(EnumVariant { name: variant_symbol, value });
+                variants.push(EnumVariant { name: variant_symbol, value, payload });
             }
 
             self.enum_map.insert(symbol, id);
@@ -285,7 +298,7 @@ impl<'sc> Scope<'sc> {
                 .map(|(i, g)| (g.name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
                 .collect();
 
-            let env = param_env.is_empty().then_some(&param_env);
+            let env = (!param_env.is_empty()).then_some(&param_env);
             let methods = interface
                 .methods
                 .iter()
@@ -389,7 +402,7 @@ impl<'sc> Scope<'sc> {
         for implementation in declarations.impls.iter().copied() {
             let receiver_type = match resolve_primitive_type(implementation.name) {
                 Some(primitive) if in_std => primitive,
-                Some(primitive) => {
+                Some(_) => {
                     return Err(hir_error!(
                         implementation.span,
                         OrphanImpl { name: implementation.name.to_string() }
@@ -529,7 +542,7 @@ impl<'sc> Scope<'sc> {
                             return_type,
                             is_const: method.is_const,
                             inline: method.inline,
-                            kind: super::FunctionKind::Free,
+                            kind: FunctionKind::Free,
                         });
                     },
                 }
@@ -752,7 +765,7 @@ impl<'sc> Scope<'sc> {
 impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn has_receiver(&self) -> bool {
-        matches!(self.kind, super::FunctionKind::Method(_))
+        matches!(self.kind, FunctionKind::Method(_))
     }
 
     #[inline]

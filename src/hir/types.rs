@@ -97,7 +97,7 @@ pub enum EnumRepr {
 pub struct StructId(pub u32);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumId(pub u32, pub EnumRepr);
+pub struct EnumId(u32, EnumRepr);
 
 const UNIT: u8 = 0;
 const I8: u8 = 1;
@@ -558,6 +558,22 @@ impl std::fmt::Display for Type {
         };
 
         f.write_str(s)
+    }
+}
+
+impl EnumId {
+    pub const fn new(id: u32, repr: EnumRepr) -> Self {
+        Self(id, repr)
+    }
+
+    #[inline(always)]
+    pub const fn id(self) -> u32 {
+        self.0
+    }
+
+    #[inline(always)]
+    pub const fn repr(self) -> EnumRepr {
+        self.1
     }
 }
 
