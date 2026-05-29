@@ -1,4 +1,5 @@
 use std::panic::{assert};
+use std::optional::{Optional};
 
 pub interface PartialEq<Rhs> {
     fn eq(&self, other: &Rhs): bool;
@@ -10,39 +11,39 @@ pub interface PartialEq<Rhs> {
 pub interface Equatable: PartialEq {}
 
 pub interface PartialOrd<Rhs>: PartialEq<Rhs> {
-    fn partial_compare(&self, other: &Rhs): Option<Ordering>;
+    fn partial_compare(&self, other: &Rhs): Optional<Ordering>;
 
     inline fn lt(&self, other: &Rhs): bool {
         match self.partial_compare(other) {
-            Ordering::Less -> true,
+            Optional::Some(Ordering::Less) -> true,
             _ -> false,
         }
     }
 
     inline fn le(&self, other: &Rhs): bool {
         match self.partial_compare(other) {
-            Ordering::Less | Ordering::Equal -> true,
+            Optional::Some(Ordering::Less) | Optional::Some(Ordering::Equal) -> true,
             _ -> false,
         }
     }
 
     inline fn gt(&self, other: &Rhs): bool {
         match self.partial_compare(other) {
-            Ordering::Greater -> true,
+            Optional::Some(Ordering::Greater) -> true,
             _ -> false,
         }
     }
 
     inline fn ge(&self, other: &Rhs): bool {
         match self.partial_compare(other) {
-            Ordering::Greater | Ordering::Equal -> true,
+            Optional::Some(Ordering::Greater) | Optional::Some(Ordering::Equal) -> true,
             _ -> false,
         }
     }
 }
 
-pub interface Orderable: Equatable + Comparable {
-    fn compare(&self, other: &Rhs): Ordering;
+pub interface Orderable: PartialOrd {
+    fn compare(&self, other: &Self): Ordering;
 
     inline fn max(self, other: Self): Self {
         if other < self return self;

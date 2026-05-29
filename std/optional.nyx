@@ -1,3 +1,6 @@
+use std::panic;
+use std::result::{Result};
+
 pub enum Optional<T> {
     Some(T),
     None,
@@ -43,7 +46,7 @@ impl Optional<T> {
         !self.is_some()
     }
 
-    pub const fn success_or<E>(self, fail: F): Result<T, E> {
+    pub const fn success_or<E>(self, fail: E): Result<T, E> {
         match self {
             Some(value) -> Result::Success(value),
             None -> Result::Failure(fail),
