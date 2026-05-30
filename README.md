@@ -78,6 +78,7 @@ Inspiration and architectural references for the Nyx compiler and standard libra
 
 - [GCC Optimisation Options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) - Documentation on optimisation levels and flags used in modern compilers
 - [The Hare Programming Language](https://harelang.org/) - A clean, simple, and statically-typed systems language that served design inspiration
+- [rustc IR guide](https://rustc-dev-guide.rust-lang.org/part-3-intro.html) = Documentation on different levels to represent a rust source code before code generation.
 
 ### Algorithms
 
