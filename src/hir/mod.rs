@@ -170,7 +170,8 @@ pub struct Block<'hir> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Arm<'hir> {
-    pub patterns: &'hir [Pattern<'hir>],
+    pub pattern: &'hir Pattern<'hir>,
+    pub guard: Option<&'hir Expression<'hir>>,
     pub body: &'hir Expression<'hir>,
     pub span: Span,
 }
@@ -183,26 +184,22 @@ pub struct Pattern<'hir> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PatternKind<'hir> {
-    /// Represents a wildcard pattern `_`
+    /// Wildcard `_`, matches anything, binds nothing
     Wildcard,
+    /// Binds the matched value to a local (e.g. `x` in `match v { x => ... }`)
     Binding(LocalId),
-    Variant {
-        id: EnumId,
-        variant_idx: usize,
-        sub: Option<&'hir Pattern<'hir>>,
-    },
+    /// Enum variant pattern (e.g. `Some(x)`)
+    Variant { id: EnumId, variant_idx: usize, sub: Option<&'hir Pattern<'hir>> },
+    /// Or-pattern `A | B | C`
+    Or(&'hir [Pattern<'hir>]),
+    /// Literal value
+    Literal(Literal),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExpressionKind<'hir> {
-    // TODO: fold those into a literal enum
-    #[allow(unused)]
-    Unit,
-    Integer(i64),
-    Float(f64),
-    String(SymbolId),
-    Char(char),
-    Bool(bool),
+    /// An inline literal value
+    Literal(Literal),
     Local(LocalId),
     /// A unary operation (e.g. `!x`)
     Unary {
@@ -230,18 +227,17 @@ pub enum ExpressionKind<'hir> {
         id: StructId,
         fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
     },
-    /// A fucntion call
+    /// A function call
     Call {
         function: FunctionId,
         args: &'hir [&'hir Expression<'hir>],
     },
-    /// A method call (e.g. `x.size_of::<T>(a, b)`)
+    /// A method call (e.g. `x.foo(a, b)`)
     MethodCall {
         function: FunctionId,
         receiver: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
-    // TODO: we should be able to fold those variants later
     Syscall {
         code: SyscallCode,
         args: &'hir [&'hir Expression<'hir>],
@@ -268,11 +264,14 @@ pub enum ExpressionKind<'hir> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Literal {
-    Str(SymbolId),
-    Char(char),
-    Bool(bool),
+    /// Unit value `()`, the zero-sized type
+    #[allow(unused)]
+    Unit,
     Int(i64),
     Float(f64),
+    Bool(bool),
+    Char(char),
+    Str(SymbolId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,6 +432,30 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             is_const: value.is_const,
             inline: value.inline,
         }
+    }
+}
+
+impl From<i64> for ExpressionKind<'_> {
+    fn from(value: i64) -> Self {
+        Self::Literal(Literal::Int(value))
+    }
+}
+
+impl From<f64> for ExpressionKind<'_> {
+    fn from(value: f64) -> Self {
+        Self::Literal(Literal::Float(value))
+    }
+}
+
+impl From<char> for ExpressionKind<'_> {
+    fn from(value: char) -> Self {
+        Self::Literal(Literal::Char(value))
+    }
+}
+
+impl From<bool> for ExpressionKind<'_> {
+    fn from(value: bool) -> Self {
+        Self::Literal(Literal::Bool(value))
     }
 }
 
@@ -736,7 +759,7 @@ mod tests {
             other => panic!("expected Call expression, got {other:?}"),
         };
         assert_eq!(main.typeck.type_of(arg.id), Type::new(TypeKind::I64));
-        assert!(matches!(arg.kind, ExpressionKind::Integer(1)));
+        assert_eq!(arg.kind, 1.into());
     }
 
     #[test]
@@ -809,7 +832,7 @@ mod tests {
 
         assert_eq!(target_id, LocalId(0));
         assert_eq!(func.typeck.type_of(value.id), Type::new(TypeKind::I64));
-        assert!(matches!(value.kind, ExpressionKind::Integer(99)));
+        assert_eq!(value.kind, 99.into());
     }
 
     #[test]
@@ -896,14 +919,14 @@ mod tests {
             other => panic!("expected Let with init, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(init_a.id), Type::new(TypeKind::Uptr));
-        assert!(matches!(init_a.kind, ExpressionKind::Integer(100)));
+        assert_eq!(init_a.kind, 100.into());
 
         let init_b = match &func.body.statements[1] {
             Statement::LetInit { init: e, .. } => *e,
             other => panic!("expected Let with init, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(init_b.id), Type::new(TypeKind::Iptr));
-        assert!(matches!(init_b.kind, ExpressionKind::Integer(200)));
+        assert_eq!(init_b.kind, 200.into());
     }
 
     #[test]
@@ -1286,7 +1309,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::I32));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(42)));
+        assert_eq!(ret_expr.kind, 42.into());
     }
 
     #[test]
@@ -1308,7 +1331,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::Uptr));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+        assert_eq!(ret_expr.kind, 127.into());
     }
 
     #[test]
@@ -1334,7 +1357,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(main_func.typeck.type_of(ret_expr.id), Type::new(TypeKind::Uptr));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+        assert_eq!(ret_expr.kind, 127.into());
     }
 
     #[test]
@@ -1357,8 +1380,8 @@ mod tests {
         match &ret_expr.kind {
             ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
-                assert!(matches!(left.kind, ExpressionKind::Integer(10)));
-                assert!(matches!(right.kind, ExpressionKind::Integer(2)));
+                assert_eq!(left.kind, 10.into());
+                assert_eq!(right.kind, 2.into());
             },
             other => panic!("expected Binary expression, got {other:?}"),
         };

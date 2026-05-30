@@ -278,16 +278,21 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let typ = self.typeck.type_of(expr.id);
 
         match &expr.kind {
-            ExpressionKind::Unit => Ok(Operand::Const(Const::Unit)),
-            ExpressionKind::Integer(n) => Ok(Operand::Const(Const::Int(*n, typ))),
-            ExpressionKind::Float(f) => Ok(Operand::Const(Const::Float(*f, typ))),
-            ExpressionKind::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
-            ExpressionKind::Char(c) => Ok(Operand::Const(Const::Int(*c as i64, typ))),
-            ExpressionKind::String(sym) => {
-                let s = &self.symbols[sym.0.into_usize()];
-                let id = self.intern_string(&s.clone());
-                let len = s.len();
-                Ok(Operand::Const(Const::Str { id, len }))
+            ExpressionKind::Literal(lit) => {
+                use hir::Literal as L;
+                Ok(match lit {
+                    L::Unit => Operand::Const(Const::Unit),
+                    L::Int(n) => Operand::Const(Const::Int(*n, typ)),
+                    L::Float(f) => Operand::Const(Const::Float(*f, typ)),
+                    L::Bool(b) => Operand::Const(Const::Bool(*b)),
+                    L::Char(c) => Operand::Const(Const::Int(*c as i64, typ)),
+                    L::Str(sym) => {
+                        let s = &self.symbols[sym.0.into_usize()];
+                        let id = self.intern_string(&s.clone());
+                        let len = s.len();
+                        Operand::Const(Const::Str { id, len })
+                    },
+                })
             },
 
             ExpressionKind::Local(local_id) => {
@@ -546,21 +551,31 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     next_arm_check_block = self.new_block();
                     let body_block = self.new_block();
 
-                    let mut current_pat_check_block = self.current_block_id();
-                    for (pat_idx, pat) in arm.patterns.iter().enumerate() {
-                        self.select_block(current_pat_check_block);
-                        let is_last_pat = pat_idx == arm.patterns.len() - 1;
-                        let fail_target = if is_last_pat {
-                            next_arm_check_block
-                        } else {
-                            self.new_block()
-                        };
+                    self.lower_pattern_match(
+                        scrutinee_place,
+                        arm.pattern,
+                        body_block,
+                        next_arm_check_block,
+                    )?;
 
-                        self.lower_pattern_match(scrutinee_place, pat, body_block, fail_target)?;
-                        current_pat_check_block = fail_target;
-                    }
-
+                    // Guard: if present, evaluate in the body block; on false, fall through to
+                    // next arm.
                     self.select_block(body_block);
+                    let exec_block = if let Some(guard_expr) = arm.guard {
+                        let guarded = self.new_block();
+                        let guard_val = self.lower_expr(guard_expr)?;
+                        self.terminate(Terminator::Branch {
+                            condition: guard_val,
+                            then_block: guarded,
+                            else_block: next_arm_check_block,
+                        });
+                        self.select_block(guarded);
+                        guarded
+                    } else {
+                        body_block
+                    };
+                    let _ = exec_block;
+
                     let body_operand = self.lower_expr(arm.body)?;
                     if let Some(res_place) = match_result_place {
                         self.emit(res_place, Kind::Assign(body_operand));
@@ -713,6 +728,49 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.terminate(Terminator::Jump(success_block));
                 Ok(())
             },
+            PatternKind::Literal(lit) => {
+                use hir::Literal as L;
+                let place_typ = place.typ;
+                let rhs = match lit {
+                    L::Int(n) => Const::Int(*n, place_typ),
+                    L::Float(f) => Const::Float(*f, place_typ),
+                    L::Bool(b) => Const::Bool(*b),
+                    L::Char(c) => Const::Int(*c as i64, place_typ),
+                    L::Unit | L::Str(_) => {
+                        self.terminate(Terminator::Jump(success_block));
+                        return Ok(());
+                    },
+                };
+                let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                self.emit(
+                    cond,
+                    Kind::Binary {
+                        operation: BinaryOperator::Eq,
+                        lhs: Operand::Place(place),
+                        rhs: Operand::Const(rhs),
+                        checked: false,
+                    },
+                );
+                self.terminate(Terminator::Branch {
+                    condition: Operand::Place(cond),
+                    then_block: success_block,
+                    else_block: fail_block,
+                });
+                Ok(())
+            },
+            PatternKind::Or(alternatives) => {
+                // Try each alternative; if one matches, jump to success_block.
+                // Only the last failure goes to fail_block.
+                let mut check = self.current_block_id();
+                let n = alternatives.len();
+                for (i, alt) in alternatives.iter().enumerate() {
+                    self.select_block(check);
+                    let next = if i + 1 < n { self.new_block() } else { fail_block };
+                    self.lower_pattern_match(place, alt, success_block, next)?;
+                    check = next;
+                }
+                Ok(())
+            },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
                 let enum_def = &self.enums[*enum_id];
                 let variant = enum_def.variants[*variant_idx];
@@ -816,26 +874,28 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline]
     fn push_print_arg(&self, output: &mut String, expr: &Expression<'hir>) {
-        match &expr.kind {
-            ExpressionKind::String(sym) => {
-                let text = &self.symbols[sym.0.into_usize()];
-                output.push_str(&self.expand_interpolation(text))
-            },
-            _ if let Some(text) = self.capture_constant_expr(expr) => {
-                output.push_str(&text);
-            },
-            _ => {},
+        if let ExpressionKind::Literal(hir::Literal::Str(sym)) = &expr.kind {
+            let text = &self.symbols[sym.0.into_usize()];
+            output.push_str(&self.expand_interpolation(text));
+        } else if let Some(text) = self.capture_constant_expr(expr) {
+            output.push_str(&text);
         }
     }
 
     #[inline]
     fn capture_constant_expr(&self, expr: &Expression<'hir>) -> Option<String> {
         match &expr.kind {
-            ExpressionKind::Integer(value) => Some(value.to_string()),
-            ExpressionKind::Float(value) => Some(value.to_string()),
-            ExpressionKind::Bool(value) => Some(value.to_string()),
-            ExpressionKind::Char(value) => Some(value.to_string()),
-            ExpressionKind::String(sym) => Some(self.symbols[sym.0.into_usize()].clone()),
+            ExpressionKind::Literal(lit) => {
+                use hir::Literal as L;
+                Some(match lit {
+                    L::Int(n) => n.to_string(),
+                    L::Float(f) => f.to_string(),
+                    L::Bool(b) => b.to_string(),
+                    L::Char(c) => c.to_string(),
+                    L::Str(sym) => self.symbols[sym.0.into_usize()].clone(),
+                    L::Unit => String::new(),
+                })
+            },
             ExpressionKind::Local(id) => self.constant_locals[*id].clone(),
             _ => None,
         }
@@ -1095,12 +1155,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         },
         ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
         ExpressionKind::TypeIntrinsic { .. } => {},
-        ExpressionKind::Unit
-        | ExpressionKind::Integer(_)
-        | ExpressionKind::Float(_)
-        | ExpressionKind::String(_)
-        | ExpressionKind::Char(_)
-        | ExpressionKind::Bool(_) => {},
+        ExpressionKind::Literal(_) => {},
         other => unimplemented!("{other:#?}"),
     }
 }

@@ -578,6 +578,11 @@ impl<'f> Lower<'f> {
                 then_block: then_block.into(),
                 else_block: else_block.into(),
             },
+            T::Switch { discriminant, targets, default } => {
+                let cond = self.operand(&discriminant, id);
+                let targets = targets.iter().map(|(val, target)| (*val, (*target).into())).collect();
+                Term::Switch { cond, targets, default: default.into() }
+            }
         };
 
         self.lir.set_term(id, terminator);
@@ -588,7 +593,7 @@ impl<'f> Lower<'f> {
             self.lower_instruction(id, instruction);
         }
 
-        self.lower_terminator(id, block.terminator);
+        self.lower_terminator(id, block.terminator.clone());
     }
 
     /// Copy physical ABI (and stack slots) registers into VRegs

@@ -570,7 +570,7 @@ mod tests {
 
             args.len() == 1 && {
                 let arg = args[0];
-                matches!(arg.kind, hir::ExpressionKind::Integer(0))
+                matches!(arg.kind, hir::ExpressionKind::Literal(hir::Literal::Int(0)))
                     && main.typeck.type_of(arg.id) == hir::Type::new(hir::TypeKind::I32)
             }
         });

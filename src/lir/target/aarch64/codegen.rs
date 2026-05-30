@@ -629,6 +629,27 @@ impl Function<AArch64> {
                 emit!(out, "b       .L_block_{name}_{}", else_block.0);
             },
 
+            Term::Switch { cond, targets, default } => {
+                let bytes = self.reg_bytes(cond);
+                let condition = alloc.location(cond, &bytes);
+
+                // if the discriminant is on the stack, load it into a scratch register
+                let cmp_src = match is_mem(&condition) {
+                    true => {
+                        let scratch = A64Reg::X16.name(bytes);
+                        emit_load(out, scratch, &condition, bytes);
+                        scratch
+                    },
+                    false => condition.as_str(),
+                };
+
+                for (val, block) in targets {
+                    emit!(out, "cmp     {cmp_src}, #{val}");
+                    emit!(out, "b.eq    .L_block_{name}_{}", block.0);
+                }
+                emit!(out, "b       .L_block_{name}_{}", default.0);
+            },
+
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
                 let is_float = self.is_float(vreg);

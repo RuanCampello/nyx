@@ -860,8 +860,9 @@ fn subst_stmt<'src>(
                 .arms
                 .iter()
                 .map(|arm| MatchArm {
-                    // patterns carry no generic type args; copy as-is
-                    patterns: arm.patterns.clone(),
+                    // pattern carries no generic type args; copy as-is
+                    pattern: arm.pattern.clone(),
+                    guard: arm.guard.clone(),
                     body: subst_expr(&arm.body, env, templates, arena),
                     span: arm.span,
                 })

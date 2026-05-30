@@ -1,7 +1,7 @@
 use crate::{
     hir::{
-        Arm, Block, Constant, EnumId, EnumVariant, ExprId, Expression, ExpressionKind, Function,
-        FunctionId, Intrinsic, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
+        Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
+        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
         RefTargetKind, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
         TypeKind, TypeckResults,
         error::{ConstFnViolationKind, HirError, hir_error},
@@ -14,7 +14,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else},
+        statement::{self, Else, PatternLit},
     },
 };
 use std::{
@@ -325,12 +325,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         use ExpressionKind as Kind;
 
         let kind = match &expr.kind {
-            Kind::Unit => Kind::Unit,
-            Kind::Integer(n) => Kind::Integer(*n),
-            Kind::Float(f) => Kind::Float(*f),
-            Kind::String(sym) => Kind::String(*sym),
-            Kind::Char(c) => Kind::Char(*c),
-            Kind::Bool(b) => Kind::Bool(*b),
+            Kind::Literal(lit) => Kind::Literal(*lit),
             Kind::Local(id) => Kind::Local(*id),
             Kind::Unary { operator, expr: inner } => {
                 let inner_copied = self.splice_const(inner, const_typeck, span);
@@ -408,13 +403,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let scrutinee_copied = self.splice_const(scrutinee, const_typeck, span);
                 let mut arms_copied = Vec::with_capacity(arms.len());
                 for arm in *arms {
-                    let mut patterns_copied = Vec::with_capacity(arm.patterns.len());
-                    for pat in arm.patterns {
-                        patterns_copied.push(self.splice_pattern(pat, const_typeck, span));
-                    }
+                    let pattern_copied = self.splice_pattern(arm.pattern, const_typeck, span);
+                    let guard_copied =
+                        arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
                     let body_copied = self.splice_const(arm.body, const_typeck, span);
                     arms_copied.push(Arm {
-                        patterns: self.arena.alloc_slice_clone(&patterns_copied),
+                        pattern: self.arena.alloc(pattern_copied),
+                        guard: guard_copied,
                         body: body_copied.expr,
                         span: arm.span,
                     });
@@ -438,7 +433,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     ) -> Pattern<'hir> {
         let kind = match &pat.kind {
             PatternKind::Wildcard => PatternKind::Wildcard,
+            PatternKind::Literal(lit) => PatternKind::Literal(*lit),
             PatternKind::Binding(id) => PatternKind::Binding(*id),
+            PatternKind::Or(pats) => {
+                let spliced: Vec<_> =
+                    pats.iter().map(|p| self.splice_pattern(p, const_typeck, span)).collect();
+                PatternKind::Or(self.arena.alloc_slice_clone(&spliced))
+            },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
                 let sub_spliced = sub.map(|s| {
                     let spliced = self.splice_pattern(s, const_typeck, span);
@@ -506,7 +507,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     .and_then(|t| t.is_number().then_some(t))
                     .unwrap_or(Type::new(TypeKind::I32));
 
-                Ok(self.alloc(ExpressionKind::Integer(*value), typ, *span))
+                Ok(self.alloc((*value).into(), typ, *span))
             },
 
             Expr::Float(value, span) => {
@@ -514,20 +515,24 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     .and_then(|t| t.is_float().then_some(t))
                     .unwrap_or(Type::new(TypeKind::F64));
 
-                Ok(self.alloc(ExpressionKind::Float(*value), typ, *span))
+                Ok(self.alloc((*value).into(), typ, *span))
             },
 
             Expr::String(value, span) => {
                 let sym = self.symbols.insert(value);
-                Ok(self.alloc(ExpressionKind::String(sym), Type::new(TypeKind::Str), *span))
+                Ok(self.alloc(
+                    ExpressionKind::Literal(Literal::Str(sym)),
+                    Type::new(TypeKind::Str),
+                    *span,
+                ))
             },
 
             Expr::Char(value, span) => {
-                Ok(self.alloc(ExpressionKind::Char(*value), Type::new(TypeKind::Char), *span))
+                Ok(self.alloc((*value).into(), Type::new(TypeKind::Char), *span))
             },
 
             Expr::Bool(value, span) => {
-                Ok(self.alloc(ExpressionKind::Bool(*value), Type::new(TypeKind::Bool), *span))
+                Ok(self.alloc((*value).into(), Type::new(TypeKind::Bool), *span))
             },
 
             Expr::Cast { expr: inner, target_type, span } => {
@@ -559,7 +564,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
                 {
                     return Ok(self.alloc(
-                        ExpressionKind::Integer(value),
+                        ExpressionKind::Literal(Literal::Int(value)),
                         Type::new(TypeKind::Enum(id)),
                         *span,
                     ));
@@ -969,10 +974,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         for arm in &match_stmt.arms {
             self.push_scope();
 
-            let mut patterns = Vec::with_capacity(arm.patterns.len());
-            for pat in &arm.patterns {
-                let pat_lowered = self.lower_pattern(scrutinee.typ, pat.value_ref(), pat.span())?;
-                patterns.push(pat_lowered);
+            let pattern =
+                self.lower_pattern(scrutinee.typ, arm.pattern.value_ref(), arm.pattern.span())?;
+            let pattern_ref = self.arena.alloc(pattern);
+
+            let guard = arm.guard.as_ref().map(|g| self.lower_expr(g, None)).transpose()?;
+            if let Some(ref g) = guard {
+                self.assert_type(Type::new(TypeKind::Bool), g.typ, g.span)?;
             }
 
             let body = self.lower_expr(&arm.body, unified_type)?;
@@ -985,7 +993,8 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             self.pop_scope();
 
             arms.push(Arm {
-                patterns: self.arena.alloc_slice_clone(&patterns),
+                pattern: pattern_ref,
+                guard: guard.map(|g| g.expr),
                 body: body.expr,
                 span: arm.span,
             });
@@ -1007,12 +1016,33 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         pattern: &statement::Pattern<'src>,
         span: Span,
     ) -> Result<Pattern<'hir>, HirError<'src>> {
-        let enum_id = self.enum_type(scrutinee_type, span)?;
-        let enum_def = &self.scope[enum_id];
-
         match pattern {
             statement::Pattern::Wildcard => Ok(Pattern { kind: PatternKind::Wildcard, span }),
+
+            statement::Pattern::Literal(lit) => {
+                let kind = match lit {
+                    PatternLit::Int(n) => PatternKind::Literal(Literal::Int(*n)),
+                    PatternLit::Float(f) => PatternKind::Literal(Literal::Float(*f)),
+                    PatternLit::Bool(b) => PatternKind::Literal(Literal::Bool(*b)),
+                    PatternLit::Char(c) => PatternKind::Literal(Literal::Char(*c)),
+                };
+                Ok(Pattern { kind, span })
+            },
+
+            statement::Pattern::Or(alts) => {
+                let lowered: Vec<Pattern<'hir>> = alts
+                    .iter()
+                    .map(|alt| self.lower_pattern(scrutinee_type, alt.value_ref(), alt.span()))
+                    .collect::<Result<_, _>>()?;
+                let slice = self.arena.alloc_slice_clone(&lowered);
+                Ok(Pattern { kind: PatternKind::Or(slice), span })
+            },
+
+            // Enum patterns — require the scrutinee to be an enum type.
             statement::Pattern::Ident(name) => {
+                let enum_id = self.enum_type(scrutinee_type, span)?;
+                let enum_def = &self.scope[enum_id];
+
                 if let Some(variant_idx) =
                     enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
                 {
@@ -1036,7 +1066,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     Ok(Pattern { kind: PatternKind::Binding(local_id), span })
                 }
             },
+
             statement::Pattern::Variant { qualifier, name, sub } => {
+                let enum_id = self.enum_type(scrutinee_type, span)?;
+                let enum_def = &self.scope[enum_id];
+
                 if let Some(qualifier) = qualifier {
                     let enum_symbol = self.symbols.insert(qualifier);
                     if self.scope.enum_map.get(&enum_symbol).copied() != Some(enum_id) {
@@ -1261,22 +1295,6 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             },
             _ => Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ })),
         }
-    }
-
-    fn variant(&mut self, id: EnumId, qualifier: Option<&str>, name: &str) -> Option<EnumVariant> {
-        if let Some(qualifier) = qualifier {
-            let enum_symbol = self.symbols.insert(qualifier);
-            if self.scope.enum_map.get(&enum_symbol).copied() != Some(id) {
-                return None;
-            }
-        }
-
-        let symbol = self.symbols.insert(name);
-        self.scope.enums[id]
-            .variants
-            .iter()
-            .find(|variant| variant.name == symbol)
-            .copied()
     }
 
     fn type_for_binary(

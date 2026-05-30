@@ -71,10 +71,21 @@ pub struct Match<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm<'i> {
-    /// the arm fires if any of these patterns matches
-    pub patterns: Vec<Pattern<'i>>,
+    /// Single pattern; multiple `|` alternatives are wrapped in [`Pattern::Or`].
+    pub pattern: Spanned<Pattern<'i>>,
+    /// Optional `if <guard>` condition.
+    pub guard: Option<Expression<'i>>,
     pub body: Expression<'i>,
     pub span: Span,
+}
+
+/// An inline literal value in a pattern position.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum PatternLit {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Char(char),
 }
 
 /// A match pattern
@@ -86,10 +97,18 @@ pub struct MatchArm<'i> {
 pub enum Pattern<'i> {
     /// `_`
     Wildcard,
+    /// An inline literal value, e.g. `42`, `true`, `'x'`
+    Literal(PatternLit),
+    /// `A | B | C` — or-pattern; alternatives are never empty and never nested
+    Or(Vec<Spanned<Pattern<'i>>>),
     /// bare identifier, fieldless variant or a payload binding
     Ident(&'i str),
     /// `Qualifier::Name`, `Name(sub)`, or `Qualifier::Name(sub)`
-    Variant { qualifier: Option<&'i str>, name: &'i str, sub: Option<Box<Pattern<'i>>> },
+    Variant {
+        qualifier: Option<&'i str>,
+        name: &'i str,
+        sub: Option<Box<Spanned<Pattern<'i>>>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -578,15 +597,33 @@ impl<'i> Parsable<'i> for Match<'i> {
                 _ => {},
             }
 
-            let mut patterns = vec![parser.parse_node()?];
-            while parser.consume_punct(Punct::Pipe)? {
-                patterns.push(parser.parse_node()?)
-            }
+            // Collect `|`-separated alternatives; fold >1 into Pattern::Or.
+            let first: Spanned<Pattern> = parser.parse_node()?;
+            let pattern = if parser.consume_punct(Punct::Pipe)? {
+                let mut alts = vec![first];
+                loop {
+                    alts.push(parser.parse_node()?);
+                    if !parser.consume_punct(Punct::Pipe)? {
+                        break;
+                    }
+                }
+                let span = alts.first().unwrap().span() + alts.last().unwrap().span();
+                Spanned::new(Pattern::Or(alts), span)
+            } else {
+                first
+            };
+
+            // Optional guard: `if <expr>`
+            let guard = if parser.consume_keyword(Keyword::If)? {
+                Some(Expression::parse(parser)?)
+            } else {
+                None
+            };
 
             parser.expect_token(Punct::Arrow)?;
             let body = Expression::parse(parser)?;
             let span = body.span();
-            arms.push(MatchArm { patterns, body, span });
+            arms.push(MatchArm { pattern, guard, body, span });
 
             // arms are comma-separated, with an optional trailing comma
             if !parser.consume_punct(Punct::Comma)? {
@@ -601,12 +638,27 @@ impl<'i> Parsable<'i> for Match<'i> {
 
 impl<'i> Parsable<'i> for Pattern<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Pattern<'i>, ParserError<'i>> {
+        // Literal patterns: integers, floats, bools, chars.
+        if let Some(Ok(token)) = parser.peek() {
+            let lit = match token.kind {
+                TokenKind::Integer(n) => Some(PatternLit::Int(n)),
+                TokenKind::Float(f) => Some(PatternLit::Float(f)),
+                TokenKind::Bool(b) => Some(PatternLit::Bool(b)),
+                TokenKind::Char(c) => Some(PatternLit::Char(c)),
+                _ => None,
+            };
+            if let Some(lit) = lit {
+                parser.expect_next()?;
+                return Ok(Pattern::Literal(lit));
+            }
+        }
+
         let pattern_payload = |parser: &mut Parser<'i>| -> Result<_, ParserError<'i>> {
             if !parser.consume_punct(Punct::OpenParen)? {
                 return Ok(None);
             }
 
-            let pattern: Pattern = parser.parse_node()?;
+            let pattern: Spanned<Pattern> = parser.parse_node()?;
             parser.expect_token(Punct::CloseParen)?;
             Ok(Some(Box::new(pattern)))
         };
@@ -629,6 +681,18 @@ impl<'i> Parsable<'i> for Pattern<'i> {
             "_" => Pattern::Wildcard,
             _ => Pattern::Ident(ident),
         })
+    }
+}
+
+impl<'i> Parsable<'i> for Spanned<Pattern<'i>> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let start = parser
+            .peek()
+            .map(|t| t.as_ref().map(|tok| tok.span).unwrap_or_default())
+            .unwrap_or_default();
+        let value = Pattern::parse(parser)?;
+        let end = parser.last_span().unwrap_or(start);
+        Ok(Spanned::new(value, start + end))
     }
 }
 
