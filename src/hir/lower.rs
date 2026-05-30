@@ -1,8 +1,9 @@
 use crate::{
     hir::{
-        Block, Constant, EnumId, EnumVariant, ExprId, Expression, ExpressionKind, Function,
-        FunctionId, Intrinsic, Local, LocalId, Parameter, RefTarget, RefTargetKind, Statement,
-        Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind, TypeckResults,
+        Arm, Block, Constant, EnumId, EnumVariant, ExprId, Expression, ExpressionKind, Function,
+        FunctionId, Intrinsic, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
+        RefTargetKind, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
+        TypeKind, TypeckResults,
         error::{ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         place_base_local,
@@ -267,7 +268,17 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 Ok((Statement::Block(block), returns))
             },
 
-            Stmt::Match(statement) => self.lower_match(statement, is_tail),
+            Stmt::Match(statement) => {
+                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
+                Ok(match tail_ret {
+                    true => {
+                        self.assert_type(self.return_type, expr.typ, expr.span)?;
+                        (Statement::Return(Some(expr.expr)), true)
+                    },
+                    _ => (Statement::Expr(expr.expr), false),
+                })
+            },
 
             Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
@@ -393,18 +404,50 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let from_copied = self.splice_const(from, const_typeck, span);
                 Kind::Cast { from: from_copied.expr, to: *to }
             },
-            Kind::EnumTag { value } => {
-                let value_copied = self.splice_const(value, const_typeck, span);
-                Kind::EnumTag { value: value_copied.expr }
-            },
-            Kind::EnumPayload { value } => {
-                let value_copied = self.splice_const(value, const_typeck, span);
-                Kind::EnumPayload { value: value_copied.expr }
+            Kind::Match { scrutinee, arms } => {
+                let scrutinee_copied = self.splice_const(scrutinee, const_typeck, span);
+                let mut arms_copied = Vec::with_capacity(arms.len());
+                for arm in *arms {
+                    let mut patterns_copied = Vec::with_capacity(arm.patterns.len());
+                    for pat in arm.patterns {
+                        patterns_copied.push(self.splice_pattern(pat, const_typeck, span));
+                    }
+                    let body_copied = self.splice_const(arm.body, const_typeck, span);
+                    arms_copied.push(Arm {
+                        patterns: self.arena.alloc_slice_clone(&patterns_copied),
+                        body: body_copied.expr,
+                        span: arm.span,
+                    });
+                }
+                Kind::Match {
+                    scrutinee: scrutinee_copied.expr,
+                    arms: self.arena.alloc_slice_clone(&arms_copied),
+                }
             },
         };
 
         let typ = const_typeck.type_of(expr.id);
         self.alloc(kind, typ, span)
+    }
+
+    fn splice_pattern(
+        &self,
+        pat: &Pattern<'hir>,
+        const_typeck: &TypeckResults,
+        span: Span,
+    ) -> Pattern<'hir> {
+        let kind = match &pat.kind {
+            PatternKind::Wildcard => PatternKind::Wildcard,
+            PatternKind::Binding(id) => PatternKind::Binding(*id),
+            PatternKind::Variant { id: enum_id, variant_idx, sub } => {
+                let sub_spliced = sub.map(|s| {
+                    let spliced = self.splice_pattern(s, const_typeck, span);
+                    &*self.arena.alloc(spliced)
+                });
+                PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub: sub_spliced }
+            },
+        };
+        Pattern { kind, span: pat.span }
     }
 
     fn local_id(&self, name: &str) -> Option<LocalId> {
@@ -498,14 +541,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
-                let lowered_expr = match src.kind() {
-                    TypeKind::Enum(id) => self.alloc(
-                        ExpressionKind::EnumTag { value: lowered_expr.expr },
-                        id.repr().typ(),
-                        *span,
-                    ),
-                    _ => lowered_expr,
-                };
+                let lowered_expr = lowered_expr;
 
                 Ok(self.alloc(
                     ExpressionKind::Cast { from: lowered_expr.expr, to: target },
@@ -923,75 +959,134 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     fn lower_match(
         &mut self,
         match_stmt: &statement::Match<'src>,
-        is_tail: bool,
-    ) -> Result<(Statement<'hir>, bool), HirError<'src>> {
+        hint: Option<Type>,
+    ) -> Result<Lowered<'hir>, HirError<'src>> {
         let scrutinee = self.lower_expr(&match_stmt.scrutinee, None)?;
-        let scrutinee_enum = self.enum_type(scrutinee.typ, match_stmt.scrutinee.span())?;
-        let temp_name = format!("__match{}", self.next_local);
-        let temp_symbol = self.symbols.insert(&temp_name);
-        let temp = self.declare_local(temp_symbol, scrutinee.typ, false)?;
-        let init = Statement::LetInit { id: temp, init: scrutinee.expr };
+        let mut arms = Vec::with_capacity(match_stmt.arms.len());
 
-        let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
-        let hint = tail_ret.then_some(self.return_type);
-        let mut else_block = None;
-        let mut all_return = true;
+        let mut unified_type = hint;
 
-        for arm in match_stmt.arms.iter().rev() {
-            let condition = self.match_arm_condition(temp, scrutinee_enum, arm)?;
-            let (then_block, returns) =
-                self.lower_match_arm_body(temp, scrutinee_enum, arm, hint)?;
-            all_return &= returns;
+        for arm in &match_stmt.arms {
+            self.push_scope();
 
-            let statement = Statement::If { condition: condition.expr, then_block, else_block };
-            let statements = self.arena.alloc_slice_clone(&[statement]);
-            else_block = Some(Block { statements, span: arm.span });
+            let mut patterns = Vec::with_capacity(arm.patterns.len());
+            for pat in &arm.patterns {
+                let pat_lowered = self.lower_pattern(scrutinee.typ, pat.value_ref(), pat.span())?;
+                patterns.push(pat_lowered);
+            }
+
+            let body = self.lower_expr(&arm.body, unified_type)?;
+            if let Some(expected) = unified_type {
+                self.assert_type(expected, body.typ, body.span)?;
+            } else {
+                unified_type = Some(body.typ);
+            }
+
+            self.pop_scope();
+
+            arms.push(Arm {
+                patterns: self.arena.alloc_slice_clone(&patterns),
+                body: body.expr,
+                span: arm.span,
+            });
         }
 
-        let statements_vec = match else_block {
-            Some(block) => vec![init, Statement::Block(block)],
-            None => vec![init],
-        };
-        let statements = self.arena.alloc_slice_clone(&statements_vec);
+        let return_type = unified_type.unwrap_or(Type::new(TypeKind::Unit));
 
-        Ok((Statement::Block(Block { statements, span: match_stmt.span }), all_return))
+        let arms_ref = self.arena.alloc_slice_clone(&arms);
+        Ok(self.alloc(
+            ExpressionKind::Match { scrutinee: scrutinee.expr, arms: arms_ref },
+            return_type,
+            match_stmt.span,
+        ))
     }
 
-    fn lower_match_arm_body(
+    fn lower_pattern(
         &mut self,
-        local: LocalId,
-        id: EnumId,
-        arm: &statement::MatchArm<'src>,
-        hint: Option<Type>,
-    ) -> Result<(Block<'hir>, bool), HirError<'src>> {
-        self.push_scope();
-        let mut statements = Vec::new();
+        scrutinee_type: Type,
+        pattern: &statement::Pattern<'src>,
+        span: Span,
+    ) -> Result<Pattern<'hir>, HirError<'src>> {
+        let enum_id = self.enum_type(scrutinee_type, span)?;
+        let enum_def = &self.scope[enum_id];
 
-        if let Some((name, payload_type)) = self.payload_binding(id, &arm.patterns, arm.span)? {
-            let symbol = self.symbols.insert(name);
-            let id = self.declare_local(symbol, payload_type, false)?;
-            let local_expr = self.local_expr(local, arm.span);
-            let value = self.alloc(
-                ExpressionKind::EnumPayload { value: local_expr.expr },
-                payload_type,
-                arm.span,
-            );
-            statements.push(Statement::LetInit { id, init: value.expr });
-        }
-
-        let body = self.lower_expr(&arm.body, hint)?;
-        let returns = hint.is_some();
-        match hint {
-            Some(expected) => {
-                self.assert_type(expected, body.typ, body.span)?;
-                statements.push(Statement::Return(Some(body.expr)));
+        match pattern {
+            statement::Pattern::Wildcard => Ok(Pattern { kind: PatternKind::Wildcard, span }),
+            statement::Pattern::Ident(name) => {
+                if let Some(variant_idx) =
+                    enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
+                {
+                    let variant = enum_def.variants[variant_idx];
+                    if variant.payload.is_some() {
+                        return Err(hir_error!(
+                            span,
+                            TypeMismatch {
+                                expected: scrutinee_type,
+                                found: Type::new(TypeKind::Unit),
+                            }
+                        ));
+                    }
+                    Ok(Pattern {
+                        kind: PatternKind::Variant { id: enum_id, variant_idx, sub: None },
+                        span,
+                    })
+                } else {
+                    let symbol = self.symbols.insert(name);
+                    let local_id = self.declare_local(symbol, scrutinee_type, false)?;
+                    Ok(Pattern { kind: PatternKind::Binding(local_id), span })
+                }
             },
-            None => statements.push(Statement::Expr(body.expr)),
-        }
+            statement::Pattern::Variant { qualifier, name, sub } => {
+                if let Some(qualifier) = qualifier {
+                    let enum_symbol = self.symbols.insert(qualifier);
+                    if self.scope.enum_map.get(&enum_symbol).copied() != Some(enum_id) {
+                        return Err(hir_error!(
+                            span,
+                            UnknownType { name: format!("{}::{}", qualifier, name) }
+                        ));
+                    }
+                }
 
-        self.pop_scope();
-        let statements_slice = self.arena.alloc_slice_clone(&statements);
-        Ok((Block { statements: statements_slice, span: arm.span }, returns))
+                let variant_idx = enum_def
+                    .variants
+                    .iter()
+                    .position(|v| self.symbols.get(v.name) == *name)
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
+
+                let variant = enum_def.variants[variant_idx];
+
+                let sub_lowered = if let Some(sub_pat) = sub {
+                    let payload_type = variant.payload.ok_or_else(|| {
+                        hir_error!(
+                            span,
+                            TypeMismatch {
+                                expected: scrutinee_type,
+                                found: Type::new(TypeKind::Unit),
+                            }
+                        )
+                    })?;
+                    let lowered =
+                        self.lower_pattern(payload_type, sub_pat.value_ref(), sub_pat.span())?;
+                    Some(&*self.arena.alloc(lowered))
+                } else {
+                    if variant.payload.is_some() {
+                        return Err(hir_error!(
+                            span,
+                            TypeMismatch {
+                                expected: scrutinee_type,
+                                found: Type::new(TypeKind::Unit),
+                            }
+                        ));
+                    }
+                    None
+                };
+
+                Ok(Pattern {
+                    kind: PatternKind::Variant { id: enum_id, variant_idx, sub: sub_lowered },
+                    span,
+                })
+            },
+        }
     }
 
     fn lower_if(
@@ -1150,129 +1245,6 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
         let args_slice = self.arena.alloc_slice_clone(&args_vec);
         Ok(self.alloc(ExpressionKind::Syscall { code, args: args_slice }, return_type, span))
-    }
-
-    fn match_arm_condition(
-        &mut self,
-        local: LocalId,
-        id: EnumId,
-        arm: &statement::MatchArm<'src>,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
-        let mut condition: Option<Lowered<'hir>> = None;
-
-        for pattern in &arm.patterns {
-            let next = self.pattern_condition(local, id, pattern, arm.span)?;
-            condition = Some(match condition {
-                Some(left) => self.alloc(
-                    ExpressionKind::Binary {
-                        operator: BinaryOperator::Or,
-                        left: left.expr,
-                        right: next.expr,
-                    },
-                    Type::new(TypeKind::Bool),
-                    arm.span,
-                ),
-                None => next,
-            });
-        }
-
-        match condition {
-            Some(condition) => Ok(condition),
-            None => Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), arm.span)),
-        }
-    }
-
-    #[inline]
-    fn pattern_condition(
-        &mut self,
-        local: LocalId,
-        id: EnumId,
-        pattern: &statement::Pattern<'src>,
-        span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
-        match pattern {
-            statement::Pattern::Wildcard => {
-                Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), span))
-            },
-            statement::Pattern::Ident(name) => match self.variant(id, None, name) {
-                Some(variant) => self.tag_comparison(local, id, variant.value, span),
-                None => Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), span)),
-            },
-            statement::Pattern::Variant { qualifier, name, .. } => {
-                let variant = self.variant(id, *qualifier, name).ok_or_else(|| {
-                    hir_error!(span, UndeclaredIdentifier { name: name.to_string() })
-                })?;
-                self.tag_comparison(local, id, variant.value, span)
-            },
-        }
-    }
-
-    fn payload_binding(
-        &mut self,
-        id: EnumId,
-        patterns: &[statement::Pattern<'src>],
-        span: Span,
-    ) -> Result<Option<(&'src str, Type)>, HirError<'src>> {
-        for pattern in patterns {
-            if let Some(binding) = self.pattern_payload_binding(id, pattern, span)? {
-                return Ok(Some(binding));
-            }
-        }
-
-        Ok(None)
-    }
-
-    #[inline]
-    fn pattern_payload_binding(
-        &mut self,
-        id: EnumId,
-        pattern: &statement::Pattern<'src>,
-        span: Span,
-    ) -> Result<Option<(&'src str, Type)>, HirError<'src>> {
-        let statement::Pattern::Variant { qualifier, name, sub } = pattern else {
-            return Ok(None);
-        };
-        let Some(sub) = sub.as_deref() else {
-            return Ok(None);
-        };
-
-        let variant = self
-            .variant(id, *qualifier, name)
-            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
-        let Some(payload) = variant.payload else {
-            return Ok(None);
-        };
-
-        Ok(match sub {
-            statement::Pattern::Wildcard => None,
-            statement::Pattern::Ident(name) => Some((*name, payload)),
-            _ => None,
-        })
-    }
-
-    #[inline]
-    fn tag_comparison(
-        &mut self,
-        local: LocalId,
-        id: EnumId,
-        value: i64,
-        span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
-        let tag_type = id.repr().typ();
-
-        let local_expr = self.local_expr(local, span);
-        let left = self.alloc(ExpressionKind::EnumTag { value: local_expr.expr }, tag_type, span);
-        let right = self.alloc(ExpressionKind::Integer(value), tag_type, span);
-
-        Ok(self.alloc(
-            ExpressionKind::Binary {
-                operator: BinaryOperator::Eq,
-                left: left.expr,
-                right: right.expr,
-            },
-            Type::new(TypeKind::Bool),
-            span,
-        ))
     }
 
     #[inline]

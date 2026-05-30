@@ -1,5 +1,5 @@
 use crate::{
-    hir::{RefTargetKind, Struct, StructId, SymbolId, Type, TypeKind, Visit, index_vec::IndexVec},
+    hir::{RefTargetKind, Struct, StructId, SymbolId, Type, TypeKind, Visit, index_vec::IndexVec, Enum, EnumId},
     mir::Layout,
     parser::statement::{StructRepr, StructReprKind},
 };
@@ -7,12 +7,23 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct LayoutTable {
     structs: Vec<StructLayout>,
+    enums: Vec<EnumLayout>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EnumLayout {
+    pub(crate) tag_layout: Layout,
+    pub(crate) payload_offset: u32,
+    pub(crate) layout: Layout,
 }
 
 struct LayoutEngine<'s> {
     structs: &'s IndexVec<StructId, Struct>,
-    layouts: Vec<Option<StructLayout>>,
-    states: Vec<Visit>,
+    enums: &'s IndexVec<EnumId, Enum>,
+    struct_layouts: Vec<Option<StructLayout>>,
+    enum_layouts: Vec<Option<EnumLayout>>,
+    struct_states: Vec<Visit>,
+    enum_states: Vec<Visit>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,12 +47,17 @@ struct PendingField {
 }
 
 impl LayoutTable {
-    pub(crate) fn build(structs: &IndexVec<StructId, Struct>) -> Self {
-        Self { structs: LayoutEngine::new(structs).compute() }
+    pub(crate) fn build(structs: &IndexVec<StructId, Struct>, enums: &IndexVec<EnumId, Enum>) -> Self {
+        let (structs, enums) = LayoutEngine::new(structs, enums).compute();
+        Self { structs, enums }
     }
 
-    pub(crate) fn summaries(&self) -> Vec<Layout> {
+    pub(crate) fn struct_summaries(&self) -> Vec<Layout> {
         self.structs.iter().map(|layout| layout.layout).collect()
+    }
+
+    pub(crate) fn enum_summaries(&self) -> Vec<Layout> {
+        self.enums.iter().map(|layout| layout.layout).collect()
     }
 
     pub(crate) fn type_layout(&self, typ: Type) -> (u32, u32) {
@@ -49,7 +65,7 @@ impl LayoutTable {
             Some(layout) => layout,
             None => match typ.kind() {
                 TypeKind::Struct(id) => self.structs[id.0 as usize].layout.into(),
-                TypeKind::Enum(id) => id.repr().layout(),
+                TypeKind::Enum(id) => self.enums[id.id() as usize].layout.into(),
                 TypeKind::SelfType | TypeKind::GenericParam(_) => {
                     unreachable!("MIR layout requires concrete types")
                 },
@@ -75,37 +91,54 @@ impl LayoutTable {
             .copied()
             .expect("field layout must exist after HIR validation")
     }
+
+    pub(crate) fn enum_layout(&self, id: EnumId) -> &EnumLayout {
+        &self.enums[id.id() as usize]
+    }
 }
 
 impl<'s> LayoutEngine<'s> {
-    fn new(structs: &'s IndexVec<StructId, Struct>) -> Self {
+    fn new(structs: &'s IndexVec<StructId, Struct>, enums: &'s IndexVec<EnumId, Enum>) -> Self {
         Self {
             structs,
-            layouts: vec![None; structs.len()],
-            states: vec![Visit::Unvisited; structs.len()],
+            enums,
+            struct_layouts: vec![None; structs.len()],
+            enum_layouts: vec![None; enums.len()],
+            struct_states: vec![Visit::Unvisited; structs.len()],
+            enum_states: vec![Visit::Unvisited; enums.len()],
         }
     }
 
-    fn compute(mut self) -> Vec<StructLayout> {
+    fn compute(mut self) -> (Vec<StructLayout>, Vec<EnumLayout>) {
         for id in 0..self.structs.len() {
             self.compute_struct(StructId(id as u32));
         }
+        for id in 0..self.enums.len() {
+            let enum_def = &self.enums[id];
+            self.compute_enum(enum_def.id);
+        }
 
-        self.layouts
+        let structs = self.struct_layouts
             .into_iter()
             .map(|layout| layout.expect("struct layout must be computed"))
-            .collect()
+            .collect();
+        let enums = self.enum_layouts
+            .into_iter()
+            .map(|layout| layout.expect("enum layout must be computed"))
+            .collect();
+
+        (structs, enums)
     }
 
     fn compute_struct(&mut self, id: StructId) {
         let idx = id.0 as usize;
-        match self.states[idx] {
+        match self.struct_states[idx] {
             Visit::Visited => return,
             Visit::Visiting => unreachable!("HIR rejects recursive by-value struct layout"),
             Visit::Unvisited => {},
         }
 
-        self.states[idx] = Visit::Visiting;
+        self.struct_states[idx] = Visit::Visiting;
         let definition = &self.structs[id];
         for field in &definition.fields {
             if let TypeKind::Struct(dep) = field.typ.kind() {
@@ -114,11 +147,53 @@ impl<'s> LayoutEngine<'s> {
         }
 
         let layout = self.layout_struct(definition);
-        self.layouts[idx] = Some(layout);
-        self.states[idx] = Visit::Visited;
+        self.struct_layouts[idx] = Some(layout);
+        self.struct_states[idx] = Visit::Visited;
     }
 
-    fn layout_struct(&self, definition: &Struct) -> StructLayout {
+    fn compute_enum(&mut self, id: EnumId) {
+        let idx = id.id() as usize;
+        match self.enum_states[idx] {
+            Visit::Visited => return,
+            Visit::Visiting => unreachable!("HIR rejects recursive by-value enum layout"),
+            Visit::Unvisited => {},
+        }
+
+        self.enum_states[idx] = Visit::Visiting;
+        let definition = &self.enums[idx];
+
+        let tag_layout = definition.repr.layout();
+        let tag_size = tag_layout.0;
+        let tag_align = tag_layout.1;
+
+        let mut max_payload_size = 0;
+        let mut max_payload_align = 1;
+        let mut contains_float = false;
+
+        for variant in &definition.variants {
+            if let Some(payload_ty) = variant.payload {
+                let (p_size, p_align) = self.layout_of(payload_ty);
+                max_payload_size = max_payload_size.max(p_size);
+                max_payload_align = max_payload_align.max(p_align);
+                contains_float |= self.contains_float(payload_ty);
+            }
+        }
+
+        let enum_alignment = tag_align.max(max_payload_align);
+        let payload_offset = align_to(tag_size, max_payload_align);
+
+        let size = align_to(payload_offset + max_payload_size, enum_alignment);
+
+        self.enum_layouts[idx] = Some(EnumLayout {
+            tag_layout: Layout::new(tag_size, tag_align, false),
+            payload_offset,
+            layout: Layout::new(size, enum_alignment, contains_float),
+        });
+
+        self.enum_states[idx] = Visit::Visited;
+    }
+
+    fn layout_struct(&mut self, definition: &Struct) -> StructLayout {
         let mut fields: Vec<_> = definition
             .fields
             .iter()
@@ -136,7 +211,7 @@ impl<'s> LayoutEngine<'s> {
         StructLayout { fields, layout: summary }
     }
 
-    fn order_fields(&self, fields: &mut [PendingField], repr: StructRepr) {
+    fn order_fields(&mut self, fields: &mut [PendingField], repr: StructRepr) {
         match repr.kind {
             StructReprKind::Default => {
                 fields.sort_unstable_by(|a, b| {
@@ -167,7 +242,7 @@ impl<'s> LayoutEngine<'s> {
     }
 
     fn assign_offsets(
-        &self,
+        &mut self,
         fields: Vec<PendingField>,
         repr: StructRepr,
     ) -> (Vec<FieldLayout>, Layout) {
@@ -195,7 +270,7 @@ impl<'s> LayoutEngine<'s> {
         (laid_out, Layout::new(size, struct_align, contains_float))
     }
 
-    fn field_layout(&self, typ: Type, repr: StructRepr) -> (u32, u32) {
+    fn field_layout(&mut self, typ: Type, repr: StructRepr) -> (u32, u32) {
         let (size, align) = self.layout_of(typ);
         match repr.kind {
             StructReprKind::Packed => {
@@ -206,16 +281,26 @@ impl<'s> LayoutEngine<'s> {
         }
     }
 
-    fn layout_of(&self, typ: Type) -> (u32, u32) {
+    fn layout_of(&mut self, typ: Type) -> (u32, u32) {
         match scalar_layout(typ) {
             Some(layout) => layout,
             None => match typ.kind() {
-                TypeKind::Struct(id) => self.layouts[id.0 as usize]
-                    .as_ref()
-                    .expect("dependent struct layout must be computed")
-                    .layout
-                    .into(),
-                TypeKind::Enum(id) => id.repr().layout(),
+                TypeKind::Struct(id) => {
+                    self.compute_struct(id);
+                    self.struct_layouts[id.0 as usize]
+                        .as_ref()
+                        .expect("dependent struct layout must be computed")
+                        .layout
+                        .into()
+                }
+                TypeKind::Enum(id) => {
+                    self.compute_enum(id);
+                    self.enum_layouts[id.id() as usize]
+                        .as_ref()
+                        .expect("dependent enum layout must be computed")
+                        .layout
+                        .into()
+                }
                 TypeKind::SelfType | TypeKind::GenericParam(_) => {
                     unreachable!("MIR layout requires concrete types")
                 },
@@ -224,14 +309,25 @@ impl<'s> LayoutEngine<'s> {
         }
     }
 
-    fn contains_float(&self, typ: Type) -> bool {
+    fn contains_float(&mut self, typ: Type) -> bool {
         match typ.kind() {
             TypeKind::F32 | TypeKind::F64 => true,
-            TypeKind::Struct(id) => self.layouts[id.0 as usize]
-                .as_ref()
-                .expect("dependent struct layout must be computed")
-                .layout
-                .contains_float(),
+            TypeKind::Struct(id) => {
+                self.compute_struct(id);
+                self.struct_layouts[id.0 as usize]
+                    .as_ref()
+                    .expect("dependent struct layout must be computed")
+                    .layout
+                    .contains_float()
+            }
+            TypeKind::Enum(id) => {
+                self.compute_enum(id);
+                self.enum_layouts[id.id() as usize]
+                    .as_ref()
+                    .expect("dependent enum layout must be computed")
+                    .layout
+                    .contains_float()
+            }
             _ => false,
         }
     }

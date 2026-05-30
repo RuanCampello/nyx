@@ -63,8 +63,8 @@ pub struct StructField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Enum {
-    id: EnumId,
-    name: SymbolId,
+    pub(crate) id: EnumId,
+    pub(crate) name: SymbolId,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
 }
@@ -169,7 +169,33 @@ pub struct Block<'hir> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Arm<'hir> {
+    pub patterns: &'hir [Pattern<'hir>],
+    pub body: &'hir Expression<'hir>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pattern<'hir> {
+    pub kind: PatternKind<'hir>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PatternKind<'hir> {
+    /// Represents a wildcard pattern `_`
+    Wildcard,
+    Binding(LocalId),
+    Variant {
+        id: EnumId,
+        variant_idx: usize,
+        sub: Option<&'hir Pattern<'hir>>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExpressionKind<'hir> {
+    // TODO: fold those into a literal enum
     #[allow(unused)]
     Unit,
     Integer(i64),
@@ -178,36 +204,44 @@ pub enum ExpressionKind<'hir> {
     Char(char),
     Bool(bool),
     Local(LocalId),
+    /// A unary operation (e.g. `!x`)
     Unary {
         operator: UnaryOperator,
         expr: &'hir Expression<'hir>,
     },
+    /// A binary operation (e.g. `a * b`)
     Binary {
         operator: BinaryOperator,
         left: &'hir Expression<'hir>,
         right: &'hir Expression<'hir>,
     },
+    /// An access of a named field on a struct
     Field {
         base: &'hir Expression<'hir>,
         field: SymbolId,
     },
+    /// An assignment (e.g. `a = f()`)
     Assign {
         target: &'hir Expression<'hir>,
         value: &'hir Expression<'hir>,
     },
+    /// A struct literal (e.g. `A { x: 1, y: 2 }`)
+    Struct {
+        id: StructId,
+        fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
+    },
+    /// A fucntion call
+    Call {
+        function: FunctionId,
+        args: &'hir [&'hir Expression<'hir>],
+    },
+    /// A method call (e.g. `x.size_of::<T>(a, b)`)
     MethodCall {
         function: FunctionId,
         receiver: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
-    Struct {
-        id: StructId,
-        fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
-    },
-    Call {
-        function: FunctionId,
-        args: &'hir [&'hir Expression<'hir>],
-    },
+    // TODO: we should be able to fold those variants later
     Syscall {
         code: SyscallCode,
         args: &'hir [&'hir Expression<'hir>],
@@ -220,16 +254,25 @@ pub enum ExpressionKind<'hir> {
         kind: TypeIntrinsicKind,
         typ: Type,
     },
+    /// A cast (e.g. `x as i64`)
     Cast {
         from: &'hir Expression<'hir>,
         to: Type,
     },
-    EnumTag {
-        value: &'hir Expression<'hir>,
+    /// A `match` block
+    Match {
+        scrutinee: &'hir Expression<'hir>,
+        arms: &'hir [Arm<'hir>],
     },
-    EnumPayload {
-        value: &'hir Expression<'hir>,
-    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Literal {
+    Str(SymbolId),
+    Char(char),
+    Bool(bool),
+    Int(i64),
+    Float(f64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -37,6 +37,7 @@ pub struct Mir {
     pub(crate) strings: Vec<String>,
     pub(crate) functions: Vec<Function>,
     pub(crate) struct_layouts: Vec<Layout>,
+    pub(crate) enum_layouts: Vec<Layout>,
 }
 
 /// Single side-effecting or value-producing operation.
@@ -155,13 +156,16 @@ pub enum Const {
 
 /// The last instruction of a [basic block](self::Block). Always exactly one per block.
 /// Terminator's are the *only* place where control flow is expressed.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Terminator {
     /// Unconditional jump
     Jump(BlockId),
 
     /// Conditional branch: if `condition` is true
     Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
+
+    /// N-way switch based on discriminant value
+    Switch { discriminant: Operand, targets: Vec<(i64, BlockId)>, default: BlockId },
 
     /// Return from the function, optionally carrying a returned value
     Return(Option<Operand>),

@@ -29,6 +29,7 @@ struct FunctionLower<'a, 'hir> {
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
     layouts: &'a LayoutTable,
+    enums: &'a IndexVec<hir::EnumId, hir::Enum>,
     typeck: &'a hir::TypeckResults,
     local_symbols: IndexVec<LocalId, usize>,
     constant_locals: IndexVec<LocalId, Option<String>>,
@@ -47,7 +48,8 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
 
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
-    let layouts = LayoutTable::build(&hir.structs);
+    let layouts = LayoutTable::build(&hir.structs, &hir.enums);
+    let enums = &hir.enums;
     let symbols = hir.symbols;
 
     let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
@@ -62,6 +64,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
             function,
             &symbols,
             &layouts,
+            enums,
             &mut strings,
             &functions_map,
             &runtime_uses_map,
@@ -72,7 +75,8 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
-        struct_layouts: layouts.summaries(),
+        struct_layouts: layouts.struct_summaries(),
+        enum_layouts: layouts.enum_summaries(),
     })
 }
 
@@ -81,6 +85,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         function: &hir::Function<'hir>,
         symbols: &'a [String],
         layouts: &'a LayoutTable,
+        enums: &'a IndexVec<hir::EnumId, hir::Enum>,
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
         runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
@@ -115,6 +120,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             symbols,
             strings,
             layouts,
+            enums,
             typeck: &function.typeck,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
@@ -508,7 +514,70 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(Operand::Place(dest))
             },
 
-            other => unimplemented!("{other:#?}"),
+            ExpressionKind::Match { scrutinee, arms } => {
+                let scrutinee = *scrutinee;
+                let arms = *arms;
+
+                // Evaluate scrutinee to a place
+                let scrutinee_operand = self.lower_expr(scrutinee)?;
+                let scrutinee_place = match scrutinee_operand {
+                    Operand::Place(p) => p,
+                    Operand::Const(c) => {
+                        let p = self.fresh_temporary(self.typeck.type_of(scrutinee.id));
+                        self.emit(p, Kind::Assign(Operand::Const(c)));
+                        p
+                    },
+                };
+
+                let join_block = self.new_block();
+                let match_result_place = if typ.kind() == TypeKind::Unit {
+                    None
+                } else {
+                    Some(self.fresh_temporary(typ))
+                };
+
+                let mut next_arm_check_block = self.new_block();
+
+                // Jump to the first check block
+                self.terminate(Terminator::Jump(next_arm_check_block));
+
+                for arm in arms.iter() {
+                    self.select_block(next_arm_check_block);
+                    next_arm_check_block = self.new_block();
+                    let body_block = self.new_block();
+
+                    let mut current_pat_check_block = self.current_block_id();
+                    for (pat_idx, pat) in arm.patterns.iter().enumerate() {
+                        self.select_block(current_pat_check_block);
+                        let is_last_pat = pat_idx == arm.patterns.len() - 1;
+                        let fail_target = if is_last_pat {
+                            next_arm_check_block
+                        } else {
+                            self.new_block()
+                        };
+
+                        self.lower_pattern_match(scrutinee_place, pat, body_block, fail_target)?;
+                        current_pat_check_block = fail_target;
+                    }
+
+                    self.select_block(body_block);
+                    let body_operand = self.lower_expr(arm.body)?;
+                    if let Some(res_place) = match_result_place {
+                        self.emit(res_place, Kind::Assign(body_operand));
+                    }
+                    self.terminate(Terminator::Jump(join_block));
+                }
+
+                self.select_block(next_arm_check_block);
+                self.terminate(Terminator::Return(None));
+
+                self.select_block(join_block);
+
+                match match_result_place {
+                    Some(p) => Ok(Operand::Place(p)),
+                    None => Ok(Operand::Const(Const::Unit)),
+                }
+            },
         }
     }
 
@@ -610,6 +679,115 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     #[inline(always)]
     const fn switch_to(&mut self, id: BlockId) {
         self.current = id.0 as usize;
+    }
+
+    #[inline(always)]
+    fn select_block(&mut self, id: BlockId) {
+        self.switch_to(id);
+    }
+
+    #[inline(always)]
+    fn current_block_id(&self) -> BlockId {
+        BlockId(self.current as u32)
+    }
+
+    fn lower_pattern_match(
+        &mut self,
+        place: Place,
+        pattern: &hir::Pattern<'hir>,
+        success_block: BlockId,
+        fail_block: BlockId,
+    ) -> Result<(), MirError> {
+        use InstructionKind as Kind;
+        use hir::PatternKind;
+
+        match &pattern.kind {
+            PatternKind::Wildcard => {
+                self.terminate(Terminator::Jump(success_block));
+                Ok(())
+            },
+            PatternKind::Binding(local_id) => {
+                let local_typ = self.local_type(*local_id);
+                let dest_place = self.place_for_local(*local_id, local_typ);
+                self.emit(dest_place, Kind::Assign(Operand::Place(place)));
+                self.terminate(Terminator::Jump(success_block));
+                Ok(())
+            },
+            PatternKind::Variant { id: enum_id, variant_idx, sub } => {
+                let enum_def = &self.enums[*enum_id];
+                let variant = enum_def.variants[*variant_idx];
+                let tag_val = variant.value;
+                let tag_ty = enum_id.repr().typ();
+
+                // Load discriminant tag from offset 0
+                let tag_place = self.fresh_temporary(tag_ty);
+                self.emit(
+                    tag_place,
+                    Kind::FieldLoad { src: Operand::Place(place), offset: 0, typ: tag_ty },
+                );
+
+                let match_cond_block = self.current_block_id();
+
+                if let Some(sub_pat) = sub {
+                    let sub_block = self.new_block();
+                    // Load payload
+                    let layout = self.layouts.enum_layout(*enum_id);
+                    let payload_offset = layout.payload_offset;
+                    let payload_ty = variant
+                        .payload
+                        .expect("Variant must have payload type since it has subpattern");
+                    let payload_place = self.fresh_temporary(payload_ty);
+                    self.emit(
+                        payload_place,
+                        Kind::FieldLoad {
+                            src: Operand::Place(place),
+                            offset: payload_offset,
+                            typ: payload_ty,
+                        },
+                    );
+
+                    // lower pattern match recursively
+                    self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
+
+                    // Switch back to match_cond_block to emit the branch/switch to sub_block or fail_block
+                    self.switch_to(match_cond_block);
+
+                    let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                    self.emit(
+                        cond,
+                        Kind::Binary {
+                            operation: BinaryOperator::Eq,
+                            lhs: Operand::Place(tag_place),
+                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
+                            checked: false,
+                        },
+                    );
+                    self.terminate(Terminator::Branch {
+                        condition: Operand::Place(cond),
+                        then_block: sub_block,
+                        else_block: fail_block,
+                    });
+                } else {
+                    // Just check tag
+                    let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                    self.emit(
+                        cond,
+                        Kind::Binary {
+                            operation: BinaryOperator::Eq,
+                            lhs: Operand::Place(tag_place),
+                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
+                            checked: false,
+                        },
+                    );
+                    self.terminate(Terminator::Branch {
+                        condition: Operand::Place(cond),
+                        then_block: success_block,
+                        else_block: fail_block,
+                    });
+                }
+                Ok(())
+            },
+        }
     }
 
     #[inline(always)]
