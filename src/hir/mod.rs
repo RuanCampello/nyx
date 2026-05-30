@@ -79,20 +79,32 @@ pub struct EnumVariant {
 #[derive(Debug, Clone, PartialEq)]
 #[rustfmt::skip]
 pub enum Statement {
-    LetInit { id: LocalId, init: Expression },
+    LetInit { id: LocalId, init: ExprId },
     LetUninit { id: LocalId },
-    Expr(Expression),
-    Return(Option<Expression>),
-    If { condition: Expression, then_block: Block, else_block: Option<Block> },
-    While { condition: Expression, body: Block },
+    Expr(ExprId),
+    Return(Option<ExprId>),
+    If { condition: ExprId, then_block: Block, else_block: Option<Block> },
+    While { condition: ExprId, body: Block },
     Block(Block),
 }
 
+/// An expression node in the read-only HIR database.
+///
+/// Children are referenced by [`ExprId`] into the owning body's `exprs` arena
+/// rather than boxed, so the node is a flat database entry and the whole body
+/// lives contiguously.
+/// The node carries no type, types live in [`TypeckResults`]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub(crate) kind: ExpressionKind,
-    pub(crate) typ: Type,
     span: Span,
+}
+
+/// Type-checking results for a body, keyed by [`ExprId`] in parallel with the
+/// body's `exprs` arena
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TypeckResults {
+    pub(crate) node_types: IndexVec<ExprId, Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +125,10 @@ pub struct Function {
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
+    /// Arena holding every expression in this body; statements and expression
+    /// children reference entries by [`ExprId`]
+    pub exprs: IndexVec<ExprId, Expression>,
+    pub typeck: TypeckResults,
     pub body: Block,
 }
 
@@ -120,7 +136,11 @@ pub struct Function {
 pub struct Constant {
     pub name: SymbolId,
     pub typ: Type,
-    pub value: Expression,
+    /// The constant initialiser's own expression arena, spliced into a function
+    /// body when the constant is referenced.
+    pub exprs: IndexVec<ExprId, Expression>,
+    pub typeck: TypeckResults,
+    pub value: ExprId,
     pub is_pub: bool,
 }
 
@@ -164,24 +184,24 @@ pub enum ExpressionKind {
     Char(char),
     Bool(bool),
     Local(LocalId),
-    Unary { operator: UnaryOperator, expr: Box<Expression> },
-    Binary { operator: BinaryOperator, left: Box<Expression>, right: Box<Expression> },
+    Unary { operator: UnaryOperator, expr: ExprId },
+    Binary { operator: BinaryOperator, left: ExprId, right: ExprId },
     Place(Place),
-    Assign { target: Place, value: Box<Expression> },
-    MethodCall { function: FunctionId, receiver: Receiver, args: Vec<Expression> },
+    Assign { target: Place, value: ExprId },
+    MethodCall { function: FunctionId, receiver: Receiver, args: Vec<ExprId> },
     Struct {
         id: StructId,
-        fields: Vec<(SymbolId, Expression)>,
+        fields: Vec<(SymbolId, ExprId)>,
     },
-    Call { function: FunctionId, args: Vec<Expression> },
-    Syscall { code: SyscallCode, args: Vec<Expression> },
-    IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
+    Call { function: FunctionId, args: Vec<ExprId> },
+    Syscall { code: SyscallCode, args: Vec<ExprId> },
+    IntrinsicCall { intrinsic: Intrinsic, args: Vec<ExprId> },
     TypeIntrinsic { kind: TypeIntrinsicKind, typ: Type },
-    Cast { from: Box<Expression>, to: Type },
+    Cast { from: ExprId, to: Type },
     /// read the discriminant of an enum value as its backing repr integer
-    EnumTag { value: Box<Expression> },
+    EnumTag { value: ExprId },
     /// read a variant payload out of an enum value (typed as the payload)
-    EnumPayload { value: Box<Expression> },
+    EnumPayload { value: ExprId },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,7 +226,7 @@ pub enum FunctionKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReceiverKind {
     Place(Place),
-    Computed(Box<Expression>),
+    Computed(ExprId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +252,17 @@ pub struct SymbolId(pub Spur);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
 
+/// Index of an [`Expression`] within a body's `exprs` arena
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExprId(pub u32);
+
 impl Idx for FunctionId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Idx for ExprId {
     fn to_usize(self) -> usize {
         self.0 as usize
     }
@@ -293,6 +323,50 @@ impl ReceiverKind {
         match self {
             Self::Place(place) => place.base_local(),
             Self::Computed(_) => None,
+        }
+    }
+}
+
+impl TypeckResults {
+    #[inline]
+    pub(crate) fn type_of(&self, id: ExprId) -> Type {
+        self.node_types[id]
+    }
+}
+
+impl ExpressionKind {
+    /// Shift every child [`ExprId`] by `base`. Used when splicing a constant's
+    /// expression arena into a larger body arena.
+    pub(in crate::hir) fn offset_children(&mut self, base: u32) {
+        let shift = |id: &mut ExprId| id.0 += base;
+        match self {
+            Self::Unary { expr, .. } => shift(expr),
+            Self::Binary { left, right, .. } => {
+                shift(left);
+                shift(right);
+            },
+            Self::Assign { value, .. } => shift(value),
+            Self::Cast { from, .. } => shift(from),
+            Self::EnumTag { value } | Self::EnumPayload { value } => shift(value),
+            Self::MethodCall { receiver, args, .. } => {
+                if let ReceiverKind::Computed(id) = &mut receiver.kind {
+                    shift(id);
+                }
+                args.iter_mut().for_each(shift);
+            },
+            Self::Struct { fields, .. } => fields.iter_mut().for_each(|(_, id)| shift(id)),
+            Self::Call { args, .. }
+            | Self::Syscall { args, .. }
+            | Self::IntrinsicCall { args, .. } => args.iter_mut().for_each(shift),
+            Self::Unit
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::String(_)
+            | Self::Char(_)
+            | Self::Bool(_)
+            | Self::Local(_)
+            | Self::Place(_)
+            | Self::TypeIntrinsic { .. } => {},
         }
     }
 }
@@ -646,20 +720,20 @@ mod tests {
         assert_eq!(foo.params[0].typ, Type::new(TypeKind::I64));
 
         let main = &hir.functions[1];
-        let call_expr = match &main.body.statements[0] {
-            Statement::Expr(expr) => expr,
+        let call_id = match &main.body.statements[0] {
+            Statement::Expr(expr) => *expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(call_expr.typ, Type::new(TypeKind::I64));
-        let arg = match &call_expr.kind {
+        assert_eq!(main.typeck.type_of(call_id), Type::new(TypeKind::I64));
+        let arg = match &main.exprs[call_id].kind {
             ExpressionKind::Call { args, .. } => {
                 assert_eq!(args.len(), 1);
-                &args[0]
+                args[0]
             },
             other => panic!("expected Call expression, got {other:?}"),
         };
-        assert_eq!(arg.typ, Type::new(TypeKind::I64));
-        assert!(matches!(arg.kind, ExpressionKind::Integer(1)));
+        assert_eq!(main.typeck.type_of(arg), Type::new(TypeKind::I64));
+        assert!(matches!(main.exprs[arg].kind, ExpressionKind::Integer(1)));
     }
 
     #[test]
@@ -713,22 +787,22 @@ mod tests {
         assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
         assert_eq!(func.locals[0].mutable, true);
 
-        let assign_expr = match &func.body.statements[1] {
-            Statement::Expr(expr) => expr,
+        let assign_id = match &func.body.statements[1] {
+            Statement::Expr(expr) => *expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(assign_expr.typ, Type::new(TypeKind::I64));
-        let (target_id, value) = match &assign_expr.kind {
+        assert_eq!(func.typeck.type_of(assign_id), Type::new(TypeKind::I64));
+        let (target_id, value) = match &func.exprs[assign_id].kind {
             ExpressionKind::Assign { target, value } => match &target.kind {
-                PlaceKind::Local(id) => (*id, value.as_ref()),
+                PlaceKind::Local(id) => (*id, *value),
                 _ => panic!("expected local assignment target"),
             },
             other => panic!("expected Assign expression, got {other:?}"),
         };
 
         assert_eq!(target_id, LocalId(0));
-        assert_eq!(value.typ, Type::new(TypeKind::I64));
-        assert!(matches!(value.kind, ExpressionKind::Integer(99)));
+        assert_eq!(func.typeck.type_of(value), Type::new(TypeKind::I64));
+        assert!(matches!(func.exprs[value].kind, ExpressionKind::Integer(99)));
     }
 
     #[test]
@@ -806,18 +880,18 @@ mod tests {
         let func = &hir.functions[0];
 
         let init_a = match &func.body.statements[0] {
-            Statement::LetInit { init: e, .. } => e,
+            Statement::LetInit { init: e, .. } => *e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(init_a.typ, Type::new(TypeKind::Uptr));
-        assert!(matches!(init_a.kind, ExpressionKind::Integer(100)));
+        assert_eq!(func.typeck.type_of(init_a), Type::new(TypeKind::Uptr));
+        assert!(matches!(func.exprs[init_a].kind, ExpressionKind::Integer(100)));
 
         let init_b = match &func.body.statements[1] {
-            Statement::LetInit { init: e, .. } => e,
+            Statement::LetInit { init: e, .. } => *e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(init_b.typ, Type::new(TypeKind::Iptr));
-        assert!(matches!(init_b.kind, ExpressionKind::Integer(200)));
+        assert_eq!(func.typeck.type_of(init_b), Type::new(TypeKind::Iptr));
+        assert!(matches!(func.exprs[init_b].kind, ExpressionKind::Integer(200)));
     }
 
     #[test]
@@ -1175,11 +1249,11 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
         let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => expr,
+            Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(42)));
+        assert_eq!(func.typeck.type_of(ret_expr), Type::new(TypeKind::I32));
+        assert!(matches!(func.exprs[ret_expr].kind, ExpressionKind::Integer(42)));
     }
 
     #[test]
@@ -1196,11 +1270,11 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
         let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => expr,
+            Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::new(TypeKind::Uptr));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+        assert_eq!(func.typeck.type_of(ret_expr), Type::new(TypeKind::Uptr));
+        assert!(matches!(func.exprs[ret_expr].kind, ExpressionKind::Integer(127)));
     }
 
     #[test]
@@ -1221,11 +1295,11 @@ mod tests {
         let functions = scope.lower_functions(&declarations, &mut symbols, true).unwrap();
         let main_func = &functions[0];
         let ret_expr = match &main_func.body.statements[0] {
-            Statement::Return(Some(expr)) => expr,
+            Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::new(TypeKind::Uptr));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Integer(127)));
+        assert_eq!(main_func.typeck.type_of(ret_expr), Type::new(TypeKind::Uptr));
+        assert!(matches!(main_func.exprs[ret_expr].kind, ExpressionKind::Integer(127)));
     }
 
     #[test]
@@ -1240,15 +1314,15 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
         let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => expr,
+            Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
-        match &ret_expr.kind {
+        assert_eq!(func.typeck.type_of(ret_expr), Type::new(TypeKind::I32));
+        match &func.exprs[ret_expr].kind {
             ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
-                assert!(matches!(left.kind, ExpressionKind::Integer(10)));
-                assert!(matches!(right.kind, ExpressionKind::Integer(2)));
+                assert!(matches!(func.exprs[*left].kind, ExpressionKind::Integer(10)));
+                assert!(matches!(func.exprs[*right].kind, ExpressionKind::Integer(2)));
             },
             other => panic!("expected Binary expression, got {other:?}"),
         };
@@ -1315,11 +1389,11 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         let func = &hir.functions[0];
         let ret_expr = match &func.body.statements[1] {
-            Statement::Return(Some(expr)) => expr,
+            Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(ret_expr.typ, Type::new(TypeKind::I32));
-        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
+        assert_eq!(func.typeck.type_of(ret_expr), Type::new(TypeKind::I32));
+        assert!(matches!(func.exprs[ret_expr].kind, ExpressionKind::Local(_)));
     }
 
     #[test]

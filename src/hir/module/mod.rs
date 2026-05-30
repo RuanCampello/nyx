@@ -533,24 +533,18 @@ mod tests {
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
-            matches!(
-                stmt,
-                hir::Statement::Expr(hir::Expression {
-                    kind: hir::ExpressionKind::Call {
-                        args,
-                        ..
-                    },
-                    ..
-                })
-                if args.len() == 1 && matches!(
-                    &args[0],
-                    hir::Expression {
-                        kind: hir::ExpressionKind::Integer(0),
-                        typ,
-                        ..
-                    } if *typ == hir::Type::new(hir::TypeKind::I32)
-                )
-            )
+            let hir::Statement::Expr(id) = stmt else {
+                return false;
+            };
+            let hir::ExpressionKind::Call { args, .. } = &main.exprs[*id].kind else {
+                return false;
+            };
+
+            args.len() == 1 && {
+                let arg = args[0];
+                matches!(main.exprs[arg].kind, hir::ExpressionKind::Integer(0))
+                    && main.typeck.type_of(arg) == hir::Type::new(hir::TypeKind::I32)
+            }
         });
 
         assert!(has_exit_call);
@@ -561,15 +555,12 @@ mod tests {
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::exit")
             .unwrap();
         let emits_exit_syscall = exit.body.statements.iter().any(|stmt| {
+            let hir::Statement::Expr(id) = stmt else {
+                return false;
+            };
             matches!(
-                stmt,
-                hir::Statement::Expr(hir::Expression {
-                    kind: hir::ExpressionKind::Syscall {
-                        code: hir::SyscallCode::Exit,
-                        args,
-                    },
-                    ..
-                })
+                &exit.exprs[*id].kind,
+                hir::ExpressionKind::Syscall { code: hir::SyscallCode::Exit, args }
                 if args.len() == 1
             )
         });
@@ -614,15 +605,13 @@ mod tests {
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
 
+        let hir::Statement::Expr(id) = &main.body.statements[0] else {
+            panic!("expected an expression statement");
+        };
         assert!(matches!(
-            &main.body.statements[0],
-            hir::Statement::Expr(hir::Expression {
-                kind: hir::ExpressionKind::IntrinsicCall {
-                    intrinsic: hir::Intrinsic::PrintLn,
-                    args,
-                },
-                ..
-            }) if args.len() == 1
+            &main.exprs[*id].kind,
+            hir::ExpressionKind::IntrinsicCall { intrinsic: hir::Intrinsic::PrintLn, args }
+            if args.len() == 1
         ));
     }
 
@@ -693,24 +682,24 @@ mod tests {
             .unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
-            Statement::LetInit { init: expr, .. } => expr,
+            Statement::LetInit { init, .. } => *init,
             _ => panic!("expected let statement"),
         };
         assert!(
-            matches!(a_init.kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(main_fn.exprs[a_init].kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(a_init.typ, Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(a_init), Type::new(TypeKind::Uptr));
 
         let b_init = match &main_fn.body.statements[1] {
-            Statement::LetInit { init: expr, .. } => expr,
+            Statement::LetInit { init, .. } => *init,
             _ => panic!("expected let statement"),
         };
         assert!(
-            matches!(b_init.kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(main_fn.exprs[b_init].kind, ExpressionKind::TypeIntrinsic { .. }),
             "align_of should remain a HIR type intrinsic"
         );
-        assert_eq!(b_init.typ, Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(b_init), Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -738,15 +727,15 @@ mod tests {
             .unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
-            Statement::Expr(expr) => expr,
-            Statement::Return(Some(expr)) => expr,
+            Statement::Expr(expr) => *expr,
+            Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
         assert!(
-            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(main_fn.exprs[body_expr].kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -779,12 +768,12 @@ mod tests {
             .unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
-            Statement::Expr(expr) => expr,
-            Statement::Return(Some(expr)) => expr,
+            Statement::Expr(expr) => *expr,
+            Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
 
-        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -811,11 +800,11 @@ mod tests {
             .unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
-            Statement::Expr(expr) => expr,
-            Statement::Return(Some(expr)) => expr,
+            Statement::Expr(expr) => *expr,
+            Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
-        assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
     }
 
     #[test]
@@ -888,12 +877,12 @@ mod tests {
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
         let body_expr = match &main_fn.body.statements[0] {
-            Statement::Expr(expr) => expr,
-            Statement::Return(Some(expr)) => expr,
+            Statement::Expr(expr) => *expr,
+            Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
         assert!(
-            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(main_fn.exprs[body_expr].kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
     }

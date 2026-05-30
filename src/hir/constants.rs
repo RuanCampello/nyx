@@ -54,14 +54,17 @@ pub(in crate::hir) fn extend<'d, 's>(
             decl.ast.typ.span(),
         )?;
 
-        let lowered = lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std)?;
+        let (exprs, typeck, value) =
+            lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std)?;
 
         scope.constants.insert(
             symbol_id,
             Constant {
                 name: symbol_id,
                 typ: expected_type,
-                value: lowered,
+                exprs,
+                typeck,
+                value,
                 is_pub: decl.ast.is_pub,
             },
         );

@@ -1,8 +1,9 @@
 use crate::{
     hir::{
-        Block, Constant, EnumId, EnumVariant, Expression, ExpressionKind, Function, FunctionId,
-        Intrinsic, Local, LocalId, Parameter, Receiver, ReceiverKind, RefTarget, RefTargetKind,
-        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        Block, Constant, EnumId, EnumVariant, ExprId, Expression, ExpressionKind, Function,
+        FunctionId, Intrinsic, Local, LocalId, Parameter, Receiver, ReceiverKind, RefTarget,
+        RefTargetKind, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
+        TypeKind, TypeckResults,
         error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
         scope::Scope,
@@ -24,6 +25,8 @@ use std::{
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     scope: &'s Scope<'s>,
     locals: IndexVec<LocalId, Local>,
+    exprs: IndexVec<ExprId, Expression>,
+    node_types: IndexVec<ExprId, Type>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
     function: Option<&'f statement::Function<'src>>,
@@ -33,6 +36,17 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
     is_const: bool,
     in_std: bool,
     self_type: Option<Type>,
+}
+
+/// A freshly lowered expression
+///
+/// Its arena id plus the type and span the
+/// lowering pass needs immediately for bidirectional checking
+#[derive(Clone, Copy)]
+pub(in crate::hir) struct Lowered {
+    id: ExprId,
+    typ: Type,
+    span: Span,
 }
 
 impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
@@ -57,6 +71,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             function_id,
             next_local: 0,
             locals: IndexVec::new(),
+            exprs: IndexVec::new(),
+            node_types: IndexVec::new(),
             scopes: vec![HashMap::new()],
             self_type,
         }
@@ -73,9 +89,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             function_id: FunctionId(0),
             next_local: 0,
             locals: IndexVec::new(),
+            exprs: IndexVec::new(),
+            node_types: IndexVec::new(),
             scopes: vec![HashMap::new()],
             self_type: None,
         }
+    }
+
+    /// Push an expression node into the arena, record its type in the parallel
+    /// side-table, and return a [`Lowered`] handle
+    #[inline]
+    fn alloc(&mut self, kind: ExpressionKind, typ: Type, span: Span) -> Lowered {
+        let id = ExprId(self.exprs.len() as u32);
+        self.exprs.push(Expression { kind, span });
+        self.node_types.push(typ);
+        Lowered { id, typ, span }
     }
 
     #[inline(always)]
@@ -121,6 +149,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             is_pub: function.is_pub,
             inline: function.inline,
             kind: signatures.kind,
+            exprs: self.exprs,
+            typeck: TypeckResults { node_types: self.node_types },
             body,
         })
     }
@@ -177,7 +207,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         let expr = self.lower_expr(expr, Some(typ))?;
                         self.assert_type(typ, expr.typ, expr.span)?;
 
-                        Statement::LetInit { id, init: expr }
+                        Statement::LetInit { id, init: expr.id }
                     },
                     _ => Statement::LetUninit { id },
                 };
@@ -190,7 +220,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        Some(expr)
+                        Some(expr.id)
                     },
                     _ => None,
                 };
@@ -207,7 +237,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 // PERFORMANCE: remove loops with constant false conditions
                 let (body, _) = self.lower_block(&statement.body, false)?;
 
-                Ok((Statement::While { condition, body }, false))
+                Ok((Statement::While { condition: condition.id, body }, false))
             },
             Stmt::Expr(expr, _) => {
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
@@ -216,9 +246,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 Ok(match tail_ret {
                     true => {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        (Statement::Return(Some(expr)), true)
+                        (Statement::Return(Some(expr.id)), true)
                     },
-                    _ => (Statement::Expr(expr), false),
+                    _ => (Statement::Expr(expr.id), false),
                 })
             },
             Stmt::Block(block) => {
@@ -238,16 +268,15 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
     }
 
-    fn lower_identifier(&mut self, name: &str, span: Span) -> Result<Expression, HirError<'src>> {
+    fn lower_identifier(&mut self, name: &str, span: Span) -> Result<Lowered, HirError<'src>> {
         if let Some(id) = self.local_id(name) {
             return Ok(self.local_expr(id, span));
         }
 
-        if let Some(constant) = self.constant(name) {
-            let mut value = constant.value.clone();
-            value.span = span;
-
-            return Ok(value);
+        if let Some((const_exprs, const_types, root)) = self.constant(name).map(|constant| {
+            (constant.exprs.clone(), constant.typeck.node_types.clone(), constant.value)
+        }) {
+            return Ok(self.splice_const(&const_exprs, &const_types, root, span));
         }
 
         let symbol = self
@@ -259,14 +288,39 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         Ok(self.local_expr(id, span))
     }
 
+    /// Copy a constant's expression subtree (nodes and their types) into this
+    /// body's arena, re-spanning the inlined root to the use site.
+    fn splice_const(
+        &mut self,
+        src: &IndexVec<ExprId, Expression>,
+        src_types: &IndexVec<ExprId, Type>,
+        root: ExprId,
+        span: Span,
+    ) -> Lowered {
+        let base = self.exprs.len() as u32;
+        for (expr, &typ) in src.iter().zip(src_types.iter()) {
+            let mut copy = expr.clone();
+            copy.kind.offset_children(base);
+            self.exprs.push(copy);
+            self.node_types.push(typ);
+        }
+
+        let id = ExprId(base + root.0);
+        self.exprs[id].span = span;
+        let typ = self.node_types[id];
+
+        Lowered { id, typ, span }
+    }
+
     fn local_id(&self, name: &str) -> Option<LocalId> {
         let symbol = self.symbols.get_id(name)?;
 
         self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
     }
 
-    fn local_expr(&self, id: LocalId, span: Span) -> Expression {
-        Expression { kind: ExpressionKind::Local(id), typ: self[id].typ, span }
+    fn local_expr(&mut self, id: LocalId, span: Span) -> Lowered {
+        let typ = self[id].typ;
+        self.alloc(ExpressionKind::Local(id), typ, span)
     }
 
     fn constant(&self, name: &str) -> Option<&Constant> {
@@ -303,7 +357,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         expr: &expression::Expression<'src>,
         hint: Option<Type>,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered, HirError<'src>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -313,7 +367,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     .and_then(|t| t.is_number().then_some(t))
                     .unwrap_or(Type::new(TypeKind::I32));
 
-                Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
+                Ok(self.alloc(ExpressionKind::Integer(*value), typ, *span))
             },
 
             Expr::Float(value, span) => {
@@ -321,29 +375,21 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     .and_then(|t| t.is_float().then_some(t))
                     .unwrap_or(Type::new(TypeKind::F64));
 
-                Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
+                Ok(self.alloc(ExpressionKind::Float(*value), typ, *span))
             },
 
             Expr::String(value, span) => {
                 let sym = self.symbols.insert(value);
-                Ok(Expression {
-                    kind: ExpressionKind::String(sym),
-                    typ: Type::new(TypeKind::Str),
-                    span: *span,
-                })
+                Ok(self.alloc(ExpressionKind::String(sym), Type::new(TypeKind::Str), *span))
             },
 
-            Expr::Char(value, span) => Ok(Expression {
-                kind: ExpressionKind::Char(*value),
-                typ: Type::new(TypeKind::Char),
-                span: *span,
-            }),
+            Expr::Char(value, span) => {
+                Ok(self.alloc(ExpressionKind::Char(*value), Type::new(TypeKind::Char), *span))
+            },
 
-            Expr::Bool(value, span) => Ok(Expression {
-                kind: ExpressionKind::Bool(*value),
-                typ: Type::new(TypeKind::Bool),
-                span: *span,
-            }),
+            Expr::Bool(value, span) => {
+                Ok(self.alloc(ExpressionKind::Bool(*value), Type::new(TypeKind::Bool), *span))
+            },
 
             Expr::Cast { expr: inner, target_type, span } => {
                 let target = self.resolve_type(&target_type.value(), target_type.span())?;
@@ -357,19 +403,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 }
 
                 let lowered_expr = match src.kind() {
-                    TypeKind::Enum(id) => Expression {
-                        kind: ExpressionKind::EnumTag { value: Box::new(lowered_expr) },
-                        typ: id.repr().typ(),
-                        span: *span,
-                    },
+                    TypeKind::Enum(id) => self.alloc(
+                        ExpressionKind::EnumTag { value: lowered_expr.id },
+                        id.repr().typ(),
+                        *span,
+                    ),
                     _ => lowered_expr,
                 };
 
-                Ok(Expression {
-                    kind: ExpressionKind::Cast { from: Box::new(lowered_expr), to: target },
-                    typ: target,
-                    span: *span,
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Cast { from: lowered_expr.id, to: target },
+                    target,
+                    *span,
+                ))
             },
 
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
@@ -380,11 +426,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 if let Some((id, value)) =
                     self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
                 {
-                    return Ok(Expression {
-                        kind: ExpressionKind::Integer(value),
-                        typ: Type::new(TypeKind::Enum(id)),
-                        span: *span,
-                    });
+                    return Ok(self.alloc(
+                        ExpressionKind::Integer(value),
+                        Type::new(TypeKind::Enum(id)),
+                        *span,
+                    ));
                 }
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
@@ -405,9 +451,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     ));
                 };
 
-                let mut val = c.value.clone();
-                val.span = *span;
-                Ok(val)
+                let const_exprs = c.exprs.clone();
+                let const_types = c.typeck.node_types.clone();
+                let root = c.value;
+                Ok(self.splice_const(&const_exprs, &const_types, root, *span))
             },
 
             Expr::Unary { operator, expr, span } => {
@@ -494,11 +541,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
-                Ok(Expression {
-                    typ: expected,
-                    span: *span,
-                    kind: ExpressionKind::Unary { operator: *operator, expr: Box::new(expr) },
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Unary { operator: *operator, expr: expr.id },
+                    expected,
+                    *span,
+                ))
             },
 
             Expr::Binary { left, operator, right, span } => {
@@ -530,15 +577,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 // PERFORMANCE: constant fold binary operator on literals
                 let result = self.type_for_binary(operator, left.typ, right.typ, *span)?;
 
-                Ok(Expression {
-                    kind: ExpressionKind::Binary {
-                        operator: *operator,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    typ: result,
-                    span: *span,
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Binary { operator: *operator, left: left.id, right: right.id },
+                    result,
+                    *span,
+                ))
             },
 
             Expr::Assignment { target, value, span } => {
@@ -565,11 +608,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let value = self.lower_expr(value, Some(place.typ))?;
                 self.assert_type(place.typ, value.typ, *span)?;
 
-                Ok(Expression {
-                    typ: place.typ,
-                    span: *span,
-                    kind: ExpressionKind::Assign { target: place, value: Box::new(value) },
-                })
+                let typ = place.typ;
+                Ok(self.alloc(
+                    ExpressionKind::Assign { target: place, value: value.id },
+                    typ,
+                    *span,
+                ))
             },
 
             Expr::Struct { name, fields, span, type_args: _ } => {
@@ -606,7 +650,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
                     let value = self.lower_expr(&field.value, Some(expected.typ))?;
                     self.assert_type(expected.typ, value.typ, value.span)?;
-                    lowered.push((field_symbol, value));
+                    lowered.push((field_symbol, value.id));
                 }
 
                 for expected in &definition.fields {
@@ -621,20 +665,17 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     }
                 }
 
-                Ok(Expression {
-                    typ: Type::new(TypeKind::Struct(id)),
-                    span: *span,
-                    kind: ExpressionKind::Struct { id, fields: lowered },
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Struct { id, fields: lowered },
+                    Type::new(TypeKind::Struct(id)),
+                    *span,
+                ))
             },
 
             Expr::Field { span, .. } => {
                 let place = self.resolve_place(expr, *span)?;
-                Ok(Expression {
-                    typ: place.typ,
-                    span: *span,
-                    kind: ExpressionKind::Place(place),
-                })
+                let typ = place.typ;
+                Ok(self.alloc(ExpressionKind::Place(place), typ, *span))
             },
 
             Expr::Call { callee, args, span, type_args: _ } => {
@@ -647,7 +688,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             let lowered = self.lower_expr(receiver, None)?;
                             let typ = lowered.typ;
-                            (ReceiverKind::Computed(Box::new(lowered)), typ)
+                            (ReceiverKind::Computed(lowered.id), typ)
                         },
                     };
                     let base_local = kind.base_local();
@@ -704,22 +745,23 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     let lowered_args = args
                         .iter()
                         .zip(explicit_params.iter())
-                        .map(|(expr, &param_type)| -> Result<_, HirError> {
+                        .map(|(expr, &param_type)| -> Result<ExprId, HirError> {
                             let expr = self.lower_expr(expr, Some(param_type))?;
                             self.assert_type(param_type, expr.typ, expr.span)?;
-                            Ok(expr)
+                            Ok(expr.id)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
-                    return Ok(Expression {
-                        typ: signature.return_type,
-                        span: *span,
-                        kind: ExpressionKind::MethodCall {
+                    let return_type = signature.return_type;
+                    return Ok(self.alloc(
+                        ExpressionKind::MethodCall {
                             function,
                             receiver: Receiver { kind, typ: receiver_typ },
                             args: lowered_args,
                         },
-                    });
+                        return_type,
+                        *span,
+                    ));
                 }
 
                 let function_id = match callee.as_ref() {
@@ -769,11 +811,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 );
                 let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
 
-                Ok(Expression {
-                    kind: ExpressionKind::TypeIntrinsic { kind: *kind, typ },
-                    typ: Type::new(TypeKind::Uptr),
-                    span: *span,
-                })
+                Ok(self.alloc(
+                    ExpressionKind::TypeIntrinsic { kind: *kind, typ },
+                    Type::new(TypeKind::Uptr),
+                    *span,
+                ))
             },
         }
     }
@@ -788,7 +830,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         let temp_name = format!("__match{}", self.next_local);
         let temp_symbol = self.symbols.insert(&temp_name);
         let temp = self.declare_local(temp_symbol, scrutinee.typ, false)?;
-        let init = Statement::LetInit { id: temp, init: scrutinee };
+        let init = Statement::LetInit { id: temp, init: scrutinee.id };
 
         let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
         let hint = tail_ret.then_some(self.return_type);
@@ -801,7 +843,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 self.lower_match_arm_body(temp, scrutinee_enum, arm, hint)?;
             all_return &= returns;
 
-            let statement = Statement::If { condition, then_block, else_block };
+            let statement = Statement::If { condition: condition.id, then_block, else_block };
             else_block = Some(Block { statements: vec![statement], span: arm.span });
         }
 
@@ -826,14 +868,13 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         if let Some((name, payload_type)) = self.payload_binding(id, &arm.patterns, arm.span)? {
             let symbol = self.symbols.insert(name);
             let id = self.declare_local(symbol, payload_type, false)?;
-            let value = Expression {
-                kind: ExpressionKind::EnumPayload {
-                    value: Box::new(self.local_expr(local, arm.span)),
-                },
-                typ: payload_type,
-                span: arm.span,
-            };
-            statements.push(Statement::LetInit { id, init: value });
+            let local_expr = self.local_expr(local, arm.span);
+            let value = self.alloc(
+                ExpressionKind::EnumPayload { value: local_expr.id },
+                payload_type,
+                arm.span,
+            );
+            statements.push(Statement::LetInit { id, init: value.id });
         }
 
         let body = self.lower_expr(&arm.body, hint)?;
@@ -841,9 +882,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         match hint {
             Some(expected) => {
                 self.assert_type(expected, body.typ, body.span)?;
-                statements.push(Statement::Return(Some(body)));
+                statements.push(Statement::Return(Some(body.id)));
             },
-            None => statements.push(Statement::Expr(body)),
+            None => statements.push(Statement::Expr(body.id)),
         }
 
         self.pop_scope();
@@ -857,6 +898,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     ) -> Result<(Statement, bool), HirError<'src>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::new(TypeKind::Bool), condition.typ, condition.span)?;
+        let condition = condition.id;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
         let (else_block, else_returns) = if_stmt
@@ -885,9 +927,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         let stmt = match tail_ret {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
-                                Statement::Return(Some(lowered))
+                                Statement::Return(Some(lowered.id))
                             },
-                            _ => Statement::Expr(lowered),
+                            _ => Statement::Expr(lowered.id),
                         };
 
                         let block = Block { statements: vec![stmt], span };
@@ -909,7 +951,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         function_id: FunctionId,
         args: &[expression::Expression<'src>],
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered, HirError<'src>> {
         let signature = &self.scope.signatures[function_id];
         let intrinsic = signature.kind.intrinsic();
 
@@ -933,18 +975,19 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             ));
         }
 
-        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut lowered_args: Vec<ExprId> = Vec::with_capacity(args.len());
         match intrinsic {
             Some(_) => {
                 for arg in args {
-                    lowered_args.push(self.lower_expr(arg, None)?);
+                    let arg = self.lower_expr(arg, None)?;
+                    lowered_args.push(arg.id);
                 }
             },
             _ => {
                 for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
                     let expr = self.lower_expr(expr, Some(param_type))?;
                     self.assert_type(param_type, expr.typ, expr.span)?;
-                    lowered_args.push(expr);
+                    lowered_args.push(expr.id);
                 }
             },
         }
@@ -954,7 +997,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             _ => ExpressionKind::Call { function: function_id, args: lowered_args },
         };
 
-        Ok(Expression { typ: signature.return_type, span, kind })
+        let return_type = signature.return_type;
+        Ok(self.alloc(kind, return_type, span))
     }
 
     fn lower_syscall(
@@ -962,7 +1006,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         args: &[expression::Expression<'src>],
         return_type: Type,
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered, HirError<'src>> {
         if !self.in_std {
             return Err(hir_error!(span, UnknownFunction { name: "syscall".into() }));
         }
@@ -993,14 +1037,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
         let args = value_args
             .iter()
-            .map(|arg| self.lower_expr(arg, None))
+            .map(|arg| self.lower_expr(arg, None).map(|lowered| lowered.id))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Expression {
-            typ: return_type,
-            span,
-            kind: ExpressionKind::Syscall { code, args },
-        })
+        Ok(self.alloc(ExpressionKind::Syscall { code, args }, return_type, span))
     }
 
     fn match_arm_condition(
@@ -1008,30 +1048,29 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         local: LocalId,
         id: EnumId,
         arm: &statement::MatchArm<'src>,
-    ) -> Result<Expression, HirError<'src>> {
-        let mut condition = None;
+    ) -> Result<Lowered, HirError<'src>> {
+        let mut condition: Option<Lowered> = None;
 
         for pattern in &arm.patterns {
             let next = self.pattern_condition(local, id, pattern, arm.span)?;
             condition = Some(match condition {
-                Some(left) => Expression {
-                    typ: Type::new(TypeKind::Bool),
-                    span: arm.span,
-                    kind: ExpressionKind::Binary {
+                Some(left) => self.alloc(
+                    ExpressionKind::Binary {
                         operator: BinaryOperator::Or,
-                        left: Box::new(left),
-                        right: Box::new(next),
+                        left: left.id,
+                        right: next.id,
                     },
-                },
+                    Type::new(TypeKind::Bool),
+                    arm.span,
+                ),
                 None => next,
             });
         }
 
-        Ok(condition.unwrap_or(Expression {
-            kind: ExpressionKind::Bool(true),
-            typ: Type::new(TypeKind::Bool),
-            span: arm.span,
-        }))
+        match condition {
+            Some(condition) => Ok(condition),
+            None => Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), arm.span)),
+        }
     }
 
     #[inline]
@@ -1041,20 +1080,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         id: EnumId,
         pattern: &statement::Pattern<'src>,
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered, HirError<'src>> {
         match pattern {
-            statement::Pattern::Wildcard => Ok(Expression {
-                kind: ExpressionKind::Bool(true),
-                typ: Type::new(TypeKind::Bool),
-                span,
-            }),
+            statement::Pattern::Wildcard => {
+                Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), span))
+            },
             statement::Pattern::Ident(name) => match self.variant(id, None, name) {
                 Some(variant) => self.tag_comparison(local, id, variant.value, span),
-                None => Ok(Expression {
-                    kind: ExpressionKind::Bool(true),
-                    typ: Type::new(TypeKind::Bool),
-                    span,
-                }),
+                None => Ok(self.alloc(ExpressionKind::Bool(true), Type::new(TypeKind::Bool), span)),
             },
             statement::Pattern::Variant { qualifier, name, .. } => {
                 let variant = self.variant(id, *qualifier, name).ok_or_else(|| {
@@ -1110,30 +1143,23 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
     #[inline]
     fn tag_comparison(
-        &self,
+        &mut self,
         local: LocalId,
         id: EnumId,
         value: i64,
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered, HirError<'src>> {
         let tag_type = id.repr().typ();
 
-        let left = Expression {
-            kind: ExpressionKind::EnumTag { value: Box::new(self.local_expr(local, span)) },
-            typ: tag_type,
-            span,
-        };
-        let right = Expression { kind: ExpressionKind::Integer(value), typ: tag_type, span };
+        let local_expr = self.local_expr(local, span);
+        let left = self.alloc(ExpressionKind::EnumTag { value: local_expr.id }, tag_type, span);
+        let right = self.alloc(ExpressionKind::Integer(value), tag_type, span);
 
-        Ok(Expression {
-            kind: ExpressionKind::Binary {
-                operator: BinaryOperator::Eq,
-                left: Box::new(left),
-                right: Box::new(right),
-            },
-            typ: Type::new(TypeKind::Bool),
+        Ok(self.alloc(
+            ExpressionKind::Binary { operator: BinaryOperator::Eq, left: left.id, right: right.id },
+            Type::new(TypeKind::Bool),
             span,
-        })
+        ))
     }
 
     #[inline]
@@ -1416,13 +1442,13 @@ pub(in crate::hir) fn lower_const<'s, 'src>(
     expr: &expression::Expression<'src>,
     expected_type: Type,
     in_std: bool,
-) -> Result<Expression, HirError<'src>> {
+) -> Result<(IndexVec<ExprId, Expression>, TypeckResults, ExprId), HirError<'src>> {
     let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std);
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
 
-    Ok(lowered)
+    Ok((builder.exprs, TypeckResults { node_types: builder.node_types }, lowered.id))
 }
 
 impl<'s, 'f, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'src> {
