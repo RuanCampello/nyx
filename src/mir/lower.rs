@@ -558,22 +558,26 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         next_arm_check_block,
                     )?;
 
-                    // Guard: if present, evaluate in the body block; on false, fall through to
-                    // next arm.
+                    // if present, evaluate in the body block
+                    // on false, fall through to next arm
                     self.select_block(body_block);
-                    let exec_block = if let Some(guard_expr) = arm.guard {
-                        let guarded = self.new_block();
-                        let guard_val = self.lower_expr(guard_expr)?;
-                        self.terminate(Terminator::Branch {
-                            condition: guard_val,
-                            then_block: guarded,
-                            else_block: next_arm_check_block,
-                        });
-                        self.select_block(guarded);
-                        guarded
-                    } else {
-                        body_block
-                    };
+                    let exec_block = arm
+                        .guard
+                        .map(|guard| {
+                            let then_block = self.new_block();
+                            let condition = self.lower_expr(guard)?;
+
+                            self.terminate(Terminator::Branch {
+                                condition,
+                                then_block,
+                                else_block: next_arm_check_block,
+                            });
+                            self.select_block(then_block);
+
+                            Ok::<_, MirError>(then_block)
+                        })
+                        .transpose()?
+                        .unwrap_or(body_block);
                     let _ = exec_block;
 
                     let body_operand = self.lower_expr(arm.body)?;
@@ -759,16 +763,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(())
             },
             PatternKind::Or(alternatives) => {
-                // Try each alternative; if one matches, jump to success_block.
-                // Only the last failure goes to fail_block.
                 let mut check = self.current_block_id();
                 let n = alternatives.len();
                 for (i, alt) in alternatives.iter().enumerate() {
                     self.select_block(check);
-                    let next = if i + 1 < n { self.new_block() } else { fail_block };
+                    let next = (i + 1 < n).then(|| self.new_block()).unwrap_or(fail_block);
                     self.lower_pattern_match(place, alt, success_block, next)?;
                     check = next;
                 }
+
                 Ok(())
             },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
@@ -777,7 +780,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let tag_val = variant.value;
                 let tag_ty = enum_id.repr().typ();
 
-                // Load discriminant tag from offset 0
+                // load discriminant tag from offset 0
                 let tag_place = self.fresh_temporary(tag_ty);
                 self.emit(
                     tag_place,
@@ -788,26 +791,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 if let Some(sub_pat) = sub {
                     let sub_block = self.new_block();
-                    // Load payload
+                    // load payload
                     let layout = self.layouts.enum_layout(*enum_id);
-                    let payload_offset = layout.payload_offset;
-                    let payload_ty = variant
+                    let offset = layout.payload_offset;
+                    let typ = variant
                         .payload
                         .expect("Variant must have payload type since it has subpattern");
-                    let payload_place = self.fresh_temporary(payload_ty);
+                    let payload_place = self.fresh_temporary(typ);
                     self.emit(
                         payload_place,
-                        Kind::FieldLoad {
-                            src: Operand::Place(place),
-                            offset: payload_offset,
-                            typ: payload_ty,
-                        },
+                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
                     );
 
                     // lower pattern match recursively
                     self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
 
-                    // Switch back to match_cond_block to emit the branch/switch to sub_block or fail_block
+                    // switch back to match_cond_block to emit the branch/switch to sub_block or fail_block
                     self.switch_to(match_cond_block);
 
                     let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
@@ -1144,19 +1143,29 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         },
         ExpressionKind::MethodCall { receiver, args, .. } => {
             let receiver = *receiver;
-            if matches!(&receiver.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. }) {
-                visit_place_runtime_uses(receiver, uses);
-            } else {
-                visit_expr_runtime_uses(receiver, uses);
+            let is_place =
+                matches!(&receiver.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. });
+
+            match is_place {
+                true => visit_place_runtime_uses(receiver, uses),
+                _ => visit_expr_runtime_uses(receiver, uses),
             }
+
             for &arg in *args {
                 visit_expr_runtime_uses(arg, uses);
             }
         },
         ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
-        ExpressionKind::TypeIntrinsic { .. } => {},
-        ExpressionKind::Literal(_) => {},
-        other => unimplemented!("{other:#?}"),
+        ExpressionKind::TypeIntrinsic { .. } | ExpressionKind::Literal(_) => {},
+        ExpressionKind::Match { scrutinee, arms } => {
+            visit_expr_runtime_uses(*scrutinee, uses);
+            for arm in *arms {
+                if let Some(guard) = arm.guard {
+                    visit_expr_runtime_uses(guard, uses);
+                }
+                visit_expr_runtime_uses(arm.body, uses);
+            }
+        },
     }
 }
 

@@ -507,4 +507,91 @@ mod tests {
 
         assert_eq!(call, (Type::new(TypeKind::Struct(crate::hir::StructId(0))), 1));
     }
+
+    #[test]
+    fn literal_pattern_emits_eq_comparison() {
+        let mir = parse_and_lower(
+            r#"
+            fn classify(x: i32): i32 {
+                match x {
+                    0 -> 10,
+                    _ -> 20,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        // Literal pattern must emit a Binary(Eq) against a constant.
+        let has_eq = func.blocks.iter().any(|b| {
+            b.instructions.iter().any(|instr| {
+                matches!(
+                    &instr.kind,
+                    InstructionKind::Binary {
+                        operation: crate::parser::expression::BinaryOperator::Eq,
+                        rhs: Operand::Const(Const::Int(0, _)),
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(has_eq, "expected an Eq comparison against 0 for the literal pattern");
+    }
+
+    #[test]
+    fn or_pattern_produces_two_check_blocks() {
+        let mir = parse_and_lower(
+            r#"
+            enum Dir { N = 0, S = 1, E = 2, W = 3 } as u8
+            fn is_horizontal(d: Dir): i32 {
+                match d {
+                    Dir::E | Dir::W -> 1,
+                    _ -> 0,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        // Or-pattern A|B generates two tag-comparison blocks (one per alternative)
+        // before reaching the body block. Count Branch terminators used for tag checks.
+        let branch_count =
+            func.blocks.iter().filter(|b| matches!(b.terminator, Terminator::Branch { .. })).count();
+        assert!(
+            branch_count >= 2,
+            "or-pattern with 2 alternatives must produce at least 2 branch terminators, got {branch_count}"
+        );
+    }
+
+    #[test]
+    fn guard_adds_conditional_branch_in_body_block() {
+        let mir = parse_and_lower(
+            r#"
+            fn sign(x: i32): i32 {
+                match x {
+                    n if n > 0 -> 1,
+                    _ -> 0,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        // A guard adds an extra Branch terminator beyond what the pattern check needs.
+        // The binding pattern itself (wildcard-like) produces a Jump, so any Branch
+        // here comes from the guard.
+        let has_guard_branch = func.blocks.iter().any(|b| {
+            matches!(b.terminator, Terminator::Branch { .. })
+                && b.instructions.iter().any(|i| {
+                    matches!(
+                        &i.kind,
+                        InstructionKind::Binary {
+                            operation: crate::parser::expression::BinaryOperator::Gt,
+                            ..
+                        }
+                    )
+                })
+        });
+        assert!(has_guard_branch, "expected a Branch from guard evaluating n > 0");
+    }
 }

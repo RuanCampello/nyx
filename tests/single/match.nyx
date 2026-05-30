@@ -1,0 +1,42 @@
+use std::panic;
+
+enum Direction {
+    North = 0,
+    South = 1,
+    East = 2,
+    West = 3,
+} as u8
+
+fn direction_code(d: Direction): i32 {
+    match d {
+        Direction::North -> 10,
+        Direction::South -> 20,
+        Direction::East -> 30,
+        Direction::West -> 40,
+    }
+}
+
+fn is_north(d: Direction): bool {
+    match d {
+        Direction::North -> true,
+        _ -> false,
+    }
+}
+
+fn main(): i32 {
+    let n = Direction::North;
+    let s = Direction::South;
+    let e = Direction::East;
+    let w = Direction::West;
+
+    panic::assert(direction_code(n) == 10);
+    panic::assert(direction_code(s) == 20);
+    panic::assert(direction_code(e) == 30);
+    panic::assert(direction_code(w) == 40);
+
+    panic::assert(is_north(n) == true);
+    panic::assert(is_north(s) == false);
+    panic::assert(is_north(e) == false);
+
+    0
+}

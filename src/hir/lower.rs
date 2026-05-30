@@ -1038,42 +1038,44 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 Ok(Pattern { kind: PatternKind::Or(slice), span })
             },
 
-            // Enum patterns — require the scrutinee to be an enum type.
             statement::Pattern::Ident(name) => {
-                let enum_id = self.enum_type(scrutinee_type, span)?;
-                let enum_def = &self.scope[enum_id];
+                if let TypeKind::Enum(_) = scrutinee_type.kind() {
+                    let id = self.enum_type(scrutinee_type, span)?;
+                    let enum_def = &self.scope[id];
 
-                if let Some(variant_idx) =
-                    enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
-                {
-                    let variant = enum_def.variants[variant_idx];
-                    if variant.payload.is_some() {
-                        return Err(hir_error!(
+                    if let Some(idx) =
+                        enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
+                    {
+                        let variant = enum_def.variants[idx];
+                        if variant.payload.is_some() {
+                            return Err(hir_error!(
+                                span,
+                                TypeMismatch {
+                                    expected: scrutinee_type,
+                                    found: Type::new(TypeKind::Unit),
+                                }
+                            ));
+                        }
+
+                        return Ok(Pattern {
+                            kind: PatternKind::Variant { id, variant_idx: idx, sub: None },
                             span,
-                            TypeMismatch {
-                                expected: scrutinee_type,
-                                found: Type::new(TypeKind::Unit),
-                            }
-                        ));
+                        });
                     }
-                    Ok(Pattern {
-                        kind: PatternKind::Variant { id: enum_id, variant_idx, sub: None },
-                        span,
-                    })
-                } else {
-                    let symbol = self.symbols.insert(name);
-                    let local_id = self.declare_local(symbol, scrutinee_type, false)?;
-                    Ok(Pattern { kind: PatternKind::Binding(local_id), span })
                 }
+
+                let symbol = self.symbols.insert(name);
+                let local_id = self.declare_local(symbol, scrutinee_type, false)?;
+                Ok(Pattern { kind: PatternKind::Binding(local_id), span })
             },
 
             statement::Pattern::Variant { qualifier, name, sub } => {
-                let enum_id = self.enum_type(scrutinee_type, span)?;
-                let enum_def = &self.scope[enum_id];
+                let id = self.enum_type(scrutinee_type, span)?;
+                let enum_def = &self.scope[id];
 
                 if let Some(qualifier) = qualifier {
                     let enum_symbol = self.symbols.insert(qualifier);
-                    if self.scope.enum_map.get(&enum_symbol).copied() != Some(enum_id) {
+                    if self.scope.enum_map.get(&enum_symbol).copied() != Some(id) {
                         return Err(hir_error!(
                             span,
                             UnknownType { name: format!("{}::{}", qualifier, name) }
@@ -1089,36 +1091,24 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
                 let variant = enum_def.variants[variant_idx];
 
-                let sub_lowered = if let Some(sub_pat) = sub {
-                    let payload_type = variant.payload.ok_or_else(|| {
-                        hir_error!(
-                            span,
-                            TypeMismatch {
-                                expected: scrutinee_type,
-                                found: Type::new(TypeKind::Unit),
-                            }
-                        )
-                    })?;
-                    let lowered =
-                        self.lower_pattern(payload_type, sub_pat.value_ref(), sub_pat.span())?;
-                    Some(&*self.arena.alloc(lowered))
-                } else {
-                    if variant.payload.is_some() {
+                let sub = match (sub, variant.payload) {
+                    (Some(pat), Some(payload)) => {
+                        let lowered = self.lower_pattern(payload, pat.value_ref(), pat.span())?;
+                        Some(&*self.arena.alloc(lowered))
+                    },
+                    (None, None) => None,
+                    _ => {
                         return Err(hir_error!(
                             span,
                             TypeMismatch {
                                 expected: scrutinee_type,
-                                found: Type::new(TypeKind::Unit),
+                                found: Type::new(TypeKind::Unit)
                             }
                         ));
-                    }
-                    None
+                    },
                 };
 
-                Ok(Pattern {
-                    kind: PatternKind::Variant { id: enum_id, variant_idx, sub: sub_lowered },
-                    span,
-                })
+                Ok(Pattern { kind: PatternKind::Variant { id, variant_idx, sub }, span })
             },
         }
     }
