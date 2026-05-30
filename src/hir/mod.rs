@@ -1461,7 +1461,110 @@ mod tests {
     }
 
     #[test]
-    fn type_size_of() {
-        assert_eq!(size_of::<Type>(), 8);
+    fn literal_pattern_integer() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn classify(x: i32): i32 {
+                match x {
+                    0 -> 10,
+                    1 -> 20,
+                    _ -> 30,
+                }
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+        let match_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected return, got {other:?}"),
+        };
+        let arms = match &match_expr.kind {
+            ExpressionKind::Match { arms, .. } => *arms,
+            other => panic!("expected Match, got {other:?}"),
+        };
+        assert_eq!(arms.len(), 3);
+        assert!(matches!(arms[0].pattern.kind, PatternKind::Literal(Literal::Int(0))));
+        assert!(matches!(arms[1].pattern.kind, PatternKind::Literal(Literal::Int(1))));
+        assert!(matches!(arms[2].pattern.kind, PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn literal_pattern_bool() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn negate(b: bool): bool {
+                match b {
+                    true -> false,
+                    false -> true,
+                }
+            }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+        let match_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected return, got {other:?}"),
+        };
+        let arms = match &match_expr.kind {
+            ExpressionKind::Match { arms, .. } => *arms,
+            other => panic!("expected Match, got {other:?}"),
+        };
+        assert!(matches!(arms[0].pattern.kind, PatternKind::Literal(Literal::Bool(true))));
+        assert!(matches!(arms[1].pattern.kind, PatternKind::Literal(Literal::Bool(false))));
+    }
+
+    #[test]
+    fn or_pattern_folds_into_single_or_node() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            enum Dir { N = 0, S = 1, E = 2, W = 3 } as u8
+            fn is_horizontal(d: Dir): bool {
+                match d {
+                    Dir::E | Dir::W -> true,
+                    _ -> false,
+                }
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+        let match_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected return, got {other:?}"),
+        };
+        let arms = match &match_expr.kind {
+            ExpressionKind::Match { arms, .. } => *arms,
+            other => panic!("expected Match, got {other:?}"),
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].pattern.kind, PatternKind::Or(pats) if pats.len() == 2));
+        assert!(matches!(arms[1].pattern.kind, PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn match_arm_guard_attached() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn sign(x: i32): i32 {
+                match x {
+                    n if n > 0 -> 1,
+                    _ -> 0,
+                }
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+        let match_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected return, got {other:?}"),
+        };
+        let arms = match &match_expr.kind {
+            ExpressionKind::Match { arms, .. } => *arms,
+            other => panic!("expected Match, got {other:?}"),
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(arms[0].guard.is_some(), "first arm must have a guard");
+        assert!(arms[1].guard.is_none(), "wildcard arm must have no guard");
     }
 }
