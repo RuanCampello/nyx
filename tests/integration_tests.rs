@@ -173,6 +173,11 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "cmp_overload",
+        file: "tests/single/cmp_overload.nyx",
+        exit_code: Some(42),
+    },
+    Case {
         name: "overflow",
         file: "tests/single/overflow.nyx",
         exit_code: Some(101),
