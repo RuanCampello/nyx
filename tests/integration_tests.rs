@@ -168,6 +168,11 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "match",
+        file: "tests/single/match.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "overflow",
         file: "tests/single/overflow.nyx",
         exit_code: Some(101),
