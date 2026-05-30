@@ -696,14 +696,20 @@ mod tests {
             Statement::LetInit { init: expr, .. } => expr,
             _ => panic!("expected let statement"),
         };
-        assert_eq!(a_init.kind, ExpressionKind::Integer(4));
+        assert!(
+            matches!(a_init.kind, ExpressionKind::TypeIntrinsic { .. }),
+            "size_of should remain a HIR type intrinsic"
+        );
         assert_eq!(a_init.typ, Type::new(TypeKind::Uptr));
 
         let b_init = match &main_fn.body.statements[1] {
             Statement::LetInit { init: expr, .. } => expr,
             _ => panic!("expected let statement"),
         };
-        assert_eq!(b_init.kind, ExpressionKind::Integer(8));
+        assert!(
+            matches!(b_init.kind, ExpressionKind::TypeIntrinsic { .. }),
+            "align_of should remain a HIR type intrinsic"
+        );
         assert_eq!(b_init.typ, Type::new(TypeKind::Uptr));
     }
 
@@ -736,7 +742,10 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             _ => panic!("expected expression or return statement"),
         };
-        assert_eq!(body_expr.kind, ExpressionKind::Integer(16));
+        assert!(
+            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
+            "size_of should remain a HIR type intrinsic"
+        );
         assert_eq!(body_expr.typ, Type::new(TypeKind::Uptr));
     }
 
@@ -763,16 +772,6 @@ mod tests {
         );
 
         let hir = vloader(fs).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.structs[0].size, 16);
-        assert_eq!(hir.structs[0].align, 8);
-        assert_eq!(hir.structs[1].size, 24);
-        assert_eq!(hir.structs[1].align, 8);
-        assert_eq!(hir.structs[2].size, 16);
-        assert_eq!(hir.structs[2].align, 4);
-        assert_eq!(hir.structs[3].size, 16);
-        assert_eq!(hir.structs[3].align, 8);
-        assert_eq!(hir.structs[4].size, 16);
-        assert_eq!(hir.structs[4].align, 8);
         let main_fn = hir
             .functions
             .iter()
@@ -893,6 +892,9 @@ mod tests {
             Statement::Return(Some(expr)) => expr,
             _ => panic!("expected expression or return statement"),
         };
-        assert_eq!(body_expr.kind, ExpressionKind::Integer(1));
+        assert!(
+            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
+            "size_of should remain a HIR type intrinsic"
+        );
     }
 }

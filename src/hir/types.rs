@@ -1,4 +1,3 @@
-use super::Struct;
 use crate::parser::statement;
 
 /// A manually bit-packed 64-bit representation of a type.
@@ -347,50 +346,6 @@ impl Type {
     pub const fn is_aggregate(self) -> bool {
         let tag = tag(self.0);
         tag == STRUCT || tag == STR || tag == STRING
-    }
-
-    #[inline(always)]
-    /// returns (size, alignment) of the type
-    pub const fn layout(self, structs: &[Option<Struct>]) -> (u32, u32) {
-        let tag = tag(self.0);
-        match tag {
-            I8 | U8 | BOOL => (1, 1),
-            I16 | U16 => (2, 2),
-            I32 | U32 | F32 | CHAR => (4, 4),
-            I64 | U64 | IPTR | UPTR | REF | F64 => (8, 8),
-            STR => (16, 8),
-            STRING => (24, 8),
-            UNIT => (0, 1),
-
-            STRUCT => {
-                let id = (self.0 >> 8) as u32;
-                let definition = match structs[id as usize].as_ref() {
-                    Some(s) => s,
-                    None => panic!("dependent struct is already lowered"),
-                };
-                (definition.size, definition.align)
-            },
-
-            ENUM => {
-                let repr_u8 = ((self.0 >> 40) & 0xFF) as u8;
-                let repr = match repr_u8 {
-                    0 => EnumRepr::I8,
-                    1 => EnumRepr::U8,
-                    2 => EnumRepr::I16,
-                    3 => EnumRepr::U16,
-                    4 => EnumRepr::I32,
-                    5 => EnumRepr::U32,
-                    6 => EnumRepr::I64,
-                    7 => EnumRepr::U64,
-                    8 => EnumRepr::Iptr,
-                    9 => EnumRepr::Uptr,
-                    _ => unreachable!(),
-                };
-                repr.layout()
-            },
-            SELF_TYPE => unreachable!(),
-            _ => unreachable!(),
-        }
     }
 }
 

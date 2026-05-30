@@ -13,7 +13,7 @@ use crate::{
     },
     lexer::token::Span,
     parser::{
-        expression::{BinaryOperator, UnaryOperator},
+        expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
         statement::{self, StructRepr},
     },
 };
@@ -21,6 +21,7 @@ use lasso::{Key, Spur};
 use std::ops::Index;
 use std::str::FromStr;
 
+pub(crate) use structs::Visit;
 pub use types::*;
 
 mod constants;
@@ -49,10 +50,8 @@ pub struct Hir {
 pub struct Struct {
     id: StructId,
     name: SymbolId,
-    /// fields after layout ordering, with byte offsets assigned
+    /// Fields in source declaration order. Concrete layout belongs to MIR.
     pub(crate) fields: Vec<StructField>,
-    pub(crate) size: u32,
-    pub(crate) align: u32,
     pub(crate) repr: StructRepr,
 }
 
@@ -60,8 +59,6 @@ pub struct Struct {
 pub struct StructField {
     pub(crate) name: SymbolId,
     pub(crate) typ: Type,
-    pub(crate) offset: u32,
-    declared_index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +91,13 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub(crate) kind: ExpressionKind,
+    pub(crate) typ: Type,
+    span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Place {
+    pub(crate) kind: PlaceKind,
     pub(crate) typ: Type,
     span: Span,
 }
@@ -162,13 +166,8 @@ pub enum ExpressionKind {
     Local(LocalId),
     Unary { operator: UnaryOperator, expr: Box<Expression> },
     Binary { operator: BinaryOperator, left: Box<Expression>, right: Box<Expression> },
-    Assign { target: LocalId, value: Box<Expression> },
-    /// source-level field path resolved to a base local plus field symbols
-    /// MIR turns this into a byte-offset load from that base aggregate
-    FieldAccess { local: LocalId, fields: Vec<SymbolId> },
-    /// source-level field path assignment
-    /// the base local mutability is checked in HIR
-    FieldAssign { local: LocalId, fields: Vec<SymbolId>, value: Box<Expression> },
+    Place(Place),
+    Assign { target: Place, value: Box<Expression> },
     MethodCall { function: FunctionId, receiver: Receiver, args: Vec<Expression> },
     Struct {
         id: StructId,
@@ -177,6 +176,7 @@ pub enum ExpressionKind {
     Call { function: FunctionId, args: Vec<Expression> },
     Syscall { code: SyscallCode, args: Vec<Expression> },
     IntrinsicCall { intrinsic: Intrinsic, args: Vec<Expression> },
+    TypeIntrinsic { kind: TypeIntrinsicKind, typ: Type },
     Cast { from: Box<Expression>, to: Type },
     /// read the discriminant of an enum value as its backing repr integer
     EnumTag { value: Box<Expression> },
@@ -190,6 +190,12 @@ pub struct Receiver {
     pub(crate) typ: Type,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaceKind {
+    Local(LocalId),
+    Field { base: Box<Place>, field: SymbolId },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionKind {
     Free,
@@ -199,8 +205,7 @@ pub enum FunctionKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReceiverKind {
-    Local(LocalId),
-    Field { base: LocalId, path: Vec<SymbolId> },
+    Place(Place),
     Computed(Box<Expression>),
 }
 
@@ -286,9 +291,29 @@ impl FunctionKind {
 impl ReceiverKind {
     pub fn base_local(&self) -> Option<LocalId> {
         match self {
-            Self::Local(id) => Some(*id),
-            Self::Field { base, .. } => Some(*base),
+            Self::Place(place) => place.base_local(),
             Self::Computed(_) => None,
+        }
+    }
+}
+
+impl Place {
+    pub(crate) const fn local(id: LocalId, typ: Type, span: Span) -> Self {
+        Self { kind: PlaceKind::Local(id), typ, span }
+    }
+
+    pub(crate) fn field(base: Self, field: SymbolId, typ: Type, span: Span) -> Self {
+        Self {
+            kind: PlaceKind::Field { base: Box::new(base), field },
+            typ,
+            span,
+        }
+    }
+
+    pub(crate) fn base_local(&self) -> Option<LocalId> {
+        match &self.kind {
+            PlaceKind::Local(id) => Some(*id),
+            PlaceKind::Field { base, .. } => base.base_local(),
         }
     }
 }
@@ -694,11 +719,14 @@ mod tests {
         };
         assert_eq!(assign_expr.typ, Type::new(TypeKind::I64));
         let (target_id, value) = match &assign_expr.kind {
-            ExpressionKind::Assign { target, value } => (target, value.as_ref()),
+            ExpressionKind::Assign { target, value } => match &target.kind {
+                PlaceKind::Local(id) => (*id, value.as_ref()),
+                _ => panic!("expected local assignment target"),
+            },
             other => panic!("expected Assign expression, got {other:?}"),
         };
 
-        assert_eq!(*target_id, LocalId(0));
+        assert_eq!(target_id, LocalId(0));
         assert_eq!(value.typ, Type::new(TypeKind::I64));
         assert!(matches!(value.kind, ExpressionKind::Integer(99)));
     }
@@ -857,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn struct_layout_reorders_fields_to_reduce_padding() {
+    fn struct_fields_remain_in_source_order() {
         let src = r#"
             struct Packed {
                 a: i8,
@@ -873,16 +901,12 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
 
         assert_eq!(hir.structs.len(), 1);
-        let layout = &hir.structs[0];
-        assert_eq!(layout.size, 16);
-        assert_eq!(layout.align, 8);
-
-        let field_names: Vec<_> = layout
+        let field_names: Vec<_> = hir.structs[0]
             .fields
             .iter()
-            .map(|field| (hir.symbols[field.name.0.into_usize()].as_str(), field.offset))
+            .map(|field| hir.symbols[field.name.0.into_usize()].as_str())
             .collect();
-        assert_eq!(field_names, vec![("b", 0), ("c", 8), ("a", 12)]);
+        assert_eq!(field_names, vec!["a", "b", "c"]);
 
         let func = &hir.functions[0];
         assert_eq!(func.locals[0].typ, Type::new(TypeKind::Struct(StructId(0))));
@@ -910,8 +934,6 @@ mod tests {
 
         let hir = super::lower(Parser::new(src).parse().unwrap()).unwrap();
         assert_eq!(hir.structs.len(), 2);
-        assert_eq!(hir.structs[0].size, 4);
-        assert_eq!(hir.structs[1].align, 4);
 
         let outer_inner = hir.structs[1]
             .fields

@@ -2,14 +2,14 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Struct,
-        StructId, SymbolId, Type, TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, PlaceKind, ReceiverKind,
+        RefTargetKind, Type, TypeKind, index_vec::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
-        Terminator, ValueId, error::MirError,
+        Terminator, ValueId, error::MirError, layout::LayoutTable,
     },
-    parser::expression::{BinaryOperator, UnaryOperator},
+    parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
 use lasso::Key;
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ struct FunctionLower<'a> {
     locals: Vec<(ValueId, Type)>,
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
-    structs: &'a IndexVec<StructId, Struct>,
+    layouts: &'a LayoutTable,
     local_symbols: IndexVec<LocalId, usize>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
@@ -46,6 +46,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
 
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
+    let layouts = LayoutTable::build(&hir.structs);
     let symbols = hir.symbols;
 
     let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
@@ -59,7 +60,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
         functions.push(FunctionLower::run(
             function,
             &symbols,
-            &hir.structs,
+            &layouts,
             &mut strings,
             &functions_map,
             &runtime_uses_map,
@@ -70,7 +71,7 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
-        struct_layouts: struct_layouts(&hir.structs),
+        struct_layouts: layouts.summaries(),
     })
 }
 
@@ -78,7 +79,7 @@ impl<'a> FunctionLower<'a> {
     fn run(
         function: &hir::Function,
         symbols: &'a [String],
-        structs: &'a IndexVec<StructId, Struct>,
+        layouts: &'a LayoutTable,
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
         runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
@@ -112,7 +113,7 @@ impl<'a> FunctionLower<'a> {
             next,
             symbols,
             strings,
-            structs,
+            layouts,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
             runtime_local_uses: runtime_uses_map.get(&id).cloned().unwrap(),
@@ -336,17 +337,25 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Assign { target, value } => {
-                self.constant_locals[*target] = self.capture_constant_expr(value);
-
-                let src = self.lower_expr(value)?;
-                let dest = self.place_for_local(*target, expr.typ);
-
-                if self.runtime_local_uses(*target) {
-                    self.emit(dest, Kind::Assign(src));
-                    return Ok(Operand::Place(dest));
+                if let PlaceKind::Local(id) = &target.kind {
+                    self.constant_locals[*id] = self.capture_constant_expr(value);
                 }
 
-                Ok(src)
+                let src = self.lower_expr(value)?;
+                let (dest, offset, typ) = self.place_info(target);
+                debug_assert_eq!(typ, value.typ);
+
+                match &target.kind {
+                    PlaceKind::Local(id) if self.runtime_local_uses(*id) => {
+                        self.emit(dest, Kind::Assign(src));
+                        Ok(Operand::Place(dest))
+                    },
+                    PlaceKind::Local(_) => Ok(src),
+                    PlaceKind::Field { .. } => {
+                        self.emit(dest, Kind::FieldStore { value: src, offset });
+                        Ok(src)
+                    },
+                }
             },
 
             ExpressionKind::Call { function, args, .. } => {
@@ -363,26 +372,26 @@ impl<'a> FunctionLower<'a> {
                 let place = self.fresh_temporary(receiver.typ);
 
                 match &receiver.kind {
-                    hir::ReceiverKind::Local(local_id) => {
-                        let origin = self.place_for_local(*local_id, self.local_type(*local_id));
-                        debug_assert!(origin.typ.kind() != TypeKind::Unit);
-
-                        match matches!(origin.typ.kind(), TypeKind::Ref { .. }) {
-                            true => self.emit(place, Kind::Assign(Operand::Place(origin))),
-                            _ => self.emit(place, Kind::AddressOf { src: origin, offset: 0 }),
-                        }
-                    },
-                    hir::ReceiverKind::Field { base, path } => {
-                        let origin = self.place_for_local(*base, self.local_type(*base));
-                        let (offset, receiver_type) = self.field_path_info(origin.typ, path);
+                    ReceiverKind::Place(receiver_place) => {
+                        let (origin, offset, receiver_type) = self.place_info(receiver_place);
                         debug_assert!(receiver_type.kind() != TypeKind::Unit);
 
-                        match matches!(receiver_type.kind(), TypeKind::Ref { .. }) {
-                            true => self.emit(place, Kind::Assign(Operand::Place(origin))),
-                            _ => self.emit(place, Kind::AddressOf { src: origin, offset }),
+                        match (offset, matches!(receiver_type.kind(), TypeKind::Ref { .. })) {
+                            (0, true) => self.emit(place, Kind::Assign(Operand::Place(origin))),
+                            (_, true) => {
+                                self.emit(
+                                    place,
+                                    Kind::FieldLoad {
+                                        src: Operand::Place(origin),
+                                        offset,
+                                        typ: receiver_type,
+                                    },
+                                );
+                            },
+                            (_, false) => self.emit(place, Kind::AddressOf { src: origin, offset }),
                         }
                     },
-                    hir::ReceiverKind::Computed(value) => {
+                    ReceiverKind::Computed(value) => {
                         let lowered_receiver = self.lower_expr(value)?;
                         let val_type = value.typ;
 
@@ -437,6 +446,16 @@ impl<'a> FunctionLower<'a> {
                 }
             },
 
+            ExpressionKind::TypeIntrinsic { kind, typ } => {
+                let (size, align) = self.layouts.type_layout(*typ);
+                let value = match kind {
+                    TypeIntrinsicKind::SizeOf => size as i64,
+                    TypeIntrinsicKind::AlignOf => align as i64,
+                };
+
+                Ok(Operand::Const(Const::Int(value, expr.typ)))
+            },
+
             ExpressionKind::Syscall { code, args } => {
                 let lowered_args =
                     args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
@@ -449,42 +468,28 @@ impl<'a> FunctionLower<'a> {
 
             ExpressionKind::Struct { id, fields } => {
                 let dest = self.fresh_temporary(Type::new(TypeKind::Struct(*id)));
-                let field_offsets: Vec<_> =
-                    self.structs[*id].fields.iter().map(|f| (f.name, f.offset)).collect();
 
                 for (sym, value) in fields {
-                    let offset = field_offsets
-                        .iter()
-                        .find(|(name, _)| name == sym)
-                        .map(|&(_, offset)| offset)
-                        .expect("field offset must exist after HIR validation");
+                    let layout = self.layouts.field(Type::new(TypeKind::Struct(*id)), *sym);
                     let value = self.lower_expr(value)?;
 
-                    self.emit(dest, Kind::FieldStore { value, offset });
+                    self.emit(dest, Kind::FieldStore { value, offset: layout.offset });
                 }
 
                 Ok(Operand::Place(dest))
             },
 
-            ExpressionKind::FieldAccess { local, fields, .. } => {
-                let origin = self.place_for_local(*local, self.local_type(*local));
-                let (offset, typ) = self.field_path_info(origin.typ, fields);
+            ExpressionKind::Place(place) => {
+                let (origin, offset, typ) = self.place_info(place);
+
+                if matches!(&place.kind, PlaceKind::Local(_)) {
+                    return Ok(Operand::Place(origin));
+                }
 
                 let dest = self.fresh_temporary(typ);
                 self.emit(dest, Kind::FieldLoad { src: Operand::Place(origin), offset, typ });
 
                 Ok(Operand::Place(dest))
-            },
-
-            ExpressionKind::FieldAssign { local, fields, value } => {
-                let value = self.lower_expr(value)?;
-                let origin = self.place_for_local(*local, self.local_type(*local));
-                let (offset, typ) = self.field_path_info(origin.typ, fields);
-                debug_assert_eq!(typ, value.typ());
-
-                self.emit(origin, Kind::FieldStore { value, offset });
-
-                Ok(value)
             },
 
             other => unimplemented!("{other:#?}"),
@@ -538,32 +543,18 @@ impl<'a> FunctionLower<'a> {
         self.locals[self.local_map[id].0 as usize].1
     }
 
-    fn field_path_info(&self, origin: Type, fields: &[SymbolId]) -> (u32, Type) {
-        let mut current_type = origin;
-        let mut total_offset = 0;
-
-        // PERFORMANCE: field paths are small enough to a linear scan don't matter :D
-        for &sym in fields {
-            let sid = match current_type.kind() {
-                TypeKind::Struct(sid) => sid,
-                TypeKind::Ref { to, .. } => match to.kind() {
-                    RefTargetKind::Struct(sid) => sid,
-                    _ => unreachable!("field projection on non-struct"),
-                },
-                _ => unreachable!("field projection on non-struct"),
-            };
-
-            let (offset, typ) = self.structs[sid]
-                .fields
-                .iter()
-                .find(|field| field.name == sym)
-                .map(|field| (field.offset, field.typ))
-                .expect("field offset must exist after HIR validation");
-            total_offset += offset;
-            current_type = typ;
+    fn place_info(&self, place: &hir::Place) -> (Place, u32, Type) {
+        match &place.kind {
+            PlaceKind::Local(id) => {
+                let origin = self.place_for_local(*id, self.local_type(*id));
+                (origin, 0, origin.typ)
+            },
+            PlaceKind::Field { base, field } => {
+                let (origin, base_offset, base_type) = self.place_info(base);
+                let layout = self.layouts.field(base_type, *field);
+                (origin, base_offset + layout.offset, layout.typ)
+            },
         }
-
-        (total_offset, current_type)
     }
 
     fn terminate(&mut self, term: Terminator) {
@@ -872,7 +863,12 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut IndexVec<LocalId, bool>
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
         },
-        ExpressionKind::Assign { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Assign { target, value } => {
+            if matches!(&target.kind, PlaceKind::Field { .. }) {
+                visit_place_runtime_uses(target, uses);
+            }
+            visit_expr_runtime_uses(value, uses);
+        },
         ExpressionKind::Struct { fields, .. } => {
             for (_, value) in fields {
                 visit_expr_runtime_uses(value, uses);
@@ -887,20 +883,15 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut IndexVec<LocalId, bool>
         },
         ExpressionKind::MethodCall { receiver, args, .. } => {
             match &receiver.kind {
-                hir::ReceiverKind::Local(id) | hir::ReceiverKind::Field { base: id, .. } => {
-                    uses[*id] = true;
-                },
-                hir::ReceiverKind::Computed(val) => visit_expr_runtime_uses(val, uses),
+                ReceiverKind::Place(place) => visit_place_runtime_uses(place, uses),
+                ReceiverKind::Computed(val) => visit_expr_runtime_uses(val, uses),
             }
             for arg in args {
                 visit_expr_runtime_uses(arg, uses);
             }
         },
-        ExpressionKind::FieldAccess { local, .. } => uses[*local] = true,
-        ExpressionKind::FieldAssign { local, value, .. } => {
-            uses[*local] = true;
-            visit_expr_runtime_uses(value, uses);
-        },
+        ExpressionKind::Place(place) => visit_place_runtime_uses(place, uses),
+        ExpressionKind::TypeIntrinsic { .. } => {},
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
         | ExpressionKind::Float(_)
@@ -911,27 +902,9 @@ fn visit_expr_runtime_uses(expr: &Expression, uses: &mut IndexVec<LocalId, bool>
     }
 }
 
-fn struct_layouts(structs: &IndexVec<StructId, Struct>) -> Vec<mir::Layout> {
-    structs
-        .iter()
-        .map(|definition| {
-            mir::Layout::new(
-                definition.size,
-                definition.align,
-                definition.fields.iter().any(|field| type_contains_float(field.typ, structs)),
-            )
-        })
-        .collect()
-}
-
-#[inline]
-fn type_contains_float(typ: Type, structs: &IndexVec<StructId, Struct>) -> bool {
-    match typ.kind() {
-        TypeKind::F32 | TypeKind::F64 => true,
-        TypeKind::Struct(id) => {
-            structs[id].fields.iter().any(|field| type_contains_float(field.typ, structs))
-        },
-        _ => false,
+fn visit_place_runtime_uses(place: &hir::Place, uses: &mut IndexVec<LocalId, bool>) {
+    if let Some(id) = place.base_local() {
+        uses[id] = true;
     }
 }
 

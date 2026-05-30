@@ -19,13 +19,14 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, Struct, SyscallCode, Type, TypeKind},
+    hir::{FunctionId, Intrinsic, SyscallCode, Type, TypeKind},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
 pub use lower::lower;
 
 pub mod error;
+mod layout;
 mod lower;
 
 /// Complete MIR program.
@@ -78,7 +79,7 @@ pub struct Block {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-/// Fully resolved aggregate size and alignment, copied from HIR layout
+/// Fully resolved aggregate size and alignment
 pub struct Layout {
     size: u32,
     align: u32,
@@ -175,12 +176,6 @@ pub struct ValueId(pub u32);
 /// Stable index into a function's `blocks` vec.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
-
-impl From<&Struct> for Layout {
-    fn from(value: &Struct) -> Self {
-        Self { size: value.size, align: value.align, contains_float: false }
-    }
-}
 
 impl Layout {
     pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
@@ -365,6 +360,65 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(offsets, vec![0, 8]);
+    }
+
+    #[test]
+    fn default_struct_layout_reorders_fields_in_mir() {
+        let mir = parse_and_lower(
+            r#"
+            struct Packed { a: i8, b: i64, c: i32 }
+            fn main() { let p = Packed { a: 1, b: 2, c: 3 }; }
+        "#,
+        );
+
+        let main = &mir.functions[0];
+        let offsets = main.blocks[0]
+            .instructions
+            .iter()
+            .filter_map(|instruction| match &instruction.kind {
+                InstructionKind::FieldStore { offset, .. } => Some(*offset),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(offsets, vec![12, 0, 8]);
+        let layout: (u32, u32) = mir.struct_layouts[0].into();
+        assert_eq!(layout, (16, 8));
+    }
+
+    #[test]
+    fn type_intrinsics_are_resolved_during_mir_lowering() {
+        let mir = parse_and_lower(
+            r#"
+            struct Packed { a: i8, b: i64, c: i32 }
+            fn size_of(): uptr { 0 }
+            fn align_of(): uptr { 0 }
+            fn main(): uptr {
+                size_of(Packed) + align_of(Packed)
+            }
+        "#,
+        );
+
+        let main = mir
+            .functions
+            .iter()
+            .find(|function| mir.symbols[function.name_symbol] == "nyx::main")
+            .unwrap();
+
+        let constants = main.blocks[0]
+            .instructions
+            .iter()
+            .flat_map(|instruction| match &instruction.kind {
+                InstructionKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+                _ => Vec::new(),
+            })
+            .filter_map(|operand| match operand {
+                Operand::Const(Const::Int(value, _)) => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(constants, vec![16, 8]);
     }
 
     #[test]

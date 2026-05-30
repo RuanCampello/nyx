@@ -542,31 +542,34 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
 
             Expr::Assignment { target, value, span } => {
-                let (local, fields, typ) =
-                    self.resolve_access_chain(target, *span).map_err(|err| match err.kind {
-                        HirErrorKind::InvalidFieldAccess => {
-                            hir_error!(*span, InvalidAssignmentTarget)
-                        },
-                        _ => err,
-                    })?;
+                let place = self.resolve_place(target, *span).map_err(|err| match err.kind {
+                    HirErrorKind::InvalidFieldAccess => hir_error!(*span, InvalidAssignmentTarget),
+                    _ => err,
+                })?;
+
+                let local =
+                    place.base_local().ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
 
                 if !self[local].mutable {
-                    let err_span = *fields.is_empty().then_some(span).unwrap_or(&target.span());
+                    let err_span = match &place.kind {
+                        crate::hir::PlaceKind::Local(_) => span,
+                        crate::hir::PlaceKind::Field { .. } => &target.span(),
+                    };
 
                     return Err(hir_error!(
-                        err_span,
+                        *err_span,
                         ImmutableBind { name: self.symbols.get(self[local].name).to_string() }
                     ));
                 }
 
-                let value = self.lower_expr(value, Some(typ))?;
-                self.assert_type(typ, value.typ, *span)?;
+                let value = self.lower_expr(value, Some(place.typ))?;
+                self.assert_type(place.typ, value.typ, *span)?;
 
-                let kind = match fields.is_empty() {
-                    true => ExpressionKind::Assign { target: local, value: Box::new(value) },
-                    _ => ExpressionKind::FieldAssign { local, fields, value: Box::new(value) },
-                };
-                Ok(Expression { kind, typ, span: *span })
+                Ok(Expression {
+                    typ: place.typ,
+                    span: *span,
+                    kind: ExpressionKind::Assign { target: place, value: Box::new(value) },
+                })
             },
 
             Expr::Struct { name, fields, span, type_args: _ } => {
@@ -626,24 +629,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             },
 
             Expr::Field { span, .. } => {
-                let (local, fields, typ) = self.resolve_access_chain(expr, *span)?;
-
+                let place = self.resolve_place(expr, *span)?;
                 Ok(Expression {
-                    kind: ExpressionKind::FieldAccess { local, fields },
-                    typ,
+                    typ: place.typ,
                     span: *span,
+                    kind: ExpressionKind::Place(place),
                 })
             },
 
             Expr::Call { callee, args, span, type_args: _ } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
-                    let (kind, receiver_type) = match self.resolve_access_chain(receiver, *span) {
-                        Ok((base, path, typ)) => {
-                            let kind = match path.is_empty() {
-                                true => ReceiverKind::Local(base),
-                                _ => ReceiverKind::Field { base, path },
-                            };
-                            (kind, typ)
+                    let (kind, receiver_type) = match self.resolve_place(receiver, *span) {
+                        Ok(place) => {
+                            let typ = place.typ;
+                            (ReceiverKind::Place(place), typ)
                         },
                         _ => {
                             let lowered = self.lower_expr(receiver, None)?;
@@ -770,17 +769,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 );
                 let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
 
-                let structs: Vec<Option<Struct>> =
-                    self.scope.structs.iter().map(|s| Some(s.clone())).collect();
-                let (size, align) = typ.layout(&structs);
-
-                let value = match kind {
-                    expression::TypeIntrinsicKind::SizeOf => size as i64,
-                    expression::TypeIntrinsicKind::AlignOf => align as i64,
-                };
-
                 Ok(Expression {
-                    kind: ExpressionKind::Integer(value),
+                    kind: ExpressionKind::TypeIntrinsic { kind: *kind, typ },
                     typ: Type::new(TypeKind::Uptr),
                     span: *span,
                 })
@@ -1387,60 +1377,26 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         Ok((sym, field.typ))
     }
 
-    /// This is used to resolve access chains like `x.y.z` or just `x` into
-    /// `(LocalId(x), [sym("y"), sym("z")], Type)`
-    ///
-    /// Returns the origin `LocalId`, the full path as symbols, and the final field's `Type`.
-    fn resolve_access_chain(
+    fn resolve_place(
         &mut self,
         expr: &expression::Expression<'src>,
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
+    ) -> Result<crate::hir::Place, HirError<'src>> {
         use expression::Expression as Expr;
 
-        let mut fields = Vec::new();
-        let mut curr = expr;
-
-        let id = loop {
-            match curr {
-                Expr::Identifier(name, ident_span) => {
-                    let symbol = self.symbols.insert(name);
-                    break self.resolve_local(symbol, *ident_span)?;
-                },
-
-                Expr::Field { expr: next, field, .. } => {
-                    fields.push(*field);
-                    curr = next;
-                },
-
-                _ => return Err(hir_error!(span, InvalidFieldAccess)),
-            }
-        };
-
-        fields.reverse();
-
-        let mut current_type = self[id].typ;
-        let mut field_symbols = Vec::with_capacity(fields.len());
-
-        for (idx, &field_name) in fields.iter().enumerate() {
-            let (sym, typ) = self.lookup_field(current_type, field_name, span)?;
-            current_type = typ;
-            field_symbols.push(sym);
-
-            let is_last = idx == fields.len() - 1;
-            let is_struct = match current_type.kind() {
-                TypeKind::Struct(_) => true,
-                TypeKind::Ref { to, .. } => matches!(to.kind(), RefTargetKind::Struct(_)),
-                _ => false,
-            };
-
-            if !is_last && !is_struct {
-                let expected = Type::new(TypeKind::Struct(Default::default()));
-                return Err(hir_error!(span, TypeMismatch { expected, found: current_type }));
-            }
+        match expr {
+            Expr::Identifier(name, ident_span) => {
+                let symbol = self.symbols.insert(name);
+                let id = self.resolve_local(symbol, *ident_span)?;
+                Ok(crate::hir::Place::local(id, self[id].typ, *ident_span))
+            },
+            Expr::Field { expr: base, field, span: field_span } => {
+                let base = self.resolve_place(base, span)?;
+                let (field, typ) = self.lookup_field(base.typ, field, *field_span)?;
+                Ok(crate::hir::Place::field(base, field, typ, *field_span))
+            },
+            _ => Err(hir_error!(span, InvalidFieldAccess)),
         }
-
-        Ok((id, field_symbols, current_type))
     }
 
     #[inline(always)]
