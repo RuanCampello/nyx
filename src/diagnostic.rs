@@ -254,7 +254,8 @@ mod tests {
     fn hir_err(src: &str) -> hir::error::HirError<'static> {
         diagnostic::initialise(src, "<test>");
         let statements = Parser::new(src).parse().expect("parse must succeed for hir tests");
-        hir::lower(statements)
+        let arena = bumpalo::Bump::new();
+        hir::lower(statements, &arena)
             .map_err(|e| unsafe {
                 std::mem::transmute::<hir::error::HirError<'_>, hir::error::HirError<'static>>(e)
             })

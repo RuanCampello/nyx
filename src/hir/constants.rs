@@ -36,11 +36,12 @@ struct DepVisitor<'a, 'd, 'i, 'sc> {
 
 /// Collect every top-level and impl-scoped constant, topologically sort by
 /// dependency, then lower each initialiser and insert it into `scope`
-pub(in crate::hir) fn extend<'d, 's>(
-    scope: &mut Scope<'_>,
+pub(in crate::hir) fn extend<'hir, 'd, 's>(
+    scope: &mut Scope<'hir>,
     declarations: &Declarations<'d, 's>,
     symbols: &mut SymbolTable,
     in_std: bool,
+    arena: &'hir bumpalo::Bump,
 ) -> Result<(), HirError<'s>> {
     let decls = collect(scope, declarations, symbols)?;
     let sorted = topo_sort(&decls, &scope.mangler, symbols)?;
@@ -48,21 +49,17 @@ pub(in crate::hir) fn extend<'d, 's>(
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
         let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map);
-        let expected_type = type_resolver::resolve_annotation(
-            &ctx,
-            &decl.ast.typ.value(),
-            decl.ast.typ.span(),
-        )?;
+        let expected_type =
+            type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())?;
 
-        let (exprs, typeck, value) =
-            lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std)?;
+        let (value, typeck) =
+            lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std, arena)?;
 
         scope.constants.insert(
             symbol_id,
             Constant {
                 name: symbol_id,
                 typ: expected_type,
-                exprs,
                 typeck,
                 value,
                 is_pub: decl.ast.is_pub,
@@ -73,8 +70,8 @@ pub(in crate::hir) fn extend<'d, 's>(
     Ok(())
 }
 
-fn collect<'d, 's>(
-    scope: &Scope<'_>,
+fn collect<'hir, 'd, 's>(
+    scope: &Scope<'hir>,
     declarations: &Declarations<'d, 's>,
     symbols: &mut SymbolTable,
 ) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'s>> {

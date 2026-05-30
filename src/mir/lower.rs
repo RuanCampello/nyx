@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, ExprId, Expression, ExpressionKind, FunctionId, Hir, LocalId, PlaceKind,
-        ReceiverKind, RefTargetKind, Type, TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Statement, Type,
+        TypeKind, index_vec::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -20,7 +20,7 @@ struct PartialBlock {
     terminator: Option<Terminator>,
 }
 
-struct FunctionLower<'a> {
+struct FunctionLower<'a, 'hir> {
     blocks: Vec<PartialBlock>,
     current: usize,
     next: u32,
@@ -29,17 +29,16 @@ struct FunctionLower<'a> {
     symbols: &'a [String],
     strings: &'a mut Vec<String>,
     layouts: &'a LayoutTable,
-    exprs: &'a IndexVec<ExprId, Expression>,
     typeck: &'a hir::TypeckResults,
     local_symbols: IndexVec<LocalId, usize>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
-    functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+    functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
     runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
 }
 
-pub fn lower(hir: Hir) -> Result<Mir, MirError> {
+pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
     debug_assert!(
         !hir.functions.iter().any(has_open_generic),
         r#"MIR lowering received HIR containing unresolved GenericParam
@@ -77,13 +76,13 @@ pub fn lower(hir: Hir) -> Result<Mir, MirError> {
     })
 }
 
-impl<'a> FunctionLower<'a> {
+impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn run(
-        function: &hir::Function,
+        function: &hir::Function<'hir>,
         symbols: &'a [String],
         layouts: &'a LayoutTable,
         strings: &'a mut Vec<String>,
-        functions_map: &'a HashMap<FunctionId, &'a hir::Function>,
+        functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
         runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
@@ -116,7 +115,6 @@ impl<'a> FunctionLower<'a> {
             symbols,
             strings,
             layouts,
-            exprs: &function.exprs,
             typeck: &function.typeck,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
@@ -154,19 +152,19 @@ impl<'a> FunctionLower<'a> {
         id
     }
 
-    fn lower_block(&mut self, block: &hir::Block) -> Result<(), MirError> {
-        for statement in &block.statements {
+    fn lower_block(&mut self, block: &hir::Block<'hir>) -> Result<(), MirError> {
+        for statement in block.statements {
             if self.is_terminated() {
                 break;
             }
 
-            self.lower_statement(&statement)?;
+            self.lower_statement(statement)?;
         }
 
         Ok(())
     }
 
-    fn lower_statement(&mut self, statement: &hir::Statement) -> Result<(), MirError> {
+    fn lower_statement(&mut self, statement: &Statement<'hir>) -> Result<(), MirError> {
         use hir::Statement as Stmt;
 
         match statement {
@@ -178,7 +176,7 @@ impl<'a> FunctionLower<'a> {
                     return Ok(());
                 }
 
-                let typ = self.typeck.type_of(init);
+                let typ = self.typeck.type_of(init.id);
                 let src = self.lower_expr(init)?;
                 let dest = self.place_for_local(*id, typ);
 
@@ -189,7 +187,7 @@ impl<'a> FunctionLower<'a> {
             Stmt::LetUninit { .. } => {},
 
             Stmt::Expr(expr) => {
-                self.lower_expr(*expr)?;
+                self.lower_expr(expr)?;
             },
 
             Stmt::Return(value) => {
@@ -268,12 +266,10 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
-    fn lower_expr(&mut self, id: ExprId) -> Result<Operand, MirError> {
+    fn lower_expr(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
         use InstructionKind as Kind;
 
-        let arena = self.exprs;
-        let expr = &arena[id];
-        let typ = self.typeck.type_of(id);
+        let typ = self.typeck.type_of(expr.id);
 
         match &expr.kind {
             ExpressionKind::Unit => Ok(Operand::Const(Const::Unit)),
@@ -293,7 +289,8 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Cast { from, to } => {
-                let (from, to) = (*from, *to);
+                let from = *from;
+                let to = *to;
                 let src = self.lower_expr(from)?;
                 let dest = self.fresh_temporary(to);
 
@@ -303,7 +300,8 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Unary { operator, expr: inner } => {
-                let (operator, inner) = (*operator, *inner);
+                let operator = *operator;
+                let inner = *inner;
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(typ.unwrap_unit());
 
@@ -327,7 +325,9 @@ impl<'a> FunctionLower<'a> {
             ExpressionKind::Binary { operator, left, right } => {
                 use crate::optimisation;
 
-                let (operator, left, right) = (*operator, *left, *right);
+                let operator = *operator;
+                let left = *left;
+                let right = *right;
                 if matches!(operator, BinaryOperator::And | BinaryOperator::Or) {
                     return self.lower_short_circuit(operator, left, right, typ);
                 }
@@ -350,31 +350,33 @@ impl<'a> FunctionLower<'a> {
             },
 
             ExpressionKind::Assign { target, value } => {
-                let value_id = *value;
-                if let PlaceKind::Local(local) = &target.kind {
-                    self.constant_locals[*local] = self.capture_constant_expr(value_id);
+                let target = *target;
+                let value_expr = *value;
+                if let ExpressionKind::Local(local) = &target.kind {
+                    self.constant_locals[*local] = self.capture_constant_expr(value_expr);
                 }
 
-                let src = self.lower_expr(value_id)?;
+                let src = self.lower_expr(value_expr)?;
                 let (dest, offset, _) = self.place_info(target);
 
                 match &target.kind {
-                    PlaceKind::Local(local) if self.runtime_local_uses(*local) => {
+                    ExpressionKind::Local(local) if self.runtime_local_uses(*local) => {
                         self.emit(dest, Kind::Assign(src));
                         Ok(Operand::Place(dest))
                     },
-                    PlaceKind::Local(_) => Ok(src),
-                    PlaceKind::Field { .. } => {
+                    ExpressionKind::Local(_) => Ok(src),
+                    ExpressionKind::Field { .. } => {
                         self.emit(dest, Kind::FieldStore { value: src, offset });
                         Ok(src)
                     },
+                    _ => unreachable!("invalid assignment target in MIR lowering"),
                 }
             },
 
             ExpressionKind::Call { function, args, .. } => {
                 let function = *function;
                 let mut lowered_args = Vec::with_capacity(args.len());
-                for arg in args {
+                for arg in *args {
                     let operand = self.lower_expr(*arg)?;
                     lowered_args.push(operand);
                 }
@@ -384,47 +386,45 @@ impl<'a> FunctionLower<'a> {
 
             ExpressionKind::MethodCall { function, receiver, args } => {
                 let function = *function;
-                let place = self.fresh_temporary(receiver.typ);
+                let receiver = *receiver;
+                let receiver_typ = self.typeck.type_of(receiver.id);
+                let place = self.fresh_temporary(receiver_typ);
 
-                match &receiver.kind {
-                    ReceiverKind::Place(receiver_place) => {
-                        let (origin, offset, receiver_type) = self.place_info(receiver_place);
-                        debug_assert!(receiver_type.kind() != TypeKind::Unit);
+                if self.is_place_expr(receiver) {
+                    let (origin, offset, receiver_type) = self.place_info(receiver);
+                    debug_assert!(receiver_type.kind() != TypeKind::Unit);
 
-                        match (offset, matches!(receiver_type.kind(), TypeKind::Ref { .. })) {
-                            (0, true) => self.emit(place, Kind::Assign(Operand::Place(origin))),
-                            (_, true) => {
-                                self.emit(
-                                    place,
-                                    Kind::FieldLoad {
-                                        src: Operand::Place(origin),
-                                        offset,
-                                        typ: receiver_type,
-                                    },
-                                );
-                            },
-                            (_, false) => self.emit(place, Kind::AddressOf { src: origin, offset }),
-                        }
-                    },
-                    ReceiverKind::Computed(value) => {
-                        let value = *value;
-                        let val_type = self.typeck.type_of(value);
-                        let lowered_receiver = self.lower_expr(value)?;
+                    match (offset, matches!(receiver_type.kind(), TypeKind::Ref { .. })) {
+                        (0, true) => self.emit(place, Kind::Assign(Operand::Place(origin))),
+                        (_, true) => {
+                            self.emit(
+                                place,
+                                Kind::FieldLoad {
+                                    src: Operand::Place(origin),
+                                    offset,
+                                    typ: receiver_type,
+                                },
+                            );
+                        },
+                        (_, false) => self.emit(place, Kind::AddressOf { src: origin, offset }),
+                    }
+                } else {
+                    let val_type = self.typeck.type_of(receiver.id);
+                    let lowered_receiver = self.lower_expr(receiver)?;
 
-                        match matches!(val_type.kind(), TypeKind::Ref { .. }) {
-                            true => self.emit(place, Kind::Assign(lowered_receiver)),
-                            _ => {
-                                let value_place = self.fresh_temporary(val_type);
-                                self.emit(value_place, Kind::Assign(lowered_receiver));
-                                self.emit(place, Kind::AddressOf { src: value_place, offset: 0 });
-                            },
-                        }
-                    },
+                    match matches!(val_type.kind(), TypeKind::Ref { .. }) {
+                        true => self.emit(place, Kind::Assign(lowered_receiver)),
+                        _ => {
+                            let value_place = self.fresh_temporary(val_type);
+                            self.emit(value_place, Kind::Assign(lowered_receiver));
+                            self.emit(place, Kind::AddressOf { src: value_place, offset: 0 });
+                        },
+                    }
                 }
 
                 let mut lowered_args = Vec::with_capacity(args.len() + 1);
                 lowered_args.push(Operand::Place(place));
-                for arg in args {
+                for arg in *args {
                     let operand = self.lower_expr(*arg)?;
                     lowered_args.push(operand);
                 }
@@ -440,7 +440,7 @@ impl<'a> FunctionLower<'a> {
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::Print => {
                         let mut output = String::new();
-                        for arg in args {
+                        for arg in *args {
                             self.push_print_arg(&mut output, *arg);
                         }
 
@@ -488,26 +488,23 @@ impl<'a> FunctionLower<'a> {
                 let id = *id;
                 let dest = self.fresh_temporary(Type::new(TypeKind::Struct(id)));
 
-                for (sym, value) in fields {
+                for (sym, value) in *fields {
                     let layout = self.layouts.field(Type::new(TypeKind::Struct(id)), *sym);
-                    let value = self.lower_expr(*value)?;
+                    let value_operand = self.lower_expr(*value)?;
 
-                    self.emit(dest, Kind::FieldStore { value, offset: layout.offset });
+                    self.emit(
+                        dest,
+                        Kind::FieldStore { value: value_operand, offset: layout.offset },
+                    );
                 }
 
                 Ok(Operand::Place(dest))
             },
 
-            ExpressionKind::Place(place) => {
-                let (origin, offset, typ) = self.place_info(place);
-
-                if matches!(&place.kind, PlaceKind::Local(_)) {
-                    return Ok(Operand::Place(origin));
-                }
-
+            ExpressionKind::Field { .. } => {
+                let (origin, offset, typ) = self.place_info(expr);
                 let dest = self.fresh_temporary(typ);
                 self.emit(dest, Kind::FieldLoad { src: Operand::Place(origin), offset, typ });
-
                 Ok(Operand::Place(dest))
             },
 
@@ -518,8 +515,8 @@ impl<'a> FunctionLower<'a> {
     fn lower_short_circuit(
         &mut self,
         operator: BinaryOperator,
-        left: ExprId,
-        right: ExprId,
+        left: &Expression<'hir>,
+        right: &Expression<'hir>,
         typ: Type,
     ) -> Result<Operand, MirError> {
         debug_assert_eq!(
@@ -562,17 +559,23 @@ impl<'a> FunctionLower<'a> {
         self.locals[self.local_map[id].0 as usize].1
     }
 
-    fn place_info(&self, place: &hir::Place) -> (Place, u32, Type) {
-        match &place.kind {
-            PlaceKind::Local(id) => {
-                let origin = self.place_for_local(*id, self.local_type(*id));
+    #[inline(always)]
+    fn is_place_expr(&self, expr: &Expression<'hir>) -> bool {
+        matches!(&expr.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. })
+    }
+
+    fn place_info(&self, expr: &Expression<'hir>) -> (Place, u32, Type) {
+        match &expr.kind {
+            ExpressionKind::Local(local_id) => {
+                let origin = self.place_for_local(*local_id, self.local_type(*local_id));
                 (origin, 0, origin.typ)
             },
-            PlaceKind::Field { base, field } => {
-                let (origin, base_offset, base_type) = self.place_info(base);
+            ExpressionKind::Field { base, field } => {
+                let (origin, base_offset, base_type) = self.place_info(*base);
                 let layout = self.layouts.field(base_type, *field);
                 (origin, base_offset + layout.offset, layout.typ)
             },
+            _ => panic!("place_info called on non-place expression: {:?}", expr),
         }
     }
 
@@ -634,13 +637,13 @@ impl<'a> FunctionLower<'a> {
     }
 
     #[inline]
-    fn push_print_arg(&self, output: &mut String, id: ExprId) {
-        match &self.exprs[id].kind {
+    fn push_print_arg(&self, output: &mut String, expr: &Expression<'hir>) {
+        match &expr.kind {
             ExpressionKind::String(sym) => {
                 let text = &self.symbols[sym.0.into_usize()];
                 output.push_str(&self.expand_interpolation(text))
             },
-            _ if let Some(text) = self.capture_constant_expr(id) => {
+            _ if let Some(text) = self.capture_constant_expr(expr) => {
                 output.push_str(&text);
             },
             _ => {},
@@ -648,8 +651,8 @@ impl<'a> FunctionLower<'a> {
     }
 
     #[inline]
-    fn capture_constant_expr(&self, id: ExprId) -> Option<String> {
-        match &self.exprs[id].kind {
+    fn capture_constant_expr(&self, expr: &Expression<'hir>) -> Option<String> {
+        match &expr.kind {
             ExpressionKind::Integer(value) => Some(value.to_string()),
             ExpressionKind::Float(value) => Some(value.to_string()),
             ExpressionKind::Bool(value) => Some(value.to_string()),
@@ -793,7 +796,6 @@ impl<'a> FunctionLower<'a> {
         );
         let old_inlined_return_target =
             replace(&mut self.inlined_return_target, Some((exit_block_id, inline_ret_place)));
-        let old_exprs = replace(&mut self.exprs, &callee.exprs);
         let old_typeck = replace(&mut self.typeck, &callee.typeck);
 
         self.lower_block(&callee.body)?;
@@ -808,7 +810,6 @@ impl<'a> FunctionLower<'a> {
         self.runtime_local_uses = old_runtime_local_uses;
         self.local_symbols = old_local_symbols;
         self.inlined_return_target = old_inlined_return_target;
-        self.exprs = old_exprs;
         self.typeck = old_typeck;
 
         self.switch_to(exit_block_id);
@@ -845,82 +846,76 @@ impl PartialBlock {
     }
 }
 
-fn collect_runtime_local_uses(function: &hir::Function) -> IndexVec<LocalId, bool> {
+fn collect_runtime_local_uses(function: &hir::Function<'_>) -> IndexVec<LocalId, bool> {
     let mut uses = IndexVec::from_elem(false, function.locals.len());
-    visit_block_runtime_uses(&function.exprs, &function.body, &mut uses);
+    visit_block_runtime_uses(&function.body, &mut uses);
 
     uses
 }
 
-fn visit_block_runtime_uses(
-    arena: &IndexVec<ExprId, Expression>,
-    block: &hir::Block,
-    uses: &mut IndexVec<LocalId, bool>,
-) {
-    for statement in &block.statements {
+fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId, bool>) {
+    for statement in block.statements {
         match statement {
-            hir::Statement::LetInit { init, .. } => visit_expr_runtime_uses(arena, *init, uses),
-            hir::Statement::LetUninit { .. } => {},
-            hir::Statement::Expr(expr) => visit_expr_runtime_uses(arena, *expr, uses),
-            hir::Statement::Return(Some(expr)) => visit_expr_runtime_uses(arena, *expr, uses),
-            hir::Statement::Return(None) => {},
-            hir::Statement::If { condition, then_block, else_block } => {
-                visit_expr_runtime_uses(arena, *condition, uses);
-                visit_block_runtime_uses(arena, then_block, uses);
+            Statement::LetInit { init, .. } => visit_expr_runtime_uses(*init, uses),
+            Statement::LetUninit { .. } => {},
+            Statement::Expr(expr) => visit_expr_runtime_uses(*expr, uses),
+            Statement::Return(Some(expr)) => visit_expr_runtime_uses(*expr, uses),
+            Statement::Return(None) => {},
+            Statement::If { condition, then_block, else_block } => {
+                visit_expr_runtime_uses(*condition, uses);
+                visit_block_runtime_uses(then_block, uses);
                 if let Some(else_block) = else_block {
-                    visit_block_runtime_uses(arena, else_block, uses);
+                    visit_block_runtime_uses(else_block, uses);
                 }
             },
             hir::Statement::While { condition, body } => {
-                visit_expr_runtime_uses(arena, *condition, uses);
-                visit_block_runtime_uses(arena, body, uses);
+                visit_expr_runtime_uses(*condition, uses);
+                visit_block_runtime_uses(body, uses);
             },
-            hir::Statement::Block(block) => visit_block_runtime_uses(arena, block, uses),
+            Statement::Block(block) => visit_block_runtime_uses(block, uses),
         }
     }
 }
 
-fn visit_expr_runtime_uses(
-    arena: &IndexVec<ExprId, Expression>,
-    id: ExprId,
-    uses: &mut IndexVec<LocalId, bool>,
-) {
-    match &arena[id].kind {
+fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
+    match &expr.kind {
         ExpressionKind::Local(id) => uses[*id] = true,
-        ExpressionKind::Unary { expr, .. } => visit_expr_runtime_uses(arena, *expr, uses),
-        ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(arena, *from, uses),
+        ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(*inner, uses),
+        ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(*from, uses),
         ExpressionKind::Binary { left, right, .. } => {
-            visit_expr_runtime_uses(arena, *left, uses);
-            visit_expr_runtime_uses(arena, *right, uses);
+            visit_expr_runtime_uses(*left, uses);
+            visit_expr_runtime_uses(*right, uses);
         },
         ExpressionKind::Assign { target, value } => {
-            if matches!(&target.kind, PlaceKind::Field { .. }) {
-                visit_place_runtime_uses(target, uses);
+            if !matches!(&target.kind, ExpressionKind::Local(_)) {
+                visit_place_runtime_uses(*target, uses);
             }
-            visit_expr_runtime_uses(arena, *value, uses);
+            visit_expr_runtime_uses(*value, uses);
         },
         ExpressionKind::Struct { fields, .. } => {
-            for (_, value) in fields {
-                visit_expr_runtime_uses(arena, *value, uses);
+            for &(_, value) in *fields {
+                visit_expr_runtime_uses(value, uses);
             }
         },
         ExpressionKind::Call { args, .. }
         | ExpressionKind::IntrinsicCall { args, .. }
         | ExpressionKind::Syscall { args, .. } => {
-            for arg in args {
-                visit_expr_runtime_uses(arena, *arg, uses);
+            for &arg in *args {
+                visit_expr_runtime_uses(arg, uses);
             }
         },
         ExpressionKind::MethodCall { receiver, args, .. } => {
-            match &receiver.kind {
-                ReceiverKind::Place(place) => visit_place_runtime_uses(place, uses),
-                ReceiverKind::Computed(val) => visit_expr_runtime_uses(arena, *val, uses),
+            let receiver = *receiver;
+            if matches!(&receiver.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. }) {
+                visit_place_runtime_uses(receiver, uses);
+            } else {
+                visit_expr_runtime_uses(receiver, uses);
             }
-            for arg in args {
-                visit_expr_runtime_uses(arena, *arg, uses);
+            for &arg in *args {
+                visit_expr_runtime_uses(arg, uses);
             }
         },
-        ExpressionKind::Place(place) => visit_place_runtime_uses(place, uses),
+        ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
         ExpressionKind::TypeIntrinsic { .. } => {},
         ExpressionKind::Unit
         | ExpressionKind::Integer(_)
@@ -932,13 +927,13 @@ fn visit_expr_runtime_uses(
     }
 }
 
-fn visit_place_runtime_uses(place: &hir::Place, uses: &mut IndexVec<LocalId, bool>) {
-    if let Some(id) = place.base_local() {
-        uses[id] = true;
+fn visit_place_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
+    if let Some(local_id) = hir::place_base_local(expr) {
+        uses[local_id] = true;
     }
 }
 
-fn has_open_generic(func: &hir::Function) -> bool {
+fn has_open_generic(func: &hir::Function<'_>) -> bool {
     fn is_open(t: Type) -> bool {
         match t.kind() {
             TypeKind::GenericParam(_) => true,

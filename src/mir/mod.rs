@@ -248,8 +248,9 @@ mod tests {
     use crate::{hir, mir, parser::Parser};
 
     fn parse_and_lower(src: &str) -> Mir {
+        let arena = bumpalo::Bump::new();
         let statements = Parser::new(src).parse().unwrap();
-        let hir = hir::lower(statements).unwrap();
+        let hir = hir::lower(statements, &arena).unwrap();
 
         mir::lower(hir).unwrap()
     }

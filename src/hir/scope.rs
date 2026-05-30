@@ -24,8 +24,8 @@ use std::{
 ///
 /// Grows incrementally as modules are loaded: structs and function
 /// signatures are assigned monotonically increasing IDs across all modules
-pub struct Scope<'s> {
-    pub(in crate::hir) mangler: Mangler<'s>,
+pub struct Scope<'hir> {
+    pub(in crate::hir) mangler: Mangler<'hir>,
     pub signatures: IndexVec<FunctionId, FunctionSignature>,
     pub functions: Functions,
     pub methods: Methods,
@@ -36,7 +36,7 @@ pub struct Scope<'s> {
     pub enum_variants: EnumVariants,
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
-    pub constants: HashMap<SymbolId, Constant>,
+    pub constants: HashMap<SymbolId, Constant<'hir>>,
 }
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
 
-impl<'sc> Scope<'sc> {
+impl<'hir> Scope<'hir> {
     pub fn new() -> Self {
         Self {
             mangler: Mangler::default(),
@@ -103,12 +103,13 @@ impl<'sc> Scope<'sc> {
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
         in_std: bool,
+        arena: &'hir bumpalo::Bump,
     ) -> Result<(), HirError<'s>> {
         self.extend_enums(declarations, symbols)?;
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
         self.extend_signatures(declarations, symbols, in_std)?;
-        constants::extend(self, declarations, symbols, in_std)?;
+        constants::extend(self, declarations, symbols, in_std, arena)?;
         interfaces::validate(self, declarations, symbols)?;
 
         Ok(())
@@ -119,8 +120,9 @@ impl<'sc> Scope<'sc> {
         declarations: &Declarations<'d, 's>,
         symbols: &mut SymbolTable,
         in_std: bool,
-    ) -> Result<IndexVec<FunctionId, Function>, HirError<'s>> {
-        self.lower_matching_functions(declarations, symbols, in_std, |_| true)
+        arena: &'hir bumpalo::Bump,
+    ) -> Result<IndexVec<FunctionId, Function<'hir>>, HirError<'s>> {
+        self.lower_matching_functions(declarations, symbols, in_std, |_| true, arena)
     }
 
     pub(in crate::hir) fn lower_matching_functions<'d, 's>(
@@ -129,7 +131,8 @@ impl<'sc> Scope<'sc> {
         symbols: &mut SymbolTable,
         in_std: bool,
         mut should_lower: impl FnMut(FunctionId) -> bool,
-    ) -> Result<IndexVec<FunctionId, Function>, HirError<'s>> {
+        arena: &'hir bumpalo::Bump,
+    ) -> Result<IndexVec<FunctionId, Function<'hir>>, HirError<'s>> {
         declarations
             .functions()
             .filter_map(|function| {
@@ -144,7 +147,9 @@ impl<'sc> Scope<'sc> {
                     return None;
                 }
 
-                Some(lower::FunctionBuilder::new(self, symbols, id, function, in_std).lower())
+                Some(
+                    lower::FunctionBuilder::new(self, symbols, id, function, in_std, arena).lower(),
+                )
             })
             .collect()
     }

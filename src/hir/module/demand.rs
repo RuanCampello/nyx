@@ -15,8 +15,8 @@ pub(super) struct DemandSet {
     needed: HashSet<FunctionId>,
 }
 
-struct ReachabilityVisitor<'a> {
-    scope: &'a Scope<'static>,
+struct ReachabilityVisitor<'a, 'hir> {
+    scope: &'a Scope<'hir>,
     symbols: &'a SymbolTable,
     found: &'a mut Vec<FunctionId>,
 }
@@ -31,13 +31,14 @@ impl DemandSet {
     }
 }
 
-pub(super) fn lower_reachable<'src>(
+pub(super) fn lower_reachable<'hir, 'src>(
     graph: &mut ModuleGraph<'src>,
     order: &[usize],
     interfaces: &HashMap<String, Interface<'src>>,
-    scope: &Scope<'static>,
+    scope: &Scope<'hir>,
     symbols: &mut SymbolTable,
-) -> Result<IndexVec<hir::FunctionId, hir::Function>, ModuleError> {
+    arena: &'hir bumpalo::Bump,
+) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError> {
     let demand = build_demand(graph, order, interfaces, scope, symbols)?;
     let mut functions = IndexVec::new();
 
@@ -50,7 +51,13 @@ pub(super) fn lower_reachable<'src>(
                 .map_err(Diagnostic::from)?;
 
         let mut lowered = scope
-            .lower_matching_functions(&declarations, symbols, node.in_std, |id| demand.contains(id))
+            .lower_matching_functions(
+                &declarations,
+                symbols,
+                node.in_std,
+                |id| demand.contains(id),
+                arena,
+            )
             .map_err(Diagnostic::from)?;
 
         functions.append(&mut lowered);
@@ -59,11 +66,11 @@ pub(super) fn lower_reachable<'src>(
     Ok(functions)
 }
 
-fn build_demand<'src>(
+fn build_demand<'hir, 'src>(
     graph: &mut ModuleGraph<'src>,
     order: &[usize],
     interfaces: &HashMap<String, Interface<'src>>,
-    scope: &Scope<'static>,
+    scope: &Scope<'hir>,
     symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
     let declarations = collect_functions(graph, order, interfaces, scope, symbols)?;
@@ -98,11 +105,11 @@ fn build_demand<'src>(
     Ok(demand)
 }
 
-fn collect_functions<'a, 'src>(
+fn collect_functions<'a, 'hir, 'src>(
     graph: &'a mut ModuleGraph<'src>,
     order: &[usize],
     interfaces: &HashMap<String, Interface<'src>>,
-    scope: &Scope<'static>,
+    scope: &Scope<'hir>,
     symbols: &SymbolTable,
 ) -> Result<HashMap<FunctionId, Function<'src>>, ModuleError> {
     let mut functions = HashMap::new();
@@ -160,7 +167,7 @@ fn find_interface_for_method(
     )
 }
 
-impl<'a, 'i> visitor::Visitor<'i> for ReachabilityVisitor<'a> {
+impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
     fn visit_expression(&mut self, expr: &Expression<'i>) {
         match expr {
             Expression::Call { callee, args, .. } => {

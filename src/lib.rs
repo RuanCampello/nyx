@@ -66,8 +66,9 @@ pub fn compile(src: &str) -> Result<String, NyxError> {
 
 /// Run the full single-file nyx compilation pipeline for a specific target
 pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
+    let arena = bumpalo::Bump::new();
     let statements = parser::Parser::new(src).parse()?;
-    let hir = hir::lower(statements)?;
+    let hir = hir::lower(statements, &arena)?;
     let mir = mir::lower(hir)?;
 
     let asm = match target {
@@ -93,8 +94,9 @@ pub fn compile_project_for(
     target: TargetArch,
 ) -> Result<String, NyxError> {
     let root = entry.parent().unwrap_or(Path::new(".")).canonicalize()?;
+    let arena = bumpalo::Bump::new();
 
-    let mut loader = module::ModuleLoader::new(name.to_string(), root);
+    let mut loader = module::ModuleLoader::new(name.to_string(), root, &arena);
     let hir = loader.load(entry)?;
     let mir = mir::lower(hir)?;
 

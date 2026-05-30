@@ -18,12 +18,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Maintains a cache of loaded modules and the shared symbol table
 /// to ensure symbol IDs remain unique across the entire compilation.
-pub(crate) struct ModuleLoader<F: FileSystem = FS> {
+pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
     resolver: ModuleResolver,
-    scope: Scope<'static>,
+    scope: Scope<'hir>,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
     fs: F,
+    arena: &'hir bumpalo::Bump,
 }
 
 #[derive(Debug, Diagnostic)]
@@ -86,14 +87,20 @@ pub(crate) trait FileSystem {
 
 pub(crate) struct FS;
 
-impl ModuleLoader<FS> {
-    pub fn new(name: String, root: PathBuf) -> Self {
-        Self::with_file_system(name, root, resolve_std_root(), FS)
+impl<'hir> ModuleLoader<'hir, FS> {
+    pub fn new(name: String, root: PathBuf, arena: &'hir bumpalo::Bump) -> Self {
+        Self::with_file_system(name, root, resolve_std_root(), FS, arena)
     }
 }
 
-impl<F: FileSystem> ModuleLoader<F> {
-    pub fn with_file_system(name: String, root: PathBuf, std: PathBuf, fs: F) -> Self {
+impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
+    pub fn with_file_system(
+        name: String,
+        root: PathBuf,
+        std: PathBuf,
+        fs: F,
+        arena: &'hir bumpalo::Bump,
+    ) -> Self {
         let canonical_root = fs.canonicalise(&root).unwrap_or_else(|_| root.clone());
         let canonical_std = fs.canonicalise(&std).unwrap_or_else(|_| std.clone());
         Self {
@@ -101,6 +108,7 @@ impl<F: FileSystem> ModuleLoader<F> {
             fs,
             scope: Scope::new(),
             symbols: SymbolTable::new(),
+            arena,
         }
     }
 
@@ -108,13 +116,16 @@ impl<F: FileSystem> ModuleLoader<F> {
     ///
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
-    #[rustfmt::skip]
-    pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir, ModuleError> {
-        let arena = bumpalo::Bump::new();
-        let mut graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, &arena)?;
+    pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir<'hir>, ModuleError> {
+        let arena = self.arena;
+        let symbols = &mut self.symbols;
+
+        let graph = &mut graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)?;
         let order = graph.all_nodes_order();
-        let interfaces = signatures::build_signatures(&mut graph, &order, &mut self.scope, &mut self.symbols, &arena)?;
-        let functions = demand::lower_reachable(&mut graph, &order, &interfaces, &self.scope, &mut self.symbols)?;
+        let interfaces =
+            signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
+        let functions =
+            demand::lower_reachable(graph, &order, &interfaces, &self.scope, symbols, arena)?;
 
         Ok(Hir {
             functions,
@@ -247,8 +258,8 @@ mod tests {
         }
     }
 
-    fn vloader(fs: VirtualFS) -> ModuleLoader<VirtualFS> {
-        ModuleLoader::with_file_system(APP.into(), PROJECT.into(), STD.into(), fs)
+    fn vloader<'hir>(fs: VirtualFS, arena: &'hir bumpalo::Bump) -> ModuleLoader<'hir, VirtualFS> {
+        ModuleLoader::with_file_system(APP.into(), PROJECT.into(), STD.into(), fs, arena)
     }
 
     const APP: &str = "my_app";
@@ -257,7 +268,8 @@ mod tests {
 
     #[test]
     fn resolve_simple_path() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let path = loader.resolve_path(&[APP, "math"], Span::default()).unwrap();
 
         assert_eq!(path, PathBuf::from("/project/math.nyx"));
@@ -265,7 +277,8 @@ mod tests {
 
     #[test]
     fn resolve_nested_path() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let path = loader.resolve_path(&[APP, "utils", "io", "file"], Span::default()).unwrap();
 
         assert_eq!(path, PathBuf::from("/project/utils/io/file.nyx"));
@@ -273,7 +286,8 @@ mod tests {
 
     #[test]
     fn reject_unknown_root() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let err = loader.resolve_path(&["other", "foo"], Span::default()).unwrap_err();
 
         match err {
@@ -284,7 +298,8 @@ mod tests {
 
     #[test]
     fn reject_empty_path() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let err = loader.resolve_path(&[], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
@@ -292,7 +307,8 @@ mod tests {
 
     #[test]
     fn reject_root_only() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let err = loader.resolve_path(&[APP], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
@@ -300,8 +316,9 @@ mod tests {
 
     #[test]
     fn single_file_function() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
 
         assert_eq!(hir.functions.len(), 1);
         let main = hir
@@ -327,14 +344,16 @@ mod tests {
 
     #[test]
     fn file_not_found() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default();
-        let err = vloader(fs).load(Path::new("/project/missing.nyx")).unwrap_err();
+        let err = vloader(fs, &arena).load(Path::new("/project/missing.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::FileNotFound { .. }));
     }
 
     #[test]
     fn circular_import() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add(
                 "/project/a.nyx",
@@ -358,13 +377,14 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs).load(Path::new("/project/main.nyx")).unwrap_err();
+        let err = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::CircularImport { .. }));
     }
 
     #[test]
     fn non_pub_return_unknown_function() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/math.nyx", "fn secret(a: i32): i32 { a + 1 }")
             .add(
@@ -376,13 +396,14 @@ mod tests {
             );
 
         // 'secret' is not exported so shouldn't be included in the symbols
-        let err = vloader(fs).load(Path::new("/project/main.nyx")).unwrap_err();
+        let err = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::UnknownExport { .. }));
     }
 
     #[test]
     fn transitive_dependency() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/base.nyx", "pub fn one(): i32 { 1 }")
             .add(
@@ -400,12 +421,13 @@ mod tests {
             "#,
             );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 3);
     }
 
     #[test]
     fn same_dependency_imported_twice_was_not_duplicated() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
@@ -424,7 +446,7 @@ mod tests {
             "#,
             );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let add_count = hir
             .functions
             .iter()
@@ -437,6 +459,7 @@ mod tests {
 
     #[test]
     fn arity_mismatch_across_modules() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
@@ -447,13 +470,14 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 
     #[test]
     fn nested_path() {
-        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT));
+        let arena = bumpalo::Bump::new();
+        let loader = ModuleLoader::new(APP.into(), PathBuf::from(PROJECT), &arena);
         let path = loader
             .resolve_path(&[APP, "std", "collections", "map"], Span::default())
             .unwrap();
@@ -463,6 +487,7 @@ mod tests {
 
     #[test]
     fn empty_module_is_valid() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add("/project/empty.nyx", "").add(
             "/project/main.nyx",
             r#"
@@ -471,12 +496,13 @@ mod tests {
             "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 1);
     }
 
     #[test]
     fn duplicate_function_across_modules_rejected() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }")
             .add(
@@ -488,12 +514,13 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 
     #[test]
     fn namespace_import_with_qualified_call() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add(
                 "/project/main.nyx",
@@ -506,12 +533,13 @@ mod tests {
             )
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
     }
 
     #[test]
     fn qualified_import() {
+        let arena = bumpalo::Bump::new();
         use crate::hir;
 
         let fs = VirtualFS::default().add(
@@ -524,7 +552,7 @@ mod tests {
             "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
 
         let main = hir
@@ -536,14 +564,14 @@ mod tests {
             let hir::Statement::Expr(id) = stmt else {
                 return false;
             };
-            let hir::ExpressionKind::Call { args, .. } = &main.exprs[*id].kind else {
+            let hir::ExpressionKind::Call { args, .. } = &id.kind else {
                 return false;
             };
 
             args.len() == 1 && {
                 let arg = args[0];
-                matches!(main.exprs[arg].kind, hir::ExpressionKind::Integer(0))
-                    && main.typeck.type_of(arg) == hir::Type::new(hir::TypeKind::I32)
+                matches!(arg.kind, hir::ExpressionKind::Integer(0))
+                    && main.typeck.type_of(arg.id) == hir::Type::new(hir::TypeKind::I32)
             }
         });
 
@@ -559,7 +587,7 @@ mod tests {
                 return false;
             };
             matches!(
-                &exit.exprs[*id].kind,
+                &id.kind,
                 hir::ExpressionKind::Syscall { code: hir::SyscallCode::Exit, args }
                 if args.len() == 1
             )
@@ -570,6 +598,7 @@ mod tests {
 
     #[test]
     fn syscall_primitive_is_std_only() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -580,12 +609,13 @@ mod tests {
             "#,
         );
 
-        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 
     #[test]
     fn qualified_std_intrinsics_keep_call_arguments() {
+        let arena = bumpalo::Bump::new();
         use crate::hir;
 
         let fs = VirtualFS::default().add(
@@ -598,7 +628,7 @@ mod tests {
             "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let main = hir
             .functions
             .iter()
@@ -609,7 +639,7 @@ mod tests {
             panic!("expected an expression statement");
         };
         assert!(matches!(
-            &main.exprs[*id].kind,
+            &id.kind,
             hir::ExpressionKind::IntrinsicCall { intrinsic: hir::Intrinsic::PrintLn, args }
             if args.len() == 1
         ));
@@ -617,6 +647,7 @@ mod tests {
 
     #[test]
     fn struct_in_single_mod() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -636,13 +667,14 @@ mod tests {
             "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.structs.len(), 1);
     }
 
     #[test]
     fn struct_orphan_rule_rejected() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add("/project/types.nyx", "pub struct Point { x: i32, y: i32 }")
             .add(
@@ -656,12 +688,13 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs).load("/project/main.nyx").unwrap_err();
+        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Diagnostic(_)));
     }
 
     #[test]
     fn test_size_of_and_align_of_primitives() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -674,7 +707,7 @@ mod tests {
                 "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let main_fn = hir
             .functions
             .iter()
@@ -686,24 +719,25 @@ mod tests {
             _ => panic!("expected let statement"),
         };
         assert!(
-            matches!(main_fn.exprs[a_init].kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(a_init.kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(a_init), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(a_init.id), Type::new(TypeKind::Uptr));
 
         let b_init = match &main_fn.body.statements[1] {
             Statement::LetInit { init, .. } => *init,
             _ => panic!("expected let statement"),
         };
         assert!(
-            matches!(main_fn.exprs[b_init].kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(b_init.kind, ExpressionKind::TypeIntrinsic { .. }),
             "align_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(b_init), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(b_init.id), Type::new(TypeKind::Uptr));
     }
 
     #[test]
     fn test_size_of_and_align_of_structs() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -719,7 +753,7 @@ mod tests {
                 "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let main_fn = hir
             .functions
             .iter()
@@ -732,14 +766,15 @@ mod tests {
             _ => panic!("expected expression or return statement"),
         };
         assert!(
-            matches!(main_fn.exprs[body_expr].kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
     }
 
     #[test]
     fn test_size_of_and_align_of_struct_representations() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -760,7 +795,7 @@ mod tests {
                 "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let main_fn = hir
             .functions
             .iter()
@@ -773,11 +808,12 @@ mod tests {
             _ => panic!("expected expression or return statement"),
         };
 
-        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
     }
 
     #[test]
     fn test_size_of_and_align_of_enums() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -791,7 +827,7 @@ mod tests {
                 "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.enums.len(), 1);
         let main_fn = hir
             .functions
@@ -804,11 +840,12 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
-        assert_eq!(main_fn.typeck.type_of(body_expr), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
     }
 
     #[test]
     fn exported_enum_supports_impl_and_self_interface_methods() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default()
             .add(
                 "/project/status.nyx",
@@ -849,7 +886,7 @@ mod tests {
                 "#,
             );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.enums.len(), 1);
         assert!(
             hir.functions
@@ -860,6 +897,7 @@ mod tests {
 
     #[test]
     fn test_size_of_without_qualifier() {
+        let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(
             "/project/main.nyx",
             r#"
@@ -870,7 +908,7 @@ mod tests {
                 "#,
         );
 
-        let hir = vloader(fs).load("/project/main.nyx").unwrap();
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         let main_fn = hir
             .functions
             .iter()
@@ -882,7 +920,7 @@ mod tests {
             _ => panic!("expected expression or return statement"),
         };
         assert!(
-            matches!(main_fn.exprs[body_expr].kind, ExpressionKind::TypeIntrinsic { .. }),
+            matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
     }
