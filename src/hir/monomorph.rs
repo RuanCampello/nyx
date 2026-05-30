@@ -1137,6 +1137,7 @@ fn mangle_type_str(t: &Type<'_>) -> String {
             format!("{name}${}", args_str.join("$"))
         },
         Type::Unit => "unit".into(),
+        Type::Never => "!".into(),
     }
 }
 

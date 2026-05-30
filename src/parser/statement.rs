@@ -292,6 +292,7 @@ pub enum Type<'i> {
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     #[allow(dead_code)]
     Unit,
+    Never,
 }
 
 impl<'i> Parsable<'i> for Statement<'i> {
@@ -388,6 +389,11 @@ impl<'i> Spanned<Type<'i>> {
                 other => Type::Ref(Box::new(other)),
             };
             return Ok(Self::new(kind, span));
+        }
+
+        if parser.consume_punct(Punct::Bang)? {
+            let span = parser.last_span().unwrap_or_default();
+            return Ok(Self::new(Type::Never, span));
         }
 
         let (name, span) = parser.expect_identifier()?;
@@ -1509,6 +1515,7 @@ impl<'i> Type<'i> {
             Type::RefSelf => Some("Self"),
             Type::Ref(inner) => inner.name(),
             Type::Unit => Some("unit"),
+            Type::Never => Some("!"),
         }
     }
 }

@@ -26,7 +26,6 @@ use std::{
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     scope: &'s Scope<'hir>,
     locals: IndexVec<LocalId, Local>,
-    node_types: IndexVec<ExprId, Type>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
     function: Option<&'f statement::Function<'src>>,
@@ -38,6 +37,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     in_std: bool,
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
+    typeck: TypeckResults,
 }
 
 /// A freshly lowered expression
@@ -75,7 +75,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             next_local: 0,
             next_expr_id: 0,
             locals: IndexVec::new(),
-            node_types: IndexVec::new(),
+            typeck: TypeckResults::default(),
             scopes: vec![HashMap::new()],
             self_type,
             arena,
@@ -99,7 +99,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             next_local: 0,
             next_expr_id: 0,
             locals: IndexVec::new(),
-            node_types: IndexVec::new(),
+            typeck: TypeckResults::default(),
             scopes: vec![HashMap::new()],
             self_type: None,
             arena,
@@ -113,7 +113,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let id = ExprId(self.next_expr_id);
         self.next_expr_id += 1;
         let expr = self.arena.alloc(Expression { id, kind, span });
-        self.node_types.push(typ);
+        self.typeck.node_types.push(typ);
 
         Lowered { expr, typ, span }
     }
@@ -161,7 +161,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             is_pub: function.is_pub,
             inline: function.inline,
             kind: signatures.kind,
-            typeck: TypeckResults { node_types: self.node_types },
+            typeck: self.typeck,
             body,
         })
     }
@@ -214,17 +214,20 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let symbol = self.symbols.insert(statement.name);
                 let id = self.declare_local(symbol, typ, statement.mutable)?;
 
+                let mut diverges = false;
                 let stmt = match statement.value {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(typ))?;
                         self.assert_type(typ, expr.typ, expr.span)?;
+
+                        diverges = expr.typ.diverges();
 
                         Statement::LetInit { id, init: expr.expr }
                     },
                     _ => Statement::LetUninit { id },
                 };
 
-                Ok((stmt, false))
+                Ok((stmt, diverges))
             },
 
             Stmt::Return(statement) => {
@@ -260,7 +263,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         (Statement::Return(Some(expr.expr)), true)
                     },
-                    _ => (Statement::Expr(expr.expr), false),
+                    _ => (Statement::Expr(expr.expr), expr.typ.diverges()),
                 })
             },
             Stmt::Block(block) => {
@@ -984,10 +987,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             }
 
             let body = self.lower_expr(&arm.body, unified_type)?;
-            if let Some(expected) = unified_type {
-                self.assert_type(expected, body.typ, body.span)?;
-            } else {
-                unified_type = Some(body.typ);
+            match unified_type {
+                Some(expected) if !body.typ.diverges() => {
+                    self.assert_type(expected, body.typ, body.span)?
+                },
+                _ => unified_type = Some(body.typ),
             }
 
             self.pop_scope();
@@ -1520,7 +1524,7 @@ pub(in crate::hir) fn lower_const<'hir, 'src>(
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
 
-    Ok((lowered.expr, TypeckResults { node_types: builder.node_types }))
+    Ok((lowered.expr, builder.typeck))
 }
 
 impl<'s, 'f, 'hir, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'hir, 'src> {

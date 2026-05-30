@@ -3,7 +3,7 @@ use crate::{
     diagnostic::{self, Diagnostic},
     hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
     parser::{
-        expression::Expression,
+        expression::{BinaryOperator, Expression},
         statement::{Function, Interface},
         visitor,
     },
@@ -202,6 +202,21 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                 if let Some(id) = self.scope.resolve_function_call(*qualifier, name, self.symbols) {
                     self.found.push(id);
                 }
+            },
+            Expression::Binary { operator, left, right, .. } => {
+                match operator {
+                    BinaryOperator::Eq
+                    | BinaryOperator::Ne
+                    | BinaryOperator::Lt
+                    | BinaryOperator::LtEq
+                    | BinaryOperator::Gt
+                    | BinaryOperator::GtEq => {
+                        self.found.extend(self.scope.methods.values().copied());
+                    },
+                    _ => {},
+                }
+                self.visit_expression(left);
+                self.visit_expression(right);
             },
             _ => visitor::walk_expression(self, expr),
         }

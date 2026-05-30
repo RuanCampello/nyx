@@ -18,8 +18,8 @@ use crate::{
     },
 };
 use lasso::{Key, Spur};
-use std::ops::Index;
 use std::str::FromStr;
+use std::{collections::HashMap, ops::Index};
 
 pub(crate) use structs::Visit;
 pub use types::*;
@@ -112,7 +112,8 @@ pub struct Expression<'hir> {
 /// Type-checking results for a body, keyed by [`ExprId`]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypeckResults {
-    pub(crate) node_types: IndexVec<ExprId, Type>,
+    node_types: IndexVec<ExprId, Type>,
+    type_dependent_defs: HashMap<ExprId, FunctionId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -349,9 +350,14 @@ impl FunctionKind {
 }
 
 impl TypeckResults {
-    #[inline]
+    #[inline(always)]
     pub(crate) fn type_of(&self, id: ExprId) -> Type {
         self.node_types[id]
+    }
+
+    #[inline(always)]
+    pub(crate) fn type_dependent_def(&self, id: ExprId) -> Option<FunctionId> {
+        self.type_dependent_defs.get(&id).copied()
     }
 }
 

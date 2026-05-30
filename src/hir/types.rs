@@ -58,10 +58,8 @@ pub enum TypeKind {
         mutable: bool,
         to: RefTarget,
     },
-    /// A generic type parameter, indexed by its position in the enclosing
-    /// declaration's parameter list (impl/struct/enum/fn). Resolved to a
-    /// concrete type by [`Type::subst`] during the monomorphisation pass.
     GenericParam(u8),
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +79,7 @@ pub enum RefTargetKind {
     Enum(EnumId),
     SelfType,
     GenericParam(u8),
+    Never,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,6 +120,7 @@ const SELF_TYPE: u8 = 19;
 const REF: u8 = 20;
 
 const GENERIC_PARAM: u8 = 21;
+const NEVER: u8 = 22;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -241,6 +241,7 @@ impl Type {
                 Self(bits | tag_bits | payload_bits)
             },
             TypeKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
+            TypeKind::Never => Self(NEVER as u64),
         }
     }
 
@@ -284,6 +285,7 @@ impl Type {
                 TypeKind::Ref { mutable, to }
             },
             GENERIC_PARAM => TypeKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
+            NEVER => TypeKind::Never,
             _ => panic!("invalid Type tag"),
         }
     }
@@ -347,6 +349,42 @@ impl Type {
         let tag = tag(self.0);
         tag == STRUCT || tag == STR || tag == STRING
     }
+
+    #[inline(always)]
+    pub const fn diverges(&self) -> bool {
+        matches!(self.kind(), TypeKind::Never)
+    }
+
+    pub fn from_primitive_ast(t: &statement::Type<'_>) -> Option<Self> {
+        use statement::Type as AstType;
+
+        let kind = match t {
+            AstType::I8 => TypeKind::I8,
+            AstType::U8 => TypeKind::U8,
+            AstType::I16 => TypeKind::I16,
+            AstType::U16 => TypeKind::U16,
+            AstType::I32 => TypeKind::I32,
+            AstType::U32 => TypeKind::U32,
+            AstType::I64 => TypeKind::I64,
+            AstType::U64 => TypeKind::U64,
+            AstType::F32 => TypeKind::F32,
+            AstType::F64 => TypeKind::F64,
+            AstType::Bool => TypeKind::Bool,
+            AstType::Uptr => TypeKind::Uptr,
+            AstType::Iptr => TypeKind::Iptr,
+            AstType::Char => TypeKind::Char,
+            AstType::Str => TypeKind::Str,
+            AstType::String => TypeKind::String,
+            AstType::SelfType => TypeKind::SelfType,
+            AstType::RefSelf => {
+                TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
+            },
+            AstType::Never => TypeKind::Never,
+            AstType::Named(_) | AstType::Ref(_) | AstType::Generic(_, _) => return None,
+            AstType::Unit => TypeKind::Unit,
+        };
+        Some(Type::new(kind))
+    }
 }
 
 impl RefTarget {
@@ -376,6 +414,7 @@ impl RefTarget {
                 Self((ENUM as u64) | ((id.0 as u64) << 8) | ((id.1.to_u8() as u64) << 40))
             },
             RefTargetKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
+            RefTargetKind::Never => Self(NEVER as u64),
         }
     }
 
@@ -409,6 +448,7 @@ impl RefTarget {
                 RefTargetKind::Enum(EnumId(id, EnumRepr::from_u8(repr_u8)))
             },
             GENERIC_PARAM => RefTargetKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
+            NEVER => RefTargetKind::Never,
             _ => panic!("invalid RefTarget tag"),
         }
     }
@@ -439,38 +479,6 @@ impl TryFrom<Type> for RefTarget {
     }
 }
 
-impl Type {
-    pub fn from_primitive_ast(t: &statement::Type<'_>) -> Option<Self> {
-        use statement::Type as AstType;
-
-        let kind = match t {
-            AstType::I8 => TypeKind::I8,
-            AstType::U8 => TypeKind::U8,
-            AstType::I16 => TypeKind::I16,
-            AstType::U16 => TypeKind::U16,
-            AstType::I32 => TypeKind::I32,
-            AstType::U32 => TypeKind::U32,
-            AstType::I64 => TypeKind::I64,
-            AstType::U64 => TypeKind::U64,
-            AstType::F32 => TypeKind::F32,
-            AstType::F64 => TypeKind::F64,
-            AstType::Bool => TypeKind::Bool,
-            AstType::Uptr => TypeKind::Uptr,
-            AstType::Iptr => TypeKind::Iptr,
-            AstType::Char => TypeKind::Char,
-            AstType::Str => TypeKind::Str,
-            AstType::String => TypeKind::String,
-            AstType::Unit => TypeKind::Unit,
-            AstType::SelfType => TypeKind::SelfType,
-            AstType::RefSelf => {
-                TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
-            },
-            AstType::Named(_) | AstType::Ref(_) | AstType::Generic(_, _) => return None,
-        };
-        Some(Type::new(kind))
-    }
-}
-
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self.kind() {
@@ -492,6 +500,7 @@ impl std::fmt::Display for Type {
             TypeKind::String => "String",
             TypeKind::Unit => "unit",
             TypeKind::SelfType => "Self",
+            TypeKind::Never => "!",
             TypeKind::Struct(id) => return write!(f, "struct#{}", id.0),
             TypeKind::Enum(id) => return write!(f, "enum#{}", id.0),
             TypeKind::Ref { mutable, to } => {
