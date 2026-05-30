@@ -318,6 +318,7 @@ impl Type {
             TypeKind::GenericParam(_) => {
                 unreachable!("GenericParam must be resolved before LIR lowering")
             },
+            TypeKind::Never => MachineType::Int { bytes: 4, signed: true },
         }
     }
 
@@ -325,7 +326,7 @@ impl Type {
     #[inline(always)]
     pub(crate) const fn unwrap_unit(self) -> Self {
         match self.kind() {
-            TypeKind::Unit => Self::new(TypeKind::I32),
+            TypeKind::Unit | TypeKind::Never => Self::new(TypeKind::I32),
             _ => self,
         }
     }

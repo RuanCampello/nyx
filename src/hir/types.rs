@@ -355,6 +355,11 @@ impl Type {
         matches!(self.kind(), TypeKind::Never)
     }
 
+    #[inline(always)]
+    pub const fn is_ref(&self) -> bool {
+        matches!(self.kind(), TypeKind::Ref { .. })
+    }
+
     pub fn from_primitive_ast(t: &statement::Type<'_>) -> Option<Self> {
         use statement::Type as AstType;
 

@@ -1,6 +1,6 @@
 use std::str;
 
-pub fn panic(msg: &str) {
+pub const fn panic(msg: &str): ! {
     syscall(SYS_WRITE, 2, msg, msg.len());
     syscall(SYS_EXIT, 101);
 }

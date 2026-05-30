@@ -9,6 +9,7 @@ use crate::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator, ValueId, error::MirError, layout::LayoutTable,
     },
+    optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
 use lasso::Key;
@@ -334,13 +335,23 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::Binary { operator, left, right } => {
-                use crate::optimisation;
+                if let Some(function) = self.typeck.type_dependent_def(expr.id) {
+                    let callee = self.get_fn_unchecked(&function);
 
-                let operator = *operator;
-                let left = *left;
-                let right = *right;
+                    let receiver_typ = callee
+                        .params
+                        .first()
+                        .map(|p| p.typ)
+                        .unwrap_or_else(|| self.typeck.type_of(left.id));
+
+                    let place = self.lower_overloaded(left, receiver_typ)?;
+                    let rhs = self.lower_expr(right)?;
+
+                    return self.emit_call(function, vec![Operand::Place(place), rhs], typ);
+                }
+
                 if matches!(operator, BinaryOperator::And | BinaryOperator::Or) {
-                    return self.lower_short_circuit(operator, left, right, typ);
+                    return self.lower_short_circuit(*operator, left, right, typ);
                 }
 
                 let lhs = self.lower_expr(left)?;
@@ -355,7 +366,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let is_on_debug = optimisation::Level::Debug == optimisation::get();
                 let checked = is_integer && is_arithmetic && is_on_debug;
 
-                self.emit(dest, Kind::Binary { operation: operator, lhs, rhs, checked });
+                self.emit(dest, Kind::Binary { operation: *operator, lhs, rhs, checked });
 
                 Ok(Operand::Place(dest))
             },
@@ -396,42 +407,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::MethodCall { function, receiver, args } => {
-                let function = *function;
                 let receiver = *receiver;
-                let receiver_typ = self.typeck.type_of(receiver.id);
-                let place = self.fresh_temporary(receiver_typ);
+                let callee_fn = self.get_fn_unchecked(function);
+                let receiver_typ = callee_fn
+                    .params
+                    .first()
+                    .map(|p| p.typ)
+                    .unwrap_or_else(|| self.typeck.type_of(receiver.id));
 
-                if self.is_place_expr(receiver) {
-                    let (origin, offset, receiver_type) = self.place_info(receiver);
-                    debug_assert!(receiver_type.kind() != TypeKind::Unit);
-
-                    match (offset, matches!(receiver_type.kind(), TypeKind::Ref { .. })) {
-                        (0, true) => self.emit(place, Kind::Assign(Operand::Place(origin))),
-                        (_, true) => {
-                            self.emit(
-                                place,
-                                Kind::FieldLoad {
-                                    src: Operand::Place(origin),
-                                    offset,
-                                    typ: receiver_type,
-                                },
-                            );
-                        },
-                        (_, false) => self.emit(place, Kind::AddressOf { src: origin, offset }),
-                    }
-                } else {
-                    let val_type = self.typeck.type_of(receiver.id);
-                    let lowered_receiver = self.lower_expr(receiver)?;
-
-                    match matches!(val_type.kind(), TypeKind::Ref { .. }) {
-                        true => self.emit(place, Kind::Assign(lowered_receiver)),
-                        _ => {
-                            let value_place = self.fresh_temporary(val_type);
-                            self.emit(value_place, Kind::Assign(lowered_receiver));
-                            self.emit(place, Kind::AddressOf { src: value_place, offset: 0 });
-                        },
-                    }
-                }
+                let place = self.lower_overloaded(&receiver, receiver_typ)?;
 
                 let mut lowered_args = Vec::with_capacity(args.len() + 1);
                 lowered_args.push(Operand::Place(place));
@@ -440,7 +424,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     lowered_args.push(operand);
                 }
 
-                self.emit_call(function, lowered_args, typ)
+                self.emit_call(*function, lowered_args, typ)
             },
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
@@ -535,11 +519,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 };
 
                 let join_block = self.new_block();
-                let match_result_place = if typ.kind() == TypeKind::Unit {
-                    None
-                } else {
-                    Some(self.fresh_temporary(typ))
-                };
+                let match_result_place =
+                    (typ.kind() == TypeKind::Unit).then_some(self.fresh_temporary(typ));
 
                 let mut next_arm_check_block = self.new_block();
 
@@ -640,6 +621,41 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.switch_to(merge_id);
 
         Ok(Operand::Place(result))
+    }
+
+    fn lower_overloaded(&mut self, left: &'hir Expression, typ: Type) -> Result<Place, MirError> {
+        let place = self.fresh_temporary(typ);
+
+        match self.is_place_expr(left) {
+            true => {
+                let (origin, offset, typ) = self.place_info(left);
+                debug_assert!(typ.kind() != TypeKind::Unit);
+
+                let instr = match (offset, typ.is_ref()) {
+                    (0, true) => InstructionKind::Assign(Operand::Place(origin)),
+                    (_, true) => {
+                        InstructionKind::FieldLoad { src: Operand::Place(origin), offset, typ }
+                    },
+                    _ => InstructionKind::AddressOf { src: origin, offset },
+                };
+
+                self.emit(place, instr)
+            },
+            _ => {
+                let val_type = self.typeck.type_of(left.id);
+                let lowered = self.lower_expr(left)?;
+
+                match val_type.is_ref() {
+                    true => self.emit(place, InstructionKind::Assign(lowered)),
+                    _ => {
+                        let val_place = self.fresh_temporary(val_type);
+                        self.emit(val_place, InstructionKind::Assign(lowered));
+                        self.emit(place, InstructionKind::AddressOf { src: val_place, offset: 0 });
+                    },
+                }
+            },
+        }
+        todo!()
     }
 
     #[inline(always)]
@@ -941,6 +957,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline]
+    fn get_fn_unchecked<'f>(&'f self, id: &FunctionId) -> &'f hir::Function<'f> {
+        self.functions_map
+            .get(id)
+            .unwrap_or_else(|| panic!("callee function {:?} not found", id))
+    }
+
+    #[inline]
     fn lookup_constant_local(&self, name: &str) -> Option<&str> {
         self.local_symbols
             .iter()
@@ -977,7 +1000,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         lowered_args: Vec<Operand>,
         return_type: Type,
     ) -> Result<Operand, MirError> {
-        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+        let callee = self.get_fn_unchecked(&callee_id);
         match callee.inline {
             true => self.inline_call(callee_id, lowered_args),
             _ => {
@@ -997,7 +1020,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     ) -> Result<Operand, MirError> {
         use std::mem::replace;
 
-        let callee = self.functions_map.get(&callee_id).expect("callee must exist");
+        let callee = self.functions_map.get(&callee_id).unwrap();
 
         let inline_ret_place = match callee.return_type.kind() != TypeKind::Unit {
             true => Some(self.fresh_temporary(callee.return_type)),

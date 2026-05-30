@@ -165,6 +165,7 @@ pub enum Terminator {
     Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
 
     /// N-way switch based on discriminant value
+    #[allow(unused)]
     Switch { discriminant: Operand, targets: Vec<(i64, BlockId)>, default: BlockId },
 
     /// Return from the function, optionally carrying a returned value
@@ -522,7 +523,6 @@ mod tests {
         );
 
         let func = &mir.functions[0];
-        // Literal pattern must emit a Binary(Eq) against a constant.
         let has_eq = func.blocks.iter().any(|b| {
             b.instructions.iter().any(|instr| {
                 matches!(
@@ -553,10 +553,11 @@ mod tests {
         );
 
         let func = &mir.functions[0];
-        // Or-pattern A|B generates two tag-comparison blocks (one per alternative)
-        // before reaching the body block. Count Branch terminators used for tag checks.
-        let branch_count =
-            func.blocks.iter().filter(|b| matches!(b.terminator, Terminator::Branch { .. })).count();
+        let branch_count = func
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Terminator::Branch { .. }))
+            .count();
         assert!(
             branch_count >= 2,
             "or-pattern with 2 alternatives must produce at least 2 branch terminators, got {branch_count}"
@@ -577,9 +578,6 @@ mod tests {
         );
 
         let func = &mir.functions[0];
-        // A guard adds an extra Branch terminator beyond what the pattern check needs.
-        // The binding pattern itself (wildcard-like) produces a Jump, so any Branch
-        // here comes from the guard.
         let has_guard_branch = func.blocks.iter().any(|b| {
             matches!(b.terminator, Terminator::Branch { .. })
                 && b.instructions.iter().any(|i| {

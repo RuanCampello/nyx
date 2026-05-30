@@ -1,5 +1,8 @@
 use crate::{
-    hir::{RefTargetKind, Struct, StructId, SymbolId, Type, TypeKind, Visit, index_vec::IndexVec, Enum, EnumId},
+    hir::{
+        Enum, EnumId, RefTargetKind, Struct, StructId, SymbolId, Type, TypeKind, Visit,
+        index_vec::IndexVec,
+    },
     mir::Layout,
     parser::statement::{StructRepr, StructReprKind},
 };
@@ -10,8 +13,9 @@ pub(crate) struct LayoutTable {
     enums: Vec<EnumLayout>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct EnumLayout {
+    #[allow(unused)]
     pub(crate) tag_layout: Layout,
     pub(crate) payload_offset: u32,
     pub(crate) layout: Layout,
@@ -47,7 +51,10 @@ struct PendingField {
 }
 
 impl LayoutTable {
-    pub(crate) fn build(structs: &IndexVec<StructId, Struct>, enums: &IndexVec<EnumId, Enum>) -> Self {
+    pub(crate) fn build(
+        structs: &IndexVec<StructId, Struct>,
+        enums: &IndexVec<EnumId, Enum>,
+    ) -> Self {
         let (structs, enums) = LayoutEngine::new(structs, enums).compute();
         Self { structs, enums }
     }
@@ -118,11 +125,13 @@ impl<'s> LayoutEngine<'s> {
             self.compute_enum(enum_def.id);
         }
 
-        let structs = self.struct_layouts
+        let structs = self
+            .struct_layouts
             .into_iter()
             .map(|layout| layout.expect("struct layout must be computed"))
             .collect();
-        let enums = self.enum_layouts
+        let enums = self
+            .enum_layouts
             .into_iter()
             .map(|layout| layout.expect("enum layout must be computed"))
             .collect();
@@ -162,9 +171,7 @@ impl<'s> LayoutEngine<'s> {
         self.enum_states[idx] = Visit::Visiting;
         let definition = &self.enums[idx];
 
-        let tag_layout = definition.repr.layout();
-        let tag_size = tag_layout.0;
-        let tag_align = tag_layout.1;
+        let (tag_size, tag_align) = definition.repr.layout();
 
         let mut max_payload_size = 0;
         let mut max_payload_align = 1;
@@ -292,7 +299,7 @@ impl<'s> LayoutEngine<'s> {
                         .expect("dependent struct layout must be computed")
                         .layout
                         .into()
-                }
+                },
                 TypeKind::Enum(id) => {
                     self.compute_enum(id);
                     self.enum_layouts[id.id() as usize]
@@ -300,7 +307,7 @@ impl<'s> LayoutEngine<'s> {
                         .expect("dependent enum layout must be computed")
                         .layout
                         .into()
-                }
+                },
                 TypeKind::SelfType | TypeKind::GenericParam(_) => {
                     unreachable!("MIR layout requires concrete types")
                 },
@@ -319,7 +326,7 @@ impl<'s> LayoutEngine<'s> {
                     .expect("dependent struct layout must be computed")
                     .layout
                     .contains_float()
-            }
+            },
             TypeKind::Enum(id) => {
                 self.compute_enum(id);
                 self.enum_layouts[id.id() as usize]
@@ -327,7 +334,7 @@ impl<'s> LayoutEngine<'s> {
                     .expect("dependent enum layout must be computed")
                     .layout
                     .contains_float()
-            }
+            },
             _ => false,
         }
     }
@@ -345,7 +352,7 @@ const fn scalar_layout(typ: Type) -> Option<(u32, u32)> {
         TypeKind::Ref { .. } => Some((8, 8)),
         TypeKind::Str => Some((16, 8)),
         TypeKind::String => Some((24, 8)),
-        TypeKind::Unit => Some((0, 1)),
+        TypeKind::Unit | TypeKind::Never => Some((0, 1)),
         _ => None,
     }
 }
