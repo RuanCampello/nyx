@@ -353,15 +353,6 @@ impl Type {
             TypeKind::Never => MachineType::Int { bytes: 4, signed: true },
         }
     }
-
-    // FIXME: that's a very workaround so future me that's your problem
-    #[inline(always)]
-    pub(crate) const fn unwrap_unit(self) -> Self {
-        match self.kind() {
-            TypeKind::Unit | TypeKind::Never => Self::new(TypeKind::I32),
-            _ => self,
-        }
-    }
 }
 
 pub(in crate::lir) fn aggregate_chunks(size: u32) -> impl Iterator<Item = (i32, u8)> {
@@ -411,6 +402,6 @@ impl std::ops::Index<mir::ValueId> for Vec<VReg> {
 
 impl From<crate::mir::BlockId> for BlockId {
     fn from(value: crate::mir::BlockId) -> Self {
-        Self { 0: value.0 }
+        Self(value.0)
     }
 }

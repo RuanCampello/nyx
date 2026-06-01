@@ -200,7 +200,7 @@ fn build_emit(
     project: &str,
     target: TargetArch,
 ) -> Result<Vec<PathBuf>, NyxError> {
-    let asm = nyx::compile_project_for(&source, &project, target)?;
+    let asm = nyx::compile_project_for(source, project, target)?;
     let mut emitted = Vec::new();
 
     // write assembly to a temp `.s` file
@@ -285,7 +285,7 @@ fn resolve_target(target: Option<String>) -> Result<TargetArch, NyxError> {
 
     match target {
         None => Ok(TargetArch::host()),
-        Some(s) => TargetArch::from_str(&s).ok_or_else(|| {
+        Some(s) => TargetArch::parse_name(&s).ok_or_else(|| {
             NyxError::Io(Error::new(
                 ErrorKind::InvalidInput,
                 format!("unknown target architecture: `{s}` (expected: x86_64, aarch64)"),
@@ -296,7 +296,7 @@ fn resolve_target(target: Option<String>) -> Result<TargetArch, NyxError> {
 
 #[inline(always)]
 fn temp_exe_path(source: &Path) -> PathBuf {
-    let stem = source.file_stem().unwrap_or_else(|| source.as_os_str()).to_string_lossy();
+    let stem = source.file_stem().unwrap_or(source.as_os_str()).to_string_lossy();
 
     source.parent().unwrap_or(Path::new(".")).join(format!("{stem}.run.tmp"))
 }

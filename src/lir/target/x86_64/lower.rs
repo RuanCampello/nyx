@@ -14,7 +14,7 @@ use crate::hir::{self, TypeKind};
 use crate::lir::{
     self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
     target::{
-        self, Lowerable, MemOps, RegClass, Target, aggregate_copy,
+        self, AggregateCopy, Lowerable, MemOps, RegClass, Target, aggregate_copy,
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
@@ -111,10 +111,10 @@ impl<'f> Lower<'f> {
             InstructionKind::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
 
-                const NEG_ZERO: u64 = (-0.0f64).to_bits() as u64;
+                const NEG_ZERO: u64 = (-0.0f64).to_bits();
                 const NEG_ZERO_32: u64 = (-0.0f32).to_bits() as u64;
 
-                let src = self.lower_operand(&rhs);
+                let src = self.lower_operand(rhs);
 
                 // 2-address: copy rhs into dest first to mutate it in-place
                 let copy = match is_float {
@@ -170,8 +170,8 @@ impl<'f> Lower<'f> {
                 let is_signed = lhs_mt.is_signed();
                 let lhs_type = lhs.typ();
                 let is_float = lhs_type.is_float();
-                let lhs = self.lower_operand(&lhs);
-                let rhs = self.lower_operand(&rhs);
+                let lhs = self.lower_operand(lhs);
+                let rhs = self.lower_operand(rhs);
                 let checked = *checked;
 
                 match operation {
@@ -192,7 +192,7 @@ impl<'f> Lower<'f> {
                         rhs,
                         bytes,
                         is_float,
-                        Condition::new(&comp, is_float),
+                        Condition::new(comp, is_float),
                     ),
 
                     _ => {
@@ -271,13 +271,15 @@ impl<'f> Lower<'f> {
                     return aggregate_copy(
                         &mut self.lir,
                         id,
-                        is_src_ref,
-                        false,
-                        origin,
-                        dest,
-                        *offset as i32,
-                        0,
-                        size,
+                        AggregateCopy {
+                            src: origin,
+                            dest,
+                            src_ref: is_src_ref,
+                            dest_ref: false,
+                            src_base: *offset as i32,
+                            dest_base: 0,
+                            size,
+                        },
                     );
                 }
 
@@ -314,13 +316,15 @@ impl<'f> Lower<'f> {
                     return aggregate_copy(
                         &mut self.lir,
                         id,
-                        false,
-                        matches!(typ.kind(), TypeKind::Ref { .. }),
-                        src_vreg,
-                        dest,
-                        0,
-                        *offset as i32,
-                        size,
+                        AggregateCopy {
+                            src: src_vreg,
+                            dest,
+                            src_ref: false,
+                            dest_ref: matches!(typ.kind(), TypeKind::Ref { .. }),
+                            src_base: 0,
+                            dest_base: *offset as i32,
+                            size,
+                        },
                     );
                 }
 
@@ -566,9 +570,9 @@ impl<'f> Lower<'f> {
                             .sret_ptr
                             .expect("struct-returning function must have an sret pointer");
                         let size = typ.machine_type(self.layouts).stack_size() as u32;
+                        let copy = AggregateCopy::new(src_vreg, sret_ptr, size).with_dest_ref();
 
-                        #[rustfmt::skip]
-                        aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
+                        aggregate_copy(&mut self.lir, id, copy);
                     },
                 }
 
@@ -642,7 +646,8 @@ impl<'f> Lower<'f> {
 
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
                 let dest = self.value[*vid];
-                aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest, 0, 0, size);
+                let copy = AggregateCopy::new(ptr, dest, size).with_src_ref();
+                aggregate_copy(&mut self.lir, &entry, copy);
                 int_idx += 1;
                 continue;
             }

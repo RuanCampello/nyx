@@ -47,7 +47,7 @@ impl<'i> Parser<'i> {
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
                 Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
                 None => break,
-                Some(Err(err)) => return Err(ParserError::new(err.clone().into(), err.span())),
+                Some(Err(err)) => return Err(ParserError::new((*err).into(), err.span())),
             }
         }
 
@@ -60,10 +60,10 @@ impl<'i> Parser<'i> {
 
     #[inline(always)]
     pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError<'i>>> {
-        if self.buffer.is_empty() {
-            if let Some(t) = self.cursor.next() {
-                self.buffer.push_back(t);
-            }
+        if self.buffer.is_empty()
+            && let Some(t) = self.cursor.next()
+        {
+            self.buffer.push_back(t);
         }
 
         self.buffer.front()
@@ -139,11 +139,11 @@ impl<'i> Parser<'i> {
 
     #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
-        if let Some(Ok(token)) = self.peek() {
-            if token.is_kind(kind) {
-                let _ = self.next_token();
-                return true;
-            }
+        if let Some(Ok(token)) = self.peek()
+            && token.is_kind(kind)
+        {
+            let _ = self.next_token();
+            return true;
         }
 
         false
@@ -196,7 +196,7 @@ impl<'i> Parser<'i> {
                 self.next_token()?;
                 Ok(true)
             },
-            Some(Err(err)) => return Err(err.into()),
+            Some(Err(err)) => Err(err.into()),
             _ => Ok(false),
         }
     }

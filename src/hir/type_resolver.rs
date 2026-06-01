@@ -27,10 +27,10 @@ pub(in crate::hir) fn resolve_annotation<'h>(
 ) -> Result<Type, HirError<'h>> {
     match typ {
         statement::Type::Named(name) => {
-            if let Some(env) = ctx.env {
-                if let Some(&t) = env.get(*name) {
-                    return Ok(t);
-                }
+            if let Some(env) = ctx.env
+                && let Some(&t) = env.get(*name)
+            {
+                return Ok(t);
             }
             ctx.symbols
                 .get_id(name)

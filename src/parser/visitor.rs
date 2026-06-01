@@ -99,7 +99,7 @@ pub trait Visitor<'i>: Sized {
     }
 }
 
-pub fn walk_expression<'i, V: Visitor<'i> + ?Sized>(visitor: &mut V, expr: &Expression<'i>) {
+pub fn walk_expression<'i, V: Visitor<'i>>(visitor: &mut V, expr: &Expression<'i>) {
     match expr {
         Expression::Unary { expr, .. } | Expression::Cast { expr, .. } => {
             visitor.visit_expression(expr);

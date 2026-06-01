@@ -395,14 +395,14 @@ impl<'i> Expression<'i> {
                 Ok(Expression::QualifiedName { span: left.span() + name_span, qualifier, name })
             },
             TokenKind::Punct(Punct::OpenParen) => {
-                if let Expression::Identifier(name, _) = &left {
-                    if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
-                        let typ = Spanned::<Type>::parse(parser)?;
-                        let end_span = parser.expect_token(Punct::CloseParen)?.span;
-                        let span = left.span() + end_span;
+                if let Expression::Identifier(name, _) = &left
+                    && let Ok(kind) = TypeIntrinsicKind::from_str(name)
+                {
+                    let typ = Spanned::<Type>::parse(parser)?;
+                    let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                    let span = left.span() + end_span;
 
-                        return Ok(Expression::TypeIntrinsic { kind, qualifier: None, typ, span });
-                    }
+                    return Ok(Expression::TypeIntrinsic { kind, qualifier: None, typ, span });
                 }
 
                 let (args, end_span) = Self::parse_call_args_after_paren(parser, token.span)?;

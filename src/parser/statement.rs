@@ -416,9 +416,11 @@ impl<'i> Spanned<Type<'i>> {
             type_span = span + parser.last_span().unwrap_or(span);
         }
 
-        let value = (!generic_args.is_empty())
-            .then(|| Type::Generic(name, generic_args))
-            .unwrap_or_else(|| Type::from_str(name).unwrap_or(Type::Named(name)));
+        let value = if !generic_args.is_empty() {
+            Type::Generic(name, generic_args)
+        } else {
+            Type::from_str(name).unwrap_or(Type::Named(name))
+        };
 
         Ok(Self::new(value, type_span))
     }
@@ -476,10 +478,10 @@ impl<'i> Parsable<'i> for Return<'i> {
         let return_token = parser.expect_token(Keyword::Return)?;
 
         let mut value = None;
-        if let Some(Ok(token)) = parser.peek() {
-            if !token.is_kind(Punct::Semicolon) {
-                value = Some(Expression::parse(parser)?);
-            }
+        if let Some(Ok(token)) = parser.peek()
+            && !token.is_kind(Punct::Semicolon)
+        {
+            value = Some(Expression::parse(parser)?);
         }
         let semi_token = parser.expect_token(Punct::Semicolon)?;
         let span = return_token.span + semi_token.span;
@@ -1526,10 +1528,10 @@ pub fn inject_default_methods<'a, 'b>(
     'a: 'b,
 {
     for stmt in statements {
-        if let Statement::Impl(imp) = stmt {
-            if let Some(interface) = imp.interface.and_then(&lookup_interface) {
-                imp.inject_default_methods(interface);
-            }
+        if let Statement::Impl(imp) = stmt
+            && let Some(interface) = imp.interface.and_then(&lookup_interface)
+        {
+            imp.inject_default_methods(interface);
         }
     }
 }

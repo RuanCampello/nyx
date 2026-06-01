@@ -265,10 +265,10 @@ impl<'s> LayoutEngine<'s> {
             offset += size;
         }
 
-        if repr.kind != StructReprKind::Packed {
-            if let Some(align) = repr.align {
-                struct_align = struct_align.max(align.get());
-            }
+        if repr.kind != StructReprKind::Packed
+            && let Some(align) = repr.align
+        {
+            struct_align = struct_align.max(align.get());
         }
 
         let size = align_to(offset, struct_align);

@@ -1,4 +1,3 @@
-use nyx;
 use std::{fs, path::Path, process::Command};
 
 struct Case<'c> {
@@ -72,7 +71,7 @@ fn run_module_tests() {
     for test in CASES {
         let entry = Path::new(test.entry);
 
-        let project = match project_name(&entry) {
+        let project = match project_name(entry) {
             Ok(name) => name,
             Err(err) => {
                 failed += 1;
@@ -82,7 +81,7 @@ fn run_module_tests() {
             },
         };
 
-        match compile_and_run(&entry, &project) {
+        match compile_and_run(entry, &project) {
             Ok(code) if code == test.exit_code => {
                 passed += 1;
                 println!("{}: exit code {}", test.name, code);

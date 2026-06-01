@@ -173,7 +173,7 @@ impl From<ModuleError> for Diagnostic {
                     ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::Diagnostic(_) => unreachable!(),
                 };
-                crate::diagnostic::AsDiagnostic::as_diagnostic(other, span)
+                crate::diagnostic::AsDiagnostic::into_diagnostic(other, span)
             },
         }
     }
@@ -190,12 +190,12 @@ fn resolve_std_root() -> PathBuf {
         return PathBuf::from(env);
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("std");
-            if candidate.is_dir() {
-                return candidate;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("std");
+        if candidate.is_dir() {
+            return candidate;
         }
     }
 

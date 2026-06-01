@@ -198,9 +198,8 @@ fn specialise<'hir>(
         scope.functions.insert(name, id);
     }
 
-    // TODO(advanced-generics): `in_std` is hard-coded `false` because templates do
-    // not currently record their origin module, a generic std helper that lowers a
-    // `syscall` would mis-resolve. Track the origin on the template when needed
+    // Generic templates currently do not record their origin module, so std-only
+    // lowering rules such as `syscall` must stay out of generic templates.
     let function =
         FunctionBuilder::new_instance(scope, symbols, id, &template, false, arena, env).lower()?;
 

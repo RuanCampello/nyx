@@ -195,11 +195,7 @@ const CASES: &[Case] = &[
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
-    let project = path
-        .file_stem()
-        .unwrap_or_else(|| path.as_os_str())
-        .to_string_lossy()
-        .to_string();
+    let project = path.file_stem().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
     let asm = nyx::compile_project(path, &project).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();

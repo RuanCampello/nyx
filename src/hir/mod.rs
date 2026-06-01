@@ -753,10 +753,10 @@ mod tests {
     fn type_inference_from_expr() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
-        let hir = super::lower(statements, &arena);
+        let hir = super::lower(statements, &arena).unwrap();
 
-        // TODO: exact assertion here of expected state
-        assert!(hir.is_ok())
+        let main = &hir.functions[0];
+        assert_eq!(main.locals[0].typ, Type::new(TypeKind::I32));
     }
 
     #[test]
@@ -858,7 +858,7 @@ mod tests {
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
         assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
-        assert_eq!(func.locals[0].mutable, true);
+        assert!(func.locals[0].mutable);
 
         let assign_id = match &func.body.statements[1] {
             Statement::Expr(expr) => *expr,
@@ -1298,9 +1298,7 @@ mod tests {
         }
         "#;
 
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena)
-            .err()
-            .expect("known bug");
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).expect_err("known bug");
         assert!(matches!(
             err.kind,
             HirErrorKind::InterfaceSignatureMismatch {

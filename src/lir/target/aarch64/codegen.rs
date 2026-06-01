@@ -498,7 +498,7 @@ impl Function<AArch64> {
                                     bytes,
                                     matches!(mt, MachineType::Float { .. }),
                                 );
-                                emit_store(out, &src, &stack_arg_addr, bytes);
+                                emit_store(out, src, &stack_arg_addr, bytes);
                             },
                             A64Operand::Label(label) => match mt {
                                 MachineType::Float { .. } => {
@@ -693,12 +693,7 @@ impl Function<AArch64> {
     }
 
     #[inline(always)]
-    fn operand<'s>(
-        &self,
-        alloc: &Allocation<AArch64>,
-        operand: &'s A64Operand,
-        bytes: &u8,
-    ) -> String {
+    fn operand(&self, alloc: &Allocation<AArch64>, operand: &A64Operand, bytes: &u8) -> String {
         match operand {
             A64Operand::VReg(vreg) => alloc.location(vreg, bytes),
             A64Operand::Imm(n) => format!("#{n}"),
@@ -746,13 +741,13 @@ fn emit_wide_immediate(out: &mut String, dest: &str, value: i64, bytes: u8) {
     let bits = value as u64;
 
     // for small non-negative values a single MOV is sufficient :D
-    if value >= 0 && value <= 0xFFFF {
+    if (0..=0xFFFF).contains(&value) {
         emit!(out, "mov     {dest}, #{value}");
         return;
     }
 
     // for small negative values in 32-bit context use MOVN
-    if bytes <= 4 && value < 0 && value >= -0x10000 {
+    if bytes <= 4 && (-0x10000..0).contains(&value) {
         let inverted = (!value as u64) & 0xFFFF;
         emit!(out, "movn    {dest}, #{inverted}");
         return;
@@ -882,7 +877,7 @@ fn emit_store_operand(
         A64Operand::VReg(vreg) => {
             let src = alloc.location(vreg, &bytes);
             let src = load_src_if_mem(out, &src, bytes, is_float);
-            emit_store(out, &src, dest, bytes);
+            emit_store(out, src, dest, bytes);
         },
         A64Operand::Imm(n) => {
             let scratch = A64Reg::X16.name(bytes);

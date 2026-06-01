@@ -182,27 +182,78 @@ pub enum RegClass {
     Float,
 }
 
+#[derive(Clone, Copy)]
+pub struct AggregateCopy {
+    pub src: VReg,
+    pub dest: VReg,
+    pub src_ref: bool,
+    pub dest_ref: bool,
+    pub src_base: i32,
+    pub dest_base: i32,
+    pub size: u32,
+}
+
+pub type CallArgMoves<T> = Vec<(VReg, <T as Target>::Reg)>;
+pub type StackArgs<T> = Vec<(<T as MemOps>::Operand, MachineType)>;
+pub type SyscallMoves<T> = Vec<(<T as MemOps>::Operand, <T as Target>::Reg, u8)>;
+pub type SyscallUses = Vec<VReg>;
+
 /// Copy an aggregate value between two memory locations, chunk by chunk
-#[rustfmt::skip]
 pub fn aggregate_copy<T: MemOps>(
     lir: &mut lir::Function<T>,
     block: &lir::BlockId,
-    is_src_ref: bool,
-    is_dest_ref: bool,
-    src: VReg,
-    dest: VReg,
-    src_base: i32,
-    dest_base: i32,
-    size: u32,
+    copy: AggregateCopy,
 ) {
-    for (offset, bytes) in lir::aggregate_chunks(size) {
+    for (offset, bytes) in lir::aggregate_chunks(copy.size) {
         let scratch = lir.new_vreg(MachineType::Int { bytes, signed: false });
 
-        let load = T::scalar_load(is_src_ref, scratch, src, src_base + offset, bytes, false, false);
+        let load = T::scalar_load(
+            copy.src_ref,
+            scratch,
+            copy.src,
+            copy.src_base + offset,
+            bytes,
+            false,
+            false,
+        );
         lir.push_instr(block, load);
 
-        let store = T::scalar_store(is_dest_ref, dest, T::vreg_operand(scratch), dest_base + offset, bytes, false);
+        let store = T::scalar_store(
+            copy.dest_ref,
+            copy.dest,
+            T::vreg_operand(scratch),
+            copy.dest_base + offset,
+            bytes,
+            false,
+        );
         lir.push_instr(block, store);
+    }
+}
+
+impl AggregateCopy {
+    #[inline(always)]
+    pub const fn new(src: VReg, dest: VReg, size: u32) -> Self {
+        Self {
+            src,
+            dest,
+            size,
+            src_ref: false,
+            dest_ref: false,
+            src_base: 0,
+            dest_base: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn with_dest_ref(mut self) -> Self {
+        self.dest_ref = true;
+        self
+    }
+
+    #[inline(always)]
+    pub const fn with_src_ref(mut self) -> Self {
+        self.src_ref = true;
+        self
     }
 }
 
@@ -382,7 +433,7 @@ where
         };
         let size = typ.machine_type(layouts).stack_size() as u32;
         let src_vreg = vreg_map(src.id);
-        aggregate_copy(lir, block, false, false, src_vreg, dest, 0, 0, size);
+        aggregate_copy(lir, block, AggregateCopy::new(src_vreg, dest, size));
         return None;
     }
 
@@ -404,7 +455,7 @@ pub fn prepare_call_args<T: TargetOps>(
     mut stack_addr: impl FnMut(&mut lir::Function<T>, &BlockId, VReg) -> VReg,
     mut int_idx: usize,
     mut float_idx: usize,
-) -> (Vec<(VReg, T::Reg)>, Vec<(T::Operand, MachineType)>)
+) -> (CallArgMoves<T>, StackArgs<T>)
 where
     T::Operand: TargetOperand,
 {
@@ -464,7 +515,7 @@ pub fn prepare_syscall_args<T: TargetOps>(
     args: &[Operand],
     layouts: Layouts,
     mut lower_operand_helper: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
-) -> (Vec<(T::Operand, T::Reg, u8)>, Vec<VReg>)
+) -> (SyscallMoves<T>, SyscallUses)
 where
     T::Operand: TargetOperand,
 {

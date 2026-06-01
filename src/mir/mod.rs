@@ -218,12 +218,12 @@ impl Const {
         }
     }
 
-    pub fn to_general_string(&self) -> String {
+    pub fn to_general_string(self) -> String {
         match self {
             Const::Int(n, _) => format!("${n}"),
             Const::Bool(b) => format!(
                 "${}",
-                if *b {
+                if b {
                     1
                 } else {
                     0
@@ -239,7 +239,7 @@ impl Const {
 impl std::fmt::Display for Const {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", self.to_general_string()),
+            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", (*self).to_general_string()),
             Const::Float(v, _) => write!(f, "{v:?}"),
             Const::Str { id, .. } => write!(f, "<str:{id}>"),
             Const::Unit => unreachable!(),

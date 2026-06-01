@@ -17,7 +17,7 @@ use crate::{
     lir::{
         self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
         target::{
-            self, Lowerable, MemOps, RegClass, Target,
+            self, AggregateCopy, Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
             aggregate_copy,
         },
@@ -356,13 +356,15 @@ impl<'f> Lower<'f> {
                     return aggregate_copy(
                         &mut self.lir,
                         id,
-                        matches!(src.typ().kind(), TypeKind::Ref { .. }),
-                        false,
-                        origin,
-                        dest,
-                        *offset as i32,
-                        0,
-                        size,
+                        AggregateCopy {
+                            src: origin,
+                            dest,
+                            src_ref: matches!(src.typ().kind(), TypeKind::Ref { .. }),
+                            dest_ref: false,
+                            src_base: *offset as i32,
+                            dest_base: 0,
+                            size,
+                        },
                     );
                 }
 
@@ -402,13 +404,15 @@ impl<'f> Lower<'f> {
                     return aggregate_copy(
                         &mut self.lir,
                         id,
-                        matches!(src.typ.kind(), TypeKind::Ref { .. }),
-                        matches!(typ.kind(), TypeKind::Ref { .. }),
-                        src_vreg,
-                        dest,
-                        0,
-                        offset,
-                        size,
+                        AggregateCopy {
+                            src: src_vreg,
+                            dest,
+                            src_ref: matches!(src.typ.kind(), TypeKind::Ref { .. }),
+                            dest_ref: matches!(typ.kind(), TypeKind::Ref { .. }),
+                            src_base: 0,
+                            dest_base: offset,
+                            size,
+                        },
                     );
                 }
 
@@ -553,7 +557,8 @@ impl<'f> Lower<'f> {
                     self.sret_ptr.expect("struct-returning function must have an sret pointer");
                 let src_vreg = self.value[place.id];
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
-                aggregate_copy(&mut self.lir, id, false, true, src_vreg, sret_ptr, 0, 0, size);
+                let copy = AggregateCopy::new(src_vreg, sret_ptr, size).with_dest_ref();
+                aggregate_copy(&mut self.lir, id, copy);
                 Term::Return(None)
             },
             T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
@@ -615,7 +620,9 @@ impl<'f> Lower<'f> {
 
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
                 let dest_vreg = self.value[*vid];
-                aggregate_copy(&mut self.lir, &entry, true, false, ptr, dest_vreg, 0, 0, size);
+                let copy = AggregateCopy::new(ptr, dest_vreg, size).with_src_ref();
+                aggregate_copy(&mut self.lir, &entry, copy);
+
                 int_idx += 1;
                 continue;
             }

@@ -30,7 +30,8 @@ impl<'src> Tokenize<'src> for CharLiteral {
             Some('\\') => {
                 let esc_pos = cursor.position();
                 cursor.advance(); // consume `\`
-                let escaped = match cursor.peek() {
+
+                match cursor.peek() {
                     Some('n') => {
                         cursor.advance();
                         '\n'
@@ -134,8 +135,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
                         let span = Span::new(start, cursor.position());
                         return Err(LexError::new(LexErrorKind::UnterminatedChar, span));
                     },
-                };
-                escaped
+                }
             },
 
             Some(c) => {

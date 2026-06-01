@@ -40,6 +40,15 @@ struct FunctionLower<'a, 'hir> {
     inlined_return_target: Option<(BlockId, Option<Place>)>,
 }
 
+struct InlineContext<'a> {
+    local_map: IndexVec<LocalId, ValueId>,
+    constant_locals: IndexVec<LocalId, Option<String>>,
+    runtime_local_uses: IndexVec<LocalId, bool>,
+    local_symbols: IndexVec<LocalId, usize>,
+    inlined_return_target: Option<(BlockId, Option<Place>)>,
+    typeck: &'a hir::TypeckResults,
+}
+
 pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
     debug_assert!(
         !hir.functions.iter().any(has_open_generic),
@@ -79,6 +88,13 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         struct_layouts: layouts.struct_summaries(),
         enum_layouts: layouts.enum_summaries(),
     })
+}
+
+const fn temp_value_type(typ: Type) -> Type {
+    match typ.kind() {
+        TypeKind::Unit | TypeKind::Never => Type::new(TypeKind::I32),
+        _ => typ,
+    }
 }
 
 impl<'a, 'hir> FunctionLower<'a, 'hir> {
@@ -198,7 +214,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             Stmt::Return(value) => {
-                let operand = value.as_ref().map(|e| self.lower_expr(*e)).transpose()?;
+                let operand = value.as_ref().map(|e| self.lower_expr(e)).transpose()?;
                 if let Some((exit_block_id, ret_place)) = self.inlined_return_target {
                     if let (Some(op), Some(dest)) = (operand, ret_place) {
                         self.emit(dest, InstructionKind::Assign(op));
@@ -210,7 +226,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             Stmt::If { condition, then_block, else_block } => {
-                let condition = self.lower_expr(*condition)?;
+                let condition = self.lower_expr(condition)?;
 
                 let then_id = self.new_block();
                 let else_id = self.new_block();
@@ -248,7 +264,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.terminate(Terminator::Jump(header_id));
 
                 self.switch_to(header_id);
-                let condition = self.lower_expr(*condition)?;
+                let condition = self.lower_expr(condition)?;
 
                 self.terminate(Terminator::Branch {
                     condition,
@@ -315,7 +331,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let operator = *operator;
                 let inner = *inner;
                 let rhs = self.lower_expr(inner)?;
-                let dest = self.fresh_temporary(typ.unwrap_unit());
+                let dest = self.fresh_temporary(temp_value_type(typ));
 
                 match operator {
                     UnaryOperator::Deref => {
@@ -365,7 +381,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 let lhs = self.lower_expr(left)?;
                 let rhs = self.lower_expr(right)?;
-                let dest = self.fresh_temporary(typ.unwrap_unit());
+                let dest = self.fresh_temporary(temp_value_type(typ));
 
                 let is_integer = typ.is_integer();
                 let is_arithmetic = matches!(
@@ -418,7 +434,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     hir::Res::Function(function) => {
                         let mut lowered_args = Vec::with_capacity(args.len());
                         for arg in *args {
-                            let operand = self.lower_expr(*arg)?;
+                            let operand = self.lower_expr(arg)?;
                             lowered_args.push(operand);
                         }
 
@@ -440,12 +456,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     .map(|p| p.typ)
                     .unwrap_or_else(|| self.typeck.type_of(receiver.id));
 
-                let place = self.lower_overloaded(&receiver, receiver_typ)?;
+                let place = self.lower_overloaded(receiver, receiver_typ)?;
 
                 let mut lowered_args = Vec::with_capacity(args.len() + 1);
                 lowered_args.push(Operand::Place(place));
                 for arg in *args {
-                    let operand = self.lower_expr(*arg)?;
+                    let operand = self.lower_expr(arg)?;
                     lowered_args.push(operand);
                 }
 
@@ -461,7 +477,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     Intrinsic::PrintLn | Intrinsic::Print => {
                         let mut output = String::new();
                         for arg in *args {
-                            self.push_print_arg(&mut output, *arg);
+                            self.push_print_arg(&mut output, arg);
                         }
 
                         if intrinsic == Intrinsic::PrintLn {
@@ -511,7 +527,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Syscall { code, args } => {
                 let code = *code;
                 let lowered_args =
-                    args.iter().map(|a| self.lower_expr(*a)).collect::<Result<Vec<_>, _>>()?;
+                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
                 let dest = self.fresh_temporary(typ);
 
                 self.emit(dest, Kind::Syscall { code, args: lowered_args, returns: true });
@@ -525,7 +541,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 for (sym, value) in *fields {
                     let layout = self.layouts.field(Type::new(TypeKind::Struct(id)), *sym);
-                    let value_operand = self.lower_expr(*value)?;
+                    let value_operand = self.lower_expr(value)?;
 
                     self.emit(
                         dest,
@@ -716,7 +732,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 (origin, 0, origin.typ)
             },
             ExpressionKind::Field { base, field } => {
-                let (origin, base_offset, base_type) = self.place_info(*base);
+                let (origin, base_offset, base_type) = self.place_info(base);
                 let layout = self.layouts.field(base_type, *field);
                 (origin, base_offset + layout.offset, layout.typ)
             },
@@ -828,7 +844,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let n = alternatives.len();
                 for (i, alt) in alternatives.iter().enumerate() {
                     self.select_block(check);
-                    let next = (i + 1 < n).then(|| self.new_block()).unwrap_or(fail_block);
+                    let next = if i + 1 < n {
+                        self.new_block()
+                    } else {
+                        fail_block
+                    };
                     self.lower_pattern_match(place, alt, success_block, next)?;
                     check = next;
                 }
@@ -1019,7 +1039,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline]
     fn intern_string(&mut self, value: &str) -> usize {
-        if let Some(id) = self.strings.iter().position(|existing| existing == &value) {
+        if let Some(id) = self.strings.iter().position(|existing| existing == value) {
             return id;
         }
 
@@ -1077,7 +1097,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         match callee.inline {
             true => self.inline_call(callee_id, lowered_args),
             _ => {
-                let dest = self.fresh_temporary(return_type.unwrap_unit());
+                let dest = self.fresh_temporary(temp_value_type(return_type));
 
                 self.emit(dest, InstructionKind::Call { callee: callee_id, args: lowered_args });
 
@@ -1091,8 +1111,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         callee_id: FunctionId,
         lowered_args: Vec<Operand>,
     ) -> Result<Operand, MirError> {
-        use std::mem::replace;
-
         let callee = self.functions_map.get(&callee_id).unwrap();
 
         let inline_ret_place = match callee.return_type.kind() != TypeKind::Unit {
@@ -1115,21 +1133,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             self.emit(dest_place, InstructionKind::Assign(arg_operand));
         }
 
-        // push the new context for lowering the callee
-        let old_local_map = replace(&mut self.local_map, callee_local_map);
-        let old_constant_locals =
-            replace(&mut self.constant_locals, IndexVec::from_elem(None, callee_n_locals));
-        let old_runtime_local_uses = replace(
-            &mut self.runtime_local_uses,
-            self.runtime_uses_map.get(&callee_id).cloned().unwrap(),
-        );
-        let old_local_symbols = replace(
-            &mut self.local_symbols,
-            callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
-        );
-        let old_inlined_return_target =
-            replace(&mut self.inlined_return_target, Some((exit_block_id, inline_ret_place)));
-        let old_typeck = replace(&mut self.typeck, &callee.typeck);
+        let old_context =
+            self.enter_inline_context(callee, callee_local_map, exit_block_id, inline_ret_place);
 
         self.lower_block(&callee.body)?;
 
@@ -1137,13 +1142,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             self.terminate(Terminator::Jump(exit_block_id));
         }
 
-        // restore the old context
-        self.local_map = old_local_map;
-        self.constant_locals = old_constant_locals;
-        self.runtime_local_uses = old_runtime_local_uses;
-        self.local_symbols = old_local_symbols;
-        self.inlined_return_target = old_inlined_return_target;
-        self.typeck = old_typeck;
+        self.restore_inline_context(old_context);
 
         self.switch_to(exit_block_id);
 
@@ -1152,6 +1151,48 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             None => Operand::Const(Const::Unit),
         };
         Ok(result)
+    }
+
+    fn enter_inline_context(
+        &mut self,
+        callee: &'a hir::Function<'hir>,
+        local_map: IndexVec<LocalId, ValueId>,
+        exit_block_id: BlockId,
+        return_place: Option<Place>,
+    ) -> InlineContext<'a> {
+        use std::mem::replace;
+
+        InlineContext {
+            local_map: replace(&mut self.local_map, local_map),
+            constant_locals: replace(
+                &mut self.constant_locals,
+                IndexVec::from_elem(None, callee.locals.len()),
+            ),
+            runtime_local_uses: replace(
+                &mut self.runtime_local_uses,
+                self.runtime_uses_map
+                    .get(&callee.id)
+                    .expect("runtime use map must contain inlined function")
+                    .clone(),
+            ),
+            local_symbols: replace(
+                &mut self.local_symbols,
+                callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
+            ),
+            inlined_return_target: self
+                .inlined_return_target
+                .replace((exit_block_id, return_place)),
+            typeck: replace(&mut self.typeck, &callee.typeck),
+        }
+    }
+
+    fn restore_inline_context(&mut self, context: InlineContext<'a>) {
+        self.local_map = context.local_map;
+        self.constant_locals = context.constant_locals;
+        self.runtime_local_uses = context.runtime_local_uses;
+        self.local_symbols = context.local_symbols;
+        self.inlined_return_target = context.inlined_return_target;
+        self.typeck = context.typeck;
     }
 
     #[inline(always)]
@@ -1189,20 +1230,20 @@ fn collect_runtime_local_uses(function: &hir::Function<'_>) -> IndexVec<LocalId,
 fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId, bool>) {
     for statement in block.statements {
         match statement {
-            Statement::LetInit { init, .. } => visit_expr_runtime_uses(*init, uses),
+            Statement::LetInit { init, .. } => visit_expr_runtime_uses(init, uses),
             Statement::LetUninit { .. } => {},
-            Statement::Expr(expr) => visit_expr_runtime_uses(*expr, uses),
-            Statement::Return(Some(expr)) => visit_expr_runtime_uses(*expr, uses),
+            Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
+            Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
             Statement::Return(None) => {},
             Statement::If { condition, then_block, else_block } => {
-                visit_expr_runtime_uses(*condition, uses);
+                visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(then_block, uses);
                 if let Some(else_block) = else_block {
                     visit_block_runtime_uses(else_block, uses);
                 }
             },
             hir::Statement::While { condition, body } => {
-                visit_expr_runtime_uses(*condition, uses);
+                visit_expr_runtime_uses(condition, uses);
                 visit_block_runtime_uses(body, uses);
             },
             Statement::Block(block) => visit_block_runtime_uses(block, uses),
@@ -1213,17 +1254,17 @@ fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId,
 fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
     match &expr.kind {
         ExpressionKind::Local(id) => uses[*id] = true,
-        ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(*inner, uses),
-        ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(*from, uses),
+        ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
+        ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(from, uses),
         ExpressionKind::Binary { left, right, .. } => {
-            visit_expr_runtime_uses(*left, uses);
-            visit_expr_runtime_uses(*right, uses);
+            visit_expr_runtime_uses(left, uses);
+            visit_expr_runtime_uses(right, uses);
         },
         ExpressionKind::Assign { target, value } => {
             if !matches!(&target.kind, ExpressionKind::Local(_)) {
-                visit_place_runtime_uses(*target, uses);
+                visit_place_runtime_uses(target, uses);
             }
-            visit_expr_runtime_uses(*value, uses);
+            visit_expr_runtime_uses(value, uses);
         },
         ExpressionKind::Struct { fields, .. } => {
             for &(_, value) in *fields {
@@ -1256,7 +1297,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         | ExpressionKind::Literal(_)
         | ExpressionKind::Path(_) => {},
         ExpressionKind::Match { scrutinee, arms } => {
-            visit_expr_runtime_uses(*scrutinee, uses);
+            visit_expr_runtime_uses(scrutinee, uses);
             for arm in *arms {
                 if let Some(guard) = arm.guard {
                     visit_expr_runtime_uses(guard, uses);

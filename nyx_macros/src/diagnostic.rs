@@ -137,7 +137,7 @@ fn generate_variant_arm(
 
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
-                crate::diagnostic::AsDiagnostic::as_diagnostic(#first_field, __span)
+                crate::diagnostic::AsDiagnostic::into_diagnostic(#first_field, __span)
             }
         });
     }
@@ -229,7 +229,7 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
     Ok(quote! {
         impl #impl_generics crate::diagnostic::AsDiagnostic for #enum_name #ty_generics #where_clause {
             #[allow(unused_variables, unused_assignments)]
-            fn as_diagnostic(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Diagnostic {
+            fn into_diagnostic(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Diagnostic {
                 use crate::diagnostic::{Builder, hi, PRIMARY, SECONDARY, HIGHLIGHT};
                 use ariadne::Fmt as _;
 

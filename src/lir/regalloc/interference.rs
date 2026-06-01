@@ -84,10 +84,10 @@ impl Interference {
         stack.push(id);
 
         for &neighbour in self.neighbours(&id) {
-            if !removed.contains(&neighbour) {
-                if let Some(d) = degree.get_mut(&neighbour) {
-                    *d = d.saturating_sub(1);
-                }
+            if !removed.contains(&neighbour)
+                && let Some(d) = degree.get_mut(&neighbour)
+            {
+                *d = d.saturating_sub(1);
             }
         }
     }

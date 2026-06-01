@@ -181,7 +181,7 @@ impl TargetArch {
     }
 
     #[inline(always)]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_name(s: &str) -> Option<Self> {
         match s {
             "x86_64" | "x86-64" => Some(Self::X86_64),
             "aarch64" | "arm64" => Some(Self::AArch64),

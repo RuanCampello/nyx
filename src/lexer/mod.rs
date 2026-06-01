@@ -190,7 +190,7 @@ impl<'src> Lexer<'src> {
                     self.cursor.advance(); // consume `/`
                     self.cursor.advance(); // consume `*`
 
-                    BlockComment { open_offset: offset as usize }.skip(&mut self.cursor)?;
+                    BlockComment { open_offset: offset }.skip(&mut self.cursor)?;
                 },
                 _ => break,
             }
@@ -218,9 +218,8 @@ impl<'src> Iterator for Lexer<'src> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
-            .map_err(|e| {
+            .inspect_err(|_e| {
                 self.finished = true;
-                e
             })
             .transpose()
     }

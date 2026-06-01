@@ -229,7 +229,7 @@ where
                     (None, None) => {
                         return Err(hir_error!(
                             statement.span,
-                            MissingInitialiser { name: statement.name.into() }
+                            MissingInitialiser { name: statement.name }
                         ));
                     },
                 };
@@ -429,7 +429,7 @@ where
                 let mut arms_copied = Vec::with_capacity(arms.len());
 
                 for arm in *arms {
-                    let pattern = self.splice_pattern(arm.pattern, const_typeck, span);
+                    let pattern = self.splice_pattern(arm.pattern);
                     let guard = arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
                     let body = self.splice_const(arm.body, const_typeck, span);
                     arms_copied.push(Arm {
@@ -460,24 +460,18 @@ where
         lowered
     }
 
-    fn splice_pattern(
-        &self,
-        pat: &Pattern<'hir>,
-        const_typeck: &TypeckResults,
-        span: Span,
-    ) -> Pattern<'hir> {
+    fn splice_pattern(&self, pat: &Pattern<'hir>) -> Pattern<'hir> {
         let kind = match &pat.kind {
             PatternKind::Wildcard => PatternKind::Wildcard,
             PatternKind::Literal(lit) => PatternKind::Literal(*lit),
             PatternKind::Binding(id) => PatternKind::Binding(*id),
             PatternKind::Or(pats) => {
-                let spliced: Vec<_> =
-                    pats.iter().map(|p| self.splice_pattern(p, const_typeck, span)).collect();
+                let spliced: Vec<_> = pats.iter().map(|p| self.splice_pattern(p)).collect();
                 PatternKind::Or(self.arena.alloc_slice_copy(&spliced))
             },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
                 let sub = sub.map(|s| {
-                    let spliced = self.splice_pattern(s, const_typeck, span);
+                    let spliced = self.splice_pattern(s);
                     &*self.arena.alloc(spliced)
                 });
                 PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub }
@@ -1453,8 +1447,7 @@ where
     /// against the lowered argument types. The resolved target id and the
     /// substitutions are recorded in the side-tables; `crate::hir::mono` later emits
     /// one specialised body per distinct `(function, type_args)`.
-
-    // TODO(advanced-generics): inference here only recovers a `GenericParam` that
+    // Current limitation: inference here only recovers a `GenericParam` that
     // appears *bare* (`T`) or directly under a reference (`&T`). It cannot see a
     // parameter buried inside a generic aggregate argument (`b: &Box<T>`), because
     // the name-mangling model erases `T` into a distinct concrete type (`Box$i32`
@@ -1466,7 +1459,7 @@ where
     // `Param(0) = i32`. The fix is the `Adt(id, GenericArgsId)`:
     // keep generic args *in* the type and unify structurally,
     // instead of materialising a fresh concrete def per instantiation. See the
-    // module-level TODO in `crate::hir::mono`
+    // matching note in `crate::hir::mono`.
     fn lower_generic_call(
         &mut self,
         function_id: FunctionId,
@@ -1728,7 +1721,6 @@ where
     }
 
     #[inline(always)]
-    #[must_use]
     fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'hir>> {
         match expected == found {
             true => Ok(()),
@@ -1823,7 +1815,7 @@ where
 
                 let satisfied = match concrete_type.kind() {
                     TypeKind::GenericParam(idx) => {
-                        current_generics.get(idx as usize).map_or(false, |param_bound| {
+                        current_generics.get(idx as usize).is_some_and(|param_bound| {
                             param_bound.bounds.iter().any(|b| {
                                 let name = match b.value_ref() {
                                     statement::Type::Named(n) => n,

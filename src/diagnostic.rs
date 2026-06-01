@@ -18,7 +18,7 @@ pub(crate) fn hi(s: impl std::fmt::Display) -> impl std::fmt::Display {
 }
 
 thread_local! {
-    static SOURCE: RefCell<(String, String)> = RefCell::new((String::new(), String::new()));
+    static SOURCE: RefCell<(String, String)> = const { RefCell::new((String::new(), String::new())) };
 }
 
 pub fn initialise(src: &str, filename: &str) {
@@ -120,42 +120,42 @@ impl Builder {
 }
 
 pub trait AsDiagnostic {
-    fn as_diagnostic(self, span: Span) -> Diagnostic;
+    fn into_diagnostic(self, span: Span) -> Diagnostic;
 }
 
 impl AsDiagnostic for Diagnostic {
-    fn as_diagnostic(self, _span: Span) -> Diagnostic {
+    fn into_diagnostic(self, _span: Span) -> Diagnostic {
         self
     }
 }
 
 impl<'src> AsDiagnostic for LexError<'src> {
-    fn as_diagnostic(self, _span: Span) -> Diagnostic {
-        self.kind.as_diagnostic(self.span)
+    fn into_diagnostic(self, _span: Span) -> Diagnostic {
+        self.kind.into_diagnostic(self.span)
     }
 }
 
 impl<'src> From<LexError<'src>> for Diagnostic {
     fn from(e: LexError<'src>) -> Self {
-        e.as_diagnostic(Span::default())
+        e.into_diagnostic(Span::default())
     }
 }
 
 impl<'i> AsDiagnostic for ParserError<'i> {
-    fn as_diagnostic(self, _span: Span) -> Diagnostic {
-        self.kind.as_diagnostic(self.span)
+    fn into_diagnostic(self, _span: Span) -> Diagnostic {
+        self.kind.into_diagnostic(self.span)
     }
 }
 
 impl<'i> From<ParserError<'i>> for Diagnostic {
     fn from(e: ParserError<'i>) -> Self {
-        e.as_diagnostic(Span::default())
+        e.into_diagnostic(Span::default())
     }
 }
 
 impl<'h> From<HirError<'h>> for Diagnostic {
     fn from(e: HirError<'h>) -> Self {
-        e.kind.as_diagnostic(e.span)
+        e.kind.into_diagnostic(e.span)
     }
 }
 

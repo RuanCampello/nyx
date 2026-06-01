@@ -267,10 +267,7 @@ impl<'hir> Scope<'hir> {
                 || self.generic_enums.contains_key(&symbol)
                 || declarations.structs.iter().any(|s| s.name == enum_decl.name)
             {
-                return Err(hir_error!(
-                    enum_decl.span,
-                    DuplicateEnum { name: enum_decl.name }
-                ));
+                return Err(hir_error!(enum_decl.span, DuplicateEnum { name: enum_decl.name }));
             }
 
             if !enum_decl.generics.is_empty() {
@@ -300,10 +297,7 @@ impl<'hir> Scope<'hir> {
             for variant in &enum_decl.variants {
                 let variant_symbol = symbols.insert(variant.name);
                 if !seen.insert(variant_symbol) {
-                    return Err(hir_error!(
-                        variant.span,
-                        DuplicateVariant { name: variant.name }
-                    ));
+                    return Err(hir_error!(variant.span, DuplicateVariant { name: variant.name }));
                 }
 
                 let value = variant.value.unwrap_or(next_value);
@@ -403,10 +397,7 @@ impl<'hir> Scope<'hir> {
 
             let symbol = symbols.insert(&self.mangler.item(function.name));
             if self.functions.contains_key(&symbol) {
-                return Err(hir_error!(
-                    function.span,
-                    DuplicateFunction { name: function.name }
-                ));
+                return Err(hir_error!(function.span, DuplicateFunction { name: function.name }));
             }
 
             if !function.generics.is_empty() {
@@ -522,7 +513,7 @@ impl<'hir> Scope<'hir> {
                     }
 
                     let symbol = symbols.insert(implementation.name);
-                    self.nominal_type(symbol).ok_or_else(|| HirError {
+                    self.nominal_type(symbol).ok_or(HirError {
                         kind: HirErrorKind::UnknownType { name: implementation.name },
                         span: implementation.span,
                     })?
@@ -581,13 +572,7 @@ impl<'hir> Scope<'hir> {
                             impl_env_ref,
                         )?;
 
-                        // FIXME: that's hardcoded af
-                        // we can do it better but let it be
-                        let intrinsic =
-                            match in_std && implementation.name == "str" && method.name == "len" {
-                                true => Some(Intrinsic::Len),
-                                _ => None,
-                            };
+                        let intrinsic = intrinsic_method(in_std, implementation.name, method.name);
 
                         let kind = match intrinsic {
                             Some(i) => FunctionKind::Intrinsic(i),
@@ -609,10 +594,9 @@ impl<'hir> Scope<'hir> {
 
                     None => {
                         if self.functions.contains_key(&mangled) {
-                            let name = self.arena.alloc_str(&format!(
-                                "{}::{}",
-                                implementation.name, method.name
-                            ));
+                            let name = self
+                                .arena
+                                .alloc_str(&format!("{}::{}", implementation.name, method.name));
                             return Err(hir_error!(method.span, DuplicateFunction { name }));
                         }
 
@@ -716,11 +700,10 @@ impl<'hir> Scope<'hir> {
 
         match (function.receiver, impl_type) {
             (Some(_), Some(impl_type)) => {
-                let receiver_type =
-                    self.lookup_named_type(impl_type, symbols).ok_or_else(|| HirError {
-                        kind: HirErrorKind::UnknownType { name: impl_type },
-                        span: function.span,
-                    })?;
+                let receiver_type = self.lookup_named_type(impl_type, symbols).ok_or(HirError {
+                    kind: HirErrorKind::UnknownType { name: impl_type },
+                    span: function.span,
+                })?;
 
                 let method_symbol = symbols.insert(function.name);
                 self.methods
@@ -732,24 +715,16 @@ impl<'hir> Scope<'hir> {
                     })
             },
 
-            (Some(_), None) => Err(HirError {
-                kind: error_kind(function.name),
-                span: function.span,
-            }),
+            (Some(_), None) => {
+                Err(HirError { kind: error_kind(function.name), span: function.span })
+            },
 
             (None, Some(impl_type)) => self
                 .resolve_qualified_call(impl_type, function.name, symbols)
-                .ok_or_else(|| HirError {
-                    kind: error_kind(function.name),
-                    span: function.span,
-                }),
-            (None, None) => {
-                self.resolve_function(symbols, |m| m.item(function.name))
-                    .ok_or_else(|| HirError {
-                        kind: error_kind(function.name),
-                        span: function.span,
-                    })
-            },
+                .ok_or_else(|| HirError { kind: error_kind(function.name), span: function.span }),
+            (None, None) => self
+                .resolve_function(symbols, |m| m.item(function.name))
+                .ok_or_else(|| HirError { kind: error_kind(function.name), span: function.span }),
         }
     }
 
@@ -808,10 +783,10 @@ impl<'hir> Scope<'hir> {
     {
         match typ {
             statement::Type::Named(name) => {
-                if let Some(env) = env {
-                    if let Some(&t) = env.get(*name) {
-                        return Ok(t);
-                    }
+                if let Some(env) = env
+                    && let Some(&t) = env.get(*name)
+                {
+                    return Ok(t);
                 }
                 symbols
                     .get_id(name)
@@ -936,18 +911,20 @@ impl<'hir> Scope<'hir> {
         for variant in &template.variants {
             let variant_symbol = symbols.insert(variant.name);
             if !seen.insert(variant_symbol) {
-                return Err(hir_error!(
-                    variant.span,
-                    DuplicateVariant { name: variant.name }
-                ));
+                return Err(hir_error!(variant.span, DuplicateVariant { name: variant.name }));
             }
 
             let value = variant.value.unwrap_or(next_value);
             next_value = value + 1;
 
             let payload = match &variant.payload {
-                Some(typ) =>
-                    Some(self.resolve_type(typ.value_ref(), typ.span(), symbols, None, Some(&env))?),
+                Some(typ) => Some(self.resolve_type(
+                    typ.value_ref(),
+                    typ.span(),
+                    symbols,
+                    None,
+                    Some(&env),
+                )?),
                 None => None,
             };
 
@@ -975,7 +952,12 @@ impl<'hir> Scope<'hir> {
 
         let id = StructId(self.structs.len() as u32);
         self.struct_map.insert(mangled_sym, id);
-        self.structs.push(Struct { id, name: mangled_sym, fields: Vec::new(), repr: template.repr });
+        self.structs.push(Struct {
+            id,
+            name: mangled_sym,
+            fields: Vec::new(),
+            repr: template.repr,
+        });
 
         let env = build_substitution(&template.generics, args);
         let fields = template
@@ -1025,14 +1007,11 @@ impl<'hir> Scope<'hir> {
                 let satisfied = matches!(concrete_type.kind(), TypeKind::GenericParam(_))
                     || symbols
                         .get_id(interface_name)
-                        .map_or(false, |sym| self.interface_impls.contains(&(concrete_type, sym)));
+                        .is_some_and(|sym| self.interface_impls.contains(&(concrete_type, sym)));
                 if !satisfied {
                     return Err(hir_error!(
                         span,
-                        UnsatisfiedBound {
-                            type_name: concrete_type,
-                            bound_name: interface_name,
-                        }
+                        UnsatisfiedBound { type_name: concrete_type, bound_name: interface_name }
                     ));
                 }
             }
@@ -1066,7 +1045,11 @@ impl<'hir> Scope<'hir> {
                 let method_symbol = symbols.insert(method.name);
                 let receiver_name = symbols.get(mangled_sym);
                 let mangled = match implementation.interface {
-                    Some(iface) => symbols.insert(&self.mangler.interface_item(receiver_name, iface, method.name)),
+                    Some(iface) => symbols.insert(&self.mangler.interface_item(
+                        receiver_name,
+                        iface,
+                        method.name,
+                    )),
                     None => symbols.insert(&self.mangler.scoped_item(receiver_name, method.name)),
                 };
 
@@ -1232,10 +1215,10 @@ impl<'hir> Scope<'hir> {
         name: &str,
         symbols: &SymbolTable,
     ) -> Option<FunctionId> {
-        if let Some(qualifier) = qualifier {
-            if let Some(id) = self.resolve_qualified_call(qualifier, name, symbols) {
-                return Some(id);
-            }
+        if let Some(qualifier) = qualifier
+            && let Some(id) = self.resolve_qualified_call(qualifier, name, symbols)
+        {
+            return Some(id);
         }
 
         self.resolve_function(symbols, |m| m.item(name))
@@ -1336,6 +1319,13 @@ fn build_impl_substitution(
             _ => None,
         })
         .collect()
+}
+
+fn intrinsic_method(in_std: bool, receiver: &str, method: &str) -> Option<Intrinsic> {
+    match (in_std, receiver, method) {
+        (true, "str", "len") => Some(Intrinsic::Len),
+        _ => None,
+    }
 }
 
 pub(in crate::hir) fn generic_param_env(
