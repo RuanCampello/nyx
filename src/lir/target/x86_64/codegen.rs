@@ -265,7 +265,14 @@ impl Function<X86_64> {
 
                 let suffix = typed_suffix(bytes, *is_float);
 
-                emit!(out, "mov{suffix}    {offset}(%rbp), {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        let scratch = scratch_register(*bytes, *is_float);
+                        emit!(out, "mov{suffix}    {offset}(%rbp), {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {dest}");
+                    },
+                    false => emit!(out, "mov{suffix}    {offset}(%rbp), {dest}"),
+                }
             },
 
             Inst::FieldStore { origin, src, offset, bytes, is_float } => {
@@ -814,6 +821,20 @@ const fn typed_suffix<'s>(bytes: &u8, is_float: bool) -> &'s str {
     match is_float {
         true => float_suffix(bytes),
         false => suffix(bytes),
+    }
+}
+
+#[inline(always)]
+const fn scratch_register<'r>(bytes: u8, is_float: bool) -> &'r str {
+    if is_float {
+        return "%xmm15";
+    }
+
+    match bytes {
+        1 => "%r11b",
+        2 => "%r11w",
+        4 => "%r11d",
+        _ => "%r11",
     }
 }
 

@@ -47,7 +47,7 @@
 //! functions whose parameters are scalars/references
 
 use crate::hir::{
-    Function, FunctionId, FunctionKind, Type,
+    Function, FunctionId, FunctionKind, Res, Type,
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
@@ -103,12 +103,14 @@ pub(in crate::hir) fn monomorphise<'hir>(
 impl Collector {
     fn collect(&mut self, function: &Function<'_>, scope: &Scope<'_>) {
         for (&expr, &callee) in &function.typeck.type_dependent_defs {
+            let Res::Function(callee) = callee else {
+                continue;
+            };
             if !scope.generic_fns.contains_key(&callee) {
                 continue;
             }
 
-            let args =
-                function.typeck.type_dependent_substs.get(&expr).cloned().unwrap_or_default();
+            let args = function.typeck.node_args.get(&expr).cloned().unwrap_or_default();
             self.worklist.push((callee, args));
         }
     }
@@ -118,16 +120,20 @@ impl Collector {
             .typeck
             .type_dependent_defs
             .iter()
-            .filter(|(_, callee)| scope.generic_fns.contains_key(callee))
             .filter_map(|(&expr, &callee)| {
-                let args =
-                    function.typeck.type_dependent_substs.get(&expr).cloned().unwrap_or_default();
+                let Res::Function(callee) = callee else {
+                    return None;
+                };
+                if !scope.generic_fns.contains_key(&callee) {
+                    return None;
+                }
+                let args = function.typeck.node_args.get(&expr).cloned().unwrap_or_default();
                 self.instances.get(&(callee, args)).map(|&id| (expr, id))
             })
             .collect();
 
         for (expr, id) in updates {
-            function.typeck.type_dependent_defs.insert(expr, id);
+            function.typeck.type_dependent_defs.insert(expr, Res::Function(id));
         }
     }
 }

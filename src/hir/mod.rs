@@ -109,14 +109,22 @@ pub struct Expression<'hir> {
     pub(crate) span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Res {
+    /// A free function, method, or operator-overload target
+    Function(FunctionId),
+    /// An enum variant constructor (e.g. `Optional::Some(x)`)
+    Variant { id: EnumId, index: usize },
+}
+
 /// Type-checking results for a body, keyed by [`ExprId`]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypeckResults {
     node_types: IndexVec<ExprId, Type>,
-    /// Resolved call/method targets, keyed by the call expression's id
-    type_dependent_defs: HashMap<ExprId, FunctionId>,
-    /// Concrete generic substitutions (turbofish) for a call, keyed by its id
-    type_dependent_substs: HashMap<ExprId, Vec<Type>>,
+    /// What each call/method expression resolved to, keyed by the call expression's id
+    type_dependent_defs: HashMap<ExprId, Res>,
+    /// Generic arguments applied at a node
+    node_args: HashMap<ExprId, Vec<Type>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,13 +377,24 @@ impl TypeckResults {
     }
 
     #[inline(always)]
-    pub(crate) fn type_dependent_def(&self, id: ExprId) -> Option<FunctionId> {
+    pub(crate) fn type_dependent_def(&self, id: ExprId) -> Option<Res> {
         self.type_dependent_defs.get(&id).copied()
     }
 
     #[inline(always)]
-    pub(crate) fn type_dependent_substs(&self, id: ExprId) -> Option<&[Type]> {
-        self.type_dependent_substs.get(&id).map(Vec::as_slice)
+    pub(crate) fn node_args(&self, id: ExprId) -> Option<&[Type]> {
+        self.node_args.get(&id).map(Vec::as_slice)
+    }
+}
+
+impl Res {
+    /// The resolved function, if this is not a variant constructor.
+    #[inline(always)]
+    pub(crate) fn function(self) -> Option<FunctionId> {
+        match self {
+            Res::Function(id) => Some(id),
+            Res::Variant { .. } => None,
+        }
     }
 }
 
@@ -1621,7 +1640,7 @@ mod tests {
             other => panic!("expected return, got {other:?}"),
         };
         assert!(matches!(call.kind, ExpressionKind::Call { .. }));
-        assert_eq!(main.typeck.type_dependent_def(call.id), Some(pick.id));
+        assert_eq!(main.typeck.type_dependent_def(call.id), Some(Res::Function(pick.id)));
     }
 
     #[test]

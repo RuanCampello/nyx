@@ -2,7 +2,7 @@ use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
         Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
-        RefTargetKind, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
+        RefTargetKind, Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
         TypeKind, TypeckResults,
         error::{ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
@@ -279,6 +279,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
                 Ok(match tail_ret {
+                    // a diverging tail expression (an `exit()`/`panic()` returning
+                    // `!`) produces no value: it needs no `return` wrapper and no
+                    // type assertion, the block simply diverges
+                    true if expr.typ.diverges() => (Statement::Expr(expr.expr), true),
                     true => {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         (Statement::Return(Some(expr.expr)), true)
@@ -442,13 +446,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let typ = const_typeck.type_of(expr.id);
         let lowered = self.alloc(kind, typ, span);
 
-        // carry over the resolved call target / substitutions for spliced calls
+        // carry over the resolved call target / generic args for spliced calls
         const_typeck
             .type_dependent_def(expr.id)
             .and_then(|def| self.typeck.type_dependent_defs.insert(lowered.expr.id, def));
-        const_typeck.type_dependent_substs(expr.id).and_then(|substs| {
-            self.typeck.type_dependent_substs.insert(lowered.expr.id, substs.to_vec())
-        });
+        const_typeck
+            .node_args(expr.id)
+            .and_then(|args| self.typeck.node_args.insert(lowered.expr.id, args.to_vec()));
 
         lowered
     }
@@ -736,6 +740,29 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 };
                 let right = self.lower_expr(right, right_hint)?;
 
+                if let Some(method) = operator.overload_method() {
+                    let receiver = left.typ.strip_reference();
+                    if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
+                        let method_symbol = self.symbols.insert(method);
+                        if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
+                        {
+                            let lowered = self.alloc(
+                                ExpressionKind::Binary {
+                                    operator: *operator,
+                                    left: left.expr,
+                                    right: right.expr,
+                                },
+                                Type::new(TypeKind::Bool),
+                                *span,
+                            );
+                            self.typeck
+                                .type_dependent_defs
+                                .insert(lowered.expr.id, Res::Function(function));
+                            return Ok(lowered);
+                        }
+                    }
+                }
+
                 // PERFORMANCE: constant fold binary operator on literals
                 let result = self.type_for_binary(operator, left.typ, right.typ, *span)?;
 
@@ -943,9 +970,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         return_type,
                         *span,
                     );
-                    self.typeck.type_dependent_defs.insert(lowered.expr.id, function);
+                    self.typeck
+                        .type_dependent_defs
+                        .insert(lowered.expr.id, Res::Function(function));
                     if !substs.is_empty() {
-                        self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+                        self.typeck.node_args.insert(lowered.expr.id, substs);
                     }
 
                     return Ok(lowered);
@@ -973,6 +1002,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             },
 
             Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
+                // `Enum::Variant(payload)` constructs a tagged-union value
+                if let Some(lowered) = self.lower_variant(qualifier, name, args, hint, *span)? {
+                    return Ok(lowered);
+                }
+
                 let id = self
                     .scope
                     .resolve_function_call(Some(qualifier), name, self.symbols)
@@ -1127,8 +1161,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let enum_def = &self.scope[id];
 
                 if let Some(qualifier) = qualifier {
+                    // the scrutinee type pins the concrete enum `id`; the qualifier
+                    // must name either that concrete enum or — for a generic enum —
+                    // its template base (`Optional` for `Optional$Ordering`)
                     let enum_symbol = self.symbols.insert(qualifier);
-                    if self.scope.enum_map.get(&enum_symbol).copied() != Some(id) {
+                    let matches = self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
+                        || self.scope.generic_enums.contains_key(&enum_symbol);
+                    if !matches {
                         return Err(hir_error!(
                             span,
                             UnknownType { name: format!("{}::{}", qualifier, name) }
@@ -1283,9 +1322,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let lowered =
             self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
 
-        self.typeck.type_dependent_defs.insert(lowered.expr.id, function_id);
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
         if !substs.is_empty() {
-            self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+            self.typeck.node_args.insert(lowered.expr.id, substs);
         }
 
         Ok(lowered)
@@ -1313,6 +1354,76 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             .iter()
             .map(|t| resolve_annotation(&ctx, &t.value(), t.span()))
             .collect()
+    }
+
+    /// Try to lower `Qualifier::Name(args)` as an enum variant constructor. Returns
+    /// `None` if `Qualifier` is not an enum (so the caller falls back to a function
+    /// call). For a generic enum, the concrete instantiation comes from `hint`.
+    fn lower_variant(
+        &mut self,
+        qualifier: &str,
+        name: &str,
+        args: &[expression::Expression<'src>],
+        hint: Option<Type>,
+        span: Span,
+    ) -> Result<Option<Lowered<'hir>>, HirError<'src>> {
+        let qualifier_symbol = self.symbols.insert(qualifier);
+        let enum_id = match self.scope.enum_map.get(&qualifier_symbol).copied() {
+            Some(id) => id,
+            // a generic enum (`Optional`) takes its instantiation from the hint
+            None if self.scope.generic_enums.contains_key(&qualifier_symbol) => {
+                match hint.map(|typ| typ.kind()) {
+                    Some(TypeKind::Enum(id)) => id,
+                    _ => return Ok(None),
+                }
+            },
+            None => return Ok(None),
+        };
+
+        let variant_symbol = self.symbols.insert(name);
+        let (index, payload_type) = {
+            let enum_def = &self.scope.enums[enum_id];
+            match enum_def.variants.iter().position(|v| v.name == variant_symbol) {
+                Some(index) => (index, enum_def.variants[index].payload),
+                None => return Ok(None),
+            }
+        };
+
+        let payload = match (payload_type, args.first()) {
+            (Some(payload_type), Some(arg)) => {
+                let lowered = self.lower_expr(arg, Some(payload_type))?;
+                self.assert_type(payload_type, lowered.typ, lowered.span)?;
+                Some(lowered.expr)
+            },
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(hir_error!(
+                    span,
+                    ArityMismatch { name: name.to_string(), expected: 1, found: 0 }
+                ));
+            },
+            (None, Some(_)) => {
+                return Err(hir_error!(
+                    span,
+                    ArityMismatch { name: name.to_string(), expected: 0, found: args.len() }
+                ));
+            },
+        };
+
+        // modelled like rustc: a structural `Call(Path, args)`, with the resolved
+        // constructor recorded in the side-table for MIR to pick up
+        let callee = self.alloc(ExpressionKind::Path(variant_symbol), Type::default(), span).expr;
+        let arguments: &[&Expression] = match payload {
+            Some(payload) => self.arena.alloc_slice_copy(&[payload]),
+            None => &[],
+        };
+        let typ = Type::new(TypeKind::Enum(enum_id));
+        let lowered = self.alloc(ExpressionKind::Call { callee, args: arguments }, typ, span);
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Variant { id: enum_id, index });
+
+        Ok(Some(lowered))
     }
 
     /// Lower a call to a generic free function (a template with an open,
@@ -1378,8 +1489,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let lowered =
             self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
 
-        self.typeck.type_dependent_defs.insert(lowered.expr.id, function_id);
-        self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
+        self.typeck.node_args.insert(lowered.expr.id, substs);
 
         Ok(lowered)
     }
@@ -1666,6 +1779,21 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     #[inline(always)]
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+}
+
+impl BinaryOperator {
+    #[inline(always)]
+    const fn overload_method<'op>(&self) -> Option<&'op str> {
+        Some(match self {
+            BinaryOperator::Eq => "eq",
+            BinaryOperator::Ne => "ne",
+            BinaryOperator::Lt => "lt",
+            BinaryOperator::LtEq => "le",
+            BinaryOperator::Gt => "gt",
+            BinaryOperator::GtEq => "ge",
+            _ => return None,
+        })
     }
 }
 
