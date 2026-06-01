@@ -24,7 +24,7 @@ use std::{
 };
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
-    scope: &'s Scope<'hir>,
+    scope: &'s mut Scope<'hir>,
     locals: IndexVec<LocalId, Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -55,9 +55,12 @@ pub(in crate::hir) struct Lowered<'hir> {
     span: Span,
 }
 
-impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
+impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
+where
+    'src: 'hir,
+{
     pub fn new(
-        scope: &'s Scope<'hir>,
+        scope: &'s mut Scope<'hir>,
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
@@ -88,7 +91,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     pub fn new_instance(
-        scope: &'s Scope<'hir>,
+        scope: &'s mut Scope<'hir>,
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
@@ -102,7 +105,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     pub fn new_for_const(
-        scope: &'s Scope<'hir>,
+        scope: &'s mut Scope<'hir>,
         symbols: &'s mut SymbolTable,
         in_std: bool,
         arena: &'hir bumpalo::Bump,
@@ -139,17 +142,17 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     #[inline(always)]
-    pub fn lower(mut self) -> Result<Function<'hir>, HirError<'src>> {
+    pub fn lower(mut self) -> Result<Function<'hir>, HirError<'hir>> {
         let function = self.function.take().expect("function to be present");
         let id = self.function_id;
-        let signatures = &self.scope.signatures[id];
-        let symbol = signatures.name;
-        self.return_type = signatures.return_type;
+        let signature = self.scope.signatures[id].clone();
+        let symbol = signature.name;
+        self.return_type = signature.return_type;
 
-        let mut params = Vec::with_capacity(signatures.params.len());
+        let mut params = Vec::with_capacity(signature.params.len());
 
         if let Some(receiver) = function.receiver {
-            let typ = signatures.receiver_type().expect("receiver in AST without one in signature");
+            let typ = signature.receiver_type().expect("receiver in AST without one in signature");
             let symbol = self.symbols.insert("self");
             let id = self.declare_local(symbol, typ, receiver.mutable)?;
             params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
@@ -159,7 +162,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             function
                 .params
                 .iter()
-                .zip(signatures.explicit_params().iter())
+                .zip(signature.explicit_params().iter())
                 .map(|(parameter, &typ)| -> Result<_, HirError> {
                     let symbol = self.symbols.insert(parameter.name);
                     let id = self.declare_local(symbol, typ, parameter.mutable)?;
@@ -176,11 +179,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             name: symbol,
             params,
             locals: self.locals,
-            return_type: signatures.return_type,
+            return_type: signature.return_type,
             is_const: function.is_const,
             is_pub: function.is_pub,
             inline: function.inline,
-            kind: signatures.kind,
+            kind: signature.kind,
             typeck: self.typeck,
             body,
         })
@@ -190,7 +193,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         block: &statement::Block<'src>,
         is_tail: bool,
-    ) -> Result<(Block<'hir>, bool), HirError<'src>> {
+    ) -> Result<(Block<'hir>, bool), HirError<'hir>> {
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
@@ -215,7 +218,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         statement: &statement::Statement<'src>,
         is_tail: bool,
-    ) -> Result<(Statement<'hir>, bool), HirError<'src>> {
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         use statement::Statement as Stmt;
 
         match statement {
@@ -320,9 +323,9 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
     fn lower_identifier(
         &mut self,
-        name: &str,
+        name: &'src str,
         span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         if let Some(id) = self.local_id(name) {
             return Ok(self.local_expr(id, span));
         }
@@ -336,7 +339,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let symbol = self
             .symbols
             .get_id(name)
-            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
+            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name }))?;
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
@@ -529,7 +532,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         expr: &expression::Expression<'src>,
         hint: Option<Type>,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         use expression::Expression as Expr;
 
         match expr {
@@ -578,8 +581,6 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
-                let lowered_expr = lowered_expr;
-
                 Ok(self.alloc(
                     ExpressionKind::Cast { from: lowered_expr.expr, to: target },
                     target,
@@ -603,22 +604,20 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 }
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
+                let qualified = self.arena.alloc_str(&format!("{qualifier}::{name}"));
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
                         return Err(hir_error!(
                             *span,
-                            UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
+                            UndeclaredIdentifier { name: qualified }
                         ));
                     },
                 };
 
-                let Some(c) = self.scope.constants.get(&symbol) else {
-                    return Err(hir_error!(
-                        *span,
-                        UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
-                    ));
-                };
+                let c = self.scope.constants.get(&symbol).cloned().ok_or_else(|| {
+                    hir_error!(*span, UndeclaredIdentifier { name: qualified })
+                })?;
 
                 Ok(self.splice_const(c.value, &c.typeck, *span))
             },
@@ -744,6 +743,18 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     let receiver = left.typ.strip_reference();
                     if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
                         let method_symbol = self.symbols.insert(method);
+                        println!("DEBUG: receiver={:?}, method={}", receiver, method);
+                        for ((recv, sym), id) in &self.scope.methods {
+                            if recv.to_string() == receiver.to_string() {
+                                let sig = &self.scope.signatures[*id];
+                                println!(
+                                    "  method in scope: {} (mangled: {}) -> {:?}",
+                                    self.symbols.get(*sym),
+                                    self.symbols.get(sig.name),
+                                    id
+                                );
+                            }
+                        }
                         if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
                         {
                             let lowered = self.alloc(
@@ -789,10 +800,8 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         _ => span,
                     };
 
-                    return Err(hir_error!(
-                        *err_span,
-                        ImmutableBind { name: self.symbols.get(self[local].name).to_string() }
-                    ));
+                    let name = self.arena.alloc_str(self.symbols.get(self[local].name));
+                    return Err(hir_error!(*err_span, ImmutableBind { name }));
                 }
 
                 let value = self.lower_expr(value, Some(target_lowered.typ))?;
@@ -806,17 +815,35 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 ))
             },
 
-            Expr::Struct { name, fields, span, type_args: _ } => {
-                let symbol = self.symbols.insert(name);
-                let id = self
-                    .scope
-                    .struct_map
-                    .get(&symbol)
-                    .copied()
-                    .ok_or_else(|| hir_error!(*span, UnknownType { name: name.to_string() }))?;
+            Expr::Struct { name, fields, span, type_args } => {
+                let id = if !type_args.is_empty() {
+                    let mut resolved = Vec::with_capacity(type_args.len());
+                    for arg in type_args {
+                        resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                    }
+                    let struct_sym = self.symbols.insert(name);
+                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, *span)?;
+                    }
+                    let typ = self
+                        .scope
+                        .instantiate_generic(name, &resolved, *span, self.symbols)?;
+                    match typ.kind() {
+                        TypeKind::Struct(id) => id,
+                        _ => return Err(hir_error!(*span, UnknownType { name })),
+                    }
+                } else {
+                    let symbol = self.symbols.insert(name);
+                    self.scope
+                        .struct_map
+                        .get(&symbol)
+                        .copied()
+                        .ok_or_else(|| hir_error!(*span, UnknownType { name }))?
+                };
 
-                let definition = &self.scope[id];
-                let struct_name = self.symbols.get(definition.name).to_string();
+                let definition_name = self.scope[id].name;
+                let struct_name = self.arena.alloc_str(self.symbols.get(definition_name));
+                let definition_fields = self.scope[id].fields.clone();
 
                 let mut seen = HashSet::with_capacity(fields.len());
                 let mut lowered = Vec::with_capacity(fields.len());
@@ -826,15 +853,15 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     if !seen.insert(field_symbol) {
                         return Err(hir_error!(
                             field.span,
-                            DuplicateField { name: field.name.to_string() }
+                            DuplicateField { name: field.name }
                         ));
                     }
 
-                    let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
+                    let Some(expected) = definition_fields.iter().find(|f| f.name == field_symbol)
                     else {
                         return Err(hir_error!(
                             field.span,
-                            UnknownField { struct_name, field: field.name.to_string() }
+                            UnknownField { struct_name, field: field.name }
                         ));
                     };
 
@@ -843,13 +870,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     lowered.push((field_symbol, value.expr));
                 }
 
-                for expected in &definition.fields {
+                for expected in &definition_fields {
                     if !seen.contains(&expected.name) {
                         return Err(hir_error!(
                             *span,
                             MissingField {
                                 struct_name,
-                                field: self.symbols.get(expected.name).to_string()
+                                field: self.arena.alloc_str(self.symbols.get(expected.name)),
                             }
                         ));
                     }
@@ -901,9 +928,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     let function =
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
                             || {
+                                let struct_name = self.arena.alloc_str(&struct_name);
                                 hir_error!(
                                     *span,
-                                    UnknownMethod { struct_name, name: method_name.to_string() }
+                                    UnknownMethod { struct_name, name: method_name }
                                 )
                             },
                         )?;
@@ -918,7 +946,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         ));
                     }
 
-                    let signature = &self.scope.signatures[function];
+                    let signature = self.scope.signatures[function].clone();
                     assert!(
                         signature.receiver_type().is_some(),
                         "method call resolved to a free function"
@@ -928,8 +956,8 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         && base_local.filter(|&id| self[id].mutable).is_none()
                     {
                         let name = match base_local {
-                            Some(id) => self.symbols.get(self[id].name).to_string(),
-                            None => "temporary".to_string(),
+                            Some(id) => self.arena.alloc_str(self.symbols.get(self[id].name)),
+                            None => "temporary",
                         };
 
                         return Err(hir_error!(*span, ImmutableBind { name }));
@@ -940,7 +968,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         return Err(hir_error!(
                             *span,
                             ArityMismatch {
-                                name: method_name.to_string(),
+                                name: method_name,
                                 expected: explicit_params.len(),
                                 found: args.len()
                             }
@@ -983,15 +1011,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let function_id = match callee.as_ref() {
                     Expr::Identifier(name, _) => {
                         self.scope.resolve_function_call(None, name, self.symbols).ok_or_else(
-                            || hir_error!(*span, UnknownFunction { name: name.to_string() }),
+                            || hir_error!(*span, UnknownFunction { name }),
                         )?
                     },
 
                     other => {
-                        return Err(hir_error!(
-                            *span,
-                            UnknownFunction { name: format!("{other:?}") }
-                        ));
+                        let name = self.arena.alloc_str(&format!("{other:?}"));
+                        return Err(hir_error!(*span, UnknownFunction { name }));
                     },
                 };
 
@@ -1003,7 +1029,9 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
             Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
                 // `Enum::Variant(payload)` constructs a tagged-union value
-                if let Some(lowered) = self.lower_variant(qualifier, name, args, hint, *span)? {
+                if let Some(lowered) =
+                    self.lower_variant(qualifier, name, args, type_args, hint, *span)?
+                {
                     return Ok(lowered);
                 }
 
@@ -1011,7 +1039,8 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     .scope
                     .resolve_function_call(Some(qualifier), name, self.symbols)
                     .ok_or_else(|| {
-                        hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
+                        let name = self.arena.alloc_str(&format!("{qualifier}::{name}"));
+                        hir_error!(*span, UnknownFunction { name })
                     })?;
 
                 match self.scope.generic_fns.contains_key(&id) {
@@ -1026,8 +1055,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     self.scope.resolve_function_call(*qualifier, name, self.symbols).is_some();
 
                 if !exists {
-                    let name =
-                        qualifier.map_or_else(|| name.to_string(), |q| format!("{q}::{name}"));
+                    let name = match qualifier {
+                        Some(q) => self.arena.alloc_str(&format!("{q}::{name}")),
+                        None => name,
+                    };
                     return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
@@ -1051,7 +1082,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         match_stmt: &statement::Match<'src>,
         hint: Option<Type>,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         let scrutinee = self.lower_expr(&match_stmt.scrutinee, None)?;
         let mut arms = Vec::with_capacity(match_stmt.arms.len());
 
@@ -1102,7 +1133,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         scrutinee_type: Type,
         pattern: &statement::Pattern<'src>,
         span: Span,
-    ) -> Result<Pattern<'hir>, HirError<'src>> {
+    ) -> Result<Pattern<'hir>, HirError<'hir>> {
         match pattern {
             statement::Pattern::Wildcard => Ok(Pattern { kind: PatternKind::Wildcard, span }),
 
@@ -1168,10 +1199,8 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     let matches = self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
                         || self.scope.generic_enums.contains_key(&enum_symbol);
                     if !matches {
-                        return Err(hir_error!(
-                            span,
-                            UnknownType { name: format!("{}::{}", qualifier, name) }
-                        ));
+                        let name = self.arena.alloc_str(&format!("{qualifier}::{name}"));
+                        return Err(hir_error!(span, UnknownType { name }));
                     }
                 }
 
@@ -1179,7 +1208,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     .variants
                     .iter()
                     .position(|v| self.symbols.get(v.name) == *name)
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
+                    .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
 
                 let variant = enum_def.variants[variant_idx];
 
@@ -1209,7 +1238,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         if_stmt: &statement::If<'src>,
         is_tail: bool,
-    ) -> Result<(Statement<'hir>, bool), HirError<'src>> {
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(Type::new(TypeKind::Bool), condition.typ, condition.span)?;
         let condition = condition.expr;
@@ -1268,12 +1297,12 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         args: &[expression::Expression<'src>],
         type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
-        let signature = &self.scope.signatures[function_id];
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let signature = self.scope.signatures[function_id].clone();
         let intrinsic = signature.kind.intrinsic();
 
         if self.is_const && !signature.is_const && intrinsic.is_none() {
-            let name = self.symbols.get(signature.name).to_string();
+            let name = self.arena.alloc_str(self.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
@@ -1285,7 +1314,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         }
 
         if intrinsic.is_none() && signature.params.len() != args.len() {
-            let name = self.symbols.get(signature.name).to_string();
+            let name = self.arena.alloc_str(self.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ArityMismatch { name, expected: signature.params.len(), found: args.len() }
@@ -1336,7 +1365,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     fn resolve_turbofish(
         &self,
         type_args: &[Spanned<statement::Type<'src>>],
-    ) -> Result<Vec<Type>, HirError<'src>> {
+    ) -> Result<Vec<Type>, HirError<'hir>> {
         if type_args.is_empty() {
             return Ok(Vec::new());
         }
@@ -1362,19 +1391,37 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     fn lower_variant(
         &mut self,
         qualifier: &str,
-        name: &str,
+        name: &'src str,
         args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
         hint: Option<Type>,
         span: Span,
-    ) -> Result<Option<Lowered<'hir>>, HirError<'src>> {
+    ) -> Result<Option<Lowered<'hir>>, HirError<'hir>> {
         let qualifier_symbol = self.symbols.insert(qualifier);
         let enum_id = match self.scope.enum_map.get(&qualifier_symbol).copied() {
             Some(id) => id,
-            // a generic enum (`Optional`) takes its instantiation from the hint
+            // a generic enum (`Optional`) takes its instantiation from type_args or the hint
             None if self.scope.generic_enums.contains_key(&qualifier_symbol) => {
-                match hint.map(|typ| typ.kind()) {
-                    Some(TypeKind::Enum(id)) => id,
-                    _ => return Ok(None),
+                if !type_args.is_empty() {
+                    let mut resolved = Vec::with_capacity(type_args.len());
+                    for arg in type_args {
+                        resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                    }
+                    if let Some(template) = self.scope.generic_enums.get(&qualifier_symbol) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    }
+                    let typ = self
+                        .scope
+                        .instantiate_generic(qualifier, &resolved, span, self.symbols)?;
+                    match typ.kind() {
+                        TypeKind::Enum(id) => id,
+                        _ => return Ok(None),
+                    }
+                } else {
+                    match hint.map(|typ| typ.kind()) {
+                        Some(TypeKind::Enum(id)) => id,
+                        _ => return Ok(None),
+                    }
                 }
             },
             None => return Ok(None),
@@ -1399,13 +1446,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             (Some(_), None) => {
                 return Err(hir_error!(
                     span,
-                    ArityMismatch { name: name.to_string(), expected: 1, found: 0 }
+                    ArityMismatch { name, expected: 1, found: 0 }
                 ));
             },
             (None, Some(_)) => {
                 return Err(hir_error!(
                     span,
-                    ArityMismatch { name: name.to_string(), expected: 0, found: args.len() }
+                    ArityMismatch { name, expected: 0, found: args.len() }
                 ));
             },
         };
@@ -1452,7 +1499,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         args: &[expression::Expression<'src>],
         type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         let (callee_name, arity, open_return) = {
             let signature = &self.scope.signatures[function_id];
             (signature.name, signature.params.len(), signature.return_type)
@@ -1460,7 +1507,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let generic_count = self.scope.generic_fns[&function_id].generics.len();
 
         if arity != args.len() {
-            let name = self.symbols.get(callee_name).to_string();
+            let name = self.arena.alloc_str(self.symbols.get(callee_name));
             return Err(hir_error!(
                 span,
                 ArityMismatch { name, expected: arity, found: args.len() }
@@ -1484,6 +1531,9 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             },
         };
 
+        let template = &self.scope.generic_fns[&function_id];
+        self.check_bounds(&template.generics, &substs, span)?;
+
         let return_type = open_return.subst(&substs);
         let callee = self.alloc(ExpressionKind::Path(callee_name), Type::default(), span).expr;
         let lowered =
@@ -1502,34 +1552,32 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         args: &[expression::Expression<'src>],
         return_type: Type,
         span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         if !self.in_std {
-            return Err(hir_error!(span, UnknownFunction { name: "syscall".into() }));
+            return Err(hir_error!(span, UnknownFunction { name: "syscall" }));
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name: "syscall".to_string(), expected: 1, found: 0 }
+                ArityMismatch { name: "syscall", expected: 1, found: 0 }
             ));
         };
 
         if value_args.len() > 6 {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name: "syscall".to_string(), expected: 7, found: args.len() }
+                ArityMismatch { name: "syscall", expected: 7, found: args.len() }
             ));
         }
 
         let expression::Expression::Identifier(name, code_span) = code_arg else {
-            return Err(hir_error!(
-                code_arg.span(),
-                UndeclaredIdentifier { name: format!("{code_arg:?}") }
-            ));
+            let name = self.arena.alloc_str(&format!("{code_arg:?}"));
+            return Err(hir_error!(code_arg.span(), UndeclaredIdentifier { name }));
         };
 
         let code = SyscallCode::from_str(name)
-            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name: name.to_string() }))?;
+            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name }))?;
 
         let args = value_args
             .iter()
@@ -1546,7 +1594,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     #[inline]
-    fn enum_type(&self, typ: Type, span: Span) -> Result<EnumId, HirError<'src>> {
+    fn enum_type(&self, typ: Type, span: Span) -> Result<EnumId, HirError<'hir>> {
         let default = TypeKind::Enum(Default::default());
 
         match typ.kind() {
@@ -1567,7 +1615,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         left: Type,
         right: Type,
         span: Span,
-    ) -> Result<Type, HirError<'src>> {
+    ) -> Result<Type, HirError<'hir>> {
         let type_mismatch =
             |found| hir_error!(span, TypeMismatch { expected: Type::new(TypeKind::I32), found });
 
@@ -1630,7 +1678,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'src>> {
+    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'hir>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
@@ -1640,7 +1688,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         typ: &statement::Type<'src>,
         span: Span,
-    ) -> Result<Type, HirError<'src>> {
+    ) -> Result<Type, HirError<'hir>> {
         match typ {
             statement::Type::Named(name) => {
                 if let Some(&typ) = self.generic_env.get(*name) {
@@ -1650,17 +1698,17 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 let symbol = self.symbols.insert(name);
                 self.scope
                     .nominal_type(symbol)
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
+                    .ok_or_else(|| hir_error!(span, UnknownType { name }))
             },
 
             statement::Type::SelfType => self
                 .self_type
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() })),
+                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self" })),
 
             statement::Type::RefSelf => {
                 let self_ty = self
                     .self_type
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() }))?;
+                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
                 let to = RefTarget::try_from(self_ty).map_err(|_| {
                     hir_error!(
                         span,
@@ -1688,14 +1736,32 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
 
+            statement::Type::Generic(name, args) => {
+                let mut resolved = Vec::with_capacity(args.len());
+                for arg in args {
+                    resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                }
+                let typ = self
+                    .scope
+                    .instantiate_generic(name, &resolved, span, self.symbols)?;
+                if let Some(struct_sym) = self.symbols.get_id(name) {
+                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    }
+                }
+                Ok(typ)
+            },
+
             other => Type::from_primitive_ast(other)
-                .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
+                .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
         }
     }
 
     #[inline(always)]
     #[must_use]
-    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
+    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'hir>> {
         match expected == found {
             true => Ok(()),
             false => Err(hir_error!(span, TypeMismatch { expected, found })),
@@ -1707,14 +1773,12 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         name: SymbolId,
         typ: Type,
         mutable: bool,
-    ) -> Result<LocalId, HirError<'src>> {
+    ) -> Result<LocalId, HirError<'hir>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
-            return Err(hir_error!(
-                Span::default(),
-                DuplicateBind { name: self.symbols.get(name).to_string() }
-            ));
+            let name = self.arena.alloc_str(self.symbols.get(name));
+            return Err(hir_error!(Span::default(), DuplicateBind { name }));
         }
 
         let id = LocalId(self.next_local);
@@ -1727,13 +1791,14 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'src>> {
+    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'hir>> {
         self.scopes
             .iter()
             .rev()
             .find_map(|scope| scope.get(&name).copied())
             .ok_or_else(|| {
-                hir_error!(span, UndeclaredIdentifier { name: self.symbols.get(name).to_string() })
+                let name = self.arena.alloc_str(self.symbols.get(name));
+                hir_error!(span, UndeclaredIdentifier { name })
             })
     }
 
@@ -1743,7 +1808,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         current: Type,
         name: &str,
         span: Span,
-    ) -> Result<(SymbolId, Type), HirError<'src>> {
+    ) -> Result<(SymbolId, Type), HirError<'hir>> {
         #[rustfmt::skip]
         let sid = match current.kind() {
             TypeKind::Struct(id) => id,
@@ -1762,13 +1827,59 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
         let sym = self.symbols.insert(name);
         let def = &self.scope[sid];
-        let struct_name = self.symbols.get(def.name).to_string();
+        let struct_name = self.arena.alloc_str(self.symbols.get(def.name));
 
         let field = def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
-            hir_error!(span, UnknownField { struct_name, field: name.to_string() })
+            let field = self.arena.alloc_str(name);
+            hir_error!(span, UnknownField { struct_name, field })
         })?;
 
         Ok((sym, field.typ))
+    }
+
+    fn check_bounds(
+        &self,
+        generics: &[statement::GenericBound<'src>],
+        args: &[Type],
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let current_generics = self.function.map(|f| f.generics.as_slice()).unwrap_or(&[]);
+        for (i, param) in generics.iter().enumerate() {
+            let concrete_type = args[i];
+            for bound in &param.bounds {
+                let interface_name = match bound.value_ref() {
+                    statement::Type::Named(name) => name,
+                    statement::Type::Generic(name, _) => name,
+                    _ => continue,
+                };
+
+                let satisfied = match concrete_type.kind() {
+                    TypeKind::GenericParam(idx) => {
+                        current_generics.get(idx as usize).map_or(false, |param_bound| {
+                            param_bound.bounds.iter().any(|b| {
+                                let name = match b.value_ref() {
+                                    statement::Type::Named(n) => n,
+                                    statement::Type::Generic(n, _) => n,
+                                    _ => "",
+                                };
+                                name == *interface_name
+                            })
+                        })
+                    },
+                    _ => self.symbols.get_id(interface_name).is_some_and(|interface_sym| {
+                        self.scope.interface_impls.contains(&(concrete_type, interface_sym))
+                    }),
+                };
+
+                if !satisfied {
+                    return Err(hir_error!(
+                        span,
+                        UnsatisfiedBound { type_name: concrete_type, bound_name: interface_name }
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[inline(always)]
@@ -1823,13 +1934,16 @@ fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
 }
 
 pub(in crate::hir) fn lower_const<'hir, 'src>(
-    scope: &Scope<'hir>,
+    scope: &mut Scope<'hir>,
     symbols: &mut SymbolTable,
     expr: &expression::Expression<'src>,
     expected_type: Type,
     in_std: bool,
     arena: &'hir bumpalo::Bump,
-) -> Result<(&'hir Expression<'hir>, TypeckResults), HirError<'src>> {
+) -> Result<(&'hir Expression<'hir>, TypeckResults), HirError<'hir>>
+where
+    'src: 'hir,
+{
     let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std, arena);
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 

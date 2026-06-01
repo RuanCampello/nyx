@@ -12,13 +12,13 @@
 
 use crate::hir::{self, TypeKind};
 use crate::lir::{
-    self, BlockId, MachineType, Term, VReg, assembly_label,
+    self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
     target::{
         self, Lowerable, MemOps, RegClass, Target, aggregate_copy,
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
-use crate::mir::{self, Function, Layout, Operand};
+use crate::mir::{self, Function, Operand};
 
 struct Lower<'f> {
     function: &'f Function,
@@ -26,7 +26,7 @@ struct Lower<'f> {
     value: Vec<VReg>,
     symbols: &'f [String],
     all_functions: &'f [Function],
-    layouts: &'f [Layout],
+    layouts: Layouts<'f>,
     sret_ptr: Option<VReg>,
 }
 
@@ -35,8 +35,11 @@ impl Lowerable for X86_64 {
         function: &Function,
         symbols: &[String],
         all_functions: &[Function],
-        layouts: &[Layout],
+        struct_layouts: &[mir::Layout],
+        enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
+        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
+
         let name = symbols
             .get(function.name_symbol)
             .map(|n| assembly_label(n))
@@ -99,7 +102,7 @@ impl<'f> Lower<'f> {
                     op,
                     layouts,
                     |vid| value[vid],
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -403,7 +406,7 @@ impl<'f> Lower<'f> {
                     layouts,
                     |vid| value[vid],
                     |lir, op, block| target::operand(lir, op, block, layouts, |vid| value[vid]),
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
                     |lir, block, origin| {
                         let dest = lir.new_vreg(MachineType::Int { bytes, signed });
                         lir.push_instr(block, X86Instr::StackAddr { dest, origin });
@@ -441,7 +444,7 @@ impl<'f> Lower<'f> {
                 let layouts = self.layouts;
                 let (syscall_moves, syscall_uses) =
                     target::prepare_syscall_args(&mut self.lir, id, args, layouts, |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid], layouts)
+                        target::lower_operand(lir, op, |vid| value[vid])
                     });
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
@@ -738,7 +741,7 @@ impl<'f> Lower<'f> {
     fn small_integer_return(&self, typ: hir::Type) -> Option<Vec<(i32, u8, X86Reg)>> {
         let size = typ.machine_type(self.layouts).stack_size() as u32;
         let contains_float = match typ.kind() {
-            TypeKind::Struct(sid) => self.layouts[sid.0 as usize].contains_float(),
+            TypeKind::Struct(sid) => self.layouts.structs[sid.0 as usize].contains_float(),
             _ => false,
         };
         if size == 0 || size > 16 || contains_float {
@@ -763,7 +766,6 @@ impl<'f> Lower<'f> {
 
     // transforms a MIR operand into a x86_64 LIR operand
     fn lower_operand(&mut self, op: &Operand) -> X86Operand {
-        let layouts = self.layouts;
-        target::lower_operand(&mut self.lir, op, |vid| self.value[vid], layouts)
+        target::lower_operand(&mut self.lir, op, |vid| self.value[vid])
     }
 }

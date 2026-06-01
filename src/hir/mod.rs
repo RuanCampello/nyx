@@ -347,7 +347,7 @@ pub fn lower<'hir>(
     let mut symbols = SymbolTable::new();
     let declarations = Declarations::partition(&mut statements, |name| interfaces.get(name))?;
 
-    let mut scope = Scope::new();
+    let mut scope = Scope::new(arena);
     scope.extend(&declarations, &mut symbols, false, arena)?;
 
     let functions = scope.lower_functions(&declarations, &mut symbols, false, arena)?;
@@ -548,7 +548,7 @@ mod tests {
         let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
         let err = super::lower(statements, &arena).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "x".to_string() })
+        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "x" })
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "x".into() });
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "x" });
 
         let statements = Parser::new(
             r#"
@@ -691,7 +691,7 @@ mod tests {
 
         let err = super::lower(statements, &arena).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::DuplicateFunction { name: "foo".into() });
+        assert_eq!(err.kind, HirErrorKind::DuplicateFunction { name: "foo" });
     }
 
     #[test]
@@ -710,7 +710,7 @@ mod tests {
 
         assert_eq!(
             err.kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 3 }
+            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 }
         );
     }
 
@@ -721,7 +721,7 @@ mod tests {
 
         let err = super::lower(statements, &arena).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::UnknownFunction { name: "foo".into() });
+        assert_eq!(err.kind, HirErrorKind::UnknownFunction { name: "foo" });
     }
 
     #[test]
@@ -1117,7 +1117,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::CircularStruct { name: "A".to_string() });
+        assert_eq!(err.kind, HirErrorKind::CircularStruct { name: "A" });
     }
 
     #[test]
@@ -1137,7 +1137,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::MissingField { struct_name: "Point".to_string(), field: "y".to_string() }
+            HirErrorKind::MissingField { struct_name: "Point", field: "y" }
         );
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::UnknownField { struct_name: "Point".to_string(), field: "z".to_string() }
+            HirErrorKind::UnknownField { struct_name: "Point", field: "z" }
         );
         assert_eq!(err.span.start.column, 23);
         assert_eq!(err.span.end.column, 26);
@@ -1161,7 +1161,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1,x:2};}";
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateField { name: "x".to_string() });
+        assert_eq!(err.kind, HirErrorKind::DuplicateField { name: "x" });
         assert_eq!(err.span.start.column, 27);
         assert_eq!(err.span.end.column, 30);
     }
@@ -1172,7 +1172,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1};p.x=2;}";
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "p".to_string() });
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "p" });
         assert_eq!(err.span.start.column, 28);
         assert_eq!(err.span.end.column, 31);
     }
@@ -1242,8 +1242,8 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::DuplicateMethod {
-                struct_name: "Counter".to_string(),
-                name: "value".to_string(),
+                struct_name: "Counter",
+                name: "value",
             }
         );
         assert_eq!(err.span.start.column, 17);
@@ -1268,7 +1268,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "counter".to_string() });
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "counter" });
     }
 
     #[test]
@@ -1285,7 +1285,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "self".to_string() });
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "self" });
     }
 
     #[test]
@@ -1333,7 +1333,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::OrphanImpl { name: "i64".to_string() });
+        assert_eq!(err.kind, HirErrorKind::OrphanImpl { name: "i64" });
     }
 
     #[test]
@@ -1391,7 +1391,7 @@ mod tests {
         let mut symbols = SymbolTable::new();
         let mut statements = Parser::new(src).parse().unwrap();
         let declarations = Declarations::partition(&mut statements, |_| None).unwrap();
-        let mut scope = Scope::new();
+        let mut scope = Scope::new(&arena);
         scope.extend(&declarations, &mut symbols, true, &arena).unwrap();
         let functions = scope.lower_functions(&declarations, &mut symbols, true, &arena).unwrap();
         let main_func = &functions[0];
@@ -1441,7 +1441,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert!(matches!(
             err.kind,
-            HirErrorKind::CircularConstant { ref name } if name == "A" || name == "B"
+            HirErrorKind::CircularConstant { name } if name == "A" || name == "B"
         ));
     }
 
@@ -1454,7 +1454,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "X".to_string() });
+        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "X" });
     }
 
     #[test]
@@ -1469,7 +1469,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE".to_string() });
+        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE" });
     }
 
     #[test]
@@ -1480,7 +1480,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "UNDEFINED".to_string() });
+        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "UNDEFINED" });
     }
 
     #[test]

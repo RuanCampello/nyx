@@ -335,19 +335,28 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::Binary { operator, left, right } => {
-                if let Some(function) = self.typeck.type_dependent_def(expr.id) {
+                if let Some(hir::Res::Function(function)) = self.typeck.type_dependent_def(expr.id)
+                {
                     let callee = self.get_fn_unchecked(&function);
-
-                    let receiver_typ = callee
+                    let self_typ = callee
                         .params
                         .first()
                         .map(|p| p.typ)
                         .unwrap_or_else(|| self.typeck.type_of(left.id));
+                    let other_typ = callee
+                        .params
+                        .get(1)
+                        .map(|p| p.typ)
+                        .unwrap_or_else(|| self.typeck.type_of(right.id));
 
-                    let place = self.lower_overloaded(left, receiver_typ)?;
-                    let rhs = self.lower_expr(right)?;
+                    let lhs = self.lower_overloaded(left, self_typ)?;
+                    let rhs = self.lower_overloaded(right, other_typ)?;
 
-                    return self.emit_call(function, vec![Operand::Place(place), rhs], typ);
+                    return self.emit_call(
+                        function,
+                        vec![Operand::Place(lhs), Operand::Place(rhs)],
+                        typ,
+                    );
                 }
 
                 if matches!(operator, BinaryOperator::And | BinaryOperator::Or) {
@@ -399,21 +408,30 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 "a path callee is resolved via the side-tables, never lowered as a value"
             ),
             ExpressionKind::Call { args, .. } => {
-                let function =
-                    self.typeck.type_dependent_def(expr.id).expect("call target must be resolved");
-                let mut lowered_args = Vec::with_capacity(args.len());
-                for arg in *args {
-                    let operand = self.lower_expr(*arg)?;
-                    lowered_args.push(operand);
-                }
+                // a call resolves either to a function or, for `Optional::Some(x)`,
+                // to an enum variant constructor that builds a tagged-union inline
+                match self.typeck.type_dependent_def(expr.id).expect("call target must be resolved")
+                {
+                    hir::Res::Variant { id, index } => {
+                        self.emit_variant(id, index, args.first().copied(), typ)
+                    },
+                    hir::Res::Function(function) => {
+                        let mut lowered_args = Vec::with_capacity(args.len());
+                        for arg in *args {
+                            let operand = self.lower_expr(*arg)?;
+                            lowered_args.push(operand);
+                        }
 
-                self.emit_call(function, lowered_args, typ)
+                        self.emit_call(function, lowered_args, typ)
+                    },
+                }
             },
 
             ExpressionKind::MethodCall { receiver, args, .. } => {
                 let function = self
                     .typeck
                     .type_dependent_def(expr.id)
+                    .and_then(hir::Res::function)
                     .expect("method target must be resolved");
                 let callee_fn = self.get_fn_unchecked(&function);
                 let receiver_typ = callee_fn
@@ -542,7 +560,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 let join_block = self.new_block();
                 let match_result_place =
-                    (typ.kind() != TypeKind::Unit).then_some(self.fresh_temporary(typ));
+                    (typ.kind() != TypeKind::Unit).then(|| self.fresh_temporary(typ));
 
                 let mut next_arm_check_block = self.new_block();
 
@@ -723,6 +741,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn fresh_temporary(&mut self, typ: Type) -> Place {
+        assert!(
+            !matches!(typ.kind(), TypeKind::Unit),
+            "internal error: unit type temporary created"
+        );
         let id = ValueId(self.next);
         self.next += 1;
         self.locals.push((id, typ));
@@ -830,24 +852,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 if let Some(sub_pat) = sub {
                     let sub_block = self.new_block();
-                    // load payload
-                    let layout = self.layouts.enum_layout(*enum_id);
-                    let offset = layout.payload_offset;
-                    let typ = variant
-                        .payload
-                        .expect("Variant must have payload type since it has subpattern");
-                    let payload_place = self.fresh_temporary(typ);
-                    self.emit(
-                        payload_place,
-                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
-                    );
 
-                    // lower pattern match recursively
-                    self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
-
-                    // switch back to match_cond_block to emit the branch/switch to sub_block or fail_block
-                    self.switch_to(match_cond_block);
-
+                    // first branch on the tag: a match continues into `sub_block`,
+                    // a mismatch falls through to `fail_block`
+                    let _ = match_cond_block;
                     let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
                     self.emit(
                         cond,
@@ -863,6 +871,20 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         then_block: sub_block,
                         else_block: fail_block,
                     });
+
+                    // only inside `sub_block` (tag confirmed) do we read the payload
+                    // and recursively match the sub-pattern
+                    self.switch_to(sub_block);
+                    let offset = self.layouts.enum_layout(*enum_id).payload_offset;
+                    let typ = variant
+                        .payload
+                        .expect("Variant must have payload type since it has subpattern");
+                    let payload_place = self.fresh_temporary(typ);
+                    self.emit(
+                        payload_place,
+                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
+                    );
+                    self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
                 } else {
                     // Just check tag
                     let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
@@ -1015,6 +1037,34 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let id = self.strings.len();
         self.strings.push(value);
         id
+    }
+
+    fn emit_variant(
+        &mut self,
+        id: hir::EnumId,
+        index: usize,
+        payload: Option<&'hir Expression<'hir>>,
+        typ: Type,
+    ) -> Result<Operand, MirError> {
+        let dest = self.fresh_temporary(typ);
+
+        let tag_ty = id.repr().typ();
+        let tag = self.enums[id].variants[index].value;
+        self.emit(
+            dest,
+            InstructionKind::FieldStore {
+                value: Operand::Const(Const::Int(tag, tag_ty)),
+                offset: 0,
+            },
+        );
+
+        if let Some(payload) = payload {
+            let offset = self.layouts.enum_layout(id).payload_offset;
+            let value = self.lower_expr(payload)?;
+            self.emit(dest, InstructionKind::FieldStore { value, offset });
+        }
+
+        Ok(Operand::Place(dest))
     }
 
     fn emit_call(

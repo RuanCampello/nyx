@@ -35,7 +35,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             ctx.symbols
                 .get_id(name)
                 .and_then(|symbol| scope::nominal_type(ctx.struct_map, ctx.enum_map, symbol))
-                .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))
+                .ok_or_else(|| hir_error!(span, UnknownType { name }))
         },
 
         statement::Type::Ref(typ) => {
@@ -72,8 +72,15 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
         ),
-        other => Type::from_primitive_ast(other)
-            .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
+        // the only unhandled variant that fails `from_primitive_ast` is `Generic`,
+        // which carries its own name; everything else resolves to a primitive
+        other => Type::from_primitive_ast(other).ok_or_else(|| {
+            let name = match other {
+                statement::Type::Generic(name, _) => name,
+                _ => "<unsupported type>",
+            };
+            hir_error!(span, UnknownType { name })
+        }),
     }
 }
 

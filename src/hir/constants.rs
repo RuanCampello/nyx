@@ -42,9 +42,12 @@ pub(in crate::hir) fn extend<'hir, 'd, 's>(
     symbols: &mut SymbolTable,
     in_std: bool,
     arena: &'hir bumpalo::Bump,
-) -> Result<(), HirError<'s>> {
+) -> Result<(), HirError<'hir>>
+where
+    's: 'hir,
+{
     let decls = collect(scope, declarations, symbols)?;
-    let sorted = topo_sort(&decls, &scope.mangler, symbols)?;
+    let sorted = topo_sort(&decls, &scope.mangler, symbols, arena)?;
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
@@ -74,13 +77,16 @@ fn collect<'hir, 'd, 's>(
     scope: &Scope<'hir>,
     declarations: &Declarations<'d, 's>,
     symbols: &mut SymbolTable,
-) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'s>> {
+) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'hir>>
+where
+    's: 'hir,
+{
     let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
 
     for c in &declarations.constants {
         let symbol_id = symbols.insert(&scope.mangler.item(c.name));
         if decls.contains_key(&symbol_id) {
-            return Err(hir_error!(c.span, DuplicateConstant { name: c.name.to_string() }));
+            return Err(hir_error!(c.span, DuplicateConstant { name: c.name }));
         }
         decls.insert(symbol_id, ConstDecl { impl_type: None, ast: c });
     }
@@ -89,10 +95,8 @@ fn collect<'hir, 'd, 's>(
         for c in &imp.constants {
             let symbol_id = symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
             if decls.contains_key(&symbol_id) {
-                return Err(hir_error!(
-                    c.span,
-                    DuplicateConstant { name: format!("{}::{}", imp.name, c.name) }
-                ));
+                let name = scope.arena.alloc_str(&format!("{}::{}", imp.name, c.name));
+                return Err(hir_error!(c.span, DuplicateConstant { name }));
             }
 
             decls.insert(symbol_id, ConstDecl { impl_type: Some(imp.name), ast: c });
@@ -102,40 +106,48 @@ fn collect<'hir, 'd, 's>(
     Ok(decls)
 }
 
-fn topo_sort<'d, 's>(
+fn topo_sort<'hir, 'd, 's>(
     decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
     mangler: &Mangler<'_>,
     symbols: &SymbolTable,
-) -> Result<Vec<SymbolId>, HirError<'s>> {
+    arena: &'hir bumpalo::Bump,
+) -> Result<Vec<SymbolId>, HirError<'hir>>
+where
+    's: 'hir,
+{
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
     let mut sorted = Vec::new();
 
     for &symbol_id in decls.keys() {
         if !visited.contains(&symbol_id) {
-            dfs(symbol_id, mangler, symbols, decls, &mut visiting, &mut visited, &mut sorted)?;
+            dfs(symbol_id, mangler, symbols, decls, arena, &mut visiting, &mut visited, &mut sorted)?;
         }
     }
 
     Ok(sorted)
 }
 
-fn dfs<'d, 's>(
+fn dfs<'hir, 'd, 's>(
     symbol_id: SymbolId,
     mangler: &Mangler<'_>,
     symbols: &SymbolTable,
     decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
+    arena: &'hir bumpalo::Bump,
     visiting: &mut HashSet<SymbolId>,
     visited: &mut HashSet<SymbolId>,
     sorted: &mut Vec<SymbolId>,
-) -> Result<(), HirError<'s>> {
+) -> Result<(), HirError<'hir>>
+where
+    's: 'hir,
+{
     use visitor::Visitor;
 
     if visiting.contains(&symbol_id) {
         let decl = &decls[&symbol_id];
         let name = match decl.impl_type {
-            Some(impl_type) => format!("{}::{}", impl_type, decl.ast.name),
-            _ => decl.ast.name.to_string(),
+            Some(impl_type) => arena.alloc_str(&format!("{}::{}", impl_type, decl.ast.name)),
+            _ => decl.ast.name,
         };
         return Err(hir_error!(decl.ast.span, CircularConstant { name }));
     }
@@ -157,7 +169,7 @@ fn dfs<'d, 's>(
         walker.visit_expression(&decl.ast.value);
         for dep in deps {
             if decls.contains_key(&dep) {
-                dfs(dep, mangler, symbols, decls, visiting, visited, sorted)?;
+                dfs(dep, mangler, symbols, decls, arena, visiting, visited, sorted)?;
             }
         }
     }

@@ -109,7 +109,13 @@ where
             continue;
         }
 
-        let lir = T::lower(function, &mir.symbols, &mir.functions, &mir.struct_layouts);
+        let lir = T::lower(
+            function,
+            &mir.symbols,
+            &mir.functions,
+            &mir.struct_layouts,
+            &mir.enum_layouts,
+        );
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
@@ -289,10 +295,27 @@ impl MachineType {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Layouts<'a> {
+    pub structs: &'a [Layout],
+    pub enums: &'a [Layout],
+}
+
 impl Type {
     #[inline(always)]
-    #[rustfmt::skip]
-    pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
+    pub(in crate::lir) fn is_aggregate_lir(self, layouts: Layouts) -> bool {
+        if self.is_aggregate() {
+            return true;
+        }
+        if let TypeKind::Enum(id) = self.kind() {
+            let (enum_size, _) = layouts.enums[id.id() as usize].into();
+            return enum_size > id.repr().layout().0;
+        }
+        false
+    }
+
+    #[inline(always)]
+    pub(in crate::lir) fn machine_type(&self, layouts: Layouts) -> MachineType {
         match self.kind() {
             TypeKind::I8 => MachineType::Int { bytes: 1, signed: true },
             TypeKind::U8 | TypeKind::Bool => MachineType::Int { bytes: 1, signed: false },
@@ -309,10 +332,19 @@ impl Type {
             TypeKind::F32 => MachineType::Float { bytes: 4 },
             TypeKind::F64 => MachineType::Float { bytes: 8 },
             TypeKind::Struct(id) => {
-                let (size, align) = layouts[id.0 as usize].into();
+                let (size, align) = layouts.structs[id.0 as usize].into();
                 MachineType::Struct { size, align }
             }
-            TypeKind::Enum(id) => id.repr().typ().machine_type(layouts),
+            TypeKind::Enum(id) => {
+                let enum_layout = layouts.enums[id.id() as usize];
+                let tag_size = id.repr().layout().0;
+                let (enum_size, enum_align) = enum_layout.into();
+                if enum_size > tag_size {
+                    MachineType::Struct { size: enum_size, align: enum_align }
+                } else {
+                    id.repr().typ().machine_type(layouts)
+                }
+            }
             TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
             TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
             TypeKind::GenericParam(_) => {

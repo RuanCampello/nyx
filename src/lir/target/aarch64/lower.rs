@@ -15,14 +15,14 @@
 use crate::{
     hir::{self, Type, TypeKind},
     lir::{
-        self, BlockId, MachineType, Term, VReg, assembly_label,
+        self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
         target::{
             self, Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
             aggregate_copy,
         },
     },
-    mir::{self, Function, Layout, Operand},
+    mir::{self, Function, Operand},
 };
 
 struct Lower<'f> {
@@ -32,7 +32,7 @@ struct Lower<'f> {
     value: Vec<VReg>,
     symbols: &'f [String],
     all_functions: &'f [Function],
-    layouts: &'f [Layout],
+    layouts: Layouts<'f>,
     sret_ptr: Option<VReg>,
 }
 
@@ -41,8 +41,11 @@ impl Lowerable for AArch64 {
         function: &Function,
         symbols: &[String],
         all_functions: &[Function],
-        layouts: &[Layout],
+        struct_layouts: &[mir::Layout],
+        enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
+        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
+
         let name = symbols
             .get(function.name_symbol)
             .map(|n| assembly_label(n))
@@ -112,7 +115,7 @@ impl<'f> Lower<'f> {
                     operand,
                     layouts,
                     |vid| value[vid],
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid], layouts),
+                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -303,7 +306,7 @@ impl<'f> Lower<'f> {
                         lir::target::operand(lir, op, block, layouts, |vid| value[vid])
                     },
                     |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid], layouts)
+                        lir::target::lower_operand(lir, op, |vid| value[vid])
                     },
                     |lir, block, origin| {
                         let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
@@ -330,7 +333,7 @@ impl<'f> Lower<'f> {
                     args,
                     layouts,
                     |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid], layouts)
+                        lir::target::lower_operand(lir, op, |vid| value[vid])
                     },
                 );
 
@@ -718,8 +721,7 @@ impl<'f> Lower<'f> {
     #[inline(always)]
     fn lower_operand(&mut self, op: &Operand, _block: &BlockId) -> A64Operand {
         let value = &self.value;
-        let layouts = self.layouts;
-        lir::target::lower_operand(&mut self.lir, op, |vid| value[vid], layouts)
+        lir::target::lower_operand(&mut self.lir, op, |vid| value[vid])
     }
 
     /// if the operand is already a `VReg`, return it

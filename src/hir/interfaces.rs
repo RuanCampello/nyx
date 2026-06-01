@@ -22,31 +22,34 @@ use std::collections::HashMap;
 /// Run all interface-related validation against a fully-extended `Scope`.
 /// Composes the per-impl signature check with the inheritance check; either
 /// can fail independently.
-pub(in crate::hir) fn validate<'d, 'h>(
-    scope: &Scope<'_>,
+pub(in crate::hir) fn validate<'hir, 'd, 'h>(
+    scope: &Scope<'hir>,
     declarations: &Declarations<'d, 'h>,
     symbols: &mut SymbolTable,
-) -> Result<(), HirError<'h>> {
+) -> Result<(), HirError<'hir>>
+where
+    'h: 'hir,
+{
     validate_impls(scope, declarations, symbols)?;
     validate_hierarchy(scope, declarations, symbols)?;
 
     Ok(())
 }
 
-fn validate_hierarchy<'d, 'h>(
-    scope: &Scope<'_>,
+fn validate_hierarchy<'hir, 'd, 'h>(
+    scope: &Scope<'hir>,
     declarations: &Declarations<'d, 'h>,
     symbols: &mut SymbolTable,
-) -> Result<(), HirError<'h>> {
+) -> Result<(), HirError<'hir>>
+where
+    'h: 'hir,
+{
     for interface in &declarations.interfaces {
         for superinterface in &interface.superinterfaces {
             let symbol = symbols.insert(superinterface);
 
             if !scope.interfaces.contains_key(&symbol) {
-                return Err(hir_error!(
-                    interface.span,
-                    UnknownInterface { name: superinterface.to_string() }
-                ));
+                return Err(hir_error!(interface.span, UnknownInterface { name: superinterface }));
             }
         }
     }
@@ -54,11 +57,14 @@ fn validate_hierarchy<'d, 'h>(
     Ok(())
 }
 
-fn validate_impls<'d, 'h>(
-    scope: &Scope<'_>,
+fn validate_impls<'hir, 'd, 'h>(
+    scope: &Scope<'hir>,
     declarations: &Declarations<'d, 'h>,
     symbols: &mut SymbolTable,
-) -> Result<(), HirError<'h>> {
+) -> Result<(), HirError<'hir>>
+where
+    'h: 'hir,
+{
     for implementation in &declarations.impls {
         let Some(interface_name) = implementation.interface else {
             continue;
@@ -66,7 +72,7 @@ fn validate_impls<'d, 'h>(
 
         let interface_sym = symbols.insert(interface_name);
         let interface = scope.interfaces.get(&interface_sym).ok_or_else(|| {
-            hir_error!(implementation.span, UnknownInterface { name: interface_name.into() })
+            hir_error!(implementation.span, UnknownInterface { name: interface_name })
         })?;
 
         let receiver_type = scope
@@ -94,32 +100,30 @@ fn validate_impls<'d, 'h>(
 
         for &required in &interface.superinterfaces {
             if !scope.interfaces.contains_key(&required) {
-                return Err(hir_error!(
-                    implementation.span,
-                    UnknownInterface { name: symbols.get(required).to_string() }
-                ));
+                let name = scope.arena.alloc_str(symbols.get(required));
+                return Err(hir_error!(implementation.span, UnknownInterface { name }));
             }
 
             if !scope.interface_impls.contains(&(receiver_type, required)) {
                 return Err(hir_error!(
                     implementation.span,
                     MissingSuperinterfaceImpl {
-                        struct_name: implementation.name.to_string(),
-                        interface_name: interface_name.to_string(),
-                        superinterface_name: symbols.get(required).to_string(),
+                        struct_name: implementation.name,
+                        interface_name,
+                        superinterface_name: scope.arena.alloc_str(symbols.get(required)),
                     }
                 ));
             }
         }
 
         for required in &interface.methods {
-            let method_name = symbols.get(required.name).to_string();
-            let Some(impl_method) = impl_methods.get(method_name.as_str()) else {
+            let method_name = scope.arena.alloc_str(symbols.get(required.name));
+            let Some(impl_method) = impl_methods.get(method_name) else {
                 return Err(hir_error!(
                     implementation.span,
                     MissingInterfaceMethod {
-                        struct_name: implementation.name.into(),
-                        interface_name: interface_name.into(),
+                        struct_name: implementation.name,
+                        interface_name,
                         method_name,
                     }
                 ));
@@ -129,9 +133,9 @@ fn validate_impls<'d, 'h>(
             let function_id =
                 scope.function_id(impl_method, symbols, Some(implementation.name), |_| {
                     HirErrorKind::MissingInterfaceMethod {
-                        struct_name: implementation.name.to_string(),
-                        interface_name: interface_name.to_string(),
-                        method_name: method_name.clone(),
+                        struct_name: implementation.name,
+                        interface_name,
+                        method_name: impl_method.name,
                     }
                 })?;
 
@@ -155,14 +159,14 @@ fn validate_impls<'d, 'h>(
 
             if !signature_ok {
                 let expected = format_signature(
-                    &method_name,
+                    method_name,
                     required.has_receiver,
                     required.receiver_mut,
                     &required.params,
                     required.return_type,
                 );
                 let found = format_signature(
-                    &method_name,
+                    method_name,
                     impl_has_receiver,
                     impl_receiver_mut,
                     impl_explicit_params,
@@ -172,11 +176,11 @@ fn validate_impls<'d, 'h>(
                 return Err(hir_error!(
                     impl_method.span,
                     InterfaceSignatureMismatch {
-                        struct_name: implementation.name.to_string(),
-                        interface_name: interface_name.to_string(),
+                        struct_name: implementation.name,
+                        interface_name,
                         method_name,
-                        expected,
-                        found,
+                        expected: scope.arena.alloc_str(&expected),
+                        found: scope.arena.alloc_str(&found),
                         impl_span: implementation.span,
                     }
                 ));

@@ -73,9 +73,7 @@ impl LayoutTable {
             None => match typ.kind() {
                 TypeKind::Struct(id) => self.structs[id.0 as usize].layout.into(),
                 TypeKind::Enum(id) => self.enums[id.id() as usize].layout.into(),
-                TypeKind::SelfType | TypeKind::GenericParam(_) => {
-                    unreachable!("MIR layout requires concrete types")
-                },
+                TypeKind::SelfType | TypeKind::GenericParam(_) => (0, 1),
                 _ => unreachable!("type has no runtime layout"),
             },
         }
@@ -308,9 +306,7 @@ impl<'s> LayoutEngine<'s> {
                         .layout
                         .into()
                 },
-                TypeKind::SelfType | TypeKind::GenericParam(_) => {
-                    unreachable!("MIR layout requires concrete types")
-                },
+                TypeKind::SelfType | TypeKind::GenericParam(_) => (0, 1),
                 _ => unreachable!("type has no runtime layout"),
             },
         }

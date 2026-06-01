@@ -1,19 +1,16 @@
 use crate::hir::Type;
 use crate::lexer::token::Span;
-use crate::parser::error::ParserError;
 use nyx_macros::Diagnostic;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct HirError<'h> {
     pub(crate) kind: HirErrorKind<'h>,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Diagnostic)]
+#[derive(Debug, Clone, Copy, PartialEq, Diagnostic)]
 #[rustfmt::skip]
 pub enum HirErrorKind<'h> {
-    #[diagnostic(transparent)]
-    Parser(ParserError<'h>),
     #[diagnostic(
         message = "only function declarations are allowed at the top level",
         primary = "this is not a function declaration",
@@ -26,77 +23,77 @@ pub enum HirErrorKind<'h> {
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} functions"
     )]
-    DuplicateFunction { name: String },
+    DuplicateFunction { name: &'h str },
 
     #[diagnostic(
         message = "duplicate method {name!} for {struct_name!}",
         primary = "{name!} is already defined for {struct_name!}",
         help = "remove or rename one of the {name!} methods"
     )]
-    DuplicateMethod { struct_name: String, name: String },
+    DuplicateMethod { struct_name: &'h str, name: &'h str },
 
     #[diagnostic(
         message = "use of undeclared identifier {name!}",
         primary = "{name!} is not declared in this scope",
         help = "declare {name!} with {`let {name} = …`} before using it"
     )]
-    UndeclaredIdentifier { name: String },
+    UndeclaredIdentifier { name: &'h str },
 
     #[diagnostic(
         message = "call to unknown function {name!}",
         primary = "{name!} is not a known function",
         help = "declare {`fn {name}(…)`} before calling it"
     )]
-    UnknownFunction { name: String },
+    UnknownFunction { name: &'h str },
 
      #[diagnostic(
         message = "call to unknown method {name!} on {struct_name!}",
         primary = "{struct_name!} has no method named {name!}",
         help = "add {`fn {name}(&self)`} to an impl block for {struct_name!}"
     )]
-    UnknownMethod { struct_name: String, name: String },
+    UnknownMethod { struct_name: &'h str, name: &'h str },
 
      #[diagnostic(
         message = "unknown type {name!}",
         primary = "{name!} is not a known type",
         help = "declare {`struct {name} { … }`} before using it"
     )]
-    UnknownType { name: String },
+    UnknownType { name: &'h str },
 
     #[diagnostic(
         message = "cannot implement methods on {name!}",
         primary = "{name!} is not a struct declared in this module",
         help = "methods can only be defined on structs in the same module"
     )]
-    OrphanImpl { name: String },
+    OrphanImpl { name: &'h str },
 
     #[diagnostic(
         message = "duplicate struct {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} structs"
     )]
-    DuplicateStruct { name: String },
+    DuplicateStruct { name: &'h str },
 
     #[diagnostic(
         message = "duplicate enum {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} enums"
     )]
-    DuplicateEnum { name: String },
+    DuplicateEnum { name: &'h str },
 
     #[diagnostic(
         message = "duplicate field {name!}",
         primary = "{name!} is already declared",
         note = "struct field names must be unique"
     )]
-    DuplicateField { name: String },
+    DuplicateField { name: &'h str },
 
     #[diagnostic(
         message = "duplicate enum variant {name!}",
         primary = "{name!} is already declared",
         note = "enum variant names must be unique"
     )]
-    DuplicateVariant { name: String },
+    DuplicateVariant { name: &'h str },
 
     #[diagnostic(
         message = "invalid field access",
@@ -115,14 +112,14 @@ pub enum HirErrorKind<'h> {
         message = "unknown field {field!} on {struct_name!}",
         primary = "{struct_name!} has no field named {field!}"
     )]
-    UnknownField { struct_name: String, field: String },
+    UnknownField { struct_name: &'h str, field: &'h str },
 
     #[diagnostic(
         message = "missing field {field!} in {struct_name!} literal",
         primary = "{field!} must be initialised here",
         help = "all fields of {struct_name!} must be provided in the struct literal"
     )]
-    MissingField { struct_name: String, field: String },
+    MissingField { struct_name: &'h str, field: &'h str },
 
     #[diagnostic(
         message = "circular struct definition involving {name!}",
@@ -130,13 +127,13 @@ pub enum HirErrorKind<'h> {
         note = "break the cycle; a pointer or box type will be needed for recursive structs",
         help = "Nyx does not support self-referential or circular structs yet"
     )]
-    CircularStruct { name: String },
+    CircularStruct { name: &'h str },
 
     #[diagnostic(
         message = "wrong number of arguments to {name!}",
         primary = "{found} arguments provided, but {name!} expects {expected}"
     )]
-    ArityMismatch { name: String, expected: usize, found: usize },
+    ArityMismatch { name: &'h str, expected: usize, found: usize },
 
     #[diagnostic(
         message = "duplicate binding {name!}",
@@ -144,7 +141,7 @@ pub enum HirErrorKind<'h> {
         note = "re-declaring the same name in the same scope is not allowed",
         help = "use a different name, or shadow it in a nested block"
     )]
-    DuplicateBind { name: String },
+    DuplicateBind { name: &'h str },
 
     #[diagnostic(
         message = "missing initialiser for {name!}",
@@ -152,7 +149,7 @@ pub enum HirErrorKind<'h> {
         note = "Nyx cannot infer the type without an initial value to check against",
         help = "add a type annotation {`let {name}: <type>;`} or provide an initial value"
     )]
-    MissingInitialiser { name: String },
+    MissingInitialiser { name: &'h str },
 
     #[diagnostic(
         message = "method {name!} is missing a receiver",
@@ -160,7 +157,7 @@ pub enum HirErrorKind<'h> {
         help = "write {`fn {name}(&self, …)`}"
     )]
     #[allow(unused)]
-    MissingReceiver { name: String },
+    MissingReceiver { name: &'h str },
 
     #[diagnostic(
         message = "self receiver outside impl block",
@@ -182,10 +179,10 @@ pub enum HirErrorKind<'h> {
         note = "bindings are immutable by default",
         help = "declare it as mutable: {`let mut {name} = …`}"
     )]
-    ImmutableBind { name: String },
+    ImmutableBind { name: &'h str },
 
     #[diagnostic(transparent)]
-    ConstFnViolation(ConstFnViolationKind),
+    ConstFnViolation(ConstFnViolationKind<'h>),
 
     #[diagnostic(
         message = "invalid cast from {src!} to {target!}",
@@ -199,14 +196,14 @@ pub enum HirErrorKind<'h> {
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} interfaces"
     )]
-    DuplicateInterface { name: String },
+    DuplicateInterface { name: &'h str },
 
     #[diagnostic(
         message = "unknown interface {name!}",
         primary = "{name!} is not a known interface",
         help = "declare {`interface {name} { … }`} before using it"
     )]
-    UnknownInterface { name: String },
+    UnknownInterface { name: &'h str },
 
     #[diagnostic(
         message = "missing method {method_name!} required by interface {interface_name!}",
@@ -214,7 +211,7 @@ pub enum HirErrorKind<'h> {
         note = "{interface_name!} requires {`fn {method_name}(…)`}",
         help = "add {`fn {method_name}(…)`} to {`impl {struct_name} with {interface_name}`}"
     )]
-    MissingInterfaceMethod { struct_name: String, interface_name: String, method_name: String },
+    MissingInterfaceMethod { struct_name: &'h str, interface_name: &'h str, method_name: &'h str },
 
     #[diagnostic(
         message = "missing {superinterface_name!} implementation required by {interface_name!}",
@@ -223,9 +220,9 @@ pub enum HirErrorKind<'h> {
         help = "add {`impl {struct_name} with {superinterface_name} { … }`}"
     )]
     MissingSuperinterfaceImpl {
-        struct_name: String,
-        interface_name: String,
-        superinterface_name: String,
+        struct_name: &'h str,
+        interface_name: &'h str,
+        superinterface_name: &'h str,
     },
 
     #[diagnostic(
@@ -236,11 +233,11 @@ pub enum HirErrorKind<'h> {
         help = "update {method_name!} in {`impl {struct_name} with {interface_name}`} to match the interface"
     )]
     InterfaceSignatureMismatch {
-        struct_name: String,
-        interface_name: String,
-        method_name: String,
-        expected: String,
-        found: String,
+        struct_name: &'h str,
+        interface_name: &'h str,
+        method_name: &'h str,
+        expected: &'h str,
+        found: &'h str,
         impl_span: Span,
     },
 
@@ -248,14 +245,14 @@ pub enum HirErrorKind<'h> {
         message = "circular dependency in constant {name!}",
         primary = "constant {name!} depends on itself"
     )]
-    CircularConstant { name: String },
+    CircularConstant { name: &'h str },
 
     #[diagnostic(
         message = "duplicate constant {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} constants"
     )]
-    DuplicateConstant { name: String },
+    DuplicateConstant { name: &'h str },
 
     #[diagnostic(
         message = "type {type_name!} does not satisfy bound {bound_name!}",
@@ -263,17 +260,17 @@ pub enum HirErrorKind<'h> {
         help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
     )]
     #[allow(unused)]
-    UnsatisfiedBound { type_name: String, bound_name: String },
+    UnsatisfiedBound { type_name: Type, bound_name: &'h str },
 }
 
-#[derive(Debug, PartialEq, Clone, Diagnostic)]
-pub enum ConstFnViolationKind {
+#[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]
+pub enum ConstFnViolationKind<'h> {
     #[diagnostic(
         message = "cannot call non-const function {name!} from a const fn",
         primary = "{name!} is not a const function",
         help = "add {`const`} to {`fn {name}`}"
     )]
-    NonConstCall { name: String },
+    NonConstCall { name: &'h str },
 }
 
 impl<'h> HirError<'h> {
@@ -305,11 +302,3 @@ macro_rules! hir_error {
 }
 
 pub(in crate::hir) use hir_error;
-
-impl<'h> From<ParserError<'h>> for HirError<'h> {
-    fn from(value: ParserError<'h>) -> Self {
-        let span = value.span;
-
-        Self { kind: HirErrorKind::Parser(value), span }
-    }
-}

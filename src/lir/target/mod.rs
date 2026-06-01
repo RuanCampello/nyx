@@ -1,7 +1,7 @@
 use crate::{
     hir::{SyscallCode, Type, TypeKind},
-    lir::{self, BlockId, MachineType, VReg, regalloc},
-    mir::{self, Const, Layout, Operand, ValueId},
+    lir::{self, BlockId, Layouts, MachineType, VReg, regalloc},
+    mir::{self, Const, Operand, ValueId},
 };
 
 mod aarch64;
@@ -58,7 +58,8 @@ pub trait Lowerable: Target {
         function: &mir::Function,
         symbols: &[String],
         all_functions: &[mir::Function],
-        layouts: &[mir::Layout],
+        struct_layouts: &[mir::Layout],
+        enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self>;
 }
 
@@ -258,7 +259,6 @@ pub fn lower_operand<T: TargetOps>(
     lir: &mut lir::Function<T>,
     op: &Operand,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
-    _layouts: &[Layout],
 ) -> T::Operand
 where
     T::Operand: TargetOperand,
@@ -290,13 +290,13 @@ pub fn constant_mov<T: TargetOps>(
     lir: &mut lir::Function<T>,
     dest: VReg,
     c: &Const,
-    layouts: &[Layout],
+    layouts: Layouts,
 ) -> T::Instruction
 where
     T::Operand: TargetOperand,
 {
     let bytes = c.typ().machine_type(layouts).bytes();
-    let src = lower_operand(lir, &Operand::Const(*c), |_| unreachable!(), layouts);
+    let src = lower_operand(lir, &Operand::Const(*c), |_| unreachable!());
 
     T::mov_op(dest, src, bytes, c.typ().is_float())
 }
@@ -306,7 +306,7 @@ pub fn operand<T: TargetOps>(
     lir: &mut lir::Function<T>,
     op: &Operand,
     block: &BlockId,
-    layouts: &[Layout],
+    layouts: Layouts,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
 ) -> VReg
 where
@@ -352,14 +352,14 @@ pub fn lower_assign<T: TargetOps>(
     dest: VReg,
     typ: Type,
     op: &Operand,
-    layouts: &[Layout],
+    layouts: Layouts,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
     mut lower_operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
 ) -> Option<T::Instruction>
 where
     T::Operand: TargetOperand,
 {
-    if typ.is_aggregate() {
+    if typ.is_aggregate_lir(layouts) {
         if typ.kind() == TypeKind::Str && matches!(op, Operand::Const(Const::Str { .. })) {
             let Operand::Const(Const::Str { id: str_id, len }) = op else {
                 unreachable!()
@@ -397,7 +397,7 @@ pub fn prepare_call_args<T: TargetOps>(
     lir: &mut lir::Function<T>,
     block: &BlockId,
     args: &[Operand],
-    layouts: &[Layout],
+    layouts: Layouts,
     mut get_vreg: impl FnMut(ValueId) -> VReg,
     mut operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> VReg,
     mut lower_operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
@@ -412,7 +412,7 @@ where
     let mut stack_args = Vec::new();
 
     for arg in args {
-        if arg.typ().is_aggregate() {
+        if arg.typ().is_aggregate_lir(layouts) {
             let ptr = match arg {
                 Operand::Place(place) => stack_addr(lir, block, get_vreg(place.id)),
                 Operand::Const(Const::Str { id: str_id, len }) => {
@@ -462,7 +462,7 @@ pub fn prepare_syscall_args<T: TargetOps>(
     lir: &mut lir::Function<T>,
     block: &BlockId,
     args: &[Operand],
-    layouts: &[Layout],
+    layouts: Layouts,
     mut lower_operand_helper: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
 ) -> (Vec<(T::Operand, T::Reg, u8)>, Vec<VReg>)
 where

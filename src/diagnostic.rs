@@ -162,7 +162,7 @@ impl<'h> From<HirError<'h>> for Diagnostic {
 impl From<MirError> for Diagnostic {
     fn from(e: MirError) -> Self {
         match e.kind {
-            MirErrorKind::Hir(hir_err) => hir_err.into(),
+            MirErrorKind::Hir(diagnostic) => diagnostic,
         }
     }
 }
@@ -253,13 +253,12 @@ mod tests {
 
     fn hir_err(src: &str) -> hir::error::HirError<'static> {
         diagnostic::initialise(src, "<test>");
+        // Leak the source and arena so the borrowed error data lives for the whole
+        // (short-lived) test process, letting us return a genuinely `'static` error.
+        let src: &'static str = Box::leak(src.to_string().into_boxed_str());
+        let arena: &'static bumpalo::Bump = Box::leak(Box::new(bumpalo::Bump::new()));
         let statements = Parser::new(src).parse().expect("parse must succeed for hir tests");
-        let arena = bumpalo::Bump::new();
-        hir::lower(statements, &arena)
-            .map_err(|e| unsafe {
-                std::mem::transmute::<hir::error::HirError<'_>, hir::error::HirError<'static>>(e)
-            })
-            .unwrap_err()
+        hir::lower(statements, arena).unwrap_err()
     }
 
     fn parse_err(src: &str) -> parser::error::ParserError<'static> {
@@ -403,7 +402,7 @@ mod tests {
             "fn foo(): i32 { 1 }
          fn foo(): i32 { 2 }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateFunction { name: "foo".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateFunction { name: "foo" });
     }
 
     #[test]
@@ -415,20 +414,20 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::DuplicateMethod { struct_name: "Counter".into(), name: "get".into() }
+            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "get" }
         );
     }
 
     #[test]
     fn hir_undeclared_identifier() {
         let kind = hir_check!("fn main() { x + 1; }");
-        assert_eq!(kind, HirErrorKind::UndeclaredIdentifier { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::UndeclaredIdentifier { name: "x" });
     }
 
     #[test]
     fn hir_unknown_function() {
         let kind = hir_check!("fn main() { foo(); }");
-        assert_eq!(kind, HirErrorKind::UnknownFunction { name: "foo".into() });
+        assert_eq!(kind, HirErrorKind::UnknownFunction { name: "foo" });
     }
 
     #[test]
@@ -439,20 +438,20 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::UnknownMethod { struct_name: "Point".into(), name: "frobnicate".into() }
+            HirErrorKind::UnknownMethod { struct_name: "Point", name: "frobnicate" }
         );
     }
 
     #[test]
     fn hir_unknown_type_in_let() {
         let kind = hir_check!("fn main() { let x: Phantom = 1; }");
-        assert_eq!(kind, HirErrorKind::UnknownType { name: "Phantom".into() });
+        assert_eq!(kind, HirErrorKind::UnknownType { name: "Phantom" });
     }
 
     #[test]
     fn hir_unknown_type_in_param() {
         let kind = hir_check!("fn foo(x: Ghost): i32 { 0 }");
-        assert_eq!(kind, HirErrorKind::UnknownType { name: "Ghost".into() });
+        assert_eq!(kind, HirErrorKind::UnknownType { name: "Ghost" });
     }
 
     #[test]
@@ -461,13 +460,13 @@ mod tests {
             "struct Foo { x: i32 }
          struct Foo { y: i32 }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateStruct { name: "Foo".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateStruct { name: "Foo" });
     }
 
     #[test]
     fn hir_duplicate_field_in_struct() {
         let kind = hir_check!("struct Bad { x: i32, x: i64 }");
-        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x" });
     }
 
     #[test]
@@ -476,7 +475,7 @@ mod tests {
             "struct Point { x: i32, y: i32 }
          fn main() { let p = Point { x: 1, x: 2 }; }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateField { name: "x" });
     }
 
     #[test]
@@ -503,7 +502,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::UnknownField { struct_name: "Point".into(), field: "z".into() }
+            HirErrorKind::UnknownField { struct_name: "Point", field: "z" }
         );
     }
 
@@ -515,7 +514,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::MissingField { struct_name: "Point".into(), field: "y".into() }
+            HirErrorKind::MissingField { struct_name: "Point", field: "y" }
         );
     }
 
@@ -525,7 +524,7 @@ mod tests {
             "struct A { b: B }
          struct B { a: A }"
         );
-        assert_eq!(kind, HirErrorKind::CircularStruct { name: "A".into() });
+        assert_eq!(kind, HirErrorKind::CircularStruct { name: "A" });
     }
 
     #[test]
@@ -536,7 +535,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 3 }
+            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 }
         );
     }
 
@@ -548,7 +547,7 @@ mod tests {
         );
         assert_eq!(
             kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add".into(), expected: 2, found: 1 }
+            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 1 }
         );
     }
 
@@ -559,7 +558,7 @@ mod tests {
          impl Counter { fn add(&mut self, delta: i32) { self.value = self.value + delta; } }
          fn main() { let mut c = Counter { value: 0 }; c.add(1, 2); }"
         );
-        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "add".into(), expected: 1, found: 2 });
+        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "add", expected: 1, found: 2 });
     }
 
     #[test]
@@ -570,13 +569,13 @@ mod tests {
              let x: i32 = 2;
          }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateBind { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateBind { name: "x" });
     }
 
     #[test]
     fn hir_missing_initialiser() {
         let kind = hir_check!("fn main() { let x; }");
-        assert_eq!(kind, HirErrorKind::MissingInitialiser { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::MissingInitialiser { name: "x" });
     }
 
     #[test]
@@ -645,7 +644,7 @@ mod tests {
              x = 2;
          }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "x".into() });
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "x" });
     }
 
     #[test]
@@ -654,7 +653,7 @@ mod tests {
             "struct Counter { value: i32 }
          impl Counter { fn bad(&self) { self.value = 1; } }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "self".into() });
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "self" });
     }
 
     #[test]
@@ -667,7 +666,7 @@ mod tests {
              c.inc();
          }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "c".into() });
+        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "c" });
     }
 
     #[test]
@@ -694,7 +693,7 @@ mod tests {
             "interface Greet { fn hello(&self); }
          interface Greet { fn bye(&self); }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateInterface { name: "Greet".into() });
+        assert_eq!(kind, HirErrorKind::DuplicateInterface { name: "Greet" });
     }
 
     #[test]
@@ -703,13 +702,13 @@ mod tests {
             "struct Foo { x: i32 }
          impl Foo with Ghost { fn hello(&self) { } }"
         );
-        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "Ghost".into() });
+        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "Ghost" });
     }
 
     #[test]
     fn hir_unknown_interface_in_superinterface() {
         let kind = hir_check!("interface Child: NonExistent { fn method(&self); }");
-        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "NonExistent".into() });
+        assert_eq!(kind, HirErrorKind::UnknownInterface { name: "NonExistent" });
     }
 
     #[test]
@@ -725,9 +724,9 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::MissingInterfaceMethod {
-                struct_name: "Foo".into(),
-                interface_name: "Greet".into(),
-                method_name: "bye".into(),
+                struct_name: "Foo",
+                interface_name: "Greet",
+                method_name: "bye",
             }
         );
     }
@@ -743,9 +742,9 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::MissingSuperinterfaceImpl {
-                struct_name: "Foo".into(),
-                interface_name: "Derived".into(),
-                superinterface_name: "Base".into(),
+                struct_name: "Foo",
+                interface_name: "Derived",
+                superinterface_name: "Base",
             }
         );
     }
@@ -763,7 +762,7 @@ mod tests {
             interface_name,
             method_name,
             ..
-        } = &kind
+        } = kind
         {
             assert_eq!(struct_name, "Rect");
             assert_eq!(interface_name, "Shape");
@@ -779,7 +778,7 @@ mod tests {
          impl Foo with Namer { fn name(&self, extra: i32): i32 { extra } }"
         );
         assert!(matches!(kind, HirErrorKind::InterfaceSignatureMismatch { .. }), "got {kind:?}");
-        if let HirErrorKind::InterfaceSignatureMismatch { method_name, .. } = &kind {
+        if let HirErrorKind::InterfaceSignatureMismatch { method_name, .. } = kind {
             assert_eq!(method_name, "name");
         }
     }

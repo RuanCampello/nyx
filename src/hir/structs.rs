@@ -60,10 +60,7 @@ pub(in crate::hir) fn lower_struct<'h>(
         Visit::Visited => return Ok(()),
         Visit::Visiting => {
             let (_, declaration) = declarations[id];
-            return Err(hir_error!(
-                declaration.span,
-                CircularStruct { name: declaration.name.into() }
-            ));
+            return Err(hir_error!(declaration.span, CircularStruct { name: declaration.name }));
         },
         Visit::Unvisited => {},
     }
@@ -76,7 +73,7 @@ pub(in crate::hir) fn lower_struct<'h>(
     for field in &declaration.fields {
         let field_symbol = symbols.get_id(field.name).unwrap();
         if !seen.insert(field_symbol) {
-            return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
+            return Err(hir_error!(field.span, DuplicateField { name: field.name }));
         }
 
         let ctx = type_resolver::ResolveCtx::root(symbols, map, enum_map);

@@ -13,7 +13,7 @@ use std::{
 };
 
 /// **std** modules loaded eagerly so their inherent methods and interface are always in scope without an explicit `use`
-const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx"];
+const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx", "cmp.nyx"];
 
 #[derive(Debug)]
 pub(super) struct ModuleGraph<'src> {

@@ -167,12 +167,14 @@ fn specialise<'hir>(
     });
     scope.functions.insert(name, id);
 
-    let env = template
-        .generics
-        .iter()
-        .zip(args)
-        .map(|(generic, &typ)| (generic.name.to_string(), typ))
-        .collect();
+    let env = scope.generic_fn_envs.get(template_id).cloned().unwrap_or_else(|| {
+        template
+            .generics
+            .iter()
+            .zip(args)
+            .map(|(generic, &typ)| (generic.name.to_string(), typ))
+            .collect()
+    });
 
     // TODO(advanced-generics): `in_std` is hard-coded `false` because templates do
     // not currently record their origin module, a generic std helper that lowers a

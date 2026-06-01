@@ -35,10 +35,13 @@ pub(super) fn lower_reachable<'hir, 'src>(
     graph: &mut ModuleGraph<'src>,
     order: &[usize],
     interfaces: &HashMap<String, Interface<'src>>,
-    scope: &Scope<'hir>,
+    scope: &mut Scope<'hir>,
     symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
-) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError> {
+) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError>
+where
+    'src: 'hir,
+{
     let demand = build_demand(graph, order, interfaces, scope, symbols)?;
     let mut functions = IndexVec::new();
 

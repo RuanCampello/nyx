@@ -106,7 +106,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         Self {
             resolver: ModuleResolver::new(name, canonical_root, canonical_std),
             fs,
-            scope: Scope::new(),
+            scope: Scope::new(arena),
             symbols: SymbolTable::new(),
             arena,
         }
@@ -125,7 +125,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         let interfaces =
             signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
         let functions =
-            demand::lower_reachable(graph, &order, &interfaces, &self.scope, symbols, arena)?;
+            demand::lower_reachable(graph, &order, &interfaces, &mut self.scope, symbols, arena)?;
         let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)
             .map_err(Diagnostic::from)?;
 
@@ -830,7 +830,11 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.enums.len(), 1);
+        assert!(
+            hir.enums
+                .iter()
+                .any(|e| hir.symbols[e.name.0.into_usize()] == "Status")
+        );
         let main_fn = hir
             .functions
             .iter()
@@ -889,7 +893,7 @@ mod tests {
             );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.enums.len(), 1);
+        assert_eq!(hir.enums.len(), 6);
         assert!(
             hir.functions
                 .iter()
