@@ -126,6 +126,8 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
         let functions =
             demand::lower_reachable(graph, &order, &interfaces, &self.scope, symbols, arena)?;
+        let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)
+            .map_err(Diagnostic::from)?;
 
         Ok(Hir {
             functions,

@@ -40,7 +40,8 @@ pub struct Scope<'hir> {
 
     pub generic_structs: HashMap<SymbolId, statement::Struct<'hir>>,
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
-    pub generic_fns: HashMap<SymbolId, statement::Function<'hir>>,
+    /// Generic free-function templates keyed by the [`FunctionId`] of their (open) signature.
+    pub generic_fns: HashMap<FunctionId, statement::Function<'hir>>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
 }
 
@@ -392,7 +393,27 @@ impl<'hir> Scope<'hir> {
             }
 
             if !function.generics.is_empty() {
-                self.generic_fns.insert(symbol, (*function).clone());
+                let env = generic_param_env(&function.generics);
+                let params = self.resolve_params(&function.params, symbols, None, Some(&env))?;
+                let return_type = self.resolve_return_type(
+                    function.return_type.as_ref(),
+                    symbols,
+                    None,
+                    Some(&env),
+                )?;
+
+                let sig = FunctionSignature {
+                    name: symbol,
+                    params,
+                    return_type,
+                    kind: FunctionKind::Free,
+                    is_const: function.is_const,
+                    inline: function.inline,
+                };
+                let id = self.push_signature(sig);
+                self.functions.insert(symbol, id);
+                self.generic_fns.insert(id, (*function).clone());
+
                 continue;
             }
 
@@ -964,7 +985,12 @@ impl<'hir> Scope<'hir> {
         Ok(Type::new(TypeKind::Struct(id)))
     }
 
-    fn mangle_generic(&self, base: &str, args: &[Type], symbols: &SymbolTable) -> String {
+    pub(in crate::hir) fn mangle_generic(
+        &self,
+        base: &str,
+        args: &[Type],
+        symbols: &SymbolTable,
+    ) -> String {
         let mut mangled = String::from(base);
         for &arg in args {
             mangled.push('$');
@@ -1005,7 +1031,7 @@ impl<'hir> Scope<'hir> {
 
     /// push a new function signature and returns its assigned [`FunctionId`]
     #[inline]
-    fn push_signature(&mut self, signature: FunctionSignature) -> FunctionId {
+    pub(in crate::hir) fn push_signature(&mut self, signature: FunctionSignature) -> FunctionId {
         let id = FunctionId(self.signatures.len() as u32);
         self.signatures.push(signature);
         id
@@ -1143,6 +1169,16 @@ fn build_substitution(
     args: &[Type],
 ) -> HashMap<String, Type> {
     generics.iter().zip(args).map(|(g, &arg)| (g.name.to_string(), arg)).collect()
+}
+
+pub(in crate::hir) fn generic_param_env(
+    generics: &[statement::GenericBound<'_>],
+) -> HashMap<String, Type> {
+    generics
+        .iter()
+        .enumerate()
+        .map(|(i, g)| (g.name.to_string(), Type::new(TypeKind::GenericParam(i as u8))))
+        .collect()
 }
 
 fn primitive_mangle<'s>(kind: TypeKind) -> &'s str {

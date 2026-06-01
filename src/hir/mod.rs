@@ -31,6 +31,7 @@ pub mod index_vec;
 mod interfaces;
 mod lower;
 pub(crate) mod module;
+mod mono;
 mod scope;
 mod structs;
 mod symbols;
@@ -342,6 +343,7 @@ pub fn lower<'hir>(
     scope.extend(&declarations, &mut symbols, false, arena)?;
 
     let functions = scope.lower_functions(&declarations, &mut symbols, false, arena)?;
+    let functions = mono::monomorphise(functions, &mut scope, &mut symbols, arena)?;
 
     Ok(Hir {
         symbols: symbols.into_symbols(),
@@ -1588,5 +1590,55 @@ mod tests {
         assert_eq!(arms.len(), 2);
         assert!(arms[0].guard.is_some(), "first arm must have a guard");
         assert!(arms[1].guard.is_none(), "wildcard arm must have no guard");
+    }
+
+    #[test]
+    fn generic_free_function_is_monomorphised() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn pick<T>(a: T, b: T): T { a }
+            fn main(): i32 { pick(7, 9) }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+
+        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+
+        let pick = hir
+            .functions
+            .iter()
+            .find(|f| name(f).contains("pick$i32"))
+            .expect("specialised pick$i32 instance");
+        assert_eq!(pick.params[0].typ, Type::new(TypeKind::I32));
+        assert_eq!(pick.return_type, Type::new(TypeKind::I32));
+        assert!(
+            hir.functions.iter().all(|f| !name(f).ends_with("pick")),
+            "the open template body must not be emitted"
+        );
+
+        let main = hir.functions.iter().find(|f| name(f) == "nyx::main").unwrap();
+        let call = match &main.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected return, got {other:?}"),
+        };
+        assert!(matches!(call.kind, ExpressionKind::Call { .. }));
+        assert_eq!(main.typeck.type_dependent_def(call.id), Some(pick.id));
+    }
+
+    #[test]
+    fn generic_turbofish_selects_instance() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn id<T>(x: T): T { x }
+            fn main(): i64 { id::<i64>(5) }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+
+        let instance = hir
+            .functions
+            .iter()
+            .find(|f| name(f).contains("id$i64"))
+            .expect("specialised id$i64 instance");
+        assert_eq!(instance.params[0].typ, Type::new(TypeKind::I64));
     }
 }

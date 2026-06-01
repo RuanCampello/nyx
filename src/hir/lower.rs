@@ -38,6 +38,10 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
+    /// Maps a generic parameter name (`T`) to the concrete type it was instantiated
+    /// with, when re-lowering a generic template body for a concrete instance. Empty
+    /// for ordinary (non-instance) lowering
+    generic_env: HashMap<String, Type>,
 }
 
 /// A freshly lowered expression
@@ -79,7 +83,22 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             scopes: vec![HashMap::new()],
             self_type,
             arena,
+            generic_env: HashMap::new(),
         }
+    }
+
+    pub fn new_instance(
+        scope: &'s Scope<'hir>,
+        symbols: &'s mut SymbolTable,
+        function_id: FunctionId,
+        function: &'f statement::Function<'src>,
+        in_std: bool,
+        arena: &'hir bumpalo::Bump,
+        generic_env: HashMap<String, Type>,
+    ) -> Self {
+        let mut builder = Self::new(scope, symbols, function_id, function, in_std, arena);
+        builder.generic_env = generic_env;
+        builder
     }
 
     pub fn new_for_const(
@@ -103,6 +122,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             scopes: vec![HashMap::new()],
             self_type: None,
             arena,
+            generic_env: HashMap::new(),
         }
     }
 
@@ -936,7 +956,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     },
                 };
 
-                self.lower_direct_call(function_id, args, type_args, *span)
+                match self.scope.generic_fns.contains_key(&function_id) {
+                    true => self.lower_generic_call(function_id, args, type_args, *span),
+                    false => self.lower_direct_call(function_id, args, type_args, *span),
+                }
             },
 
             Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
@@ -947,7 +970,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
                     })?;
 
-                self.lower_direct_call(id, args, type_args, *span)
+                match self.scope.generic_fns.contains_key(&id) {
+                    true => self.lower_generic_call(id, args, type_args, *span),
+                    false => self.lower_direct_call(id, args, type_args, *span),
+                }
             },
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
@@ -1279,6 +1305,75 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             .collect()
     }
 
+    /// Lower a call to a generic free function (a template with an open,
+    /// `GenericParam`-typed signature). The concrete type arguments come from an
+    /// explicit turbofish, or are inferred by unifying the open parameter types
+    /// against the lowered argument types. The resolved target id and the
+    /// substitutions are recorded in the side-tables; `crate::hir::mono` later emits
+    /// one specialised body per distinct `(function, type_args)`.
+
+    // TODO(advanced-generics): inference here only recovers a `GenericParam` that
+    // appears *bare* (`T`) or directly under a reference (`&T`). It cannot see a
+    // parameter buried inside a generic aggregate argument (`b: &Box<T>`), because
+    // the name-mangling model erases `T` into a distinct concrete type (`Box$i32`
+    // vs the template's `Box$T0`) — the `T` is no longer present in the `Type` to
+    // unify against, so such calls must use an explicit turbofish for now.
+    //
+    // rustc avoids this entirely: an argument's type is `Adt(Box, [Param(0)])`, so
+    // unifying `Adt(Box, [Param(0)])` against `Adt(Box, [i32])` trivially recovers
+    // `Param(0) = i32`. The fix is the `Adt(id, GenericArgsId)`:
+    // keep generic args *in* the type and unify structurally,
+    // instead of materialising a fresh concrete def per instantiation. See the
+    // module-level TODO in `crate::hir::mono`
+    fn lower_generic_call(
+        &mut self,
+        function_id: FunctionId,
+        args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'src>> {
+        let (callee_name, arity, open_return) = {
+            let signature = &self.scope.signatures[function_id];
+            (signature.name, signature.params.len(), signature.return_type)
+        };
+        let generic_count = self.scope.generic_fns[&function_id].generics.len();
+
+        if arity != args.len() {
+            let name = self.symbols.get(callee_name).to_string();
+            return Err(hir_error!(
+                span,
+                ArityMismatch { name, expected: arity, found: args.len() }
+            ));
+        }
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            let lowered = self.lower_expr(arg, None)?;
+            arg_types.push(lowered.typ);
+            lowered_args.push(lowered.expr);
+        }
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+
+        let substs = match type_args.is_empty() {
+            false => self.resolve_turbofish(type_args)?,
+            true => {
+                let open_params = &self.scope.signatures[function_id].params;
+                infer_type_args(open_params, &arg_types, generic_count)
+            },
+        };
+
+        let return_type = open_return.subst(&substs);
+        let callee = self.alloc(ExpressionKind::Path(callee_name), Type::default(), span).expr;
+        let lowered =
+            self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
+
+        self.typeck.type_dependent_defs.insert(lowered.expr.id, function_id);
+        self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+
+        Ok(lowered)
+    }
+
     fn lower_syscall(
         &mut self,
         args: &[expression::Expression<'src>],
@@ -1420,6 +1515,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     ) -> Result<Type, HirError<'src>> {
         match typ {
             statement::Type::Named(name) => {
+                if let Some(&typ) = self.generic_env.get(*name) {
+                    return Ok(typ);
+                }
+
                 let symbol = self.symbols.insert(name);
                 self.scope
                     .nominal_type(symbol)
@@ -1552,6 +1651,31 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
     #[inline(always)]
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+}
+
+fn infer_type_args(open_params: &[Type], arg_types: &[Type], count: usize) -> Vec<Type> {
+    let mut bindings = vec![None; count];
+    for (&param, &actual) in open_params.iter().zip(arg_types) {
+        unify_generic(param, actual, &mut bindings);
+    }
+    bindings.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
+    let slot = match param.kind() {
+        TypeKind::GenericParam(i) => bindings.get_mut(i as usize).map(|slot| (slot, actual)),
+        TypeKind::Ref { to, .. } => match to.kind() {
+            RefTargetKind::GenericParam(i) => {
+                bindings.get_mut(i as usize).map(|slot| (slot, actual.strip_reference()))
+            },
+            _ => None,
+        },
+        _ => None,
+    };
+
+    if let Some((slot, value)) = slot {
+        slot.get_or_insert(value);
     }
 }
 
