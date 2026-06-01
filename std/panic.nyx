@@ -10,3 +10,9 @@ pub fn assert(condition: bool) {
         panic("assertion failed");
     }
 }
+
+pub fn assert_eq<A, B>(left: A, right: B) where A: PartialEq<B> {
+    if left != right {
+        panic("assertion failed: values are not equal");
+    }
+}

@@ -1,4 +1,3 @@
-use std::panic::{assert};
 use std::optional::{Optional};
 
 pub interface PartialEq<Rhs> {
@@ -56,8 +55,6 @@ pub interface Orderable: PartialOrd {
     }
 
     inline fn clamp(self, min: Self, max: Self): Self {
-        assert(min <= max);
-
         if self < min return min;
         else if self > max return max;
         else return self;
