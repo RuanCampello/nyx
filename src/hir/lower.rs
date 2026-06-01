@@ -11,7 +11,7 @@ use crate::{
         symbols::Mangler,
         type_resolver::{self, resolve_annotation},
     },
-    lexer::token::Span,
+    lexer::{Spanned, token::Span},
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
         statement::{self, Else, PatternLit},
@@ -187,7 +187,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         )?;
 
         self.pop_scope();
-        let statements = self.arena.alloc_slice_clone(&statements_vec);
+        let statements = self.arena.alloc_slice_copy(&statements_vec);
         Ok((Block { statements, span: block.span }, returns))
     }
 
@@ -274,6 +274,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             Stmt::Match(statement) => {
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
+
                 Ok(match tail_ret {
                     true => {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
@@ -330,102 +331,106 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let kind = match &expr.kind {
             Kind::Literal(lit) => Kind::Literal(*lit),
             Kind::Local(id) => Kind::Local(*id),
-            Kind::Unary { operator, expr: inner } => {
-                let inner_copied = self.splice_const(inner, const_typeck, span);
-                Kind::Unary { operator: *operator, expr: inner_copied.expr }
+            Kind::Unary { operator, expr } => {
+                let expr = self.splice_const(expr, const_typeck, span);
+                Kind::Unary { operator: *operator, expr: expr.expr }
             },
             Kind::Binary { operator, left, right } => {
-                let left_copied = self.splice_const(left, const_typeck, span);
-                let right_copied = self.splice_const(right, const_typeck, span);
-                Kind::Binary {
-                    operator: *operator,
-                    left: left_copied.expr,
-                    right: right_copied.expr,
-                }
+                let left = self.splice_const(left, const_typeck, span);
+                let right = self.splice_const(right, const_typeck, span);
+                Kind::Binary { operator: *operator, left: left.expr, right: right.expr }
             },
             Kind::Field { base, field } => {
-                let base_copied = self.splice_const(base, const_typeck, span);
-                Kind::Field { base: base_copied.expr, field: *field }
+                let base = self.splice_const(base, const_typeck, span);
+                Kind::Field { base: base.expr, field: *field }
             },
             Kind::Assign { target, value } => {
-                let target_copied = self.splice_const(target, const_typeck, span);
-                let value_copied = self.splice_const(value, const_typeck, span);
-                Kind::Assign { target: target_copied.expr, value: value_copied.expr }
+                let target = self.splice_const(target, const_typeck, span);
+                let value = self.splice_const(value, const_typeck, span);
+                Kind::Assign { target: target.expr, value: value.expr }
             },
-            Kind::MethodCall { function, receiver, args } => {
-                let receiver_copied = self.splice_const(receiver, const_typeck, span);
-                let args_copied = args
+            Kind::Path(symbol) => Kind::Path(*symbol),
+            Kind::MethodCall { name, receiver, args } => {
+                let receiver = self.splice_const(receiver, const_typeck, span);
+                let args = args
                     .iter()
                     .map(|arg| self.splice_const(arg, const_typeck, span).expr)
                     .collect::<Vec<_>>();
-                let args_ref = self.arena.alloc_slice_clone(&args_copied);
-                Kind::MethodCall {
-                    function: *function,
-                    receiver: receiver_copied.expr,
-                    args: args_ref,
-                }
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::MethodCall { name: *name, receiver: receiver.expr, args }
             },
             Kind::Struct { id, fields } => {
-                let fields_copied = fields
+                let fields = fields
                     .iter()
                     .map(|(sym, val)| (*sym, self.splice_const(val, const_typeck, span).expr))
                     .collect::<Vec<_>>();
-                let fields_ref = self.arena.alloc_slice_clone(&fields_copied);
-                Kind::Struct { id: *id, fields: fields_ref }
+                let fields = self.arena.alloc_slice_copy(&fields);
+                Kind::Struct { id: *id, fields }
             },
-            Kind::Call { function, args } => {
-                let args_copied = args
+            Kind::Call { callee, args } => {
+                let callee = self.splice_const(callee, const_typeck, span);
+                let args = args
                     .iter()
                     .map(|arg| self.splice_const(arg, const_typeck, span).expr)
                     .collect::<Vec<_>>();
-                let args_ref = self.arena.alloc_slice_clone(&args_copied);
-                Kind::Call { function: *function, args: args_ref }
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::Call { callee: callee.expr, args }
             },
             Kind::Syscall { code, args } => {
-                let args_copied = args
+                let args = args
                     .iter()
                     .map(|arg| self.splice_const(arg, const_typeck, span).expr)
                     .collect::<Vec<_>>();
-                let args_ref = self.arena.alloc_slice_clone(&args_copied);
-                Kind::Syscall { code: *code, args: args_ref }
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::Syscall { code: *code, args }
             },
             Kind::IntrinsicCall { intrinsic, args } => {
-                let args_copied = args
+                let args = args
                     .iter()
                     .map(|arg| self.splice_const(arg, const_typeck, span).expr)
                     .collect::<Vec<_>>();
-                let args_ref = self.arena.alloc_slice_clone(&args_copied);
-                Kind::IntrinsicCall { intrinsic: *intrinsic, args: args_ref }
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::IntrinsicCall { intrinsic: *intrinsic, args }
             },
             Kind::TypeIntrinsic { kind, typ } => Kind::TypeIntrinsic { kind: *kind, typ: *typ },
             Kind::Cast { from, to } => {
-                let from_copied = self.splice_const(from, const_typeck, span);
-                Kind::Cast { from: from_copied.expr, to: *to }
+                let from = self.splice_const(from, const_typeck, span);
+                Kind::Cast { from: from.expr, to: *to }
             },
             Kind::Match { scrutinee, arms } => {
-                let scrutinee_copied = self.splice_const(scrutinee, const_typeck, span);
+                let scrutinee = self.splice_const(scrutinee, const_typeck, span);
                 let mut arms_copied = Vec::with_capacity(arms.len());
+
                 for arm in *arms {
-                    let pattern_copied = self.splice_pattern(arm.pattern, const_typeck, span);
-                    let guard_copied =
-                        arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
-                    let body_copied = self.splice_const(arm.body, const_typeck, span);
+                    let pattern = self.splice_pattern(arm.pattern, const_typeck, span);
+                    let guard = arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
+                    let body = self.splice_const(arm.body, const_typeck, span);
                     arms_copied.push(Arm {
-                        pattern: self.arena.alloc(pattern_copied),
-                        guard: guard_copied,
-                        body: body_copied.expr,
+                        pattern: self.arena.alloc(pattern),
+                        guard,
+                        body: body.expr,
                         span: arm.span,
                     });
                 }
                 Kind::Match {
-                    scrutinee: scrutinee_copied.expr,
-                    arms: self.arena.alloc_slice_clone(&arms_copied),
+                    scrutinee: scrutinee.expr,
+                    arms: self.arena.alloc_slice_copy(&arms_copied),
                 }
             },
         };
 
         let typ = const_typeck.type_of(expr.id);
-        self.alloc(kind, typ, span)
+        let lowered = self.alloc(kind, typ, span);
+
+        // carry over the resolved call target / substitutions for spliced calls
+        const_typeck
+            .type_dependent_def(expr.id)
+            .and_then(|def| self.typeck.type_dependent_defs.insert(lowered.expr.id, def));
+        const_typeck.type_dependent_substs(expr.id).and_then(|substs| {
+            self.typeck.type_dependent_substs.insert(lowered.expr.id, substs.to_vec())
+        });
+
+        lowered
     }
 
     fn splice_pattern(
@@ -441,14 +446,14 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             PatternKind::Or(pats) => {
                 let spliced: Vec<_> =
                     pats.iter().map(|p| self.splice_pattern(p, const_typeck, span)).collect();
-                PatternKind::Or(self.arena.alloc_slice_clone(&spliced))
+                PatternKind::Or(self.arena.alloc_slice_copy(&spliced))
             },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
-                let sub_spliced = sub.map(|s| {
+                let sub = sub.map(|s| {
                     let spliced = self.splice_pattern(s, const_typeck, span);
                     &*self.arena.alloc(spliced)
                 });
-                PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub: sub_spliced }
+                PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub }
             },
         };
         Pattern { kind, span: pat.span }
@@ -803,9 +808,9 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     }
                 }
 
-                let fields_slice = self.arena.alloc_slice_clone(&lowered);
+                let fields = self.arena.alloc_slice_copy(&lowered);
                 Ok(self.alloc(
-                    ExpressionKind::Struct { id, fields: fields_slice },
+                    ExpressionKind::Struct { id, fields },
                     Type::new(TypeKind::Struct(id)),
                     *span,
                 ))
@@ -828,7 +833,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 ))
             },
 
-            Expr::Call { callee, args, span, type_args: _ } => {
+            Expr::Call { callee, args, span, type_args } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let receiver_lowered = self.lower_expr(receiver, None)?;
                     let base_local = place_base_local(receiver_lowered.expr);
@@ -895,17 +900,25 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
-                    let lowered_args_ref = self.arena.alloc_slice_clone(&lowered_args);
+                    let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
                     let return_type = signature.return_type;
-                    return Ok(self.alloc(
+                    let substs = self.resolve_turbofish(type_args)?;
+
+                    let lowered = self.alloc(
                         ExpressionKind::MethodCall {
-                            function,
+                            name: method_symbol,
                             receiver: receiver_lowered.expr,
-                            args: lowered_args_ref,
+                            args: lowered_args,
                         },
                         return_type,
                         *span,
-                    ));
+                    );
+                    self.typeck.type_dependent_defs.insert(lowered.expr.id, function);
+                    if !substs.is_empty() {
+                        self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+                    }
+
+                    return Ok(lowered);
                 }
 
                 let function_id = match callee.as_ref() {
@@ -923,10 +936,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     },
                 };
 
-                self.lower_direct_call(function_id, args, *span)
+                self.lower_direct_call(function_id, args, type_args, *span)
             },
 
-            Expr::QualifiedCall { qualifier, name, args, span, type_args: _ } => {
+            Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
                 let id = self
                     .scope
                     .resolve_function_call(Some(qualifier), name, self.symbols)
@@ -934,7 +947,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                         hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
                     })?;
 
-                self.lower_direct_call(id, args, *span)
+                self.lower_direct_call(id, args, type_args, *span)
             },
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
@@ -979,7 +992,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
 
             let pattern =
                 self.lower_pattern(scrutinee.typ, arm.pattern.value_ref(), arm.pattern.span())?;
-            let pattern_ref = self.arena.alloc(pattern);
+            let pattern = self.arena.alloc(pattern);
 
             let guard = arm.guard.as_ref().map(|g| self.lower_expr(g, None)).transpose()?;
             if let Some(ref g) = guard {
@@ -997,7 +1010,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             self.pop_scope();
 
             arms.push(Arm {
-                pattern: pattern_ref,
+                pattern,
                 guard: guard.map(|g| g.expr),
                 body: body.expr,
                 span: arm.span,
@@ -1005,10 +1018,10 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         }
 
         let return_type = unified_type.unwrap_or(Type::new(TypeKind::Unit));
+        let arms = self.arena.alloc_slice_copy(&arms);
 
-        let arms_ref = self.arena.alloc_slice_clone(&arms);
         Ok(self.alloc(
-            ExpressionKind::Match { scrutinee: scrutinee.expr, arms: arms_ref },
+            ExpressionKind::Match { scrutinee: scrutinee.expr, arms },
             return_type,
             match_stmt.span,
         ))
@@ -1038,7 +1051,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                     .iter()
                     .map(|alt| self.lower_pattern(scrutinee_type, alt.value_ref(), alt.span()))
                     .collect::<Result<_, _>>()?;
-                let slice = self.arena.alloc_slice_clone(&lowered);
+                let slice = self.arena.alloc_slice_copy(&lowered);
                 Ok(Pattern { kind: PatternKind::Or(slice), span })
             },
 
@@ -1134,7 +1147,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 match else_branch.as_ref() {
                     Else::If(block) => {
                         let (statement, returns) = self.lower_if(block, is_tail)?;
-                        let statements = self.arena.alloc_slice_clone(&[statement]);
+                        let statements = self.arena.alloc_slice_copy(&[statement]);
                         let block = Block { span: block.span, statements };
 
                         Ok((Some(block), returns))
@@ -1159,7 +1172,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                             _ => Statement::Expr(lowered.expr),
                         };
 
-                        let statements = self.arena.alloc_slice_clone(&[stmt]);
+                        let statements = self.arena.alloc_slice_copy(&[stmt]);
                         let block = Block { statements, span };
                         Ok((Some(block), tail_ret))
                     },
@@ -1178,6 +1191,7 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         &mut self,
         function_id: FunctionId,
         args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
     ) -> Result<Lowered<'hir>, HirError<'src>> {
         let signature = &self.scope.signatures[function_id];
@@ -1220,16 +1234,49 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             },
         }
 
-        let lowered_args_slice = self.arena.alloc_slice_clone(&lowered_args);
-        let kind = match intrinsic {
-            Some(intrinsic) => {
-                ExpressionKind::IntrinsicCall { intrinsic, args: lowered_args_slice }
-            },
-            _ => ExpressionKind::Call { function: function_id, args: lowered_args_slice },
-        };
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+        let (callee_name, return_type) = (signature.name, signature.return_type);
 
-        let return_type = signature.return_type;
-        Ok(self.alloc(kind, return_type, span))
+        if let Some(intrinsic) = intrinsic {
+            let kind = ExpressionKind::IntrinsicCall { intrinsic, args: lowered_args };
+            return Ok(self.alloc(kind, return_type, span));
+        }
+
+        let callee = self.alloc(ExpressionKind::Path(callee_name), Type::default(), span).expr;
+        let substs = self.resolve_turbofish(type_args)?;
+        let lowered =
+            self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
+
+        self.typeck.type_dependent_defs.insert(lowered.expr.id, function_id);
+        if !substs.is_empty() {
+            self.typeck.type_dependent_substs.insert(lowered.expr.id, substs);
+        }
+
+        Ok(lowered)
+    }
+
+    /// Resolve explicit turbofish `type_args` to concrete HIR types
+    fn resolve_turbofish(
+        &self,
+        type_args: &[Spanned<statement::Type<'src>>],
+    ) -> Result<Vec<Type>, HirError<'src>> {
+        if type_args.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ctx = type_resolver::ResolveCtx::root(
+            self.symbols,
+            &self.scope.struct_map,
+            &self.scope.enum_map,
+        );
+        if let Some(typ) = self.self_type {
+            ctx = ctx.with_self(typ);
+        }
+
+        type_args
+            .iter()
+            .map(|t| resolve_annotation(&ctx, &t.value(), t.span()))
+            .collect()
     }
 
     fn lower_syscall(
@@ -1266,13 +1313,13 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
         let code = SyscallCode::from_str(name)
             .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name: name.to_string() }))?;
 
-        let args_vec = value_args
+        let args = value_args
             .iter()
             .map(|arg| self.lower_expr(arg, None).map(|lowered| lowered.expr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let args_slice = self.arena.alloc_slice_clone(&args_vec);
-        Ok(self.alloc(ExpressionKind::Syscall { code, args: args_slice }, return_type, span))
+        let args = self.arena.alloc_slice_copy(&args);
+        Ok(self.alloc(ExpressionKind::Syscall { code, args }, return_type, span))
     }
 
     #[inline]
@@ -1414,9 +1461,6 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                 Ok(Type::new(TypeKind::Ref { mutable: false, to }))
             },
 
-            // Named / Ref / Self / RefSelf are handled above; the remainder are primitives.
-            // `Generic` would only land here if monomorphisation skipped this site — that's
-            // a compiler bug, not user-reachable, so error visibly rather than panicking.
             other => Type::from_primitive_ast(other)
                 .ok_or_else(|| hir_error!(span, UnknownType { name: format!("{other:?}") })),
         }

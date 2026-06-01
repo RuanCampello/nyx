@@ -1,7 +1,7 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     diagnostic::{self, Diagnostic},
-    hir::{Declarations, SymbolTable, monomorph, scope::Scope},
+    hir::{Declarations, SymbolTable, scope::Scope},
     parser::statement::{Interface, Statement},
 };
 use std::collections::HashMap;
@@ -14,23 +14,6 @@ pub(super) fn build_signatures<'hir>(
     arena: &'hir bumpalo::Bump,
 ) -> Result<HashMap<String, Interface<'hir>>, ModuleError> {
     let interfaces = collect_interfaces(graph);
-
-    // FIXME: we can do this better in the future but be it for now :/
-
-    let mut templates = monomorph::Templates::default();
-    for &idx in order {
-        let node = &mut graph.nodes[idx];
-        monomorph::extract_templates(&mut node.statements, &mut templates);
-    }
-
-    // run monomorphization on each non-std module before scope-extending
-    for &idx in order {
-        let node = &mut graph.nodes[idx];
-        if !node.in_std {
-            monomorph::monomorphise_with_templates(&mut node.statements, &templates, arena)
-                .map_err(Diagnostic::from)?;
-        }
-    }
 
     for &idx in order {
         let node = &mut graph.nodes[idx];

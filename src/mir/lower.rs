@@ -395,8 +395,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
             },
 
-            ExpressionKind::Call { function, args, .. } => {
-                let function = *function;
+            ExpressionKind::Path(_) => unreachable!(
+                "a path callee is resolved via the side-tables, never lowered as a value"
+            ),
+            ExpressionKind::Call { args, .. } => {
+                let function =
+                    self.typeck.type_dependent_def(expr.id).expect("call target must be resolved");
                 let mut lowered_args = Vec::with_capacity(args.len());
                 for arg in *args {
                     let operand = self.lower_expr(*arg)?;
@@ -406,9 +410,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.emit_call(function, lowered_args, typ)
             },
 
-            ExpressionKind::MethodCall { function, receiver, args } => {
-                let receiver = *receiver;
-                let callee_fn = self.get_fn_unchecked(function);
+            ExpressionKind::MethodCall { receiver, args, .. } => {
+                let function = self
+                    .typeck
+                    .type_dependent_def(expr.id)
+                    .expect("method target must be resolved");
+                let callee_fn = self.get_fn_unchecked(&function);
                 let receiver_typ = callee_fn
                     .params
                     .first()
@@ -424,7 +431,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     lowered_args.push(operand);
                 }
 
-                self.emit_call(*function, lowered_args, typ)
+                self.emit_call(function, lowered_args, typ)
             },
 
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
@@ -1179,7 +1186,9 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
             }
         },
         ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
-        ExpressionKind::TypeIntrinsic { .. } | ExpressionKind::Literal(_) => {},
+        ExpressionKind::TypeIntrinsic { .. }
+        | ExpressionKind::Literal(_)
+        | ExpressionKind::Path(_) => {},
         ExpressionKind::Match { scrutinee, arms } => {
             visit_expr_runtime_uses(*scrutinee, uses);
             for arm in *arms {

@@ -86,9 +86,4 @@ impl<'a> ResolveCtx<'a> {
         self.self_type = Some(t);
         self
     }
-
-    pub fn with_env_opt(mut self, env: Option<&'a HashMap<String, Type>>) -> Self {
-        self.env = env;
-        self
-    }
 }

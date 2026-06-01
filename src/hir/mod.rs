@@ -31,7 +31,6 @@ pub mod index_vec;
 mod interfaces;
 mod lower;
 pub(crate) mod module;
-pub(crate) mod monomorph;
 mod scope;
 mod structs;
 mod symbols;
@@ -113,7 +112,10 @@ pub struct Expression<'hir> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypeckResults {
     node_types: IndexVec<ExprId, Type>,
+    /// Resolved call/method targets, keyed by the call expression's id
     type_dependent_defs: HashMap<ExprId, FunctionId>,
+    /// Concrete generic substitutions (turbofish) for a call, keyed by its id
+    type_dependent_substs: HashMap<ExprId, Vec<Type>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,14 +230,25 @@ pub enum ExpressionKind<'hir> {
         id: StructId,
         fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
     },
+    /// A path referencing an item, e.g. the name of a called function
+    ///
+    /// Carries only the structural name, the resolved [`FunctionId`] lives in
+    /// [`TypeckResults::type_dependent_defs`], keyed by the enclosing call's id
+    Path(SymbolId),
     /// A function call
+    ///
+    /// The `callee` is a structural [`ExpressionKind::Path`],
+    /// the resolved target is looked up from the side-tables in [`TypeckResults`]
     Call {
-        function: FunctionId,
+        callee: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
     /// A method call (e.g. `x.foo(a, b)`)
+    ///
+    /// The resolved target is looked up from [`TypeckResults::type_dependent_defs`],
+    /// keyed by this expression's id
     MethodCall {
-        function: FunctionId,
+        name: SymbolId,
         receiver: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
@@ -314,8 +327,6 @@ pub fn lower<'hir>(
     mut statements: Vec<statement::Statement<'hir>>,
     arena: &'hir bumpalo::Bump,
 ) -> Result<Hir<'hir>, HirError<'hir>> {
-    monomorph::monomorphise(&mut statements, arena)?;
-
     let interfaces: std::collections::HashMap<_, _> = statements
         .iter()
         .filter_map(|stmt| match stmt {
@@ -358,6 +369,11 @@ impl TypeckResults {
     #[inline(always)]
     pub(crate) fn type_dependent_def(&self, id: ExprId) -> Option<FunctionId> {
         self.type_dependent_defs.get(&id).copied()
+    }
+
+    #[inline(always)]
+    pub(crate) fn type_dependent_substs(&self, id: ExprId) -> Option<&[Type]> {
+        self.type_dependent_substs.get(&id).map(Vec::as_slice)
     }
 }
 
