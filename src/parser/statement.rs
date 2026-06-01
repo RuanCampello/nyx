@@ -271,6 +271,7 @@ pub enum UseItems<'i> {
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 #[non_exhaustive]
 #[rustfmt::skip]
+#[allow(clippy::enum_variant_names)]
 pub enum Type<'i> {
     I8, U8, I16, U16,
     I32, U32, I64, U64,
@@ -379,7 +380,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
 
 impl<'i> Spanned<Type<'i>> {
     pub fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        if parser.consume_punct(Punct::Ampersand)? {
+        if parser.consume_token(Punct::Ampersand)? {
             let start = parser.last_span().unwrap_or_default();
             let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
             let span = start + inner.span();
@@ -391,7 +392,7 @@ impl<'i> Spanned<Type<'i>> {
             return Ok(Self::new(kind, span));
         }
 
-        if parser.consume_punct(Punct::Bang)? {
+        if parser.consume_token(Punct::Bang)? {
             let span = parser.last_span().unwrap_or_default();
             return Ok(Self::new(Type::Never, span));
         }
@@ -400,7 +401,7 @@ impl<'i> Spanned<Type<'i>> {
 
         let mut generic_args = Vec::new();
         let mut type_span = span;
-        if parser.consume_punct(Punct::Lt)? {
+        if parser.consume_token(Punct::Lt)? {
             loop {
                 let arg = parser.parse_node::<Spanned<Type<'i>>>()?;
                 generic_args.push(arg);
@@ -429,15 +430,15 @@ impl<'i> Spanned<Type<'i>> {
 impl<'i> Parsable<'i> for Let<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let let_token = parser.expect_token(Keyword::Let)?;
-        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let mutable = parser.consume_token(Keyword::Mut)?;
         let (name, _) = parser.expect_identifier()?;
 
-        let typ = match parser.consume_punct(Punct::Colon)? {
+        let typ = match parser.consume_token(Punct::Colon)? {
             true => Some(parser.parse_node::<Spanned<Type>>()?),
             false => None,
         };
 
-        let value = match parser.consume_punct(Punct::Eq)? {
+        let value = match parser.consume_token(Punct::Eq)? {
             true => Some(parser.parse_node::<Expression>()?),
             false => None,
         };
@@ -459,7 +460,7 @@ impl<'i> Parsable<'i> for Const<'i> {
             },
         };
 
-        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let is_pub = parser.consume_token(Keyword::Pub)?;
         let _const_token = parser.expect_token(Keyword::Const)?;
         let (name, _) = parser.expect_identifier()?;
         parser.expect_token(Punct::Colon)?;
@@ -605,28 +606,25 @@ impl<'i> Parsable<'i> for Match<'i> {
                 _ => {},
             }
 
-            // Collect `|`-separated alternatives; fold >1 into Pattern::Or.
             let first: Spanned<Pattern> = parser.parse_node()?;
-            let pattern = if parser.consume_punct(Punct::Pipe)? {
+            let pattern = if parser.consume_token(Punct::Pipe)? {
                 let mut alts = vec![first];
-                loop {
+
+                while {
                     alts.push(parser.parse_node()?);
-                    if !parser.consume_punct(Punct::Pipe)? {
-                        break;
-                    }
-                }
+                    parser.consume_token(Punct::Pipe)?
+                } {}
+
                 let span = alts.first().unwrap().span() + alts.last().unwrap().span();
                 Spanned::new(Pattern::Or(alts), span)
             } else {
                 first
             };
 
-            // Optional guard: `if <expr>`
-            let guard = if parser.consume_keyword(Keyword::If)? {
-                Some(Expression::parse(parser)?)
-            } else {
-                None
-            };
+            let guard = parser
+                .consume_token(Keyword::If)?
+                .then(|| Expression::parse(parser))
+                .transpose()?;
 
             parser.expect_token(Punct::Arrow)?;
             let body = Expression::parse(parser)?;
@@ -634,7 +632,7 @@ impl<'i> Parsable<'i> for Match<'i> {
             arms.push(MatchArm { pattern, guard, body, span });
 
             // arms are comma-separated, with an optional trailing comma
-            if !parser.consume_punct(Punct::Comma)? {
+            if !parser.consume_token(Punct::Comma)? {
                 break;
             }
         }
@@ -662,7 +660,7 @@ impl<'i> Parsable<'i> for Pattern<'i> {
         }
 
         let pattern_payload = |parser: &mut Parser<'i>| -> Result<_, ParserError<'i>> {
-            if !parser.consume_punct(Punct::OpenParen)? {
+            if !parser.consume_token(Punct::OpenParen)? {
                 return Ok(None);
             }
 
@@ -674,7 +672,7 @@ impl<'i> Parsable<'i> for Pattern<'i> {
         let (ident, _) = parser.expect_identifier()?;
 
         // `Qualifier::Name` (optionally `Qualifier::Name(sub)`)
-        if parser.consume_punct(Punct::ColonColon)? {
+        if parser.consume_token(Punct::ColonColon)? {
             let (name, _) = parser.expect_identifier()?;
             let sub = pattern_payload(parser)?;
             return Ok(Pattern::Variant { qualifier: Some(ident), name, sub });
@@ -706,9 +704,9 @@ impl<'i> Parsable<'i> for Spanned<Pattern<'i>> {
 
 impl<'i> Parsable<'i> for Function<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let is_pub = parser.consume_keyword(Keyword::Pub)?;
-        let inline = parser.consume_keyword(Keyword::Inline)?;
-        let is_const = parser.consume_keyword(Keyword::Const)?;
+        let is_pub = parser.consume_token(Keyword::Pub)?;
+        let inline = parser.consume_token(Keyword::Inline)?;
+        let is_const = parser.consume_token(Keyword::Const)?;
 
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
@@ -737,7 +735,7 @@ impl<'i> Parsable<'i> for Function<'i> {
                     }
 
                     if params.is_empty() && receiver.is_none() {
-                        if parser.consume_punct(Punct::Ampersand)? {
+                        if parser.consume_token(Punct::Ampersand)? {
                             let amp_span = parser.last_span().unwrap_or_default();
                             receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
                             continue;
@@ -755,7 +753,7 @@ impl<'i> Parsable<'i> for Function<'i> {
             }
         }
 
-        let return_type = match parser.consume_punct(Punct::Colon)? {
+        let return_type = match parser.consume_token(Punct::Colon)? {
             true => Some(parser.parse_node()?),
             false => None,
         };
@@ -794,7 +792,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
         let mut interface_type = None;
         let mut interface = None;
-        if parser.consume_keyword(Keyword::With)? {
+        if parser.consume_token(Keyword::With)? {
             let parsed_interface = Spanned::<Type>::parse(parser)?;
             let interface_name = parsed_interface.value().name().ok_or_else(|| {
                 ParserError::new(
@@ -896,7 +894,7 @@ impl<'i> Impl<'i> {
 
 impl<'i> Parsable<'i> for Struct<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let is_pub = parser.consume_token(Keyword::Pub)?;
         let struct_token = parser.expect_token(Keyword::Struct)?;
         let (name, _) = parser.expect_identifier()?;
 
@@ -947,7 +945,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
 
 impl<'i> Parsable<'i> for Enum<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let is_pub = parser.consume_token(Keyword::Pub)?;
         let enum_token = parser.expect_token(Keyword::Enum)?;
         let (name, _) = parser.expect_identifier()?;
         let generics = parse_generics::<GenericBound>(parser)?;
@@ -985,14 +983,14 @@ impl<'i> Parsable<'i> for Enum<'i> {
             let (variant_name, variant_span) = parser.expect_identifier()?;
 
             let mut payload = None;
-            if parser.consume_punct(Punct::OpenParen)? {
+            if parser.consume_token(Punct::OpenParen)? {
                 payload = Some(parser.parse_node::<Spanned<Type<'i>>>()?);
                 parser.expect_token(Punct::CloseParen)?;
             }
 
-            let (value, span) = match parser.consume_punct(Punct::Eq)? {
+            let (value, span) = match parser.consume_token(Punct::Eq)? {
                 true => {
-                    let negative = parser.consume_punct(Punct::Minus)?;
+                    let negative = parser.consume_token(Punct::Minus)?;
                     let token = parser.expect_next()?;
                     match token.kind {
                         TokenKind::Integer(value) => {
@@ -1021,7 +1019,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
         }
 
         let repr = parser
-            .consume_keyword(Keyword::As)?
+            .consume_token(Keyword::As)?
             .then(|| parser.parse_node())
             .transpose()?
             .unwrap_or_else(|| Spanned::new(Type::I32, enum_token.span));
@@ -1033,14 +1031,14 @@ impl<'i> Parsable<'i> for Enum<'i> {
 
 impl<'i> Parsable<'i> for Interface<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let is_pub = parser.consume_keyword(Keyword::Pub)?;
+        let is_pub = parser.consume_token(Keyword::Pub)?;
         let interface_token = parser.expect_token(Keyword::Interface)?;
         let (name, _) = parser.expect_identifier()?;
 
         let generics = parse_generics::<GenericBound>(parser)?;
 
         let mut superinterfaces = Vec::new();
-        if parser.consume_punct(Punct::Colon)? {
+        if parser.consume_token(Punct::Colon)? {
             loop {
                 // parse as a full type so generic args (`PartialEq<Rhs>`) are consumed,
                 // then keep only the bare interface name
@@ -1058,7 +1056,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
                 };
                 superinterfaces.push(name);
 
-                if !parser.consume_punct(Punct::Plus)? {
+                if !parser.consume_token(Punct::Plus)? {
                     break;
                 }
             }
@@ -1091,8 +1089,8 @@ impl<'i> Parsable<'i> for Interface<'i> {
 impl<'i> Parsable<'i> for InterfaceMethod<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         // accept (and ignore) `inline`/`const` modifiers on interface methods
-        let _inline = parser.consume_keyword(Keyword::Inline)?;
-        let _is_const = parser.consume_keyword(Keyword::Const)?;
+        let _inline = parser.consume_token(Keyword::Inline)?;
+        let _is_const = parser.consume_token(Keyword::Const)?;
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, _) = parser.expect_identifier()?;
 
@@ -1116,7 +1114,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
                     }
 
                     if params.is_empty() && receiver.is_none() {
-                        if parser.consume_punct(Punct::Ampersand)? {
+                        if parser.consume_token(Punct::Ampersand)? {
                             let amp_span = parser.last_span().unwrap_or_default();
                             receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
                             continue;
@@ -1139,10 +1137,10 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         }
 
         let return_type =
-            parser.consume_punct(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
+            parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
 
-        let (body, span) = match parser.consume_punct(Punct::Semicolon)? {
+        let (body, span) = match parser.consume_token(Punct::Semicolon)? {
             true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
             _ => {
                 let b = parser.parse_node::<Block>()?;
@@ -1256,7 +1254,7 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
 
 impl Receiver {
     fn parse_after_amp<'i>(parser: &mut Parser<'i>, start: Span) -> Result<Self, ParserError<'i>> {
-        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let mutable = parser.consume_token(Keyword::Mut)?;
         let (name, span) = parser.expect_identifier()?;
 
         if name != "self" {
@@ -1271,7 +1269,7 @@ impl Receiver {
 
     fn parse_by_value<'i>(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let start = parser.last_span().unwrap_or_default();
-        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let mutable = parser.consume_token(Keyword::Mut)?;
         let (name, span) = parser.expect_identifier()?;
 
         if name != "self" {
@@ -1287,7 +1285,7 @@ impl Receiver {
 
 impl<'i> Parsable<'i> for Parameter<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let mutable = parser.consume_keyword(Keyword::Mut)?;
+        let mutable = parser.consume_token(Keyword::Mut)?;
         let (name, span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Colon)?;
         let typ = parser.parse_node::<Spanned<Type>>()?;
@@ -1299,7 +1297,7 @@ impl<'i> Parsable<'i> for Parameter<'i> {
 
 impl<'i> Parsable<'i> for StructRepr {
     fn parse(parser: &mut Parser<'i>) -> Result<StructRepr, ParserError<'i>> {
-        if !parser.consume_keyword(Keyword::As)? {
+        if !parser.consume_token(Keyword::As)? {
             return Ok(StructRepr::default());
         }
 
@@ -1357,12 +1355,12 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
         let (param_name, param_span) = parser.expect_identifier()?;
         let mut bounds = Vec::new();
         let mut bound_span = param_span;
-        if parser.consume_punct(Punct::Colon)? {
+        if parser.consume_token(Punct::Colon)? {
             loop {
                 let bound = Spanned::<Type>::parse(parser)?;
                 bound_span = bound_span + bound.span();
                 bounds.push(bound);
-                if !parser.consume_punct(Punct::Plus)? {
+                if !parser.consume_token(Punct::Plus)? {
                     break;
                 }
             }
@@ -1371,8 +1369,6 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
     }
 }
 
-/// Returns `true` when the next token (or the token after `mut`) is the identifier `self`.
-/// Used to detect a by-value receiver in a parameter list.
 fn peek_is_self<'i>(parser: &mut Parser<'i>) -> bool {
     let head = match parser.peek_nth(0) {
         Some(Ok(t)) => t,
@@ -1388,13 +1384,11 @@ fn peek_is_self<'i>(parser: &mut Parser<'i>) -> bool {
     }
 }
 
-/// Parse an optional `where` clause and merge each `Name: Bound + Bound` entry into `generics`
-/// (by appending bounds onto the matching declared generic param, or as a fresh entry if absent).
 fn parse_where_clause<'i>(
     parser: &mut Parser<'i>,
     generics: &mut Vec<GenericBound<'i>>,
 ) -> Result<(), ParserError<'i>> {
-    if !parser.consume_keyword(Keyword::Where)? {
+    if !parser.consume_token(Keyword::Where)? {
         return Ok(());
     }
 
@@ -1408,7 +1402,7 @@ fn parse_where_clause<'i>(
             None => generics.push(entry),
         }
 
-        if !parser.consume_punct(Punct::Comma)? {
+        if !parser.consume_token(Punct::Comma)? {
             break;
         }
 
@@ -1426,7 +1420,7 @@ pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
     parser: &mut Parser<'i>,
 ) -> Result<Vec<T>, ParserError<'i>> {
     let mut items = Vec::new();
-    if parser.consume_punct(Punct::Lt)? {
+    if parser.consume_token(Punct::Lt)? {
         loop {
             items.push(parser.parse_node::<T>()?);
             if parser.consume_generic_close()? {

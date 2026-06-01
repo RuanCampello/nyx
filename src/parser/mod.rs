@@ -149,16 +149,6 @@ impl<'i> Parser<'i> {
         false
     }
 
-    #[inline(always)]
-    pub fn consume_keyword(&mut self, keyword: Keyword) -> Result<bool, ParserError<'i>> {
-        self.consume_token(TokenKind::Keyword(keyword))
-    }
-
-    #[inline(always)]
-    pub fn consume_punct(&mut self, punct: Punct) -> Result<bool, ParserError<'i>> {
-        self.consume_token(TokenKind::Punct(punct))
-    }
-
     /// Consume a closing `>` for a generic argument list, splitting a `>>` (Shr) if necessary.
     ///
     /// Nested generics like `PartialEq<T>` produce a `>>` token at the boundary
@@ -190,7 +180,7 @@ impl<'i> Parser<'i> {
         }
     }
 
-    fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
+    fn consume_token(&mut self, kind: impl Into<TokenKind<'i>>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.is_kind(kind) => {
                 self.next_token()?;

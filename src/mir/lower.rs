@@ -471,7 +471,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::IntrinsicCall { intrinsic, args } => {
                 use crate::hir::Intrinsic;
 
-                let intrinsic = *intrinsic;
                 // the return value is ignored for those functions
                 match intrinsic {
                     Intrinsic::PrintLn | Intrinsic::Print => {
@@ -480,7 +479,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             self.push_print_arg(&mut output, arg);
                         }
 
-                        if intrinsic == Intrinsic::PrintLn {
+                        if *intrinsic == Intrinsic::PrintLn {
                             output.push('\n');
                         }
 
@@ -584,7 +583,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.terminate(Terminator::Jump(next_arm_check_block));
 
                 for arm in arms.iter() {
-                    self.select_block(next_arm_check_block);
+                    self.switch_to(next_arm_check_block);
                     next_arm_check_block = self.new_block();
                     let body_block = self.new_block();
 
@@ -597,7 +596,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                     // if present, evaluate in the body block
                     // on false, fall through to next arm
-                    self.select_block(body_block);
+                    self.switch_to(body_block);
                     let exec_block = arm
                         .guard
                         .map(|guard| {
@@ -609,7 +608,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                                 then_block,
                                 else_block: next_arm_check_block,
                             });
-                            self.select_block(then_block);
+                            self.switch_to(then_block);
 
                             Ok::<_, MirError>(then_block)
                         })
@@ -624,10 +623,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     self.terminate(Terminator::Jump(join_block));
                 }
 
-                self.select_block(next_arm_check_block);
+                self.switch_to(next_arm_check_block);
                 self.terminate(Terminator::Return(None));
 
-                self.select_block(join_block);
+                self.switch_to(join_block);
 
                 match match_result_place {
                     Some(p) => Ok(Operand::Place(p)),
@@ -778,11 +777,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline(always)]
-    fn select_block(&mut self, id: BlockId) {
-        self.switch_to(id);
-    }
-
-    #[inline(always)]
     fn current_block_id(&self) -> BlockId {
         BlockId(self.current as u32)
     }
@@ -843,11 +837,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let mut check = self.current_block_id();
                 let n = alternatives.len();
                 for (i, alt) in alternatives.iter().enumerate() {
-                    self.select_block(check);
-                    let next = if i + 1 < n {
-                        self.new_block()
-                    } else {
-                        fail_block
+                    self.switch_to(check);
+                    let next = match i + 1 < n {
+                        true => self.new_block(),
+                        _ => fail_block,
                     };
                     self.lower_pattern_match(place, alt, success_block, next)?;
                     check = next;
@@ -1274,7 +1267,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         ExpressionKind::Call { args, .. }
         | ExpressionKind::IntrinsicCall { args, .. }
         | ExpressionKind::Syscall { args, .. } => {
-            for &arg in *args {
+            for arg in *args {
                 visit_expr_runtime_uses(arg, uses);
             }
         },
@@ -1288,7 +1281,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
                 _ => visit_expr_runtime_uses(receiver, uses),
             }
 
-            for &arg in *args {
+            for arg in *args {
                 visit_expr_runtime_uses(arg, uses);
             }
         },
