@@ -132,3 +132,9 @@ impl iptr with PartialEq<iptr> {
         *self == *other
     }
 }
+
+impl bool with PartialEq<bool> {
+    fn eq(&self, other: &bool): bool {
+        *self == *other
+    }
+}
