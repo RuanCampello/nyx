@@ -325,8 +325,8 @@ impl Type {
             TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
             TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
             TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } => {
-                MachineType::Int { bytes: 8, signed: false, }
-            }
+                MachineType::Int { bytes: 8, signed: false }
+            },
             TypeKind::Str => MachineType::Struct { size: 16, align: 8 },
             TypeKind::String => MachineType::Struct { size: 24, align: 8 },
             TypeKind::F32 => MachineType::Float { bytes: 4 },
@@ -334,7 +334,7 @@ impl Type {
             TypeKind::Struct(id) => {
                 let (size, align) = layouts.structs[id.0 as usize].into();
                 MachineType::Struct { size, align }
-            }
+            },
             TypeKind::Enum(id) => {
                 let enum_layout = layouts.enums[id.id() as usize];
                 let tag_size = id.repr().layout().0;
@@ -344,7 +344,7 @@ impl Type {
                 } else {
                     id.repr().typ().machine_type(layouts)
                 }
-            }
+            },
             TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
             TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
             TypeKind::GenericParam(_) => {

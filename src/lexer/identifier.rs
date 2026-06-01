@@ -13,7 +13,11 @@ use crate::lexer::token::{Keyword, Position, Span, Token, TokenKind, Tokenize};
 pub struct Identifier;
 
 impl<'src> Tokenize<'src> for Identifier {
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError<'src>> {
+    fn lex(
+        self,
+        cursor: &mut Cursor<'src>,
+        start: Position,
+    ) -> Result<Token<'src>, LexError<'src>> {
         cursor.advance();
         cursor.consume_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
 

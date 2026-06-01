@@ -121,7 +121,16 @@ where
 
     for &symbol_id in decls.keys() {
         if !visited.contains(&symbol_id) {
-            dfs(symbol_id, mangler, symbols, decls, arena, &mut visiting, &mut visited, &mut sorted)?;
+            dfs(
+                symbol_id,
+                mangler,
+                symbols,
+                decls,
+                arena,
+                &mut visiting,
+                &mut visited,
+                &mut sorted,
+            )?;
         }
     }
 

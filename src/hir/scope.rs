@@ -754,7 +754,7 @@ impl<'hir> Scope<'hir> {
     }
 
     #[inline]
-    fn resolve_return_type<'h>(
+    pub(in crate::hir) fn resolve_return_type<'h>(
         &mut self,
         return_type: Option<&Spanned<statement::Type<'h>>>,
         symbols: &mut SymbolTable,
@@ -771,7 +771,7 @@ impl<'hir> Scope<'hir> {
     }
 
     #[inline]
-    fn resolve_params<'h>(
+    pub(in crate::hir) fn resolve_params<'h>(
         &mut self,
         params: &[statement::Parameter<'h>],
         symbols: &mut SymbolTable,
@@ -1040,7 +1040,7 @@ impl<'hir> Scope<'hir> {
         Ok(())
     }
 
-    /// Instantiate every `impl<T> Name<T>` block from `generic_impls` that matches `template_name`
+    /// Instantiate every `impl Name<T>` block from `generic_impls` that matches `template_name`
     /// into `receiver_type`, using `args` as the substitution.
     fn specialize_impls(
         &mut self,

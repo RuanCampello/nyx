@@ -305,9 +305,7 @@ impl<'f> Lower<'f> {
                     |lir, op, block| {
                         lir::target::operand(lir, op, block, layouts, |vid| value[vid])
                     },
-                    |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid])
-                    },
+                    |lir, op, _block| lir::target::lower_operand(lir, op, |vid| value[vid]),
                     |lir, block, origin| {
                         let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
                         lir.push_instr(block, A64Instr::StackAddr { dest, origin });
@@ -332,9 +330,7 @@ impl<'f> Lower<'f> {
                     id,
                     args,
                     layouts,
-                    |lir, op, _block| {
-                        lir::target::lower_operand(lir, op, |vid| value[vid])
-                    },
+                    |lir, op, _block| lir::target::lower_operand(lir, op, |vid| value[vid]),
                 );
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
@@ -569,9 +565,10 @@ impl<'f> Lower<'f> {
             },
             T::Switch { discriminant, targets, default } => {
                 let cond = self.operand(&discriminant, id);
-                let targets = targets.iter().map(|(val, target)| (*val, (*target).into())).collect();
+                let targets =
+                    targets.iter().map(|(val, target)| (*val, (*target).into())).collect();
                 Term::Switch { cond, targets, default: default.into() }
-            }
+            },
         };
 
         self.lir.set_term(id, terminator);

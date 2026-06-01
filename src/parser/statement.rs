@@ -781,9 +781,8 @@ impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let impl_token = parser.expect_token(Keyword::Impl)?;
 
-        let generics = parse_generics::<GenericBound>(parser)?;
-
         let receiver = Spanned::<Type>::parse(parser)?;
+        let generics = Vec::new();
         let name = receiver.value().name().ok_or_else(|| {
             ParserError::new(
                 ParseErrorKind::ExpectedTypeIdentifier { found: format!("{:?}", receiver.value()) },

@@ -84,12 +84,11 @@ where
             implementation.interface_type.as_ref().map(|s| s.value()),
         ) {
             (false, Some(statement::Type::Generic(_, args))) => {
-                let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map)
-                    .with_self(receiver_type);
+                let ctx =
+                    type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map)
+                        .with_self(receiver_type);
                 args.iter()
-                    .map(|arg| {
-                        type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span())
-                    })
+                    .map(|arg| type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span()))
                     .collect::<Result<_, _>>()?
             },
             _ => Vec::new(),

@@ -412,10 +412,7 @@ mod tests {
          impl Counter { fn get(&self): i32 { self.value } }
          impl Counter { fn get(&self): i32 { self.value } }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "get" }
-        );
+        assert_eq!(kind, HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "get" });
     }
 
     #[test]
@@ -436,10 +433,7 @@ mod tests {
             "struct Point { x: i32 }
          fn main() { let p = Point { x: 1 }; p.frobnicate(); }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownMethod { struct_name: "Point", name: "frobnicate" }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownMethod { struct_name: "Point", name: "frobnicate" });
     }
 
     #[test]
@@ -500,10 +494,7 @@ mod tests {
             "struct Point { x: i32 }
          fn main() { let p = Point { x: 1 }; let _ = p.z; }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::UnknownField { struct_name: "Point", field: "z" }
-        );
+        assert_eq!(kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
     }
 
     #[test]
@@ -512,10 +503,7 @@ mod tests {
             "struct Point { x: i32, y: i32 }
          fn main() { let p = Point { x: 1 }; }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::MissingField { struct_name: "Point", field: "y" }
-        );
+        assert_eq!(kind, HirErrorKind::MissingField { struct_name: "Point", field: "y" });
     }
 
     #[test]
@@ -533,10 +521,7 @@ mod tests {
             "fn add(a: i32, b: i32): i32 { a + b }
          fn main() { add(1, 2, 3); }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 }
-        );
+        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 });
     }
 
     #[test]
@@ -545,10 +530,7 @@ mod tests {
             "fn add(a: i32, b: i32): i32 { a + b }
          fn main() { add(1); }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 1 }
-        );
+        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 1 });
     }
 
     #[test]

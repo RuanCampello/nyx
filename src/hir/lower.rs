@@ -608,16 +608,14 @@ where
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
-                        return Err(hir_error!(
-                            *span,
-                            UndeclaredIdentifier { name: qualified }
-                        ));
+                        return Err(hir_error!(*span, UndeclaredIdentifier { name: qualified }));
                     },
                 };
 
-                let c = self.scope.constants.get(&symbol).cloned().ok_or_else(|| {
-                    hir_error!(*span, UndeclaredIdentifier { name: qualified })
-                })?;
+                let c =
+                    self.scope.constants.get(&symbol).cloned().ok_or_else(|| {
+                        hir_error!(*span, UndeclaredIdentifier { name: qualified })
+                    })?;
 
                 Ok(self.splice_const(c.value, &c.typeck, *span))
             },
@@ -743,18 +741,6 @@ where
                     let receiver = left.typ.strip_reference();
                     if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
                         let method_symbol = self.symbols.insert(method);
-                        println!("DEBUG: receiver={:?}, method={}", receiver, method);
-                        for ((recv, sym), id) in &self.scope.methods {
-                            if recv.to_string() == receiver.to_string() {
-                                let sig = &self.scope.signatures[*id];
-                                println!(
-                                    "  method in scope: {} (mangled: {}) -> {:?}",
-                                    self.symbols.get(*sym),
-                                    self.symbols.get(sig.name),
-                                    id
-                                );
-                            }
-                        }
                         if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
                         {
                             let lowered = self.alloc(
@@ -825,9 +811,8 @@ where
                     if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
                         self.check_bounds(&template.generics, &resolved, *span)?;
                     }
-                    let typ = self
-                        .scope
-                        .instantiate_generic(name, &resolved, *span, self.symbols)?;
+                    let typ =
+                        self.scope.instantiate_generic(name, &resolved, *span, self.symbols)?;
                     match typ.kind() {
                         TypeKind::Struct(id) => id,
                         _ => return Err(hir_error!(*span, UnknownType { name })),
@@ -851,10 +836,7 @@ where
                 for field in fields {
                     let field_symbol = self.symbols.insert(field.name);
                     if !seen.insert(field_symbol) {
-                        return Err(hir_error!(
-                            field.span,
-                            DuplicateField { name: field.name }
-                        ));
+                        return Err(hir_error!(field.span, DuplicateField { name: field.name }));
                     }
 
                     let Some(expected) = definition_fields.iter().find(|f| f.name == field_symbol)
@@ -929,10 +911,7 @@ where
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
                             || {
                                 let struct_name = self.arena.alloc_str(&struct_name);
-                                hir_error!(
-                                    *span,
-                                    UnknownMethod { struct_name, name: method_name }
-                                )
+                                hir_error!(*span, UnknownMethod { struct_name, name: method_name })
                             },
                         )?;
 
@@ -1009,11 +988,10 @@ where
                 }
 
                 let function_id = match callee.as_ref() {
-                    Expr::Identifier(name, _) => {
-                        self.scope.resolve_function_call(None, name, self.symbols).ok_or_else(
-                            || hir_error!(*span, UnknownFunction { name }),
-                        )?
-                    },
+                    Expr::Identifier(name, _) => self
+                        .scope
+                        .resolve_function_call(None, name, self.symbols)
+                        .ok_or_else(|| hir_error!(*span, UnknownFunction { name }))?,
 
                     other => {
                         let name = self.arena.alloc_str(&format!("{other:?}"));
@@ -1410,9 +1388,8 @@ where
                     if let Some(template) = self.scope.generic_enums.get(&qualifier_symbol) {
                         self.check_bounds(&template.generics, &resolved, span)?;
                     }
-                    let typ = self
-                        .scope
-                        .instantiate_generic(qualifier, &resolved, span, self.symbols)?;
+                    let typ =
+                        self.scope.instantiate_generic(qualifier, &resolved, span, self.symbols)?;
                     match typ.kind() {
                         TypeKind::Enum(id) => id,
                         _ => return Ok(None),
@@ -1444,10 +1421,7 @@ where
             },
             (None, None) => None,
             (Some(_), None) => {
-                return Err(hir_error!(
-                    span,
-                    ArityMismatch { name, expected: 1, found: 0 }
-                ));
+                return Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0 }));
             },
             (None, Some(_)) => {
                 return Err(hir_error!(
@@ -1558,10 +1532,7 @@ where
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
-            return Err(hir_error!(
-                span,
-                ArityMismatch { name: "syscall", expected: 1, found: 0 }
-            ));
+            return Err(hir_error!(span, ArityMismatch { name: "syscall", expected: 1, found: 0 }));
         };
 
         if value_args.len() > 6 {
@@ -1701,14 +1672,13 @@ where
                     .ok_or_else(|| hir_error!(span, UnknownType { name }))
             },
 
-            statement::Type::SelfType => self
-                .self_type
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self" })),
+            statement::Type::SelfType => {
+                self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
+            },
 
             statement::Type::RefSelf => {
-                let self_ty = self
-                    .self_type
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
+                let self_ty =
+                    self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
                 let to = RefTarget::try_from(self_ty).map_err(|_| {
                     hir_error!(
                         span,
@@ -1741,9 +1711,7 @@ where
                 for arg in args {
                     resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
                 }
-                let typ = self
-                    .scope
-                    .instantiate_generic(name, &resolved, span, self.symbols)?;
+                let typ = self.scope.instantiate_generic(name, &resolved, span, self.symbols)?;
                 if let Some(struct_sym) = self.symbols.get_id(name) {
                     if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
                         self.check_bounds(&template.generics, &resolved, span)?;

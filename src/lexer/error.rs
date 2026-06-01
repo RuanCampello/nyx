@@ -70,6 +70,9 @@ impl<'src> LexError<'src> {
 
     pub fn unexpected_char(ch: char, pos: Position) -> LexError<'static> {
         let end = Position::new(pos.offset + ch.len_utf8() as u32, pos.line, pos.column + 1);
-        LexError { kind: LexErrorKind::UnexpectedChar(ch), span: Span::new(pos, end) }
+        LexError {
+            kind: LexErrorKind::UnexpectedChar(ch),
+            span: Span::new(pos, end),
+        }
     }
 }

@@ -12,7 +12,11 @@ use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
 pub struct StringLiteral;
 
 impl<'src> Tokenize<'src> for StringLiteral {
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError<'src>> {
+    fn lex(
+        self,
+        cursor: &mut Cursor<'src>,
+        start: Position,
+    ) -> Result<Token<'src>, LexError<'src>> {
         // consume the opening `"`
         cursor.advance();
 

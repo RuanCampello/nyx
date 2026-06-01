@@ -47,7 +47,7 @@
 //! functions whose parameters are scalars/references
 
 use crate::hir::{
-    Function, FunctionId, FunctionKind, Res, Type,
+    Function, FunctionId, FunctionKind, RefTarget, Res, Type, TypeKind,
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
@@ -149,32 +149,54 @@ fn specialise<'hir>(
     let template = scope.generic_fns[template_id].clone();
     let open = &scope.signatures[*template_id];
 
-    let params: Vec<_> = open.params.iter().map(|typ| typ.subst(args)).collect();
-    let return_type = open.return_type.subst(args);
     let base = symbols.get(open.name).to_string();
+    let kind = open.kind;
     let is_const = open.is_const;
     let inline = open.inline;
 
     let mangled = scope.mangle_generic(&base, args, symbols);
     let name = symbols.insert(&mangled);
-    let id = scope.push_signature(FunctionSignature {
-        name,
-        params,
-        return_type,
-        kind: FunctionKind::Free,
-        is_const,
-        inline,
-    });
-    scope.functions.insert(name, id);
 
-    let env = scope.generic_fn_envs.get(template_id).cloned().unwrap_or_else(|| {
+    let mut env = scope.generic_fn_envs.get(template_id).cloned().unwrap_or_default();
+    env.extend(
         template
             .generics
             .iter()
             .zip(args)
-            .map(|(generic, &typ)| (generic.name.to_string(), typ))
-            .collect()
+            .map(|(generic, &typ)| (generic.name.to_string(), typ)),
+    );
+
+    let receiver_type = match kind {
+        FunctionKind::Method(method) => Some(method.receiver),
+        FunctionKind::Free | FunctionKind::Intrinsic(_) => None,
+    };
+    let mut params =
+        Vec::with_capacity(template.params.len() + usize::from(receiver_type.is_some()));
+    if let (Some(receiver), Some(receiver_type)) = (template.receiver, receiver_type) {
+        params.push(Type::new(TypeKind::Ref {
+            mutable: receiver.mutable,
+            to: RefTarget::try_from(receiver_type).expect("receiver must be a reference target"),
+        }));
+    }
+    params.extend(scope.resolve_params(&template.params, symbols, receiver_type, Some(&env))?);
+    let return_type = scope.resolve_return_type(
+        template.return_type.as_ref(),
+        symbols,
+        receiver_type,
+        Some(&env),
+    )?;
+
+    let id = scope.push_signature(FunctionSignature {
+        name,
+        params,
+        return_type,
+        kind,
+        is_const,
+        inline,
     });
+    if matches!(kind, FunctionKind::Free) {
+        scope.functions.insert(name, id);
+    }
 
     // TODO(advanced-generics): `in_std` is hard-coded `false` because templates do
     // not currently record their origin module, a generic std helper that lowers a

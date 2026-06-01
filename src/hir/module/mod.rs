@@ -830,11 +830,7 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert!(
-            hir.enums
-                .iter()
-                .any(|e| hir.symbols[e.name.0.into_usize()] == "Status")
-        );
+        assert!(hir.enums.iter().any(|e| hir.symbols[e.name.0.into_usize()] == "Status"));
         let main_fn = hir
             .functions
             .iter()

@@ -273,6 +273,46 @@ mod tests {
     }
 
     #[test]
+    fn generic_impl_receiver_type_is_parsed() {
+        let statements = Parser::new(
+            r#"
+            struct Pair<L, R> { left: L, right: R }
+            impl Pair<L, R> {
+                fn first(&self): L { self.left }
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Impl(implementation) = &statements[1] else {
+            panic!("expected impl block");
+        };
+
+        assert_eq!(implementation.name, "Pair");
+        assert!(implementation.generics.is_empty());
+        assert!(
+            matches!(implementation.receiver.value_ref(), Type::Generic("Pair", args) if args.len() == 2)
+        );
+    }
+
+    #[test]
+    fn rust_style_generic_impl_header_is_rejected() {
+        let err = Parser::new(
+            r#"
+            struct Box<T> { val: T }
+            impl<T> Box<T> {
+                fn get(&self): T { self.val }
+            }
+            "#,
+        )
+        .parse()
+        .unwrap_err();
+
+        assert!(matches!(err.kind, ParseErrorKind::ExpectedIdentifier { .. }));
+    }
+
+    #[test]
     fn invalid_and_valid_return() {
         let err = Parser::new("return +1;").parse().unwrap_err();
         assert_eq!(

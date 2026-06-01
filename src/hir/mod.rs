@@ -1135,10 +1135,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::MissingField { struct_name: "Point", field: "y" }
-        );
+        assert_eq!(err.kind, HirErrorKind::MissingField { struct_name: "Point", field: "y" });
     }
 
     #[test]
@@ -1147,10 +1144,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{z:1};}";
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::UnknownField { struct_name: "Point", field: "z" }
-        );
+        assert_eq!(err.kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
         assert_eq!(err.span.start.column, 23);
         assert_eq!(err.span.end.column, 26);
     }
@@ -1241,10 +1235,7 @@ mod tests {
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(
             err.kind,
-            HirErrorKind::DuplicateMethod {
-                struct_name: "Counter",
-                name: "value",
-            }
+            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "value" }
         );
         assert_eq!(err.span.start.column, 17);
     }

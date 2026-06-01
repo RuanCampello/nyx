@@ -12,7 +12,11 @@ use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
 pub struct NumberLiteral;
 
 impl<'src> Tokenize<'src> for NumberLiteral {
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError<'src>> {
+    fn lex(
+        self,
+        cursor: &mut Cursor<'src>,
+        start: Position,
+    ) -> Result<Token<'src>, LexError<'src>> {
         // consume leading digits and underscores
         consume_digits(cursor);
 
@@ -42,16 +46,16 @@ impl<'src> Tokenize<'src> for NumberLiteral {
 
         let kind = match is_float {
             true => {
-                let value: f64 = parse_str.parse().map_err(|_| {
-                    LexError::new(LexErrorKind::InvalidFloat(text), span)
-                })?;
+                let value: f64 = parse_str
+                    .parse()
+                    .map_err(|_| LexError::new(LexErrorKind::InvalidFloat(text), span))?;
                 TokenKind::Float(value)
             },
 
             false => {
-                let value: i64 = parse_str.parse().map_err(|_| {
-                    LexError::new(LexErrorKind::InvalidInteger(text), span)
-                })?;
+                let value: i64 = parse_str
+                    .parse()
+                    .map_err(|_| LexError::new(LexErrorKind::InvalidInteger(text), span))?;
                 TokenKind::Integer(value)
             },
         };
