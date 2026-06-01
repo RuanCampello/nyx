@@ -166,6 +166,10 @@ impl<'hir> Scope<'hir> {
                     return None;
                 }
 
+                if matches!(self.signatures[id].kind, FunctionKind::Intrinsic(_)) {
+                    return None;
+                }
+
                 Some(
                     lower::FunctionBuilder::new(self, symbols, id, function, in_std, arena).lower(),
                 )

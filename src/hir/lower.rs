@@ -881,6 +881,16 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
                             },
                         )?;
 
+                    if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
+                        let return_type = self.scope.signatures[function].return_type;
+                        let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
+                        return Ok(self.alloc(
+                            ExpressionKind::IntrinsicCall { intrinsic, args },
+                            return_type,
+                            *span,
+                        ));
+                    }
+
                     let signature = &self.scope.signatures[function];
                     assert!(
                         signature.receiver_type().is_some(),
@@ -1412,6 +1422,11 @@ impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src> {
             .iter()
             .map(|arg| self.lower_expr(arg, None).map(|lowered| lowered.expr))
             .collect::<Result<Vec<_>, _>>()?;
+
+        let return_type = match code {
+            SyscallCode::Exit => Type::new(TypeKind::Never),
+            _ => return_type,
+        };
 
         let args = self.arena.alloc_slice_copy(&args);
         Ok(self.alloc(ExpressionKind::Syscall { code, args }, return_type, span))

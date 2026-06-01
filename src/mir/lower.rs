@@ -461,7 +461,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
                     },
 
-                    Intrinsic::Len => unreachable!(),
+                    Intrinsic::Len => match self.lower_expr(args[0])? {
+                        Operand::Const(Const::Str { len, .. }) => {
+                            Ok(Operand::Const(Const::Int(len as i64, typ)))
+                        },
+                        Operand::Place(place) => {
+                            let dest = self.fresh_temporary(typ);
+                            let instr = InstructionKind::FieldLoad {
+                                src: Operand::Place(place),
+                                offset: 8,
+                                typ,
+                            };
+                            self.emit(dest, instr);
+                            Ok(Operand::Place(dest))
+                        },
+                        other => unreachable!("str length of a non-str operand: {other:?}"),
+                    },
                 }
             },
 
@@ -527,7 +542,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 let join_block = self.new_block();
                 let match_result_place =
-                    (typ.kind() == TypeKind::Unit).then_some(self.fresh_temporary(typ));
+                    (typ.kind() != TypeKind::Unit).then_some(self.fresh_temporary(typ));
 
                 let mut next_arm_check_block = self.new_block();
 
@@ -662,7 +677,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
             },
         }
-        todo!()
+
+        Ok(place)
     }
 
     #[inline(always)]
