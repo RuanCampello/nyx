@@ -29,14 +29,14 @@ fn main(): i32 {
     let e = Direction::East;
     let w = Direction::West;
 
-    panic::assert(direction_code(n) == 10);
-    panic::assert(direction_code(s) == 20);
-    panic::assert(direction_code(e) == 30);
-    panic::assert(direction_code(w) == 40);
+    panic::assert_eq(direction_code(n), 10);
+    panic::assert_eq(direction_code(s), 20);
+    panic::assert_eq(direction_code(e), 30);
+    panic::assert_eq(direction_code(w), 40);
 
-    panic::assert(is_north(n) == true);
-    panic::assert(is_north(s) == false);
-    panic::assert(is_north(e) == false);
+    panic::assert_eq(is_north(n), true);
+    panic::assert_eq(is_north(s), false);
+    panic::assert_eq(is_north(e), false);
 
     0
 }

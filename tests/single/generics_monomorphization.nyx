@@ -5,9 +5,24 @@ struct Box<T> {
     val: T,
 }
 
-impl<T> Box<T> {
+struct Pair<L, R> {
+    left: L,
+    right: R,
+}
+
+impl Box<T> {
     fn get(&self): T {
         self.val
+    }
+}
+
+impl Pair<L, R> {
+    fn first(&self): L {
+        self.left
+    }
+
+    fn second(&self): R {
+        self.right
     }
 }
 
@@ -21,9 +36,19 @@ fn main(): i32 {
     let b1 = Box::<i32> { val: 42 };
     let b2 = Box::<i32> { val: 42 };
     let b3 = Box::<i32> { val: 100 };
+    let flag1 = Box::<bool> { val: true };
+    let flag2 = Box::<bool> { val: false };
+    let pair = Pair::<Box<i32>, bool> { left: b1, right: true };
+    let nested = Pair::<Box<bool>, i64> { left: flag1, right: 64 };
+    let numbers = Pair::<i32, bool> { left: 7, right: false };
 
-    panic::assert(compare_boxes::<i32>(&b1, &b2));
-    panic::assert(compare_boxes::<i32>(&b1, &b3) == false);
+    panic::assert(compare_boxes::<i32>(&pair.first(), &b2));
+    panic::assert(compare_boxes::<i32>(&pair.first(), &b3) == false);
+    panic::assert(compare_boxes::<bool>(&nested.first(), &flag2) == false);
+    panic::assert(pair.second());
+    panic::assert(nested.second() == 64);
+    panic::assert(numbers.first() == 7);
+    panic::assert(numbers.second() == false);
 
     0
 }
