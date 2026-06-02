@@ -67,3 +67,8 @@ impl<'m> Mangler<'m> {
         format!("{}::{scope}::{interface}::{name}", self.module)
     }
 }
+
+#[inline]
+pub(in crate::hir) fn qualified<'a>(arena: &'a bumpalo::Bump, scope: &str, name: &str) -> &'a str {
+    arena.alloc_str(&format!("{scope}::{name}"))
+}

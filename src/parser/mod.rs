@@ -4,14 +4,14 @@ use crate::{
     lexer::{
         HasSpan, Lexer,
         error::LexError,
-        token::{Keyword, Punct, Span, Token, TokenKind},
+        token::{Keyword, Position, Punct, Span, Token, TokenKind},
     },
     parser::{
         error::{ParseErrorKind, ParserError},
         statement::Statement,
     },
 };
-use std::iter::Peekable;
+use std::collections::VecDeque;
 
 pub mod error;
 pub mod expression;
@@ -20,7 +20,8 @@ pub mod visitor;
 
 /// Recursive-descent parser.
 pub struct Parser<'i> {
-    cursor: Peekable<Lexer<'i>>,
+    cursor: Lexer<'i>,
+    buffer: VecDeque<Result<Token<'i>, LexError<'i>>>,
     /// Most recently used consumed token, used to place EOF diagnostics.
     last: Option<Span>,
 }
@@ -31,7 +32,11 @@ pub trait Parsable<'i>: Sized {
 
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
-        Self { cursor: Lexer::new(source).peekable(), last: None }
+        Self {
+            cursor: Lexer::new(source),
+            buffer: VecDeque::with_capacity(4),
+            last: None,
+        }
     }
 
     pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError<'i>> {
@@ -42,7 +47,7 @@ impl<'i> Parser<'i> {
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
                 Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
                 None => break,
-                Some(Err(err)) => return Err(ParserError::new(err.clone().into(), err.span())),
+                Some(Err(err)) => return Err(ParserError::new((*err).into(), err.span())),
             }
         }
 
@@ -54,18 +59,32 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
-    pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError>> {
-        self.cursor.peek()
+    pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError<'i>>> {
+        if self.buffer.is_empty()
+            && let Some(t) = self.cursor.next()
+        {
+            self.buffer.push_back(t);
+        }
+
+        self.buffer.front()
     }
 
     #[inline(always)]
-    pub fn peek_nth(&self, n: usize) -> Option<Result<Token<'i>, LexError>> {
-        self.cursor.clone().nth(n)
+    pub fn peek_nth(&mut self, n: usize) -> Option<Result<Token<'i>, LexError<'i>>> {
+        while self.buffer.len() <= n {
+            match self.cursor.next() {
+                Some(t) => self.buffer.push_back(t),
+                None => break,
+            }
+        }
+
+        self.buffer.get(n).copied()
     }
 
     #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
-        match self.cursor.next() {
+        let token = self.buffer.pop_front().or_else(|| self.cursor.next());
+        match token {
             Some(Ok(token)) => {
                 self.last = Some(token.span);
                 Ok(Some(token))
@@ -120,52 +139,59 @@ impl<'i> Parser<'i> {
 
     #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
-        if let Some(Ok(token)) = self.peek() {
-            if token.is_kind(kind) {
-                let _ = self.next_token();
-                return true;
-            }
+        if let Some(Ok(token)) = self.peek()
+            && token.is_kind(kind)
+        {
+            let _ = self.next_token();
+            return true;
         }
 
         false
     }
 
-    #[inline(always)]
-    pub fn consume_keyword(&mut self, keyword: Keyword) -> Result<bool, ParserError<'i>> {
-        self.consume_token(TokenKind::Keyword(keyword))
+    /// Consume a closing `>` for a generic argument list, splitting a `>>` (Shr) if necessary.
+    ///
+    /// Nested generics like `PartialEq<T>` produce a `>>` token at the boundary
+    /// of the outer list. Rather than teaching the lexer about generic context,
+    /// we split it here: consume `>>`, push the trailing `>` back into the
+    /// buffer, and report success.
+    pub(crate) fn consume_generic_close(&mut self) -> Result<bool, ParserError<'i>> {
+        match self.peek() {
+            Some(Ok(t)) if t.is_kind(Punct::Gt) => {
+                self.next_token()?;
+                Ok(true)
+            },
+            Some(Ok(t)) if t.is_kind(Punct::Shr) => {
+                let shr = self.next_token()?.unwrap();
+                // Split >>: push back a synthetic > for the second character
+                let mid = Position::new(
+                    shr.span.start.offset + 1,
+                    shr.span.start.line,
+                    shr.span.start.column + 1,
+                );
+                self.buffer.push_front(Ok(Token {
+                    kind: TokenKind::Punct(Punct::Gt),
+                    span: Span::new(mid, shr.span.end),
+                }));
+                Ok(true)
+            },
+            Some(Err(err)) => Err(err.into()),
+            _ => Ok(false),
+        }
     }
 
-    #[inline(always)]
-    pub fn consume_punct(&mut self, punct: Punct) -> Result<bool, ParserError<'i>> {
-        self.consume_token(TokenKind::Punct(punct))
-    }
-
-    fn consume_token(&mut self, kind: TokenKind<'i>) -> Result<bool, ParserError<'i>> {
+    fn consume_token(&mut self, kind: impl Into<TokenKind<'i>>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.is_kind(kind) => {
                 self.next_token()?;
                 Ok(true)
             },
-            Some(Err(err)) => return Err(err.into()),
+            Some(Err(err)) => Err(err.into()),
             _ => Ok(false),
         }
     }
 
-    pub(crate) fn is_pub_struct(&self) -> bool {
-        matches!(
-            self.peek_nth(1),
-            Some(Ok(t)) if t.is_kind(Keyword::Struct)
-        )
-    }
-
-    pub(crate) fn is_pub_interface(&self) -> bool {
-        matches!(
-            self.peek_nth(1),
-            Some(Ok(t)) if t.is_kind(Keyword::Interface)
-        )
-    }
-
-    pub(crate) fn is_const_decl(&self) -> bool {
+    pub(crate) fn is_const_decl(&mut self) -> bool {
         match self.peek_nth(0) {
             Some(Ok(t)) if t.is_kind(Keyword::Const) => {
                 matches!(
@@ -234,6 +260,46 @@ mod tests {
 
         assert_eq!(err.span.start.column, 5);
         assert_eq!(err.span.end.column, 8);
+    }
+
+    #[test]
+    fn generic_impl_receiver_type_is_parsed() {
+        let statements = Parser::new(
+            r#"
+            struct Pair<L, R> { left: L, right: R }
+            impl Pair<L, R> {
+                fn first(&self): L { self.left }
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Impl(implementation) = &statements[1] else {
+            panic!("expected impl block");
+        };
+
+        assert_eq!(implementation.name, "Pair");
+        assert!(implementation.generics.is_empty());
+        assert!(
+            matches!(implementation.receiver.value_ref(), Type::Generic("Pair", args) if args.len() == 2)
+        );
+    }
+
+    #[test]
+    fn rust_style_generic_impl_header_is_rejected() {
+        let err = Parser::new(
+            r#"
+            struct Box<T> { val: T }
+            impl<T> Box<T> {
+                fn get(&self): T { self.val }
+            }
+            "#,
+        )
+        .parse()
+        .unwrap_err();
+
+        assert!(matches!(err.kind, ParseErrorKind::ExpectedIdentifier { .. }));
     }
 
     #[test]
@@ -460,6 +526,59 @@ mod tests {
             Some(Type::Named("Point"))
         ));
         assert!(matches!(let_statement.value, Some(Expression::Struct { name: "Point", .. })));
+    }
+
+    #[test]
+    fn parses_struct_representation_options() {
+        let statements = Parser::new(
+            r#"
+            struct Flags {
+                a: bool,
+                b: bool,
+            } as packed, align(4)
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Struct(declaration) => declaration,
+            other => panic!("expected struct declaration, got {other:?}"),
+        };
+        assert_eq!(declaration.repr.kind, statement::StructReprKind::Packed);
+        assert_eq!(declaration.repr.align.unwrap().get(), 4);
+    }
+
+    #[test]
+    fn parses_enum_statement_with_repr_and_values() {
+        let statements = Parser::new(
+            r#"
+            pub enum Status {
+                Ok = 0,
+                Err = 1,
+                Timeout,
+            } as u16
+
+            fn main(): Status {
+                Status::Ok
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+
+        let declaration = match &statements[0] {
+            Statement::Enum(declaration) => declaration,
+            other => panic!("expected enum declaration, got {other:?}"),
+        };
+        assert!(declaration.is_pub);
+        assert_eq!(declaration.name, "Status");
+        assert_eq!(declaration.variants.len(), 3);
+        assert_eq!(declaration.variants[0].name, "Ok");
+        assert_eq!(declaration.variants[0].value, Some(0));
+        assert_eq!(declaration.variants[2].name, "Timeout");
+        assert_eq!(declaration.variants[2].value, None);
+        assert!(matches!(declaration.repr.value(), Type::U16));
     }
 
     #[test]

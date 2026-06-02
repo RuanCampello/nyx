@@ -14,7 +14,7 @@ pub struct ParserError<'i> {
 #[derive(Debug, Clone, PartialEq, Diagnostic)]
 pub enum ParseErrorKind<'i> {
     #[diagnostic(transparent)]
-    Lexical(LexError),
+    Lexical(LexError<'i>),
     #[diagnostic(
         message = "expected {expected^}, found {found~}",
         primary = "expected {expected^} here",
@@ -61,14 +61,14 @@ impl<'i> ParserError<'i> {
     }
 }
 
-impl<'i> From<&LexError> for ParserError<'i> {
-    fn from(value: &LexError) -> Self {
-        Self::new(ParseErrorKind::Lexical(value.clone()), value.span())
+impl<'i> From<&LexError<'i>> for ParserError<'i> {
+    fn from(value: &LexError<'i>) -> Self {
+        Self::new(ParseErrorKind::Lexical(*value), value.span())
     }
 }
 
-impl<'i> From<LexError> for ParseErrorKind<'i> {
-    fn from(value: LexError) -> Self {
+impl<'i> From<LexError<'i>> for ParseErrorKind<'i> {
+    fn from(value: LexError<'i>) -> Self {
         Self::Lexical(value)
     }
 }

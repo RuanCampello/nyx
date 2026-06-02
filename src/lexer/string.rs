@@ -12,7 +12,11 @@ use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
 pub struct StringLiteral;
 
 impl<'src> Tokenize<'src> for StringLiteral {
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError> {
+    fn lex(
+        self,
+        cursor: &mut Cursor<'src>,
+        start: Position,
+    ) -> Result<Token<'src>, LexError<'src>> {
         // consume the opening `"`
         cursor.advance();
 
@@ -34,8 +38,8 @@ impl<'src> Tokenize<'src> for StringLiteral {
                     cursor.advance(); // consume closing `"
                     let span = Span::new(start, cursor.position());
                     let content = &cursor.source()[content_start..content_end];
-                    return match has_invalid_escape {
-                        true => Err(LexError::new(
+                    if has_invalid_escape {
+                        return Err(LexError::new(
                             LexErrorKind::InvalidEscape(invalid_escape_char),
                             Span::new(
                                 invalid_escape_pos,
@@ -45,10 +49,10 @@ impl<'src> Tokenize<'src> for StringLiteral {
                                     invalid_escape_pos.column + 2,
                                 ),
                             ),
-                        )),
+                        ));
+                    }
 
-                        _ => Ok(Token::new(TokenKind::String(content), span)),
-                    };
+                    return Ok(Token::new(TokenKind::String(content), span));
                 },
 
                 Some('\\') => {
@@ -88,7 +92,7 @@ impl<'src> Tokenize<'src> for StringLiteral {
 mod tests {
     use super::*;
 
-    fn tok(src: &str) -> Result<Token<'_>, LexError> {
+    fn tok(src: &str) -> Result<Token<'_>, LexError<'_>> {
         let mut cursor = Cursor::new(src);
         let start = cursor.position();
         StringLiteral.lex(&mut cursor, start)

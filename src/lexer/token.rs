@@ -13,7 +13,8 @@ use std::ops::Add;
 ///
 pub trait Tokenize<'src> {
     /// Lex a single token starting at `start`, advancing `cursor` past it.
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position) -> Result<Token<'src>, LexError>;
+    fn lex(self, cursor: &mut Cursor<'src>, start: Position)
+    -> Result<Token<'src>, LexError<'src>>;
 }
 
 /// A single token produced by the lexer.
@@ -48,6 +49,7 @@ pub enum Keyword {
     While,
     For,
     Struct,
+    Enum,
     Impl,
     Inline,
     Const,
@@ -56,6 +58,8 @@ pub enum Keyword {
     Interface,
     With,
     As,
+    Where,
+    Match,
 }
 
 /// Punctuators and operators.
@@ -100,14 +104,14 @@ pub enum Punct {
     Arrow,      // ->
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Position {
     pub offset: u32,
     pub line: u16,
     pub column: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
@@ -171,6 +175,7 @@ impl Keyword {
             Self::While => "while",
             Self::For => "for",
             Self::Struct => "struct",
+            Self::Enum => "enum",
             Self::Impl => "impl",
             Self::Inline => "inline",
             Self::Const => "const",
@@ -179,6 +184,8 @@ impl Keyword {
             Self::Interface => "interface",
             Self::With => "with",
             Self::As => "as",
+            Self::Where => "where",
+            Self::Match => "match",
         }
     }
 }
@@ -197,6 +204,7 @@ impl std::str::FromStr for Keyword {
             "while" => Self::While,
             "for" => Self::For,
             "struct" => Self::Struct,
+            "enum" => Self::Enum,
             "impl" => Self::Impl,
             "inline" => Self::Inline,
             "const" => Self::Const,
@@ -205,6 +213,8 @@ impl std::str::FromStr for Keyword {
             "with" => Self::With,
             "interface" => Self::Interface,
             "as" => Self::As,
+            "where" => Self::Where,
+            "match" => Self::Match,
             _ => return Err(()),
         })
     }

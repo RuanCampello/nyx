@@ -1,16 +1,20 @@
 use crate::{
     hir::{
-        Block, Constant, Expression, ExpressionKind, Function, FunctionId, Intrinsic, Local,
-        LocalId, Parameter, Receiver, RefTarget, Statement, Struct, StructField, StructId,
-        SymbolId, SymbolTable, SyscallCode, Type,
-        error::{ConstFnViolationKind, HirError, HirErrorKind, hir_error},
-        scope::{self, Scope, Structs},
-        symbols::Mangler,
+        Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
+        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
+        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        TypeckResults,
+        error::{ConstFnViolationKind, HirError, hir_error},
+        index_vec::IndexVec,
+        place_base_local,
+        scope::{GenericEnv, Scope},
+        symbols::{Mangler, qualified},
+        type_resolver::{self, resolve_annotation},
     },
-    lexer::token::Span,
+    lexer::{Spanned, token::Span},
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else},
+        statement::{self, Else, PatternLit},
     },
 };
 use std::{
@@ -19,89 +23,146 @@ use std::{
     str::FromStr,
 };
 
-pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'src> {
-    scope: &'s Scope<'s>,
-    locals: Vec<Local>,
+pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
+    scope: &'s mut Scope<'hir>,
+    locals: IndexVec<LocalId, Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
     function: Option<&'f statement::Function<'src>>,
     function_id: FunctionId,
     next_local: u32,
+    next_expr_id: u32,
     symbols: &'s mut SymbolTable,
     is_const: bool,
     in_std: bool,
     self_type: Option<Type>,
+    arena: &'hir bumpalo::Bump,
+    typeck: TypeckResults,
+    /// Maps a generic parameter name (`T`) to the concrete type it was instantiated
+    /// with, when re-lowering a generic template body for a concrete instance. Empty
+    /// for ordinary (non-instance) lowering
+    generic_env: GenericEnv,
 }
 
-impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
+/// A freshly lowered expression
+///
+/// Its arena reference plus the type and span the
+/// lowering pass needs immediately for bidirectional checking
+#[derive(Clone, Copy)]
+pub(in crate::hir) struct Lowered<'hir> {
+    expr: &'hir Expression<'hir>,
+    typ: Type,
+    span: Span,
+}
+
+impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
+where
+    'src: 'hir,
+{
     pub fn new(
-        scope: &'s Scope,
+        scope: &'s mut Scope<'hir>,
         symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
         in_std: bool,
+        arena: &'hir bumpalo::Bump,
     ) -> Self {
-        let self_type = function.impl_type.and_then(|impl_type| {
-            scope::resolve_primitive_type(impl_type).or_else(|| {
-                let struct_symbol = symbols.get_id(impl_type)?;
-                scope.struct_map.get(&struct_symbol).copied().map(Type::Struct)
-            })
-        });
+        let self_type = function
+            .impl_type
+            .and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
 
         Self {
             scope,
             symbols,
             is_const: function.is_const,
             in_std,
-            return_type: Type::Unit,
+            return_type: TypeKind::Unit.into(),
             function: Some(function),
             function_id,
             next_local: 0,
-            locals: Vec::new(),
+            next_expr_id: 0,
+            locals: IndexVec::new(),
+            typeck: TypeckResults::default(),
             scopes: vec![HashMap::new()],
             self_type,
+            arena,
+            generic_env: HashMap::new(),
         }
     }
 
-    pub fn new_for_const(scope: &'s Scope, symbols: &'s mut SymbolTable, in_std: bool) -> Self {
+    pub fn new_instance(
+        scope: &'s mut Scope<'hir>,
+        symbols: &'s mut SymbolTable,
+        function_id: FunctionId,
+        function: &'f statement::Function<'src>,
+        in_std: bool,
+        arena: &'hir bumpalo::Bump,
+        generic_env: GenericEnv,
+    ) -> Self {
+        let mut builder = Self::new(scope, symbols, function_id, function, in_std, arena);
+        builder.generic_env = generic_env;
+        builder
+    }
+
+    pub fn new_for_const(
+        scope: &'s mut Scope<'hir>,
+        symbols: &'s mut SymbolTable,
+        in_std: bool,
+        arena: &'hir bumpalo::Bump,
+    ) -> Self {
         Self {
             scope,
             symbols,
             is_const: true,
             in_std,
-            return_type: Type::Unit,
+            return_type: TypeKind::Unit.into(),
             function: None,
             function_id: FunctionId(0),
             next_local: 0,
-            locals: Vec::new(),
+            next_expr_id: 0,
+            locals: IndexVec::new(),
+            typeck: TypeckResults::default(),
             scopes: vec![HashMap::new()],
             self_type: None,
+            arena,
+            generic_env: HashMap::new(),
         }
     }
 
+    /// Push an expression node into the arena, record its type in the parallel
+    /// side-table, and return a [`Lowered`] handle
+    #[inline]
+    fn alloc(&mut self, kind: ExpressionKind<'hir>, typ: Type, span: Span) -> Lowered<'hir> {
+        let id = ExprId(self.next_expr_id);
+        self.next_expr_id += 1;
+        let expr = self.arena.alloc(Expression { id, kind, span });
+        self.typeck.node_types.push(typ);
+
+        Lowered { expr, typ, span }
+    }
+
     #[inline(always)]
-    pub fn lower(mut self) -> Result<Function, HirError<'src>> {
+    pub fn lower(mut self) -> Result<Function<'hir>, HirError<'hir>> {
         let function = self.function.take().expect("function to be present");
         let id = self.function_id;
-        let signatures = &self.scope.signatures[id.0 as usize];
-        let symbol = signatures.name;
-        self.return_type = signatures.return_type;
+        let signature = self.scope.signatures[id].clone();
+        let symbol = signature.name;
+        self.return_type = signature.return_type;
 
-        let mut params = Vec::with_capacity(signatures.params.len());
+        let mut params = Vec::with_capacity(signature.params.len());
 
         if let Some(receiver) = function.receiver {
-            let typ = signatures.params[0];
+            let typ = signature.receiver_type().expect("receiver in AST without one in signature");
             let symbol = self.symbols.insert("self");
             let id = self.declare_local(symbol, typ, receiver.mutable)?;
             params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
         }
 
-        let receiver_offset = usize::from(function.receiver.is_some());
         params.extend(
             function
                 .params
                 .iter()
-                .zip(signatures.params.iter().skip(receiver_offset))
+                .zip(signature.explicit_params().iter())
                 .map(|(parameter, &typ)| -> Result<_, HirError> {
                     let symbol = self.symbols.insert(parameter.name);
                     let id = self.declare_local(symbol, typ, parameter.mutable)?;
@@ -118,12 +179,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             name: symbol,
             params,
             locals: self.locals,
-            return_type: signatures.return_type,
+            return_type: signature.return_type,
             is_const: function.is_const,
             is_pub: function.is_pub,
             inline: function.inline,
-            intrinsic: signatures.intrinsic,
-            method: signatures.method,
+            kind: signature.kind,
+            typeck: self.typeck,
             body,
         })
     }
@@ -132,11 +193,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         block: &statement::Block<'src>,
         is_tail: bool,
-    ) -> Result<(Block, bool), HirError<'src>> {
+    ) -> Result<(Block<'hir>, bool), HirError<'hir>> {
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
-        let (statements, returns) = block.statements.iter().enumerate().try_fold(
+        let (statements_vec, returns) = block.statements.iter().enumerate().try_fold(
             (Vec::new(), false),
             |(mut statements, mut returns), (idx, statement)| -> Result<_, HirError> {
                 let (statement, did_return) =
@@ -149,6 +210,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         )?;
 
         self.pop_scope();
+        let statements = self.arena.alloc_slice_copy(&statements_vec);
         Ok((Block { statements, span: block.span }, returns))
     }
 
@@ -156,7 +218,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         statement: &statement::Statement<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'src>> {
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         use statement::Statement as Stmt;
 
         match statement {
@@ -167,7 +229,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     (None, None) => {
                         return Err(hir_error!(
                             statement.span,
-                            MissingInitialiser { name: statement.name.into() }
+                            MissingInitialiser { name: statement.name }
                         ));
                     },
                 };
@@ -175,17 +237,20 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 let symbol = self.symbols.insert(statement.name);
                 let id = self.declare_local(symbol, typ, statement.mutable)?;
 
-                let init = match statement.value {
+                let mut diverges = false;
+                let stmt = match statement.value {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(typ))?;
                         self.assert_type(typ, expr.typ, expr.span)?;
 
-                        Some(expr)
+                        diverges = expr.typ.diverges();
+
+                        Statement::LetInit { id, init: expr.expr }
                     },
-                    _ => None,
+                    _ => Statement::LetUninit { id },
                 };
 
-                Ok((Statement::Let { id, init }, false))
+                Ok((stmt, diverges))
             },
 
             Stmt::Return(statement) => {
@@ -193,7 +258,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     Some(ref expr) => {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        Some(expr)
+                        Some(expr.expr)
                     },
                     _ => None,
                 };
@@ -205,67 +270,214 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             Stmt::While(statement) => {
                 let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(Type::Bool, condition.typ, statement.span)?;
+                self.assert_type(TypeKind::Bool, condition.typ, statement.span)?;
 
                 // PERFORMANCE: remove loops with constant false conditions
                 let (body, _) = self.lower_block(&statement.body, false)?;
 
-                Ok((Statement::While { condition, body }, false))
+                Ok((Statement::While { condition: condition.expr, body }, false))
             },
-
             Stmt::Expr(expr, _) => {
-                let hint = match is_tail && self.return_type != Type::Unit {
-                    true => Some(self.return_type),
-                    _ => None,
-                };
-                let expr = self.lower_expr(expr, hint)?;
+                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
-                match is_tail {
-                    true => match self.return_type == Type::Unit {
-                        true => Ok((Statement::Expr(expr), false)),
-                        _ => {
-                            self.assert_type(self.return_type, expr.typ, expr.span)?;
-                            Ok((Statement::Return(Some(expr)), true))
-                        },
+                Ok(match tail_ret {
+                    // a diverging tail expression (an `exit()`/`panic()` returning
+                    // `!`) produces no value: it needs no `return` wrapper and no
+                    // type assertion, the block simply diverges
+                    true if expr.typ.diverges() => (Statement::Expr(expr.expr), true),
+                    true => {
+                        self.assert_type(self.return_type, expr.typ, expr.span)?;
+                        (Statement::Return(Some(expr.expr)), true)
                     },
-                    _ => Ok((Statement::Expr(expr), false)),
-                }
+                    _ => (Statement::Expr(expr.expr), expr.typ.diverges()),
+                })
             },
-
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
                 Ok((Statement::Block(block), returns))
             },
 
-            Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
+            Stmt::Match(statement) => {
+                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
 
+                Ok(match tail_ret {
+                    true => {
+                        self.assert_type(self.return_type, expr.typ, expr.span)?;
+                        (Statement::Return(Some(expr.expr)), true)
+                    },
+                    _ => (Statement::Expr(expr.expr), false),
+                })
+            },
+
+            Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
             Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
             Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
+            Stmt::Enum(_) => unimplemented!("nested enums are not supported yet"),
             Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
             Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
             Stmt::Const(_) => unimplemented!("local constants are not supported yet"),
         }
     }
 
-    fn lower_identifier(&mut self, name: &str, span: Span) -> Result<Expression, HirError<'src>> {
+    fn lower_identifier(
+        &mut self,
+        name: &'src str,
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         if let Some(id) = self.local_id(name) {
             return Ok(self.local_expr(id, span));
         }
 
-        if let Some(constant) = self.constant(name) {
-            let mut value = constant.value.clone();
-            value.span = span;
-
-            return Ok(value);
+        if let Some(c) = self.constant(name) {
+            let val = c.value;
+            let typeck = c.typeck.clone();
+            return Ok(self.splice_const(val, &typeck, span));
         }
 
         let symbol = self
             .symbols
             .get_id(name)
-            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name: name.to_string() }))?;
+            .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name }))?;
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
+    }
+
+    /// Copy a constant's expression subtree (nodes and their types) into this
+    /// body's arena, re-spanning the inlined root to the use site
+    fn splice_const(
+        &mut self,
+        expr: &Expression<'hir>,
+        const_typeck: &TypeckResults,
+        span: Span,
+    ) -> Lowered<'hir> {
+        use ExpressionKind as Kind;
+
+        let kind = match &expr.kind {
+            Kind::Literal(lit) => Kind::Literal(*lit),
+            Kind::Local(id) => Kind::Local(*id),
+            Kind::Unary { operator, expr } => {
+                let expr = self.splice_const(expr, const_typeck, span);
+                Kind::Unary { operator: *operator, expr: expr.expr }
+            },
+            Kind::Binary { operator, left, right } => {
+                let left = self.splice_const(left, const_typeck, span);
+                let right = self.splice_const(right, const_typeck, span);
+                Kind::Binary { operator: *operator, left: left.expr, right: right.expr }
+            },
+            Kind::Field { base, field } => {
+                let base = self.splice_const(base, const_typeck, span);
+                Kind::Field { base: base.expr, field: *field }
+            },
+            Kind::Assign { target, value } => {
+                let target = self.splice_const(target, const_typeck, span);
+                let value = self.splice_const(value, const_typeck, span);
+                Kind::Assign { target: target.expr, value: value.expr }
+            },
+            Kind::Path(symbol) => Kind::Path(*symbol),
+            Kind::MethodCall { name, receiver, args } => {
+                let receiver = self.splice_const(receiver, const_typeck, span);
+                let args = args
+                    .iter()
+                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::MethodCall { name: *name, receiver: receiver.expr, args }
+            },
+            Kind::Struct { id, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|(sym, val)| (*sym, self.splice_const(val, const_typeck, span).expr))
+                    .collect::<Vec<_>>();
+                let fields = self.arena.alloc_slice_copy(&fields);
+                Kind::Struct { id: *id, fields }
+            },
+            Kind::Call { callee, args } => {
+                let callee = self.splice_const(callee, const_typeck, span);
+                let args = args
+                    .iter()
+                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::Call { callee: callee.expr, args }
+            },
+            Kind::Syscall { code, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::Syscall { code: *code, args }
+            },
+            Kind::IntrinsicCall { intrinsic, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                let args = self.arena.alloc_slice_copy(&args);
+                Kind::IntrinsicCall { intrinsic: *intrinsic, args }
+            },
+            Kind::TypeIntrinsic { kind, typ } => Kind::TypeIntrinsic { kind: *kind, typ: *typ },
+            Kind::Cast { from, to } => {
+                let from = self.splice_const(from, const_typeck, span);
+                Kind::Cast { from: from.expr, to: *to }
+            },
+            Kind::Match { scrutinee, arms } => {
+                let scrutinee = self.splice_const(scrutinee, const_typeck, span);
+                let mut arms_copied = Vec::with_capacity(arms.len());
+
+                for arm in *arms {
+                    let pattern = self.splice_pattern(arm.pattern);
+                    let guard = arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
+                    let body = self.splice_const(arm.body, const_typeck, span);
+                    arms_copied.push(Arm {
+                        pattern: self.arena.alloc(pattern),
+                        guard,
+                        body: body.expr,
+                        span: arm.span,
+                    });
+                }
+                Kind::Match {
+                    scrutinee: scrutinee.expr,
+                    arms: self.arena.alloc_slice_copy(&arms_copied),
+                }
+            },
+        };
+
+        let typ = const_typeck.type_of(expr.id);
+        let lowered = self.alloc(kind, typ, span);
+
+        // carry over the resolved call target / generic args for spliced calls
+        const_typeck
+            .type_dependent_def(expr.id)
+            .and_then(|def| self.typeck.type_dependent_defs.insert(lowered.expr.id, def));
+        const_typeck
+            .node_args(expr.id)
+            .and_then(|args| self.typeck.node_args.insert(lowered.expr.id, args.to_vec()));
+
+        lowered
+    }
+
+    fn splice_pattern(&self, pat: &Pattern<'hir>) -> Pattern<'hir> {
+        let kind = match &pat.kind {
+            PatternKind::Wildcard => PatternKind::Wildcard,
+            PatternKind::Literal(lit) => PatternKind::Literal(*lit),
+            PatternKind::Binding(id) => PatternKind::Binding(*id),
+            PatternKind::Or(pats) => {
+                let spliced: Vec<_> = pats.iter().map(|p| self.splice_pattern(p)).collect();
+                PatternKind::Or(self.arena.alloc_slice_copy(&spliced))
+            },
+            PatternKind::Variant { id: enum_id, variant_idx, sub } => {
+                let sub = sub.map(|s| {
+                    let spliced = self.splice_pattern(s);
+                    &*self.arena.alloc(spliced)
+                });
+                PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub }
+            },
+        };
+        Pattern { kind, span: pat.span }
     }
 
     fn local_id(&self, name: &str) -> Option<LocalId> {
@@ -274,11 +486,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
     }
 
-    fn local_expr(&self, id: LocalId, span: Span) -> Expression {
-        Expression { kind: ExpressionKind::Local(id), typ: self[id].typ, span }
+    fn local_expr(&mut self, id: LocalId, span: Span) -> Lowered<'hir> {
+        let typ = self[id].typ;
+        self.alloc(ExpressionKind::Local(id), typ, span)
     }
 
-    fn constant(&self, name: &str) -> Option<&Constant> {
+    fn constant(&self, name: &str) -> Option<&Constant<'hir>> {
         if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
             let scoped = self.mangler().scoped_item(impl_type, name);
             if let Some(constant) = self.constant_by_symbol_name(&scoped) {
@@ -291,7 +504,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             .or_else(|| self.constant_by_symbol_name(name))
     }
 
-    fn constant_by_symbol_name(&self, name: &str) -> Option<&Constant> {
+    #[inline]
+    fn constant_by_symbol_name(&self, name: &str) -> Option<&Constant<'hir>> {
         let symbol = self.symbols.get_id(name)?;
 
         self.scope.constants.get(&symbol)
@@ -312,106 +526,107 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         expr: &expression::Expression<'src>,
         hint: Option<Type>,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         use expression::Expression as Expr;
 
         match expr {
             // literal coercion: use the hint to widen to the expected numeric type.
             Expr::Integer(value, span) => {
-                let typ = match hint {
-                    Some(t) if t.is_number() => t,
-                    _ => Type::I32,
-                };
+                let typ =
+                    hint.and_then(|t| t.is_number().then_some(t)).unwrap_or(TypeKind::I32.into());
 
-                Ok(Expression { kind: ExpressionKind::Integer(*value), typ, span: *span })
+                Ok(self.alloc((*value).into(), typ, *span))
             },
 
             Expr::Float(value, span) => {
-                let typ = match hint {
-                    Some(t) if t.is_float() => t,
-                    _ => Type::F64,
-                };
+                let typ =
+                    hint.and_then(|t| t.is_float().then_some(t)).unwrap_or(TypeKind::F64.into());
 
-                Ok(Expression { kind: ExpressionKind::Float(*value), typ, span: *span })
+                Ok(self.alloc((*value).into(), typ, *span))
             },
 
-            Expr::String(value, span) => Ok(Expression {
-                kind: ExpressionKind::String((*value).to_string()),
-                typ: Type::String,
-                span: *span,
-            }),
+            Expr::String(value, span) => {
+                let sym = self.symbols.insert(value);
+                Ok(self.alloc(
+                    ExpressionKind::Literal(Literal::Str(sym)),
+                    TypeKind::Str.into(),
+                    *span,
+                ))
+            },
 
-            Expr::Char(value, span) => Ok(Expression {
-                kind: ExpressionKind::Char(*value),
-                typ: Type::Char,
-                span: *span,
-            }),
-
-            Expr::Bool(value, span) => Ok(Expression {
-                kind: ExpressionKind::Bool(*value),
-                typ: Type::Bool,
-                span: *span,
-            }),
+            Expr::Char(value, span) => {
+                Ok(self.alloc((*value).into(), TypeKind::Char.into(), *span))
+            },
+            Expr::Bool(value, span) => {
+                Ok(self.alloc((*value).into(), TypeKind::Bool.into(), *span))
+            },
 
             Expr::Cast { expr: inner, target_type, span } => {
                 let target = self.resolve_type(&target_type.value(), target_type.span())?;
                 let lowered_expr = self.lower_expr(inner, None)?;
                 let src = lowered_expr.typ;
 
-                if !src.is_primitive_castable() || !target.is_primitive_castable() {
+                let src_castable =
+                    src.is_primitive_castable() || matches!(src.kind(), TypeKind::Enum(_));
+                if !src_castable || !target.is_primitive_castable() {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
-                Ok(Expression {
-                    kind: ExpressionKind::Cast { from: Box::new(lowered_expr), to: target },
-                    typ: target,
-                    span: *span,
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Cast { from: lowered_expr.expr, to: target },
+                    target,
+                    *span,
+                ))
             },
 
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
             Expr::QualifiedName { qualifier, name, span } => {
+                let enum_symbol = self.symbols.insert(qualifier);
+                let variant_symbol = self.symbols.insert(name);
+                if let Some((id, value)) =
+                    self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
+                {
+                    return Ok(self.alloc(
+                        ExpressionKind::Literal(Literal::Int(value)),
+                        Type::enumerable(id),
+                        *span,
+                    ));
+                }
+
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
+                let qualified = qualified(self.arena, qualifier, name);
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
-                        return Err(hir_error!(
-                            *span,
-                            UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
-                        ));
+                        return Err(hir_error!(*span, UndeclaredIdentifier { name: qualified }));
                     },
                 };
 
-                let Some(c) = self.scope.constants.get(&symbol) else {
-                    return Err(hir_error!(
-                        *span,
-                        UndeclaredIdentifier { name: format!("{qualifier}::{name}") }
-                    ));
-                };
+                let c =
+                    self.scope.constants.get(&symbol).cloned().ok_or_else(|| {
+                        hir_error!(*span, UndeclaredIdentifier { name: qualified })
+                    })?;
 
-                let mut val = c.value.clone();
-                val.span = *span;
-                Ok(val)
+                Ok(self.splice_const(c.value, &c.typeck, *span))
             },
 
             Expr::Unary { operator, expr, span } => {
-                // for negation the hint flows through to the operand
-                let inner_hint = match operator {
+                let hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
-                    UnaryOperator::Deref => hint.map(|h| Type::Ref {
-                        mutable: false,
-                        to: match h {
-                            Type::Struct(id) => RefTarget::Struct(id),
-                            Type::Char => RefTarget::Char,
-                            Type::Ref { to, .. } => to,
-                            _ => RefTarget::Char,
-                        },
+                    UnaryOperator::Deref => hint.map(|h| {
+                        let to = match h.kind() {
+                            TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
+                            TypeKind::Char => RefTarget::new(TypeKind::Char),
+                            TypeKind::Ref { to, .. } => to,
+                            _ => RefTarget::new(TypeKind::Char),
+                        };
+                        Type::refer(to, false)
                     }),
                     UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
-                let expr = self.lower_expr(expr, inner_hint)?;
+                let expr = self.lower_expr(expr, hint)?;
 
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
@@ -420,42 +635,50 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
-                                TypeMismatch { expected: Type::I32, found: expr.typ }
+                                TypeMismatch { expected: TypeKind::I32.into(), found: expr.typ }
                             ));
                         },
                     },
-                    UnaryOperator::Not => match expr.typ == Type::Bool || expr.typ.is_integer() {
-                        true => expr.typ,
-                        _ => {
-                            return Err(hir_error!(
-                                expr.span,
-                                TypeMismatch { expected: Type::Bool, found: expr.typ }
-                            ));
-                        },
+
+                    UnaryOperator::Not => {
+                        match expr.typ == TypeKind::Bool.into() || expr.typ.is_integer() {
+                            true => expr.typ,
+                            _ => {
+                                return Err(hir_error!(
+                                    expr.span,
+                                    TypeMismatch {
+                                        expected: TypeKind::Bool.into(),
+                                        found: expr.typ
+                                    }
+                                ));
+                            },
+                        }
                     },
-                    UnaryOperator::Deref => match expr.typ {
-                        Type::Ref { to, .. } => to.into(),
+
+                    UnaryOperator::Deref => match expr.typ.kind() {
+                        TypeKind::Ref { to, .. } => to.into(),
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::Ref { mutable: false, to: RefTarget::Char },
+                                    expected: Type::refer(RefTarget::new(TypeKind::Char), false),
                                     found: expr.typ
                                 }
                             ));
                         },
                     },
+
                     UnaryOperator::Ref => {
                         let to = RefTarget::try_from(expr.typ).map_err(|_| {
                             hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::Struct(Default::default()),
+                                    expected: Type::structure(Default::default()),
                                     found: expr.typ
                                 }
                             )
                         })?;
-                        Type::Ref { mutable: false, to }
+                        Type::refer(to, false)
                     },
                 };
 
@@ -463,11 +686,11 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
-                Ok(Expression {
-                    typ: expected,
-                    span: *span,
-                    kind: ExpressionKind::Unary { operator: *operator, expr: Box::new(expr) },
-                })
+                Ok(self.alloc(
+                    ExpressionKind::Unary { operator: *operator, expr: expr.expr },
+                    expected,
+                    *span,
+                ))
             },
 
             Expr::Binary { left, operator, right, span } => {
@@ -491,64 +714,103 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
                     | BinaryOperator::BitXor => Some(left.typ),
-                    BinaryOperator::And | BinaryOperator::Or => Some(Type::Bool),
+                    BinaryOperator::And | BinaryOperator::Or => Some(TypeKind::Bool.into()),
                     BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
                 let right = self.lower_expr(right, right_hint)?;
 
+                if let Some(method) = operator.overload_method() {
+                    let receiver = left.typ.strip_reference();
+                    if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
+                        let method_symbol = self.symbols.insert(method);
+                        if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
+                        {
+                            let lowered = self.alloc(
+                                ExpressionKind::Binary {
+                                    operator: *operator,
+                                    left: left.expr,
+                                    right: right.expr,
+                                },
+                                TypeKind::Bool.into(),
+                                *span,
+                            );
+                            self.typeck
+                                .type_dependent_defs
+                                .insert(lowered.expr.id, Res::Function(function));
+                            return Ok(lowered);
+                        }
+                    }
+                }
+
                 // PERFORMANCE: constant fold binary operator on literals
                 let result = self.type_for_binary(operator, left.typ, right.typ, *span)?;
 
-                Ok(Expression {
-                    kind: ExpressionKind::Binary {
+                Ok(self.alloc(
+                    ExpressionKind::Binary {
                         operator: *operator,
-                        left: Box::new(left),
-                        right: Box::new(right),
+                        left: left.expr,
+                        right: right.expr,
                     },
-                    typ: result,
-                    span: *span,
-                })
+                    result,
+                    *span,
+                ))
             },
 
             Expr::Assignment { target, value, span } => {
-                let (local, fields, typ) =
-                    self.resolve_access_chain(target, *span).map_err(|err| match err.kind {
-                        HirErrorKind::InvalidFieldAccess => {
-                            hir_error!(*span, InvalidAssignmentTarget)
-                        },
-                        _ => err,
-                    })?;
+                let target_lowered = self.lower_expr(target, None)?;
+                let local = place_base_local(target_lowered.expr)
+                    .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
 
                 if !self[local].mutable {
-                    let err_span = *fields.is_empty().then_some(span).unwrap_or(&target.span());
+                    let err_span = match &target_lowered.expr.kind {
+                        ExpressionKind::Local(_) => span,
+                        ExpressionKind::Field { .. } => &target.span(),
+                        _ => span,
+                    };
 
-                    return Err(hir_error!(
-                        err_span,
-                        ImmutableBind { name: self.symbols.get(self[local].name).to_string() }
-                    ));
+                    let name = self.arena.alloc_str(self.symbols.get(self[local].name));
+                    return Err(hir_error!(*err_span, ImmutableBind { name }));
                 }
 
-                let value = self.lower_expr(value, Some(typ))?;
-                self.assert_type(typ, value.typ, *span)?;
+                let value = self.lower_expr(value, Some(target_lowered.typ))?;
+                self.assert_type(target_lowered.typ, value.typ, *span)?;
 
-                let kind = match fields.is_empty() {
-                    true => ExpressionKind::Assign { target: local, value: Box::new(value) },
-                    _ => ExpressionKind::FieldAssign { local, fields, value: Box::new(value) },
-                };
-                Ok(Expression { kind, typ, span: *span })
+                let typ = target_lowered.typ;
+                Ok(self.alloc(
+                    ExpressionKind::Assign { target: target_lowered.expr, value: value.expr },
+                    typ,
+                    *span,
+                ))
             },
 
-            Expr::Struct { name, fields, span } => {
-                let symbol = self.symbols.insert(name);
-                let id = self
-                    .scope
-                    .struct_map
-                    .get(&symbol)
-                    .copied()
-                    .ok_or_else(|| hir_error!(*span, UnknownType { name: name.to_string() }))?;
+            Expr::Struct { name, fields, span, type_args } => {
+                let id = if !type_args.is_empty() {
+                    let mut resolved = Vec::with_capacity(type_args.len());
+                    for arg in type_args {
+                        resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                    }
+                    let struct_sym = self.symbols.insert(name);
+                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, *span)?;
+                    }
+                    let typ =
+                        self.scope.instantiate_generic(name, &resolved, *span, self.symbols)?;
+                    match typ.kind() {
+                        TypeKind::Struct(id) => id,
+                        _ => return Err(hir_error!(*span, UnknownType { name })),
+                    }
+                } else {
+                    let symbol = self.symbols.insert(name);
+                    self.scope
+                        .struct_map
+                        .get(&symbol)
+                        .copied()
+                        .ok_or_else(|| hir_error!(*span, UnknownType { name }))?
+                };
 
-                let definition = &self.scope.structs[id.0 as usize];
-                let struct_name = self.symbols.get(definition.name).to_string();
+                let definition_name = self.scope[id].name;
+                let struct_name = self.arena.alloc_str(self.symbols.get(definition_name));
+                let definition_fields = self.scope[id].fields.clone();
 
                 let mut seen = HashSet::with_capacity(fields.len());
                 let mut lowered = Vec::with_capacity(fields.len());
@@ -556,104 +818,114 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 for field in fields {
                     let field_symbol = self.symbols.insert(field.name);
                     if !seen.insert(field_symbol) {
-                        return Err(hir_error!(
-                            field.span,
-                            DuplicateField { name: field.name.to_string() }
-                        ));
+                        return Err(hir_error!(field.span, DuplicateField { name: field.name }));
                     }
 
-                    let Some(expected) = definition.fields.iter().find(|f| f.name == field_symbol)
+                    let Some(expected) = definition_fields.iter().find(|f| f.name == field_symbol)
                     else {
                         return Err(hir_error!(
                             field.span,
-                            UnknownField { struct_name, field: field.name.to_string() }
+                            UnknownField { struct_name, field: field.name }
                         ));
                     };
 
                     let value = self.lower_expr(&field.value, Some(expected.typ))?;
                     self.assert_type(expected.typ, value.typ, value.span)?;
-                    lowered.push((field_symbol, value));
+                    lowered.push((field_symbol, value.expr));
                 }
 
-                for expected in &definition.fields {
+                for expected in &definition_fields {
                     if !seen.contains(&expected.name) {
                         return Err(hir_error!(
                             *span,
                             MissingField {
                                 struct_name,
-                                field: self.symbols.get(expected.name).to_string()
+                                field: self.arena.alloc_str(self.symbols.get(expected.name)),
                             }
                         ));
                     }
                 }
 
-                Ok(Expression {
-                    typ: Type::Struct(id),
-                    span: *span,
-                    kind: ExpressionKind::Struct { id, fields: lowered },
-                })
+                let fields = self.arena.alloc_slice_copy(&lowered);
+                Ok(self.alloc(ExpressionKind::Struct { id, fields }, Type::structure(id), *span))
             },
 
-            Expr::Field { span, .. } => {
-                let (local, fields, typ) = self.resolve_access_chain(expr, *span)?;
+            Expr::Field { expr: base, field, span } => {
+                let base_lowered = self.lower_expr(base, None)?;
+                if !matches!(
+                    &base_lowered.expr.kind,
+                    ExpressionKind::Local(_) | ExpressionKind::Field { .. }
+                ) {
+                    return Err(hir_error!(*span, InvalidFieldAccess));
+                }
 
-                Ok(Expression {
-                    kind: ExpressionKind::FieldAccess { local, fields },
+                let (field_symbol, typ) = self.lookup_field(base_lowered.typ, field, *span)?;
+                Ok(self.alloc(
+                    ExpressionKind::Field { base: base_lowered.expr, field: field_symbol },
                     typ,
-                    span: *span,
-                })
+                    *span,
+                ))
             },
 
-            Expr::Call { callee, args, span } => {
+            Expr::Call { callee, args, span, type_args } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
-                    let (local, fields, receiver_expr, receiver_type) =
-                        match self.resolve_access_chain(receiver, *span) {
-                            Ok((loc, flds, typ)) => (Some(loc), flds, None, typ),
-                            _ => {
-                                let lowered = self.lower_expr(receiver, None)?;
-                                let typ = lowered.typ;
-                                (None, Vec::new(), Some(Box::new(lowered)), typ)
-                            },
-                        };
+                    let receiver_lowered = self.lower_expr(receiver, None)?;
+                    let base_local = place_base_local(receiver_lowered.expr);
+                    let receiver_type = receiver_lowered.typ;
 
                     let receiver_base_type = receiver_type.strip_reference();
                     let method_symbol = self.symbols.insert(method_name);
-                    let struct_name = match receiver_base_type {
-                        Type::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
-                        other => other.to_string(),
+                    let struct_name = match receiver_base_type.kind() {
+                        TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                        TypeKind::Enum(id) => self
+                            .scope
+                            .enums
+                            .get(id)
+                            .map(|e| self.symbols.get(e.name).to_string())
+                            .unwrap_or_else(|| receiver_base_type.to_string()),
+                        _ => receiver_base_type.to_string(),
                     };
                     let function =
                         *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
                             || {
-                                hir_error!(
-                                    *span,
-                                    UnknownMethod { struct_name, name: method_name.to_string() }
-                                )
+                                let struct_name = self.arena.alloc_str(&struct_name);
+                                hir_error!(*span, UnknownMethod { struct_name, name: method_name })
                             },
                         )?;
 
-                    let signature = &self.scope.signatures[function.0 as usize];
-                    let Type::Ref { mutable, .. } = signature.params[0] else {
-                        unreachable!("method signature must start with receiver reference");
-                    };
-
-                    if mutable {
-                        if local.filter(|&id| self[id].mutable).is_none() {
-                            let name = match local {
-                                Some(id) => self.symbols.get(self[id].name).to_string(),
-                                None => "temporary".to_string(),
-                            };
-
-                            return Err(hir_error!(*span, ImmutableBind { name }));
-                        }
+                    if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
+                        let return_type = self.scope.signatures[function].return_type;
+                        let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
+                        return Ok(self.alloc(
+                            ExpressionKind::IntrinsicCall { intrinsic, args },
+                            return_type,
+                            *span,
+                        ));
                     }
 
-                    let explicit_params = &signature.params[1..];
+                    let signature = self.scope.signatures[function].clone();
+                    assert!(
+                        signature.receiver_type().is_some(),
+                        "method call resolved to a free function"
+                    );
+
+                    if signature.receiver_mutable()
+                        && base_local.filter(|&id| self[id].mutable).is_none()
+                    {
+                        let name = match base_local {
+                            Some(id) => self.arena.alloc_str(self.symbols.get(self[id].name)),
+                            None => "temporary",
+                        };
+
+                        return Err(hir_error!(*span, ImmutableBind { name }));
+                    }
+
+                    let explicit_params = signature.explicit_params();
                     if explicit_params.len() != args.len() {
                         return Err(hir_error!(
                             *span,
                             ArityMismatch {
-                                name: method_name.to_string(),
+                                name: method_name,
                                 expected: explicit_params.len(),
                                 found: args.len()
                             }
@@ -663,128 +935,254 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     let lowered_args = args
                         .iter()
                         .zip(explicit_params.iter())
-                        .map(|(expr, &param_type)| -> Result<_, HirError> {
+                        .map(|(expr, &param_type)| -> Result<&'hir Expression<'hir>, HirError> {
                             let expr = self.lower_expr(expr, Some(param_type))?;
                             self.assert_type(param_type, expr.typ, expr.span)?;
-                            Ok(expr)
+                            Ok(expr.expr)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
 
-                    return Ok(Expression {
-                        typ: signature.return_type,
-                        span: *span,
-                        kind: ExpressionKind::MethodCall {
-                            function,
-                            receiver: Receiver {
-                                local,
-                                fields,
-                                value: receiver_expr,
-                                typ: signature.params[0],
-                            },
+                    let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+                    let return_type = signature.return_type;
+                    let substs = self.resolve_turbofish(type_args)?;
+
+                    let lowered = self.alloc(
+                        ExpressionKind::MethodCall {
+                            name: method_symbol,
+                            receiver: receiver_lowered.expr,
                             args: lowered_args,
                         },
-                    });
+                        return_type,
+                        *span,
+                    );
+                    self.typeck
+                        .type_dependent_defs
+                        .insert(lowered.expr.id, Res::Function(function));
+                    if !substs.is_empty() {
+                        self.typeck.node_args.insert(lowered.expr.id, substs);
+                    }
+
+                    return Ok(lowered);
                 }
 
                 let function_id = match callee.as_ref() {
-                    Expr::Identifier(name, _) => {
-                        let symbol = self.symbols.insert(&self.mangler().item(name));
-                        *self.scope.functions.get(&symbol).ok_or_else(|| {
-                            hir_error!(*span, UnknownFunction { name: name.to_string() })
-                        })?
-                    },
+                    Expr::Identifier(name, _) => self
+                        .scope
+                        .resolve_function_call(None, name, self.symbols)
+                        .ok_or_else(|| hir_error!(*span, UnknownFunction { name }))?,
 
                     other => {
+                        let name = self.arena.alloc_str(&format!("{other:?}"));
+                        return Err(hir_error!(*span, UnknownFunction { name }));
+                    },
+                };
+
+                match self.scope.generic_fns.contains_key(&function_id) {
+                    true => self.lower_generic_call(function_id, args, type_args, *span),
+                    false => self.lower_direct_call(function_id, args, type_args, *span),
+                }
+            },
+
+            Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
+                // `Enum::Variant(payload)` constructs a tagged-union value
+                if let Some(lowered) =
+                    self.lower_variant(qualifier, name, args, type_args, hint, *span)?
+                {
+                    return Ok(lowered);
+                }
+
+                let id = self
+                    .scope
+                    .resolve_function_call(Some(qualifier), name, self.symbols)
+                    .ok_or_else(|| {
+                        let name = qualified(self.arena, qualifier, name);
+                        hir_error!(*span, UnknownFunction { name })
+                    })?;
+
+                match self.scope.generic_fns.contains_key(&id) {
+                    true => self.lower_generic_call(id, args, type_args, *span),
+                    false => self.lower_direct_call(id, args, type_args, *span),
+                }
+            },
+
+            Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
+                let name: &str = kind.into();
+                let exists =
+                    self.scope.resolve_function_call(*qualifier, name, self.symbols).is_some();
+
+                if !exists {
+                    let name = match qualifier {
+                        Some(q) => qualified(self.arena, q, name),
+                        None => name,
+                    };
+                    return Err(hir_error!(*span, UnknownFunction { name }));
+                }
+
+                let ctx = type_resolver::ResolveCtx::root(
+                    self.symbols,
+                    &self.scope.struct_map,
+                    &self.scope.enum_map,
+                );
+                let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
+
+                Ok(self.alloc(
+                    ExpressionKind::TypeIntrinsic { kind: *kind, typ },
+                    TypeKind::Uptr.into(),
+                    *span,
+                ))
+            },
+        }
+    }
+
+    fn lower_match(
+        &mut self,
+        match_stmt: &statement::Match<'src>,
+        hint: Option<Type>,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let scrutinee = self.lower_expr(&match_stmt.scrutinee, None)?;
+        let mut arms = Vec::with_capacity(match_stmt.arms.len());
+
+        let mut unified_type = hint;
+
+        for arm in &match_stmt.arms {
+            self.push_scope();
+
+            let pattern =
+                self.lower_pattern(scrutinee.typ, arm.pattern.value_ref(), arm.pattern.span())?;
+            let pattern = self.arena.alloc(pattern);
+
+            let guard = arm.guard.as_ref().map(|g| self.lower_expr(g, None)).transpose()?;
+            if let Some(ref g) = guard {
+                self.assert_type(TypeKind::Bool, g.typ, g.span)?;
+            }
+
+            let body = self.lower_expr(&arm.body, unified_type)?;
+            match unified_type {
+                Some(expected) if !body.typ.diverges() => {
+                    self.assert_type(expected, body.typ, body.span)?
+                },
+                _ => unified_type = Some(body.typ),
+            }
+
+            self.pop_scope();
+
+            arms.push(Arm {
+                pattern,
+                guard: guard.map(|g| g.expr),
+                body: body.expr,
+                span: arm.span,
+            });
+        }
+
+        let return_type = unified_type.unwrap_or(TypeKind::Unit.into());
+        let arms = self.arena.alloc_slice_copy(&arms);
+
+        Ok(self.alloc(
+            ExpressionKind::Match { scrutinee: scrutinee.expr, arms },
+            return_type,
+            match_stmt.span,
+        ))
+    }
+
+    fn lower_pattern(
+        &mut self,
+        scrutinee_type: Type,
+        pattern: &statement::Pattern<'src>,
+        span: Span,
+    ) -> Result<Pattern<'hir>, HirError<'hir>> {
+        match pattern {
+            statement::Pattern::Wildcard => Ok(Pattern { kind: PatternKind::Wildcard, span }),
+
+            statement::Pattern::Literal(lit) => {
+                let kind = match lit {
+                    PatternLit::Int(n) => PatternKind::Literal(Literal::Int(*n)),
+                    PatternLit::Float(f) => PatternKind::Literal(Literal::Float(*f)),
+                    PatternLit::Bool(b) => PatternKind::Literal(Literal::Bool(*b)),
+                    PatternLit::Char(c) => PatternKind::Literal(Literal::Char(*c)),
+                };
+                Ok(Pattern { kind, span })
+            },
+
+            statement::Pattern::Or(alts) => {
+                let lowered: Vec<Pattern<'hir>> = alts
+                    .iter()
+                    .map(|alt| self.lower_pattern(scrutinee_type, alt.value_ref(), alt.span()))
+                    .collect::<Result<_, _>>()?;
+                let slice = self.arena.alloc_slice_copy(&lowered);
+                Ok(Pattern { kind: PatternKind::Or(slice), span })
+            },
+
+            statement::Pattern::Ident(name) => {
+                if let TypeKind::Enum(_) = scrutinee_type.kind() {
+                    let id = self.enum_type(scrutinee_type, span)?;
+                    let enum_def = &self.scope[id];
+
+                    if let Some(idx) =
+                        enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
+                    {
+                        let variant = enum_def.variants[idx];
+                        if variant.payload.is_some() {
+                            return Err(hir_error!(
+                                span,
+                                TypeMismatch {
+                                    expected: scrutinee_type,
+                                    found: TypeKind::Unit.into(),
+                                }
+                            ));
+                        }
+
+                        return Ok(Pattern {
+                            kind: PatternKind::Variant { id, variant_idx: idx, sub: None },
+                            span,
+                        });
+                    }
+                }
+
+                let symbol = self.symbols.insert(name);
+                let local_id = self.declare_local(symbol, scrutinee_type, false)?;
+                Ok(Pattern { kind: PatternKind::Binding(local_id), span })
+            },
+
+            statement::Pattern::Variant { qualifier, name, sub } => {
+                let id = self.enum_type(scrutinee_type, span)?;
+                let enum_def = &self.scope[id];
+
+                if let Some(qualifier) = qualifier {
+                    // the scrutinee type pins the concrete enum `id`; the qualifier
+                    // must name either that concrete enum or — for a generic enum —
+                    // its template base (`Optional` for `Optional$Ordering`)
+                    let enum_symbol = self.symbols.insert(qualifier);
+                    let matches = self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
+                        || self.scope.generic_enums.contains_key(&enum_symbol);
+                    if !matches {
+                        let name = qualified(self.arena, qualifier, name);
+                        return Err(hir_error!(span, UnknownType { name }));
+                    }
+                }
+
+                let variant_idx = enum_def
+                    .variants
+                    .iter()
+                    .position(|v| self.symbols.get(v.name) == *name)
+                    .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
+
+                let variant = enum_def.variants[variant_idx];
+
+                let sub = match (sub, variant.payload) {
+                    (Some(pat), Some(payload)) => {
+                        let lowered = self.lower_pattern(payload, pat.value_ref(), pat.span())?;
+                        Some(&*self.arena.alloc(lowered))
+                    },
+                    (None, None) => None,
+                    _ => {
                         return Err(hir_error!(
-                            *span,
-                            UnknownFunction { name: format!("{other:?}") }
+                            span,
+                            TypeMismatch { expected: scrutinee_type, found: TypeKind::Unit.into() }
                         ));
                     },
                 };
 
-                self.lower_direct_call(function_id, args, *span)
-            },
-
-            Expr::QualifiedCall { qualifier, name, args, span } => {
-                let mangled_name = self.mangler().scoped_item(qualifier, name);
-                let mangled_symbol = self.symbols.insert(&mangled_name);
-
-                let id = self.scope.functions.get(&mangled_symbol).copied().or_else(|| {
-                    let receiver_type = match scope::resolve_primitive_type(qualifier) {
-                        Some(primitive) => primitive,
-                        _ => {
-                            let struct_symbol = self.symbols.insert(qualifier);
-                            let struct_id = *self.scope.struct_map.get(&struct_symbol)?;
-                            Type::Struct(struct_id)
-                        },
-                    };
-
-                    self.scope
-                        .interface_impls
-                        .iter()
-                        .filter(|&&(t, _)| t == receiver_type)
-                        .find_map(|&(_, interface_sym)| {
-                            let interface_name = self.symbols.get(interface_sym);
-                            let interface_mangled = self.symbols.insert(
-                                &self.mangler().interface_item(qualifier, interface_name, name),
-                            );
-                            self.scope.functions.get(&interface_mangled).copied()
-                        })
-                });
-
-                if let Some(id) = id {
-                    return self.lower_direct_call(id, args, *span);
-                }
-
-                let symbol = self.symbols.insert(&self.mangler().item(name));
-                let id = *self.scope.functions.get(&symbol).ok_or_else(|| {
-                    hir_error!(*span, UnknownFunction { name: format!("{qualifier}::{name}") })
-                })?;
-
-                self.lower_direct_call(id, args, *span)
-            },
-
-            Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
-                let name = kind.into();
-                let lookup_symbol = match qualifier {
-                    Some(q) => {
-                        let mangled = self.symbols.insert(&self.mangler().scoped_item(q, name));
-                        match self.scope.functions.contains_key(&mangled) {
-                            true => mangled,
-                            _ => self.symbols.insert(&self.mangler().item(name)),
-                        }
-                    },
-                    None => self.symbols.insert(&self.mangler().item(name)),
-                };
-
-                if !self.scope.functions.contains_key(&lookup_symbol) {
-                    let name =
-                        qualifier.map_or_else(|| name.to_string(), |q| format!("{q}::{name}"));
-                    return Err(hir_error!(*span, UnknownFunction { name }));
-                }
-
-                let typ = resolve_annotation(
-                    self.symbols,
-                    &self.scope.struct_map,
-                    &typ.value(),
-                    typ.span(),
-                    None,
-                )?;
-
-                let structs: Vec<Option<Struct>> =
-                    self.scope.structs.iter().map(|s| Some(s.clone())).collect();
-                let (size, align) = typ.layout(&structs);
-
-                let value = match kind {
-                    expression::TypeIntrinsicKind::SizeOf => size as i64,
-                    expression::TypeIntrinsicKind::AlignOf => align as i64,
-                };
-
-                Ok(Expression {
-                    kind: ExpressionKind::Integer(value),
-                    typ: Type::Uptr,
-                    span: *span,
-                })
+                Ok(Pattern { kind: PatternKind::Variant { id, variant_idx, sub }, span })
             },
         }
     }
@@ -793,9 +1191,10 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         if_stmt: &statement::If<'src>,
         is_tail: bool,
-    ) -> Result<(Statement, bool), HirError<'src>> {
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
-        self.assert_type(Type::Bool, condition.typ, condition.span)?;
+        self.assert_type(TypeKind::Bool, condition.typ, condition.span)?;
+        let condition = condition.expr;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
         let (else_block, else_returns) = if_stmt
@@ -805,7 +1204,8 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                 match else_branch.as_ref() {
                     Else::If(block) => {
                         let (statement, returns) = self.lower_if(block, is_tail)?;
-                        let block = Block { span: block.span, statements: vec![statement] };
+                        let statements = self.arena.alloc_slice_copy(&[statement]);
+                        let block = Block { span: block.span, statements };
 
                         Ok((Some(block), returns))
                     },
@@ -816,24 +1216,22 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
                     },
 
                     Else::Expr(expr) => {
-                        let hint = match is_tail && self.return_type != Type::Unit {
-                            true => Some(self.return_type),
-                            _ => None,
-                        };
+                        let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
+                        let hint = tail_ret.then_some(self.return_type);
                         let lowered = self.lower_expr(expr, hint)?;
                         let span = lowered.span;
 
-                        let stmt = match is_tail && self.return_type != Type::Unit {
+                        let stmt = match tail_ret {
                             true => {
                                 self.assert_type(self.return_type, lowered.typ, lowered.span)?;
-                                Statement::Return(Some(lowered))
+                                Statement::Return(Some(lowered.expr))
                             },
-                            _ => Statement::Expr(lowered),
+                            _ => Statement::Expr(lowered.expr),
                         };
 
-                        let returns = is_tail && self.return_type != Type::Unit;
-                        let block = Block { statements: vec![stmt], span };
-                        Ok((Some(block), returns))
+                        let statements = self.arena.alloc_slice_copy(&[stmt]);
+                        let block = Block { statements, span };
+                        Ok((Some(block), tail_ret))
                     },
                 }
             })
@@ -850,24 +1248,26 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         function_id: FunctionId,
         args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
-        let signature = &self.scope.signatures[function_id.0 as usize];
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let signature = self.scope.signatures[function_id].clone();
+        let intrinsic = signature.kind.intrinsic();
 
-        if self.is_const && !signature.is_const && signature.intrinsic.is_none() {
-            let name = self.symbols.get(signature.name).to_string();
+        if self.is_const && !signature.is_const && intrinsic.is_none() {
+            let name = self.arena.alloc_str(self.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
             ));
         }
 
-        if signature.intrinsic == Some(Intrinsic::Syscall) {
+        if intrinsic == Some(Intrinsic::Syscall) {
             return self.lower_syscall(args, signature.return_type, span);
         }
 
-        if signature.intrinsic.is_none() && signature.params.len() != args.len() {
-            let name = self.symbols.get(signature.name).to_string();
+        if intrinsic.is_none() && signature.params.len() != args.len() {
+            let name = self.arena.alloc_str(self.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ArityMismatch { name, expected: signature.params.len(), found: args.len() }
@@ -875,27 +1275,224 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         }
 
         let mut lowered_args = Vec::with_capacity(args.len());
-        match signature.intrinsic {
+        match intrinsic {
             Some(_) => {
                 for arg in args {
-                    lowered_args.push(self.lower_expr(arg, None)?);
+                    let arg = self.lower_expr(arg, None)?;
+                    lowered_args.push(arg.expr);
                 }
             },
             _ => {
                 for (expr, &param_type) in args.iter().zip(signature.params.iter()) {
                     let expr = self.lower_expr(expr, Some(param_type))?;
                     self.assert_type(param_type, expr.typ, expr.span)?;
-                    lowered_args.push(expr);
+                    lowered_args.push(expr.expr);
                 }
             },
         }
 
-        let kind = match signature.intrinsic {
-            Some(intrinsic) => ExpressionKind::IntrinsicCall { intrinsic, args: lowered_args },
-            _ => ExpressionKind::Call { function: function_id, args: lowered_args },
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+        let (callee_name, return_type) = (signature.name, signature.return_type);
+
+        if let Some(intrinsic) = intrinsic {
+            let kind = ExpressionKind::IntrinsicCall { intrinsic, args: lowered_args };
+            return Ok(self.alloc(kind, return_type, span));
+        }
+
+        let callee = self.alloc(ExpressionKind::Path(callee_name), Type::default(), span).expr;
+        let substs = self.resolve_turbofish(type_args)?;
+        let lowered =
+            self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
+
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
+        if !substs.is_empty() {
+            self.typeck.node_args.insert(lowered.expr.id, substs);
+        }
+
+        Ok(lowered)
+    }
+
+    /// Resolve explicit turbofish `type_args` to concrete HIR types
+    fn resolve_turbofish(
+        &self,
+        type_args: &[Spanned<statement::Type<'src>>],
+    ) -> Result<Vec<Type>, HirError<'hir>> {
+        if type_args.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ctx = type_resolver::ResolveCtx::root(
+            self.symbols,
+            &self.scope.struct_map,
+            &self.scope.enum_map,
+        );
+        if let Some(typ) = self.self_type {
+            ctx = ctx.with_self(typ);
+        }
+
+        type_args
+            .iter()
+            .map(|t| resolve_annotation(&ctx, &t.value(), t.span()))
+            .collect()
+    }
+
+    /// Try to lower `Qualifier::Name(args)` as an enum variant constructor. Returns
+    /// `None` if `Qualifier` is not an enum (so the caller falls back to a function
+    /// call). For a generic enum, the concrete instantiation comes from `hint`.
+    fn lower_variant(
+        &mut self,
+        qualifier: &str,
+        name: &'src str,
+        args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
+        hint: Option<Type>,
+        span: Span,
+    ) -> Result<Option<Lowered<'hir>>, HirError<'hir>> {
+        let qualifier_symbol = self.symbols.insert(qualifier);
+        let enum_id = match self.scope.enum_map.get(&qualifier_symbol).copied() {
+            Some(id) => id,
+            // a generic enum (`Optional`) takes its instantiation from type_args or the hint
+            None if self.scope.generic_enums.contains_key(&qualifier_symbol) => {
+                if !type_args.is_empty() {
+                    let mut resolved = Vec::with_capacity(type_args.len());
+                    for arg in type_args {
+                        resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                    }
+                    if let Some(template) = self.scope.generic_enums.get(&qualifier_symbol) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    }
+                    let typ =
+                        self.scope.instantiate_generic(qualifier, &resolved, span, self.symbols)?;
+                    match typ.kind() {
+                        TypeKind::Enum(id) => id,
+                        _ => return Ok(None),
+                    }
+                } else {
+                    match hint.map(|typ| typ.kind()) {
+                        Some(TypeKind::Enum(id)) => id,
+                        _ => return Ok(None),
+                    }
+                }
+            },
+            None => return Ok(None),
         };
 
-        Ok(Expression { typ: signature.return_type, span, kind })
+        let variant_symbol = self.symbols.insert(name);
+        let (index, payload_type) = {
+            let enum_def = &self.scope.enums[enum_id];
+            match enum_def.variants.iter().position(|v| v.name == variant_symbol) {
+                Some(index) => (index, enum_def.variants[index].payload),
+                None => return Ok(None),
+            }
+        };
+
+        let payload = match (payload_type, args.first()) {
+            (Some(payload_type), Some(arg)) => {
+                let lowered = self.lower_expr(arg, Some(payload_type))?;
+                self.assert_type(payload_type, lowered.typ, lowered.span)?;
+                Some(lowered.expr)
+            },
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0 }));
+            },
+            (None, Some(_)) => {
+                return Err(hir_error!(
+                    span,
+                    ArityMismatch { name, expected: 0, found: args.len() }
+                ));
+            },
+        };
+
+        // modelled like rustc: a structural `Call(Path, args)`, with the resolved
+        // constructor recorded in the side-table for MIR to pick up
+        let callee = self.alloc(ExpressionKind::Path(variant_symbol), Type::default(), span).expr;
+        let arguments: &[&Expression] = match payload {
+            Some(payload) => self.arena.alloc_slice_copy(&[payload]),
+            None => &[],
+        };
+        let typ = Type::enumerable(enum_id);
+        let lowered = self.alloc(ExpressionKind::Call { callee, args: arguments }, typ, span);
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Variant { id: enum_id, index });
+
+        Ok(Some(lowered))
+    }
+
+    /// Lower a call to a generic free function (a template with an open,
+    /// `GenericParam`-typed signature). The concrete type arguments come from an
+    /// explicit turbofish, or are inferred by unifying the open parameter types
+    /// against the lowered argument types. The resolved target id and the
+    /// substitutions are recorded in the side-tables; `crate::hir::mono` later emits
+    /// one specialised body per distinct `(function, type_args)`.
+    // Current limitation: inference here only recovers a `GenericParam` that
+    // appears *bare* (`T`) or directly under a reference (`&T`). It cannot see a
+    // parameter buried inside a generic aggregate argument (`b: &Box<T>`), because
+    // the name-mangling model erases `T` into a distinct concrete type (`Box$i32`
+    // vs the template's `Box$T0`) — the `T` is no longer present in the `Type` to
+    // unify against, so such calls must use an explicit turbofish for now.
+    //
+    // rustc avoids this entirely: an argument's type is `Adt(Box, [Param(0)])`, so
+    // unifying `Adt(Box, [Param(0)])` against `Adt(Box, [i32])` trivially recovers
+    // `Param(0) = i32`. The fix is the `Adt(id, GenericArgsId)`:
+    // keep generic args *in* the type and unify structurally,
+    // instead of materialising a fresh concrete def per instantiation. See the
+    // matching note in `crate::hir::mono`.
+    fn lower_generic_call(
+        &mut self,
+        function_id: FunctionId,
+        args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let (callee_name, arity, open_return) = {
+            let signature = &self.scope.signatures[function_id];
+            (signature.name, signature.params.len(), signature.return_type)
+        };
+        let generic_count = self.scope.generic_fns[&function_id].generics.len();
+
+        if arity != args.len() {
+            let name = self.arena.alloc_str(self.symbols.get(callee_name));
+            return Err(hir_error!(
+                span,
+                ArityMismatch { name, expected: arity, found: args.len() }
+            ));
+        }
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            let lowered = self.lower_expr(arg, None)?;
+            arg_types.push(lowered.typ);
+            lowered_args.push(lowered.expr);
+        }
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+
+        let substs = match type_args.is_empty() {
+            false => self.resolve_turbofish(type_args)?,
+            true => {
+                let open_params = &self.scope.signatures[function_id].params;
+                infer_type_args(open_params, &arg_types, generic_count)
+            },
+        };
+
+        let template = &self.scope.generic_fns[&function_id];
+        self.check_bounds(&template.generics, &substs, span)?;
+
+        let return_type = open_return.subst(&substs);
+        let callee = self.alloc(ExpressionKind::Path(callee_name), Type::default(), span).expr;
+        let lowered =
+            self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
+
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
+        self.typeck.node_args.insert(lowered.expr.id, substs);
+
+        Ok(lowered)
     }
 
     fn lower_syscall(
@@ -903,45 +1500,58 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         args: &[expression::Expression<'src>],
         return_type: Type,
         span: Span,
-    ) -> Result<Expression, HirError<'src>> {
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
         if !self.in_std {
-            return Err(hir_error!(span, UnknownFunction { name: "syscall".into() }));
+            return Err(hir_error!(span, UnknownFunction { name: "syscall" }));
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
-            return Err(hir_error!(
-                span,
-                ArityMismatch { name: "syscall".to_string(), expected: 1, found: 0 }
-            ));
+            return Err(hir_error!(span, ArityMismatch { name: "syscall", expected: 1, found: 0 }));
         };
 
         if value_args.len() > 6 {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name: "syscall".to_string(), expected: 7, found: args.len() }
+                ArityMismatch { name: "syscall", expected: 7, found: args.len() }
             ));
         }
 
         let expression::Expression::Identifier(name, code_span) = code_arg else {
-            return Err(hir_error!(
-                code_arg.span(),
-                UndeclaredIdentifier { name: format!("{code_arg:?}") }
-            ));
+            let name = self.arena.alloc_str(&format!("{code_arg:?}"));
+            return Err(hir_error!(code_arg.span(), UndeclaredIdentifier { name }));
         };
 
         let code = SyscallCode::from_str(name)
-            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name: name.to_string() }))?;
+            .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name }))?;
 
         let args = value_args
             .iter()
-            .map(|arg| self.lower_expr(arg, None))
+            .map(|arg| self.lower_expr(arg, None).map(|lowered| lowered.expr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Expression {
-            typ: return_type,
-            span,
-            kind: ExpressionKind::Syscall { code, args },
-        })
+        let return_type = match code {
+            SyscallCode::Exit => TypeKind::Never.into(),
+            _ => return_type,
+        };
+
+        let args = self.arena.alloc_slice_copy(&args);
+        Ok(self.alloc(ExpressionKind::Syscall { code, args }, return_type, span))
+    }
+
+    #[inline]
+    fn enum_type(&self, typ: Type, span: Span) -> Result<EnumId, HirError<'hir>> {
+        let default = TypeKind::Enum(Default::default());
+
+        match typ.kind() {
+            TypeKind::Enum(id) => Ok(id),
+            TypeKind::Ref { to, .. } => match to.kind() {
+                TypeKind::Enum(id) => Ok(id),
+                _ => {
+                    Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ }))
+                },
+            },
+            _ => Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ })),
+        }
     }
 
     fn type_for_binary(
@@ -950,8 +1560,9 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         left: Type,
         right: Type,
         span: Span,
-    ) -> Result<Type, HirError<'src>> {
-        let type_mismatch = |found| hir_error!(span, TypeMismatch { expected: Type::I32, found });
+    ) -> Result<Type, HirError<'hir>> {
+        let type_mismatch =
+            |found| hir_error!(span, TypeMismatch { expected: TypeKind::I32.into(), found });
 
         match operator {
             BinaryOperator::Add
@@ -967,7 +1578,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
                 self.assert_type(left, right, span)?;
-                Ok(Type::Bool)
+                Ok(TypeKind::Bool.into())
             },
 
             BinaryOperator::Lt
@@ -975,23 +1586,23 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() || left == Type::Char {
-                    true => Ok(Type::Bool),
+                match left.is_number() || left == TypeKind::Char.into() {
+                    true => Ok(TypeKind::Bool.into()),
                     _ => Err(type_mismatch(left)),
                 }
             },
 
             BinaryOperator::And | BinaryOperator::Or => {
-                self.assert_type(Type::Bool, left, span)?;
-                self.assert_type(Type::Bool, right, span)?;
+                self.assert_type(TypeKind::Bool, left, span)?;
+                self.assert_type(TypeKind::Bool, right, span)?;
 
-                Ok(Type::Bool)
+                Ok(TypeKind::Bool.into())
             },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
 
-                match left == Type::Bool || left.is_integer() {
+                match left == TypeKind::Bool.into() || left.is_integer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1012,7 +1623,7 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 
     #[inline(always)]
-    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'src>> {
+    fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type, HirError<'hir>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
     }
@@ -1022,45 +1633,82 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         &mut self,
         typ: &statement::Type<'src>,
         span: Span,
-    ) -> Result<Type, HirError<'src>> {
+    ) -> Result<Type, HirError<'hir>> {
         match typ {
             statement::Type::Named(name) => {
-                let symbol = self.symbols.insert(name);
-                let id = self
-                    .scope
-                    .struct_map
-                    .get(&symbol)
-                    .copied()
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() }))?;
+                if let Some(&typ) = self.generic_env.get(*name) {
+                    return Ok(typ);
+                }
 
-                Ok(Type::Struct(id))
+                let symbol = self.symbols.insert(name);
+                self.scope
+                    .nominal_type(symbol)
+                    .ok_or_else(|| hir_error!(span, UnknownType { name }))
             },
 
-            statement::Type::SelfType => self
-                .self_type
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() })),
+            statement::Type::SelfType => {
+                self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
+            },
 
             statement::Type::RefSelf => {
-                let self_ty = self
-                    .self_type
-                    .ok_or_else(|| hir_error!(span, UnknownType { name: "Self".into() }))?;
+                let self_ty =
+                    self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
                 let to = RefTarget::try_from(self_ty).map_err(|_| {
                     hir_error!(
                         span,
-                        TypeMismatch { expected: Type::Struct(Default::default()), found: self_ty }
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: self_ty
+                        }
                     )
                 })?;
 
-                Ok(Type::Ref { mutable: false, to })
+                Ok(Type::refer(to, false))
             },
 
-            typ => Ok(typ.into()),
+            statement::Type::Ref(inner) => {
+                let inner_type = self.resolve_type(inner, span)?;
+                let to = RefTarget::try_from(inner_type).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: inner_type
+                        }
+                    )
+                })?;
+                Ok(Type::refer(to, false))
+            },
+
+            statement::Type::Generic(name, args) => {
+                let mut resolved = Vec::with_capacity(args.len());
+                for arg in args {
+                    resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                }
+                let typ = self.scope.instantiate_generic(name, &resolved, span, self.symbols)?;
+                if let Some(struct_sym) = self.symbols.get_id(name) {
+                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
+                        self.check_bounds(&template.generics, &resolved, span)?;
+                    }
+                }
+                Ok(typ)
+            },
+
+            other => Type::from_primitive_ast(other)
+                .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
         }
     }
 
     #[inline(always)]
-    #[must_use]
-    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'src>> {
+    fn assert_type(
+        &self,
+        expected: impl Into<Type>,
+        found: impl Into<Type>,
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let (expected, found) = (expected.into(), found.into());
         match expected == found {
             true => Ok(()),
             false => Err(hir_error!(span, TypeMismatch { expected, found })),
@@ -1072,14 +1720,12 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         name: SymbolId,
         typ: Type,
         mutable: bool,
-    ) -> Result<LocalId, HirError<'src>> {
+    ) -> Result<LocalId, HirError<'hir>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
-            return Err(hir_error!(
-                Span::default(),
-                DuplicateBind { name: self.symbols.get(name).to_string() }
-            ));
+            let name = self.arena.alloc_str(self.symbols.get(name));
+            return Err(hir_error!(Span::default(), DuplicateBind { name }));
         }
 
         let id = LocalId(self.next_local);
@@ -1092,13 +1738,14 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 
     #[inline(always)]
-    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'src>> {
+    fn resolve_local(&mut self, name: SymbolId, span: Span) -> Result<LocalId, HirError<'hir>> {
         self.scopes
             .iter()
             .rev()
             .find_map(|scope| scope.get(&name).copied())
             .ok_or_else(|| {
-                hir_error!(span, UndeclaredIdentifier { name: self.symbols.get(name).to_string() })
+                let name = self.arena.alloc_str(self.symbols.get(name));
+                hir_error!(span, UndeclaredIdentifier { name })
             })
     }
 
@@ -1108,81 +1755,78 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
         current: Type,
         name: &str,
         span: Span,
-    ) -> Result<(SymbolId, Type), HirError<'src>> {
+    ) -> Result<(SymbolId, Type), HirError<'hir>> {
         #[rustfmt::skip]
-        let sid = match current {
-            Type::Struct(id) => id,
-            Type::Ref { to: RefTarget::Struct(id), .. } => id,
-            found => return Err(hir_error!(span, TypeMismatch {
-                expected: Type::Struct(Default::default()),
-                found
+        let sid = match current.kind() {
+            TypeKind::Struct(id) => id,
+            TypeKind::Ref { to, .. } => match to.kind() {
+                TypeKind::Struct(id) => id,
+                _ => return Err(hir_error!(span, TypeMismatch {
+                    expected: Type::structure(Default::default()),
+                    found: current
+                })),
+            },
+            _ => return Err(hir_error!(span, TypeMismatch {
+                expected: Type::structure(Default::default()),
+                found: current
             })),
         };
 
         let sym = self.symbols.insert(name);
-        let def = &self.scope.structs[sid.0 as usize];
-        let struct_name = self.symbols.get(def.name).to_string();
+        let def = &self.scope[sid];
+        let struct_name = self.arena.alloc_str(self.symbols.get(def.name));
 
         let field = def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
-            hir_error!(span, UnknownField { struct_name, field: name.to_string() })
+            let field = self.arena.alloc_str(name);
+            hir_error!(span, UnknownField { struct_name, field })
         })?;
 
         Ok((sym, field.typ))
     }
 
-    /// This is used to resolve access chains like `x.y.z` or just `x` into
-    /// `(LocalId(x), [sym("y"), sym("z")], Type)`
-    ///
-    /// Returns the origin `LocalId`, the full path as symbols, and the final field's `Type`.
-    fn resolve_access_chain(
-        &mut self,
-        expr: &expression::Expression<'src>,
+    fn check_bounds(
+        &self,
+        generics: &[statement::GenericBound<'src>],
+        args: &[Type],
         span: Span,
-    ) -> Result<(LocalId, Vec<SymbolId>, Type), HirError<'src>> {
-        use expression::Expression as Expr;
+    ) -> Result<(), HirError<'hir>> {
+        let current_generics = self.function.map(|f| f.generics.as_slice()).unwrap_or(&[]);
+        for (i, param) in generics.iter().enumerate() {
+            let concrete_type = args[i];
+            for bound in &param.bounds {
+                let interface_name = match bound.value_ref() {
+                    statement::Type::Named(name) => name,
+                    statement::Type::Generic(name, _) => name,
+                    _ => continue,
+                };
 
-        let mut fields = Vec::new();
-        let mut curr = expr;
+                let satisfied = match concrete_type.kind() {
+                    TypeKind::GenericParam(idx) => {
+                        current_generics.get(idx as usize).is_some_and(|param_bound| {
+                            param_bound.bounds.iter().any(|b| {
+                                let name = match b.value_ref() {
+                                    statement::Type::Named(n) => n,
+                                    statement::Type::Generic(n, _) => n,
+                                    _ => "",
+                                };
+                                name == *interface_name
+                            })
+                        })
+                    },
+                    _ => self.symbols.get_id(interface_name).is_some_and(|interface_sym| {
+                        self.scope.interface_impls.contains(&(concrete_type, interface_sym))
+                    }),
+                };
 
-        let id = loop {
-            match curr {
-                Expr::Identifier(name, ident_span) => {
-                    let symbol = self.symbols.insert(name);
-                    break self.resolve_local(symbol, *ident_span)?;
-                },
-
-                Expr::Field { expr: next, field, .. } => {
-                    fields.push(*field);
-                    curr = next;
-                },
-
-                _ => return Err(hir_error!(span, InvalidFieldAccess)),
-            }
-        };
-
-        fields.reverse();
-
-        let mut current_type = self[id].typ;
-        let mut field_symbols = Vec::with_capacity(fields.len());
-
-        for (idx, &field_name) in fields.iter().enumerate() {
-            let (sym, typ) = self.lookup_field(current_type, field_name, span)?;
-            current_type = typ;
-            field_symbols.push(sym);
-
-            let is_last = idx == fields.len() - 1;
-            let is_struct = matches!(
-                current_type,
-                Type::Struct(_) | Type::Ref { to: RefTarget::Struct(_), .. }
-            );
-
-            if !is_last && !is_struct {
-                let expected = Type::Struct(Default::default());
-                return Err(hir_error!(span, TypeMismatch { expected, found: current_type }));
+                if !satisfied {
+                    return Err(hir_error!(
+                        span,
+                        UnsatisfiedBound { type_name: concrete_type, bound_name: interface_name }
+                    ));
+                }
             }
         }
-
-        Ok((id, field_symbols, current_type))
+        Ok(())
     }
 
     #[inline(always)]
@@ -1196,183 +1840,75 @@ impl<'s, 'f, 'src> FunctionBuilder<'s, 'f, 'src> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::hir) enum Visit {
-    Unvisited,
-    Visiting,
-    Visited,
+impl BinaryOperator {
+    #[inline(always)]
+    const fn overload_method<'op>(&self) -> Option<&'op str> {
+        Some(match self {
+            BinaryOperator::Eq => "eq",
+            BinaryOperator::Ne => "ne",
+            BinaryOperator::Lt => "lt",
+            BinaryOperator::LtEq => "le",
+            BinaryOperator::Gt => "gt",
+            BinaryOperator::GtEq => "ge",
+            _ => return None,
+        })
+    }
 }
 
-pub(in crate::hir) fn lower_structs<'h>(
-    declarations: &[(SymbolId, &statement::Struct<'h>)],
-    map: &Structs,
-    symbols: &mut SymbolTable,
-    lowered: &mut [Option<Struct>],
-) -> Result<(), HirError<'h>> {
-    // pre-insert all field names into the symbol table to avoid mutable borrows of symbols
-    // during the topological sort dfs
-    for (_, declaration) in declarations {
-        for field in &declaration.fields {
-            symbols.insert(field.name);
-        }
+fn infer_type_args(open_params: &[Type], arg_types: &[Type], count: usize) -> Vec<Type> {
+    let mut bindings = vec![None; count];
+    for (&param, &actual) in open_params.iter().zip(arg_types) {
+        unify_generic(param, actual, &mut bindings);
     }
-
-    let mut states = vec![Visit::Unvisited; declarations.len()];
-    let symbols = &*symbols; // shadow as shared reference
-    for id in 0..declarations.len() {
-        lower_struct(id, declarations, map, symbols, lowered, &mut states)?;
-    }
-
-    Ok(())
+    bindings.into_iter().map(Option::unwrap_or_default).collect()
 }
 
-pub(in crate::hir) fn lower_struct<'h>(
-    id: usize,
-    declarations: &[(SymbolId, &statement::Struct<'h>)],
-    map: &Structs,
-    symbols: &SymbolTable,
-    lowered: &mut [Option<Struct>],
-    states: &mut [Visit],
-) -> Result<(), HirError<'h>> {
-    match states[id] {
-        Visit::Visited => return Ok(()),
-        Visit::Visiting => {
-            let (_, declaration) = declarations[id];
-            return Err(hir_error!(
-                declaration.span,
-                CircularStruct { name: declaration.name.into() }
-            ));
+fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
+    let slot = match param.kind() {
+        TypeKind::GenericParam(i) => bindings.get_mut(i as usize).map(|slot| (slot, actual)),
+        TypeKind::Ref { to, .. } => match to.kind() {
+            TypeKind::GenericParam(i) => {
+                bindings.get_mut(i as usize).map(|slot| (slot, actual.strip_reference()))
+            },
+            _ => None,
         },
-        Visit::Unvisited => {},
+        _ => None,
+    };
+
+    if let Some((slot, value)) = slot {
+        slot.get_or_insert(value);
     }
-
-    states[id] = Visit::Visiting;
-    let (name, declaration) = declarations[id];
-    let mut seen = HashSet::new();
-    let mut fields = Vec::with_capacity(declaration.fields.len());
-
-    for (idx, field) in declaration.fields.iter().enumerate() {
-        let field_symbol = symbols.get_id(field.name).unwrap();
-        if !seen.insert(field_symbol) {
-            return Err(hir_error!(field.span, DuplicateField { name: field.name.into() }));
-        }
-
-        let typ = resolve_annotation(symbols, map, &field.typ.value(), field.typ.span(), None)?;
-        if let Type::Struct(dep) = typ {
-            lower_struct(dep.0 as usize, declarations, map, symbols, lowered, states)?;
-        }
-
-        fields.push(StructField {
-            name: field_symbol,
-            typ,
-            offset: 0,
-            declared_index: idx as u32,
-        });
-    }
-
-    let (fields, size, align) = layout_fields(fields, lowered);
-    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, size, align });
-    states[id] = Visit::Visited;
-
-    Ok(())
 }
 
-pub(in crate::hir) fn lower_const<'s, 'src>(
-    scope: &'s Scope,
-    symbols: &'s mut SymbolTable,
+pub(in crate::hir) fn lower_const<'hir, 'src>(
+    scope: &mut Scope<'hir>,
+    symbols: &mut SymbolTable,
     expr: &expression::Expression<'src>,
     expected_type: Type,
     in_std: bool,
-) -> Result<Expression, HirError<'src>> {
-    let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std);
+    arena: &'hir bumpalo::Bump,
+) -> Result<(&'hir Expression<'hir>, TypeckResults), HirError<'hir>>
+where
+    'src: 'hir,
+{
+    let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std, arena);
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
 
-    Ok(lowered)
+    Ok((lowered.expr, builder.typeck))
 }
 
-pub(in crate::hir) fn resolve_annotation<'h>(
-    symbols: &SymbolTable,
-    struct_map: &Structs,
-    typ: &statement::Type<'h>,
-    span: Span,
-    self_type: Option<Type>,
-) -> Result<Type, HirError<'h>> {
-    match typ {
-        statement::Type::Named(name) => symbols
-            .get_id(name)
-            .and_then(|symbol| struct_map.get(&symbol).copied())
-            .map(Type::Struct)
-            .ok_or_else(|| hir_error!(span, UnknownType { name: name.to_string() })),
-        statement::Type::SelfType => Ok(self_type.unwrap_or(Type::SelfType)),
-        statement::Type::RefSelf => self_type.map_or(
-            Ok(Type::Ref { mutable: false, to: RefTarget::SelfType }),
-            |self_typ| {
-                let to = RefTarget::try_from(self_typ).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::Struct(Default::default()),
-                            found: self_typ,
-                        }
-                    )
-                })?;
-
-                Ok(Type::Ref { mutable: false, to })
-            },
-        ),
-        typ => Ok(typ.into()),
-    }
-}
-
-fn layout_fields(
-    mut fields: Vec<StructField>,
-    structs: &[Option<Struct>],
-) -> (Vec<StructField>, u32, u32) {
-    // PERFORMANCE: field reordering is a small stable sort by layout class
-    fields.sort_by(|a, b| {
-        let (a_size, a_align) = &a.typ.layout(structs);
-        let (b_size, b_align) = &b.typ.layout(structs);
-
-        b_align
-            .cmp(&a_align)
-            .then_with(|| b_size.cmp(&a_size))
-            .then_with(|| a.declared_index.cmp(&b.declared_index))
-    });
-
-    let mut offset = 0;
-    let mut struct_align = 1;
-
-    for field in &mut fields {
-        let (size, align) = field.typ.layout(structs);
-
-        struct_align = struct_align.max(align);
-        offset = align_to(offset, align);
-        field.offset = offset;
-        offset += size;
-    }
-
-    let size = align_to(offset, struct_align);
-
-    (fields, size, struct_align)
-}
-
-#[inline(always)]
-const fn align_to(value: u32, align: u32) -> u32 {
-    (value + align - 1) & !(align - 1)
-}
-
-impl<'s, 'f, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'src> {
+impl<'s, 'f, 'hir, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'hir, 'src> {
     type Output = Local;
     fn index(&self, index: LocalId) -> &Self::Output {
-        &self.locals[index.0 as usize]
+        &self.locals[index]
     }
 }
 
-impl<'s, 'f, 'src> Index<StructId> for FunctionBuilder<'s, 'f, 'src> {
+impl<'s, 'f, 'hir, 'src> Index<StructId> for FunctionBuilder<'s, 'f, 'hir, 'src> {
     type Output = Struct;
     fn index(&self, index: StructId) -> &Self::Output {
-        &self.scope.structs[index.0 as usize]
+        &self.scope[index]
     }
 }

@@ -90,7 +90,7 @@ impl Interference {
         let used_callee_saved = T::callee_saved()
             .iter()
             .copied()
-            .filter(|&reg| locations.iter().any(|loc| *loc == Some(Location::Reg(reg))))
+            .filter(|&reg| locations.contains(&Some(Location::Reg(reg))))
             .collect::<Vec<_>>();
 
         let locations = locations

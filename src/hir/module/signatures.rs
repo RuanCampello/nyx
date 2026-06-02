@@ -6,12 +6,13 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub(super) fn build_signatures<'src>(
-    graph: &mut ModuleGraph<'src>,
+pub(super) fn build_signatures<'hir>(
+    graph: &mut ModuleGraph<'hir>,
     order: &[usize],
-    scope: &mut Scope<'static>,
+    scope: &mut Scope<'hir>,
     symbols: &mut SymbolTable,
-) -> Result<HashMap<String, Interface<'src>>, ModuleError> {
+    arena: &'hir bumpalo::Bump,
+) -> Result<HashMap<String, Interface<'hir>>, ModuleError> {
     let interfaces = collect_interfaces(graph);
 
     for &idx in order {
@@ -23,13 +24,15 @@ pub(super) fn build_signatures<'src>(
             Declarations::partition(&mut node.statements, |name| interfaces.get(name))
                 .map_err(Diagnostic::from)?;
 
-        scope.extend(&declarations, symbols, node.in_std).map_err(Diagnostic::from)?;
+        scope
+            .extend(&declarations, symbols, node.in_std, arena)
+            .map_err(Diagnostic::from)?;
     }
 
     Ok(interfaces)
 }
 
-fn collect_interfaces<'src>(graph: &ModuleGraph<'src>) -> HashMap<String, Interface<'src>> {
+fn collect_interfaces<'hir>(graph: &ModuleGraph<'hir>) -> HashMap<String, Interface<'hir>> {
     let mut interfaces = HashMap::new();
 
     for node in &graph.nodes {

@@ -1,0 +1,55 @@
+use std::panic;
+use std::result::{Result};
+
+pub enum Optional<T> {
+    Some(T),
+    None,
+}
+
+impl Optional<T> {
+    pub const fn unwrap(self): T {
+        match self {
+            Some(value) -> value,
+            None -> panic::panic("called `Optional::unwrap()` on a `None` value"),
+        }
+    }
+
+    pub const fn unwrap_or(self, default: T): T {
+        match self {
+            Some(value) -> value,
+            None -> default,
+        }
+    }
+
+    pub fn unwrap_or_default(self): T where T: Default {
+        match self {
+            Some(value) -> value,
+            None -> T::default(),
+        }
+    }
+
+    pub fn expect(self, msg: &str): T {
+        match self {
+            Some(value) -> value,
+            None -> panic::panic(msg),
+        }
+    }
+
+    pub inline const fn is_some(&self): bool {
+        match self {
+            Some(_) -> true,
+            None -> false,
+        }
+    }
+
+    pub inline const fn is_none(&self): bool {
+        !self.is_some()
+    }
+
+    pub const fn success_or<E>(self, fail: E): Result<T, E> {
+        match self {
+            Some(value) -> Result::Success(value),
+            None -> Result::Failure(fail),
+        }
+    }
+}

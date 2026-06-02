@@ -12,15 +12,16 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 ## Compiler Optimisations
 
-- [ ] Optimisations flags (**requires** definition of each optimisation level scope)
+- [x] Optimisations flags (**requires** definition of each optimisation level scope)
 - [ ] If-conversion
 - [ ] Constant Folding & Propagation
 - [ ] Dead Code Elimination (DCE)
-- [ ] Function Inlining
+- [x] Function Inlining
+  - [ ] Heuristics to or not-to inline a function
 - [ ] Common Subexpression Elimination (CSE)
 - [ ] Loop Unrolling
 - [ ] Scalar evolution
-- [ ] Peephole Optimizations
+- [ ] Peephole Optimisations
 
 ## Language Features
 
@@ -41,27 +42,31 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Pointers (**requires** _unsafe_ blocks implementation)
   - [ ] Raw pointer
   - [ ] Raw pointer dereference
-- [ ] References (**requires** safety model design and implementation)
-  - [ ] Reference (`&`)
-  - [ ] Mutable References (`&mut`)
+- [x] References
+  - [x] Reference (`&`)
+  - [x] Mutable References (`&mut`)
 - [ ] Type definition
+  - [x] Generics with monomorphisation (`<T>`)
   - [ ] Polymorphism (`Interface`)
     - [x] Static dispatch
     - [ ] Dynamic dispatch
     - [x] Interface composition
   - [ ] Composite data declaration (`struct`)
     - [x] Field access and instantiation
-    - [ ] Compatibility with `C` memory layout representation (**requires** syntax definition)
+    - [ ] Compatibility with `C` memory layout representation (extern, packed, align)
     - [x] Methods
       - [x] Reference (`&self`)
       - [x] Mutable reference (`&mut self`)
-  - [ ] Enumerables / Tag Union (`enum`)
+  - [ ] Enumerables / Tag Union
+    - [x] Sum enumerable (`enum`)
+    - [x] Payload-carrying variants (tagged union)
+    - [ ] C-like `union` representation
 
 ### Expressions & Operators
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
   - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
-  - [ ] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
+  - [x] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
@@ -70,9 +75,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Shifts (`>>`, `<<`)
 - [x] Variable Assignment (`=`)
 - [x] Function Calls
-- [ ] Reference Operators
-  - [ ] Reference (`&`)
-  - [ ] Dereference (`*`) (**requires** safety assurance)
+- [x] Reference Operators
+  - [x] Reference (`&`)
+  - [x] Dereference (`*`)
 
 ### Control Flow
 
@@ -80,21 +85,25 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Inline return (`if this return that;`)
 - [x] `while` loops
 - [ ] `for` loops
-- [ ] Pattern matching (**requires** syntax definition)
+- [x] Pattern matching
 
 ### Variables & Functions
 
 - [ ] Variable declaration
   - [x] Immutable (`let`)
   - [x] Mutable (`let mut`)
-  - [ ] Constants (`const`)
+  - [x] Constants (`const`)
+    - [x] File scoped constants
+    - [ ] Associated constants
+      - [x] `struct`/primitive associated
+      - [ ] `interface` associated
 - [ ] Function definition
   - [x] Definition (`fn`)
-  - [ ] Mutable parameters
+  - [x] Mutable parameters
   - [ ] Default parameter values (**requires** definition of _default_ interface)
   - [ ] Modifiers
-    - [ ] Constant constraint (`const`)
-    - [ ] Inlining (`inline`)
+    - [x] Constant constraint (`const`)
+    - [x] Inlining (`inline`)
 - [x] Return statements (`return`)
 
 ### Others
@@ -104,7 +113,29 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Project (_dir_) compilation
 - [ ] Standard Library
   - [ ] I/O
-    - [x] Printing to standard out (`println`, `printf`)
+    - [ ] Console formatting & printing (`print`/`println`)
+      - [ ] Better formatting (padding, alignment)
+      - [ ] Interpolation of non-immediate values
+    - [ ] Keyboard input reading
+    - [ ] File system
+  - [ ] Core interfaces
+    - [x] Equality comparison (`cmp`)
+    - [x] Default value initialisation (`default`)
+  - [ ] Primitive helpers
+    - [ ] Integers
+      - [x] Integer constants & basic properties
+      - [ ] Checked/wrapping integer arithmetic
+    - [ ] Floating-point
+      - [x] Floating-point constants
+      - [ ] Floating-point mathematics (abs, floor, ceil, power, trigonometry)
+    - [x] Character classification & ASCII conversions
+    - [x] String length querying
+    - [ ] String slicing, manipulation & search
+  - [ ] Memory queries
+    - [x] Size & alignment (`std/mem.nyx`)
+  - [ ] System utilities
+    - [x] Process exit execution
+    - [ ] Better assertions (with values that `impl PartialEq`)
   - [ ] Collections (**requires** syntax definition and memory allocator)
     - [ ] Array
     - [ ] Hash table
@@ -115,3 +146,5 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Memory allocator (**requires** definition of memory layout)
 - [ ] Error handling (**requires** definition of error handling model)
 - [ ] Panic handling
+  - [x] Panicking primitives
+  - [ ] Panicking unwinder

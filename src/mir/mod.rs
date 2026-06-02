@@ -19,13 +19,14 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, Struct, SyscallCode, Type},
+    hir::{FunctionId, Intrinsic, SyscallCode, Type, TypeKind},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
 pub use lower::lower;
 
 pub mod error;
+mod layout;
 mod lower;
 
 /// Complete MIR program.
@@ -36,6 +37,7 @@ pub struct Mir {
     pub(crate) strings: Vec<String>,
     pub(crate) functions: Vec<Function>,
     pub(crate) struct_layouts: Vec<Layout>,
+    pub(crate) enum_layouts: Vec<Layout>,
 }
 
 /// Single side-effecting or value-producing operation.
@@ -78,7 +80,7 @@ pub struct Block {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-/// Fully resolved aggregate size and alignment, copied from HIR layout
+/// Fully resolved aggregate size and alignment
 pub struct Layout {
     size: u32,
     align: u32,
@@ -154,13 +156,17 @@ pub enum Const {
 
 /// The last instruction of a [basic block](self::Block). Always exactly one per block.
 /// Terminator's are the *only* place where control flow is expressed.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Terminator {
     /// Unconditional jump
     Jump(BlockId),
 
     /// Conditional branch: if `condition` is true
     Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
+
+    /// N-way switch based on discriminant value
+    #[allow(unused)]
+    Switch { discriminant: Operand, targets: Vec<(i64, BlockId)>, default: BlockId },
 
     /// Return from the function, optionally carrying a returned value
     Return(Option<Operand>),
@@ -175,12 +181,6 @@ pub struct ValueId(pub u32);
 /// Stable index into a function's `blocks` vec.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
-
-impl From<&Struct> for Layout {
-    fn from(value: &Struct) -> Self {
-        Self { size: value.size, align: value.align, contains_float: false }
-    }
-}
 
 impl Layout {
     pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
@@ -212,18 +212,18 @@ impl Const {
         match self {
             Self::Int(_, typ) => *typ,
             Self::Float(_, typ) => *typ,
-            Self::Bool(_) => Type::Bool,
-            Self::Str { .. } => Type::Str,
-            Self::Unit => Type::Unit,
+            Self::Bool(_) => Type::new(TypeKind::Bool),
+            Self::Str { .. } => Type::new(TypeKind::Str),
+            Self::Unit => Type::new(TypeKind::Unit),
         }
     }
 
-    pub fn to_general_string(&self) -> String {
+    pub fn to_general_string(self) -> String {
         match self {
             Const::Int(n, _) => format!("${n}"),
             Const::Bool(b) => format!(
                 "${}",
-                if *b {
+                if b {
                     1
                 } else {
                     0
@@ -239,7 +239,7 @@ impl Const {
 impl std::fmt::Display for Const {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", self.to_general_string()),
+            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", (*self).to_general_string()),
             Const::Float(v, _) => write!(f, "{v:?}"),
             Const::Str { id, .. } => write!(f, "<str:{id}>"),
             Const::Unit => unreachable!(),
@@ -253,8 +253,9 @@ mod tests {
     use crate::{hir, mir, parser::Parser};
 
     fn parse_and_lower(src: &str) -> Mir {
+        let arena = bumpalo::Bump::new();
         let statements = Parser::new(src).parse().unwrap();
-        let hir = hir::lower(statements).unwrap();
+        let hir = hir::lower(statements, &arena).unwrap();
 
         mir::lower(hir).unwrap()
     }
@@ -266,7 +267,7 @@ mod tests {
 
         let function = &mir.functions[0];
 
-        assert_eq!(function.return_type, Type::Unit);
+        assert_eq!(function.return_type, TypeKind::Unit.into());
         assert_eq!(function.blocks.len(), 1);
         assert_eq!(function.blocks[0].instructions.len(), 0);
         assert_eq!(function.blocks[0].terminator, Terminator::Return(None));
@@ -276,7 +277,7 @@ mod tests {
     fn let_binding_and_return() {
         let mir = parse_and_lower("fn foo(): i32 { let x: i32 = 42; x }");
         let f = &mir.functions[0];
-        assert_eq!(f.return_type, Type::I32);
+        assert_eq!(f.return_type, TypeKind::I32.into());
 
         let assigns: Vec<_> = f.blocks[0]
             .instructions
@@ -285,7 +286,7 @@ mod tests {
             .collect();
         assert!(!assigns.is_empty(), "expected at least one Assign instruction");
 
-        assert!(f.locals.iter().any(|(_, t)| *t == Type::I32));
+        assert!(f.locals.iter().any(|(_, t)| *t == TypeKind::I32.into()));
     }
 
     #[test]
@@ -335,7 +336,7 @@ mod tests {
         let f = &mir.functions[0];
 
         assert!(f.locals.len() >= 2);
-        assert!(f.locals.iter().all(|(_, t)| *t == Type::I32));
+        assert!(f.locals.iter().all(|(_, t)| *t == TypeKind::I32.into()));
 
         let has_add = f.blocks[0].instructions.iter().any(|i| {
             matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
@@ -368,6 +369,65 @@ mod tests {
     }
 
     #[test]
+    fn default_struct_layout_reorders_fields_in_mir() {
+        let mir = parse_and_lower(
+            r#"
+            struct Packed { a: i8, b: i64, c: i32 }
+            fn main() { let p = Packed { a: 1, b: 2, c: 3 }; }
+        "#,
+        );
+
+        let main = &mir.functions[0];
+        let offsets = main.blocks[0]
+            .instructions
+            .iter()
+            .filter_map(|instruction| match &instruction.kind {
+                InstructionKind::FieldStore { offset, .. } => Some(*offset),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(offsets, vec![12, 0, 8]);
+        let layout: (u32, u32) = mir.struct_layouts[0].into();
+        assert_eq!(layout, (16, 8));
+    }
+
+    #[test]
+    fn type_intrinsics_are_resolved_during_mir_lowering() {
+        let mir = parse_and_lower(
+            r#"
+            struct Packed { a: i8, b: i64, c: i32 }
+            fn size_of(): uptr { 0 }
+            fn align_of(): uptr { 0 }
+            fn main(): uptr {
+                size_of(Packed) + align_of(Packed)
+            }
+        "#,
+        );
+
+        let main = mir
+            .functions
+            .iter()
+            .find(|function| mir.symbols[function.name_symbol] == "nyx::main")
+            .unwrap();
+
+        let constants = main.blocks[0]
+            .instructions
+            .iter()
+            .flat_map(|instruction| match &instruction.kind {
+                InstructionKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+                _ => Vec::new(),
+            })
+            .filter_map(|operand| match operand {
+                Operand::Const(Const::Int(value, _)) => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(constants, vec![16, 8]);
+    }
+
+    #[test]
     fn nested_field_load_uses_combined_offset() {
         let mir = parse_and_lower(
             r#"
@@ -386,7 +446,7 @@ mod tests {
         let has_combined_load = main.blocks[0].instructions.iter().any(|instruction| {
             matches!(
                 instruction.kind,
-                InstructionKind::FieldLoad { offset: 16, typ: Type::I64, .. }
+                InstructionKind::FieldLoad { offset: 16, typ, .. } if typ == TypeKind::I64.into()
             )
         });
 
@@ -412,11 +472,11 @@ mod tests {
         let main = &mir.functions[0];
         let has_assignment = main.blocks[0].instructions.iter().any(|instruction| {
             matches!(
-                instruction.kind,
+                &instruction.kind,
                 InstructionKind::FieldStore {
                     offset: 16,
-                    value: Operand::Const(Const::Int(5, Type::I64)),
-                }
+                    value: Operand::Const(Const::Int(5, typ)),
+                } if *typ == TypeKind::I64.into()
             )
         });
 
@@ -446,6 +506,90 @@ mod tests {
             })
             .expect("expected a call instruction");
 
-        assert_eq!(call, (Type::Struct(crate::hir::StructId(0)), 1));
+        assert_eq!(call, (Type::structure(crate::hir::StructId(0)), 1));
+    }
+
+    #[test]
+    fn literal_pattern_emits_eq_comparison() {
+        let mir = parse_and_lower(
+            r#"
+            fn classify(x: i32): i32 {
+                match x {
+                    0 -> 10,
+                    _ -> 20,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        let has_eq = func.blocks.iter().any(|b| {
+            b.instructions.iter().any(|instr| {
+                matches!(
+                    &instr.kind,
+                    InstructionKind::Binary {
+                        operation: crate::parser::expression::BinaryOperator::Eq,
+                        rhs: Operand::Const(Const::Int(0, _)),
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(has_eq, "expected an Eq comparison against 0 for the literal pattern");
+    }
+
+    #[test]
+    fn or_pattern_produces_two_check_blocks() {
+        let mir = parse_and_lower(
+            r#"
+            enum Dir { N = 0, S = 1, E = 2, W = 3 } as u8
+            fn is_horizontal(d: Dir): i32 {
+                match d {
+                    Dir::E | Dir::W -> 1,
+                    _ -> 0,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        let branch_count = func
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Terminator::Branch { .. }))
+            .count();
+        assert!(
+            branch_count >= 2,
+            "or-pattern with 2 alternatives must produce at least 2 branch terminators, got {branch_count}"
+        );
+    }
+
+    #[test]
+    fn guard_adds_conditional_branch_in_body_block() {
+        let mir = parse_and_lower(
+            r#"
+            fn sign(x: i32): i32 {
+                match x {
+                    n if n > 0 -> 1,
+                    _ -> 0,
+                }
+            }
+        "#,
+        );
+
+        let func = &mir.functions[0];
+        let has_guard_branch = func.blocks.iter().any(|b| {
+            matches!(b.terminator, Terminator::Branch { .. })
+                && b.instructions.iter().any(|i| {
+                    matches!(
+                        &i.kind,
+                        InstructionKind::Binary {
+                            operation: crate::parser::expression::BinaryOperator::Gt,
+                            ..
+                        }
+                    )
+                })
+        });
+        assert!(has_guard_branch, "expected a Branch from guard evaluating n > 0");
     }
 }

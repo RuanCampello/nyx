@@ -1,7 +1,18 @@
-pub fn panic(msg: &str) {}
+use std::str;
+
+pub const fn panic(msg: &str): ! {
+    syscall(SYS_WRITE, 2, msg, msg.len());
+    syscall(SYS_EXIT, 101);
+}
 
 pub fn assert(condition: bool) {
     if !condition {
         panic("assertion failed");
+    }
+}
+
+pub fn assert_eq<A, B>(left: A, right: B) where A: PartialEq<B> {
+    if left != right {
+        panic("assertion failed: values are not equal");
     }
 }

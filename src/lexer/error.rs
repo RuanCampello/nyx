@@ -4,14 +4,14 @@
 use crate::lexer::token::{Position, Span};
 use nyx_macros::Diagnostic;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LexError {
-    pub(crate) kind: LexErrorKind,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LexError<'src> {
+    pub(crate) kind: LexErrorKind<'src>,
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Diagnostic)]
-pub(crate) enum LexErrorKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Diagnostic)]
+pub(crate) enum LexErrorKind<'src> {
     #[diagnostic(message = "unexpected character {0~}", primary = "not valid here")]
     UnexpectedChar(char),
     #[diagnostic(
@@ -51,20 +51,28 @@ pub(crate) enum LexErrorKind {
     )]
     InvalidEscape(char),
     #[diagnostic(
-        message = "invalid number literal: {0}",
-        primary = "could not parse this as a number"
+        message = "invalid float literal: `{0}`",
+        primary = "could not parse this as a float"
     )]
-    InvalidNumber(String),
+    InvalidFloat(&'src str),
+    #[diagnostic(
+        message = "invalid integer literal: `{0}`",
+        primary = "could not parse this as an integer"
+    )]
+    InvalidInteger(&'src str),
 }
 
-impl LexError {
+impl<'src> LexError<'src> {
     #[inline]
-    pub(in crate::lexer) fn new(kind: LexErrorKind, span: Span) -> Self {
+    pub(in crate::lexer) fn new(kind: LexErrorKind<'src>, span: Span) -> Self {
         Self { kind, span }
     }
 
-    pub fn unexpected_char(ch: char, pos: Position) -> Self {
+    pub fn unexpected_char(ch: char, pos: Position) -> LexError<'static> {
         let end = Position::new(pos.offset + ch.len_utf8() as u32, pos.line, pos.column + 1);
-        Self::new(LexErrorKind::UnexpectedChar(ch), Span::new(pos, end))
+        LexError {
+            kind: LexErrorKind::UnexpectedChar(ch),
+            span: Span::new(pos, end),
+        }
     }
 }

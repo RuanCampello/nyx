@@ -2,7 +2,7 @@ use crate::{
     hir::SyscallCode,
     lir::{
         CheckedOperation, MachineType, VReg,
-        target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
+        target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
     },
     parser::expression::BinaryOperator,
 };
@@ -238,13 +238,6 @@ impl Target for X86_64 {
     }
 
     #[inline(always)]
-    fn param_stack_offset(stack_idx: usize, _class: RegClass) -> Option<i32> {
-        // SysV: after prologue the first stack argument is at rbp+16
-        // the second at rbp+24 and so on
-        Some(16 + (stack_idx as i32) * 8)
-    }
-
-    #[inline(always)]
     fn syscall_code(code: SyscallCode) -> u64 {
         match code {
             SyscallCode::Write => 1,
@@ -281,47 +274,79 @@ impl MemOps for X86_64 {
     }
 }
 
+impl TargetOperand for X86Operand {
+    #[inline(always)]
+    fn from_vreg(v: VReg) -> Self {
+        Self::VReg(v)
+    }
+
+    #[inline(always)]
+    fn from_imm(imm: i64) -> Self {
+        Self::Imm(imm)
+    }
+
+    #[inline(always)]
+    fn from_label(label: String) -> Self {
+        Self::RipRel(format!("{label}(%rip)"))
+    }
+
+    #[inline(always)]
+    fn as_vreg(&self) -> Option<VReg> {
+        match self {
+            Self::VReg(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+
+impl TargetOps for X86_64 {
+    #[inline(always)]
+    fn mov_op(dest: VReg, src: Self::Operand, bytes: u8, is_float: bool) -> Self::Instruction {
+        match is_float {
+            true => X86Instr::MovFloat { dest, src, bytes },
+            _ => X86Instr::Mov { dest, src, bytes },
+        }
+    }
+
+    #[inline(always)]
+    fn load_label(dest: VReg, label: String, is_float: bool, bytes: u8) -> Self::Instruction {
+        let rip_rel = format!("{label}(%rip)");
+        match is_float {
+            true => X86Instr::MovFloat { dest, src: X86Operand::RipRel(rip_rel), bytes },
+            _ => X86Instr::Lea { dest, src: X86Operand::RipRel(rip_rel) },
+        }
+    }
+}
+
 impl Instruction<X86_64> for X86Instr {
+    #[rustfmt::skip]
     fn defs(&self) -> &[VReg] {
         match self {
-            Self::Mov { dest, .. }
-            | Self::MovFloat { dest, .. }
-            | Self::MovFromStack { dest, .. }
-            | Self::Lea { dest, .. }
-            | Self::StackAddr { dest, .. }
-            | Self::Movzx { dest, .. }
-            | Self::Movsx { dest, .. }
-            | Self::Add { dest, .. }
-            | Self::Sub { dest, .. }
-            | Self::Imul { dest, .. }
-            | Self::Neg { dest, .. }
-            | Self::And { dest, .. }
-            | Self::Or { dest, .. }
-            | Self::Xor { dest, .. }
-            | Self::Setcc { dest, .. }
-            | Self::AddFloat { dest, .. }
-            | Self::SubFloat { dest, .. }
-            | Self::MulFloat { dest, .. }
-            | Self::DivFloat { dest, .. }
-            | Self::FieldLoad { dest, .. }
-            | Self::PtrLoad { dest, .. }
-            | Self::XorFloat { dest, .. }
-            | Self::Not { dest, .. }
-            | Self::Shl { dest, .. }
+            Self::Mov { dest, .. } | Self::MovFloat { dest, .. }
+            | Self::MovFromStack { dest, .. } | Self::Lea { dest, .. }
+            | Self::StackAddr { dest, .. } | Self::Movzx { dest, .. }
+            | Self::Movsx { dest, .. } | Self::Add { dest, .. }
+            | Self::Sub { dest, .. } | Self::Imul { dest, .. }
+            | Self::Neg { dest, .. } | Self::And { dest, .. }
+            | Self::Or { dest, .. } | Self::Xor { dest, .. }
+            | Self::Setcc { dest, .. } | Self::AddFloat { dest, .. }
+            | Self::SubFloat { dest, .. } | Self::MulFloat { dest, .. }
+            | Self::DivFloat { dest, .. } | Self::FieldLoad { dest, .. }
+            | Self::PtrLoad { dest, .. } | Self::XorFloat { dest, .. }
+            | Self::Not { dest, .. } | Self::Shl { dest, .. }
             | Self::Shr { dest, .. }
             | Self::Sar { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
-            Self::FieldStore { .. }
-            | Self::PtrStore { .. }
-            | Self::Cmp { .. }
-            | Self::Test { .. }
+            Self::FieldStore { .. } | Self::PtrStore { .. }
+            | Self::Cmp { .. } | Self::Test { .. }
             | Self::Ucomis { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
             },
+
             Self::Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
             Self::Syscall { ret: None, .. } => &[],
         }
@@ -556,18 +581,14 @@ impl CheckedOperation for X86Instr {
 }
 
 impl Condition {
+    #[rustfmt::skip]
     pub const fn as_str<'s>(&self) -> &'s str {
         match self {
-            Self::E => "e",
-            Self::Ne => "ne",
-            Self::L => "l",
-            Self::Le => "le",
-            Self::G => "g",
-            Self::Ge => "ge",
-            Self::B => "b",
-            Self::Be => "be",
-            Self::A => "a",
-            Self::Ae => "ae",
+            Self::E => "e", Self::Ne => "ne",
+            Self::L => "l", Self::Le => "le",
+            Self::G => "g", Self::Ge => "ge",
+            Self::B => "b", Self::Be => "be",
+            Self::A => "a", Self::Ae => "ae",
         }
     }
 

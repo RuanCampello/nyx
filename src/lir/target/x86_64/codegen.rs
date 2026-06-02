@@ -190,14 +190,26 @@ impl Function<X86_64> {
                 let dest = alloc.location(dest, &8);
                 let src = self.operand(alloc, src, &8);
 
-                emit!(out, "leaq   {src}, {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        emit!(out, "leaq   {src}, %r11");
+                        emit!(out, "movq   %r11, {dest}");
+                    },
+                    _ => emit!(out, "leaq   {src}, {dest}"),
+                }
             },
 
             Inst::StackAddr { dest, origin } => {
                 let dest = alloc.location(dest, &8);
                 let offset = alloc.struct_offset(origin);
 
-                emit!(out, "leaq   {offset}(%rbp), {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        emit!(out, "leaq   {offset}(%rbp), %r11");
+                        emit!(out, "movq   %r11, {dest}");
+                    },
+                    _ => emit!(out, "leaq   {offset}(%rbp), {dest}"),
+                }
             },
 
             Inst::Movzx { dest, src, src_bytes, dest_bytes } => {
@@ -253,7 +265,14 @@ impl Function<X86_64> {
 
                 let suffix = typed_suffix(bytes, *is_float);
 
-                emit!(out, "mov{suffix}    {offset}(%rbp), {dest}");
+                match dest.contains("(%rbp)") {
+                    true => {
+                        let scratch = scratch_register(*bytes, *is_float);
+                        emit!(out, "mov{suffix}    {offset}(%rbp), {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {dest}");
+                    },
+                    false => emit!(out, "mov{suffix}    {offset}(%rbp), {dest}"),
+                }
             },
 
             Inst::FieldStore { origin, src, offset, bytes, is_float } => {
@@ -688,6 +707,32 @@ impl Function<X86_64> {
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
             },
 
+            Term::Switch { cond, targets, default } => {
+                let bytes = self.reg_bytes(cond);
+                let condition = alloc.location(cond, &bytes);
+                let suffix = suffix(&bytes);
+
+                let cmp_src = match condition.contains("(%rbp)") {
+                    true => {
+                        let scratch = match bytes {
+                            8 => "%r11",
+                            4 => "%r11d",
+                            2 => "%r11w",
+                            _ => "%r11b",
+                        };
+                        emit!(out, "mov{suffix}    {condition}, {scratch}");
+                        scratch
+                    },
+                    _ => condition.as_str(),
+                };
+
+                for (val, block) in targets {
+                    emit!(out, "cmp{suffix}    ${val}, {cmp_src}");
+                    emit!(out, "je          .L_block_{name}_{}", block.0);
+                }
+                emit!(out, "jmp         .L_block_{name}_{}", default.0);
+            },
+
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
                 let is_float = self.is_float(vreg);
@@ -776,6 +821,20 @@ const fn typed_suffix<'s>(bytes: &u8, is_float: bool) -> &'s str {
     match is_float {
         true => float_suffix(bytes),
         false => suffix(bytes),
+    }
+}
+
+#[inline(always)]
+const fn scratch_register<'r>(bytes: u8, is_float: bool) -> &'r str {
+    if is_float {
+        return "%xmm15";
+    }
+
+    match bytes {
+        1 => "%r11b",
+        2 => "%r11w",
+        4 => "%r11d",
+        _ => "%r11",
     }
 }
 

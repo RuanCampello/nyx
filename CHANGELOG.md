@@ -2,6 +2,52 @@
 
 All notable changes to the Nyx compiler will be documented in this file
 
+## [0.3.0] - 2026-06-02
+
+Added tagged-union `enum`s with pattern matching, generic types and functions with on-demand monomorphisation, the `Self` type and default interface methods, integer overflow checks, and a procedural-macro diagnostics system, alongside a large rearchitecture that moves layout into the MIR and types into side-tables.
+
+### Added
+
+- **Tagged-Union Enums & Pattern Matching** ([!8]):
+  - Payload-carrying `enum`s, parsed and lowered through the HIR, plus the `never` type for diverging arms (`panic`, `assert`)
+  - `match` statements with literal, variant, binding and wildcard patterns, `A | B` or-patterns, and single patterns with `if` guards
+  - MIR and codegen for tag/payload lowering and match emission
+- **Generics & Monomorphisation** ([!8]):
+  - Generic `struct`s, `enum`s, free functions, and `impl` methods, resolved via turbofish or inference
+  - On-demand monomorphisation deferred to the MIR through parked scope templates and per-call type side-tables, each specialisation is emitted once via name mangling (`Box$i32`)
+- **`Self` Type & Default Interface Methods** ([!5]):
+  - `Self` and `&Self` as valid annotations inside `impl` blocks and interface signatures
+  - Default method bodies on interfaces, injected into `impl` blocks that don't override them
+- **Comparison, Equality & Cloning** ([!5], [!8]):
+  - `PartialEq` and `Default` interfaces with implementations for the integer primitives, `char`, `uptr`, and `iptr` ([!5])
+  - `Clone` interface and a `Copy` marker, plus `assert_eq` generic over `PartialEq` ([!8])
+  - MIR resolution of operator overloads (e.g. `PartialEq::eq` behind `==`) ([!8])
+- **Integer Overflow Checks & Optimisation Levels** ([!7]):
+  - Integer `+`, `-`, `*` panic on overflow in `debug` builds and wrap silently at higher levels
+  - `optimisation` module with `Debug`, `Sane`, and `Max` levels, exposed via `--opt` on `build` and `run`
+- **Standard Library**:
+  - `std/optional.nyx`, `std/result.nyx`, `std/clone.nyx`, and `std/str.nyx` ([!8])
+  - `std/panic.nyx` with `panic`/`assert` ([!7])
+  - `std/cmp.nyx`, `std/default.nyx`, extended `std/char.nyx` and `iptr`/`uptr` impls ([!5])
+
+### Changed & Refactored
+
+- **HIR → MIR Rearchitecture** ([!8]):
+  - Moved the layout engine (size/align/field offsets) out of the HIR into the MIR, replacing `FieldAccess`/`FieldAssign` with a unified `Place` abstraction
+  - HIR expressions now live in a bump arena and `ExpressionKind` is `Copy`, expression types moved into `TypeckResults` side-tables keyed by `ExprId`, based on `rustc.`
+  - Added an `IndexVec` for typed indices and split the HIR into focused modules (`types`, `constants`, `interfaces`, `structs`, `type_resolver`, `mono`)
+- **Type System** ([!8]):
+  - Removed `RefTargetKind`, folding it onto `TypeKind` via the shared layout, and collapsed every type-name printer (`Display`, mangling, parser keywords) onto a single source of truth
+- **Diagnostics** ([!6], [!8]):
+  - Added the `nyx_macros` crate with a `#[derive(Diagnostic)]` procedural macro, replacing manual diagnostic implementations across the lexer, parser, HIR, and module system ([!6])
+  - `HirError` now borrows `&str` and derives `Copy`, dropping owned `String`s and the `into_other` shuffling ([!8])
+- **Module System & Reachability** ([!5]):
+  - Split `src/hir/module.rs` into focused submodules and added demand-driven loading so unreachable (and dead standard-library) functions are no longer lowered
+  - Added an AST `Visitor` trait, replacing ad-hoc traversals in constant resolution and reachability analysis
+- **Tooling** ([!5], [!6]):
+  - `benches/parsing.rs` criterion suite over std compilation and the integration files ([!5])
+  - Stabilised `rustfmt` configuration for deterministic formatting ([!6])
+
 ## [0.2.0] - 2026-05-22
 
 Added support for bitwise operations, explicit type casting (`as`), constants (`const`), and automated standard library prelude loading.
@@ -60,4 +106,7 @@ Initial release of the Nyx compiler, introducing support for `struct`s, implemen
 [!2]: https://gitlab.com/ruancampello/nyx/-/merge_requests/2
 [!3]: https://gitlab.com/ruancampello/nyx/-/merge_requests/3
 [!4]: https://gitlab.com/ruancampello/nyx/-/merge_requests/4
-
+[!5]: https://gitlab.com/ruancampello/nyx/-/merge_requests/5
+[!6]: https://gitlab.com/ruancampello/nyx/-/merge_requests/6
+[!7]: https://gitlab.com/ruancampello/nyx/-/merge_requests/7
+[!8]: https://gitlab.com/ruancampello/nyx/-/merge_requests/8

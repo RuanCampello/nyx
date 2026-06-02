@@ -1,6 +1,6 @@
 # Nyx Design Decision
 
-This document is to discuss the key design decision taken when implementing the `nyx` compiler and defining the language syntax, design and semantics.
+This document is to discuss the **key** design decisions taken when implementing the `nyx` compiler and defining the language syntax, design and semantics.
 
 ## Architecture
 
@@ -75,11 +75,11 @@ Every `.nyx` file is a module identified by its **canonical file-system path**. 
 use std::io;
 // usage: io::println(...)
 
-item import: directly binding into the scope
+// item import: directly binding into the scope
 use std::io::{println};
 // usage: println(...)
 
-project-relative import
+// project-relative import
 // use my_project::math::{add, subtract};
 ```
 
@@ -90,6 +90,7 @@ project-relative import
 Interfaces define a contract of method signatures. The compiler validates interface compliance at the High-level IR (HIR) boundary.
 
 An implementation block binds methods to a struct under a given interface:
+
 ```rust
 impl Rectangle with Shape {
     fn area(&self): i64 { ... }
@@ -97,6 +98,7 @@ impl Rectangle with Shape {
 ```
 
 The semantic analyzer enforces the following rules:
+
 - **Completeness**: Every method declared in the interface must be defined in the `impl` block.
 - **Signature Matching**: Method names, parameter types, receiver mutability (`&self` vs `&mut self`), and return types must match exactly.
 - **Superinterface Constraints**: Interfaces support single inheritance (`interface B: A`) and multiple composition (`interface C: A + B`). The implementing struct must explicitly implement all superinterfaces in the hierarchy.

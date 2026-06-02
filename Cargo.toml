@@ -1,6 +1,6 @@
 [package]
 name = "nyx"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [[bin]]
@@ -12,6 +12,7 @@ members = ["nyx_macros"]
 
 [dependencies]
 lasso = "0.7.3"
+bumpalo = "3"
 ariadne = { version = "0.6.0" }
 clap = { version = "4", features = ["derive"] }
 nyx_macros = { path = "./nyx_macros" }

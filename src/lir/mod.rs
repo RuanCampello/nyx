@@ -7,7 +7,7 @@
 //! physical registers or stack slots.
 
 use crate::{
-    hir::Type,
+    hir::{Type, TypeKind},
     lir::target::{Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -48,10 +48,11 @@ pub struct Block<I> {
 }
 
 /// All control-flow terminators
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Term {
     Jump(BlockId),
     Branch { cond: VReg, then_block: BlockId, else_block: BlockId },
+    Switch { cond: VReg, targets: Vec<(i64, BlockId)>, default: BlockId },
     Return(Option<VReg>),
 }
 
@@ -108,7 +109,13 @@ where
             continue;
         }
 
-        let lir = T::lower(function, &mir.symbols, &mir.functions, &mir.struct_layouts);
+        let lir = T::lower(
+            function,
+            &mir.symbols,
+            &mir.functions,
+            &mir.struct_layouts,
+            &mir.enum_layouts,
+        );
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
@@ -133,7 +140,7 @@ where
         for (idx, string) in mir.strings.iter().enumerate() {
             label!(out, ".align 1");
             label!(out, ".L_str_{}:", idx);
-            label!(out, "    .ascii {:?}", string);
+            label!(out, "    .asciz {:?}", string);
         }
     }
 
@@ -288,38 +295,62 @@ impl MachineType {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Layouts<'a> {
+    pub structs: &'a [Layout],
+    pub enums: &'a [Layout],
+}
+
 impl Type {
     #[inline(always)]
-    #[rustfmt::skip]
-    pub(in crate::lir) fn machine_type(&self, layouts: &[Layout]) -> MachineType {
-        match self {
-            Type::I8 => MachineType::Int { bytes: 1, signed: true },
-            Type::U8 | Type::Bool => MachineType::Int { bytes: 1, signed: false },
-            Type::I16 => MachineType::Int { bytes: 2, signed: true },
-            Type::U16 => MachineType::Int { bytes: 2, signed: false },
-            Type::I32 => MachineType::Int { bytes: 4, signed: true },
-            Type::U32 | Type::Char => MachineType::Int { bytes: 4, signed: false },
-            Type::I64 | Type::Iptr => MachineType::Int { bytes: 8, signed: true },
-            Type::U64 | Type::Uptr | Type::Str | Type::String | Type::Ref { .. } => {
-                MachineType::Int { bytes: 8, signed: false, }
-            }
-            Type::F32 => MachineType::Float { bytes: 4 },
-            Type::F64 => MachineType::Float { bytes: 8 },
-            Type::Struct(id) => {
-                let (size, align) = layouts[id.0 as usize].into();
-                MachineType::Struct { size, align }
-            }
-            Type::Unit => unreachable!("unit doesn't have a machine type"),
-            Type::SelfType => unreachable!("Self type doesn't have a machine type"),
+    pub(in crate::lir) fn is_aggregate_lir(self, layouts: Layouts) -> bool {
+        if self.is_aggregate() {
+            return true;
         }
+        if let TypeKind::Enum(id) = self.kind() {
+            let (enum_size, _) = layouts.enums[id.id() as usize].into();
+            return enum_size > id.repr().layout().0;
+        }
+        false
     }
 
-    // FIXME: that's a very workaround so future me that's your problem
     #[inline(always)]
-    pub(crate) const fn unwrap_unit(self) -> Self {
-        match self {
-            Self::Unit => Self::I32,
-            _ => self,
+    pub(in crate::lir) fn machine_type(&self, layouts: Layouts) -> MachineType {
+        match self.kind() {
+            TypeKind::I8 => MachineType::Int { bytes: 1, signed: true },
+            TypeKind::U8 | TypeKind::Bool => MachineType::Int { bytes: 1, signed: false },
+            TypeKind::I16 => MachineType::Int { bytes: 2, signed: true },
+            TypeKind::U16 => MachineType::Int { bytes: 2, signed: false },
+            TypeKind::I32 => MachineType::Int { bytes: 4, signed: true },
+            TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
+            TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
+            TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } => {
+                MachineType::Int { bytes: 8, signed: false }
+            },
+            TypeKind::Str => MachineType::Struct { size: 16, align: 8 },
+            TypeKind::String => MachineType::Struct { size: 24, align: 8 },
+            TypeKind::F32 => MachineType::Float { bytes: 4 },
+            TypeKind::F64 => MachineType::Float { bytes: 8 },
+            TypeKind::Struct(id) => {
+                let (size, align) = layouts.structs[id.0 as usize].into();
+                MachineType::Struct { size, align }
+            },
+            TypeKind::Enum(id) => {
+                let enum_layout = layouts.enums[id.id() as usize];
+                let tag_size = id.repr().layout().0;
+                let (enum_size, enum_align) = enum_layout.into();
+                if enum_size > tag_size {
+                    MachineType::Struct { size: enum_size, align: enum_align }
+                } else {
+                    id.repr().typ().machine_type(layouts)
+                }
+            },
+            TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
+            TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
+            TypeKind::GenericParam(_) => {
+                unreachable!("GenericParam must be resolved before LIR lowering")
+            },
+            TypeKind::Never => MachineType::Int { bytes: 4, signed: true },
         }
     }
 }
@@ -356,14 +387,21 @@ impl Term {
     pub fn uses_of(&self) -> &[VReg] {
         match self {
             Self::Return(Some(v)) => std::slice::from_ref(v),
-            Self::Branch { cond, .. } => std::slice::from_ref(cond),
+            Self::Branch { cond, .. } | Self::Switch { cond, .. } => std::slice::from_ref(cond),
             Self::Return(None) | Self::Jump(_) => &[],
         }
     }
 }
 
+impl std::ops::Index<mir::ValueId> for Vec<VReg> {
+    type Output = VReg;
+    fn index(&self, index: mir::ValueId) -> &Self::Output {
+        &self[index.0 as usize]
+    }
+}
+
 impl From<crate::mir::BlockId> for BlockId {
     fn from(value: crate::mir::BlockId) -> Self {
-        Self { 0: value.0 }
+        Self(value.0)
     }
 }

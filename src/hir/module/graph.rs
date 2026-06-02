@@ -12,7 +12,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx"];
+/// **std** modules loaded eagerly so their inherent methods and interface are always in scope without an explicit `use`
+const PRELUDE: &[&str] = &["int.nyx", "float.nyx", "char.nyx", "default.nyx", "cmp.nyx"];
 
 #[derive(Debug)]
 pub(super) struct ModuleGraph<'src> {
@@ -33,7 +34,7 @@ pub(super) struct ModuleNode<'src> {
 struct GraphBuilder<'a, 'src, F> {
     resolver: &'a ModuleResolver,
     fs: &'a F,
-    arena: &'src super::arena::SourceArena,
+    arena: &'src bumpalo::Bump,
     nodes: Vec<ModuleNode<'src>>,
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
@@ -44,7 +45,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     entry: &Path,
     resolver: &ModuleResolver,
     fs: &F,
-    arena: &'src super::arena::SourceArena,
+    arena: &'src bumpalo::Bump,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
     let canonical = fs
         .canonicalise(entry)
@@ -139,7 +140,7 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             span: triggered_by,
         })?;
 
-        let source = self.arena.alloc(source);
+        let source = self.arena.alloc_str(&source);
 
         diagnostic::initialise(source, canonical.to_str().unwrap_or("<unknown>"));
         let statements = Parser::new(source).parse().map_err(Diagnostic::from)?;
@@ -202,6 +203,7 @@ fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
     for statement in statements {
         match statement {
             Statement::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
+            Statement::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
             Statement::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
             Statement::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
             Statement::Const(c) if c.is_pub => exports.insert(c.name.to_string()),

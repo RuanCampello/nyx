@@ -45,16 +45,14 @@ fn tests_compilation(c: &mut Criterion) {
     let test_dir = Path::new("tests/single");
     let mut files = Vec::new();
     if let Ok(entries) = fs::read_dir(test_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
+        for entry in entries.flatten() {
+            let path = entry.path();
 
-                if path.extension().map_or(false, |ext| ext == "nyx") {
-                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                    let project = path.file_stem().unwrap().to_string_lossy().to_string();
-                    if nyx::compile_project(&path, &project).is_ok() {
-                        files.push((name, path));
-                    }
+            if path.extension().is_some_and(|ext| ext == "nyx") {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let project = path.file_stem().unwrap().to_string_lossy().to_string();
+                if nyx::compile_project(&path, &project).is_ok() {
+                    files.push((name, path));
                 }
             }
         }

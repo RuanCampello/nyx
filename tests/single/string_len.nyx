@@ -1,0 +1,12 @@
+use std::process::{exit};
+use std::str;
+
+fn check_string_len(s: &str): uptr {
+    s.len()
+}
+
+fn main() {
+    let text: &str = "Hello, Rust";
+    let len = check_string_len(text);
+    exit(len as i32);
+}

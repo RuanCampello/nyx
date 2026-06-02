@@ -498,7 +498,7 @@ impl Function<AArch64> {
                                     bytes,
                                     matches!(mt, MachineType::Float { .. }),
                                 );
-                                emit_store(out, &src, &stack_arg_addr, bytes);
+                                emit_store(out, src, &stack_arg_addr, bytes);
                             },
                             A64Operand::Label(label) => match mt {
                                 MachineType::Float { .. } => {
@@ -568,12 +568,7 @@ impl Function<AArch64> {
                         let dest = alloc.location(ret, &bytes);
 
                         if src != dest {
-                            let mnemonic = if is_float {
-                                "fmov"
-                            } else {
-                                "mov"
-                            };
-                            emit!(out, "{mnemonic}    {dest}, {src}");
+                            emit_move(out, &dest, src, bytes, is_float);
                         }
                     }
                 }
@@ -591,7 +586,7 @@ impl Function<AArch64> {
                         _ => {
                             let src = self.operand(alloc, operand, bytes);
                             if src != dest {
-                                emit!(out, "mov     {dest}, {src}");
+                                emit_move(out, dest, &src, *bytes, false);
                             }
                         },
                     }
@@ -606,7 +601,7 @@ impl Function<AArch64> {
                     let dest = alloc.location(ret, &bytes);
 
                     if src != dest {
-                        emit!(out, "mov     {dest}, {src}");
+                        emit_move(out, &dest, src, bytes, false);
                     }
                 }
             },
@@ -634,6 +629,27 @@ impl Function<AArch64> {
                 emit!(out, "b       .L_block_{name}_{}", else_block.0);
             },
 
+            Term::Switch { cond, targets, default } => {
+                let bytes = self.reg_bytes(cond);
+                let condition = alloc.location(cond, &bytes);
+
+                // if the discriminant is on the stack, load it into a scratch register
+                let cmp_src = match is_mem(&condition) {
+                    true => {
+                        let scratch = A64Reg::X16.name(bytes);
+                        emit_load(out, scratch, &condition, bytes);
+                        scratch
+                    },
+                    false => condition.as_str(),
+                };
+
+                for (val, block) in targets {
+                    emit!(out, "cmp     {cmp_src}, #{val}");
+                    emit!(out, "b.eq    .L_block_{name}_{}", block.0);
+                }
+                emit!(out, "b       .L_block_{name}_{}", default.0);
+            },
+
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
                 let is_float = self.is_float(vreg);
@@ -647,12 +663,7 @@ impl Function<AArch64> {
                     let dest = ret_reg.name(bytes);
 
                     if src != dest {
-                        let mnemonic = if is_float {
-                            "fmov"
-                        } else {
-                            "mov"
-                        };
-                        emit!(out, "{mnemonic}    {dest}, {src}");
+                        emit_move(out, dest, &src, bytes, is_float);
                     }
                 }
 
@@ -682,12 +693,7 @@ impl Function<AArch64> {
     }
 
     #[inline(always)]
-    fn operand<'s>(
-        &self,
-        alloc: &Allocation<AArch64>,
-        operand: &'s A64Operand,
-        bytes: &u8,
-    ) -> String {
+    fn operand(&self, alloc: &Allocation<AArch64>, operand: &A64Operand, bytes: &u8) -> String {
         match operand {
             A64Operand::VReg(vreg) => alloc.location(vreg, bytes),
             A64Operand::Imm(n) => format!("#{n}"),
@@ -735,13 +741,13 @@ fn emit_wide_immediate(out: &mut String, dest: &str, value: i64, bytes: u8) {
     let bits = value as u64;
 
     // for small non-negative values a single MOV is sufficient :D
-    if value >= 0 && value <= 0xFFFF {
+    if (0..=0xFFFF).contains(&value) {
         emit!(out, "mov     {dest}, #{value}");
         return;
     }
 
     // for small negative values in 32-bit context use MOVN
-    if bytes <= 4 && value < 0 && value >= -0x10000 {
+    if bytes <= 4 && (-0x10000..0).contains(&value) {
         let inverted = (!value as u64) & 0xFFFF;
         emit!(out, "movn    {dest}, #{inverted}");
         return;
@@ -871,7 +877,7 @@ fn emit_store_operand(
         A64Operand::VReg(vreg) => {
             let src = alloc.location(vreg, &bytes);
             let src = load_src_if_mem(out, &src, bytes, is_float);
-            emit_store(out, &src, dest, bytes);
+            emit_store(out, src, dest, bytes);
         },
         A64Operand::Imm(n) => {
             let scratch = A64Reg::X16.name(bytes);

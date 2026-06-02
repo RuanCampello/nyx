@@ -1,0 +1,87 @@
+pub interface Clone {
+    fn clone(&self): Self;
+}
+
+impl i8 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl i16 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl i32 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl i64 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl u8 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl u16 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl u32 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl u64 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl iptr with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl uptr with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl f32 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl f64 with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl bool with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}
+
+impl char with Clone {
+    fn clone(&self): Self {
+        *self
+    }
+}

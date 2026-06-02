@@ -19,7 +19,7 @@ pub struct BlockComment {
 }
 
 impl BlockComment {
-    pub fn skip(self, cursor: &mut Cursor<'_>) -> Result<(), LexError> {
+    pub fn skip<'src>(self, cursor: &mut Cursor<'src>) -> Result<(), LexError<'src>> {
         let start_pos = cursor.position();
         let mut depth = 1;
 

@@ -1,6 +1,6 @@
 use crate::lir::{
     CheckedOperation, MachineType, VReg,
-    target::{Instruction, MemOps, PhysicalReg, RegClass, Target},
+    target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
 };
 use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
 
@@ -144,18 +144,14 @@ pub enum A64Cond {
 }
 
 impl A64Cond {
+    #[rustfmt::skip]
     pub const fn as_str<'s>(&self) -> &'s str {
         match self {
-            Self::Eq => "eq",
-            Self::Ne => "ne",
-            Self::Lt => "lt",
-            Self::Le => "le",
-            Self::Gt => "gt",
-            Self::Ge => "ge",
-            Self::Lo => "lo",
-            Self::Ls => "ls",
-            Self::Hi => "hi",
-            Self::Hs => "hs",
+            Self::Eq => "eq", Self::Ne => "ne",
+            Self::Lt => "lt", Self::Le => "le",
+            Self::Gt => "gt", Self::Ge => "ge",
+            Self::Lo => "lo", Self::Ls => "ls",
+            Self::Hi => "hi", Self::Hs => "hs",
         }
     }
 
@@ -273,37 +269,14 @@ impl Target for AArch64 {
 
     #[inline(always)]
     fn param(idx: usize, class: RegClass) -> Option<Self::Reg> {
-        match class {
-            RegClass::Int => {
-                const REGS: [A64Reg; 8] = [
-                    A64Reg::X0,
-                    A64Reg::X1,
-                    A64Reg::X2,
-                    A64Reg::X3,
-                    A64Reg::X4,
-                    A64Reg::X5,
-                    A64Reg::X6,
-                    A64Reg::X7,
-                ];
+        use self::A64Reg as R;
 
-                REGS.get(idx).copied()
-            },
+        let regs = match class {
+            RegClass::Int => [R::X0, R::X1, R::X2, R::X3, R::X4, R::X5, R::X6, R::X7],
+            RegClass::Float => [R::D0, R::D1, R::D2, R::D3, R::D4, R::D5, R::D6, R::D7],
+        };
 
-            RegClass::Float => {
-                const REGS: [A64Reg; 8] = [
-                    A64Reg::D0,
-                    A64Reg::D1,
-                    A64Reg::D2,
-                    A64Reg::D3,
-                    A64Reg::D4,
-                    A64Reg::D5,
-                    A64Reg::D6,
-                    A64Reg::D7,
-                ];
-
-                REGS.get(idx).copied()
-            },
-        }
+        regs.get(idx).copied()
     }
 
     #[inline(always)]
@@ -322,15 +295,6 @@ impl Target for AArch64 {
             [A64Reg::X0, A64Reg::X1, A64Reg::X2, A64Reg::X3, A64Reg::X4, A64Reg::X5];
 
         REGS.get(idx).copied()
-    }
-
-    /// AAPCS64 stack argument layout
-    ///
-    /// after the prologue, [x29, #0] = saved fp, [x29, #8] = saved lr
-    /// stack arguments begin at [x29, #16] for the first, [x29, #24] for the second, so on
-    #[inline(always)]
-    fn param_stack_offset(stack_idx: usize, _class: RegClass) -> Option<i32> {
-        Some(16 + (stack_idx as i32) * 8)
     }
 
     #[inline(always)]
@@ -370,68 +334,97 @@ impl MemOps for AArch64 {
     }
 }
 
+impl TargetOperand for A64Operand {
+    #[inline(always)]
+    fn from_vreg(v: VReg) -> Self {
+        Self::VReg(v)
+    }
+
+    #[inline(always)]
+    fn from_imm(imm: i64) -> Self {
+        Self::Imm(imm)
+    }
+
+    #[inline(always)]
+    fn from_label(label: String) -> Self {
+        Self::Label(label)
+    }
+
+    #[inline(always)]
+    fn as_vreg(&self) -> Option<VReg> {
+        match self {
+            Self::VReg(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+
+impl TargetOps for AArch64 {
+    #[inline(always)]
+    fn mov_op(dest: VReg, src: Self::Operand, bytes: u8, is_float: bool) -> Self::Instruction {
+        match src {
+            A64Operand::VReg(src) => match is_float {
+                true => A64Instr::FMov { dest, src, bytes },
+                _ => A64Instr::Mov { dest, src, bytes },
+            },
+            A64Operand::Imm(imm) => A64Instr::MovImm { dest, imm, bytes },
+            A64Operand::Label(label) => match is_float {
+                true => A64Instr::FLiteral { dest, label, bytes },
+                _ => A64Instr::Adr { dest, label },
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn load_label(dest: VReg, label: String, is_float: bool, bytes: u8) -> Self::Instruction {
+        match is_float {
+            true => A64Instr::FLiteral { dest, label, bytes },
+            _ => A64Instr::Adr { dest, label },
+        }
+    }
+}
+
 impl Instruction<AArch64> for A64Instr {
+    #[rustfmt::skip]
     fn defs(&self) -> &[VReg] {
         match self {
-            Self::MovImm { dest, .. }
-            | Self::Mov { dest, .. }
-            | Self::LdrParam { dest, .. }
-            | Self::Add { dest, .. }
-            | Self::Sub { dest, .. }
-            | Self::Mul { dest, .. }
-            | Self::SDiv { dest, .. }
-            | Self::Neg { dest, .. }
-            | Self::Mvn { dest, .. }
-            | Self::And { dest, .. }
-            | Self::Or { dest, .. }
-            | Self::Eor { dest, .. }
-            | Self::Lsl { dest, .. }
-            | Self::Lsr { dest, .. }
-            | Self::Asr { dest, .. }
-            | Self::Cset { dest, .. }
-            | Self::FMov { dest, .. }
-            | Self::FLiteral { dest, .. }
-            | Self::FAdd { dest, .. }
-            | Self::FSub { dest, .. }
-            | Self::FMul { dest, .. }
-            | Self::FDiv { dest, .. }
-            | Self::FNeg { dest, .. }
-            | Self::FieldLoad { dest, .. }
-            | Self::StackAddr { dest, .. }
-            | Self::PtrLoad { dest, .. }
+            Self::MovImm { dest, .. } | Self::Mov { dest, .. }
+            | Self::LdrParam { dest, .. } | Self::Add { dest, .. }
+            | Self::Sub { dest, .. } | Self::Mul { dest, .. }
+            | Self::SDiv { dest, .. } | Self::Neg { dest, .. }
+            | Self::Mvn { dest, .. } | Self::And { dest, .. }
+            | Self::Or { dest, .. } | Self::Eor { dest, .. }
+            | Self::Lsl { dest, .. } | Self::Lsr { dest, .. }
+            | Self::Asr { dest, .. } | Self::Cset { dest, .. }
+            | Self::FMov { dest, .. } | Self::FLiteral { dest, .. }
+            | Self::FAdd { dest, .. } | Self::FSub { dest, .. }
+            | Self::FMul { dest, .. } | Self::FDiv { dest, .. }
+            | Self::FNeg { dest, .. } | Self::FieldLoad { dest, .. }
+            | Self::StackAddr { dest, .. } | Self::PtrLoad { dest, .. }
             | Self::Extend { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
-                std::slice::from_ref(r)
+               std::slice::from_ref(r)
             },
-            Self::FieldStore { .. }
-            | Self::PtrStore { .. }
-            | Self::Call { ret: None, .. }
-            | Self::Syscall { ret: None, .. } => &[],
+            Self::FieldStore { .. } | Self::PtrStore { .. }
+            | Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
         }
     }
 
+    #[rustfmt::skip]
     fn uses(&self, uses: &mut Vec<VReg>) {
         match self {
-            Self::Mov { src, .. }
-            | Self::Neg { src, .. }
-            | Self::Mvn { src, .. }
-            | Self::FMov { src, .. }
-            | Self::Extend { src, .. }
-            | Self::FNeg { src, .. } => uses.push(*src),
+            Self::Mov { src, .. } | Self::Neg { src, .. }
+            | Self::Mvn { src, .. } | Self::FMov { src, .. }
+            | Self::Extend { src, .. } | Self::FNeg { src, .. } => uses.push(*src),
 
-            Self::Add { lhs, rhs, .. }
-            | Self::Sub { lhs, rhs, .. }
-            | Self::And { lhs, rhs, .. }
-            | Self::Or { lhs, rhs, .. }
-            | Self::Eor { lhs, rhs, .. }
-            | Self::Lsl { lhs, rhs, .. }
-            | Self::Lsr { lhs, rhs, .. }
-            | Self::Asr { lhs, rhs, .. }
-            | Self::Cmp { lhs, rhs, .. }
-            | Self::Cmn { lhs, rhs, .. }
+            Self::Add { lhs, rhs, .. } | Self::Sub { lhs, rhs, .. }
+            | Self::And { lhs, rhs, .. } | Self::Or { lhs, rhs, .. }
+            | Self::Eor { lhs, rhs, .. } | Self::Lsl { lhs, rhs, .. }
+            | Self::Lsr { lhs, rhs, .. } | Self::Asr { lhs, rhs, .. }
+            | Self::Cmp { lhs, rhs, .. } | Self::Cmn { lhs, rhs, .. }
             | Self::Tst { lhs, rhs, .. } => {
                 uses.push(*lhs);
 
@@ -440,20 +433,14 @@ impl Instruction<AArch64> for A64Instr {
                 }
             },
 
-            Self::Mul { lhs, .. }
-            | Self::SDiv { lhs, .. }
-            | Self::FAdd { lhs, .. }
-            | Self::FSub { lhs, .. }
-            | Self::FMul { lhs, .. }
-            | Self::FDiv { lhs, .. } => {
+            Self::Mul { lhs, .. } | Self::SDiv { lhs, .. }
+            | Self::FAdd { lhs, .. } | Self::FSub { lhs, .. }
+            | Self::FMul { lhs, .. } | Self::FDiv { lhs, .. } => {
                 uses.push(*lhs);
                 match self {
-                    Self::Mul { rhs, .. }
-                    | Self::SDiv { rhs, .. }
-                    | Self::FAdd { rhs, .. }
-                    | Self::FSub { rhs, .. }
-                    | Self::FMul { rhs, .. }
-                    | Self::FDiv { rhs, .. } => uses.push(*rhs),
+                    Self::Mul { rhs, .. } | Self::SDiv { rhs, .. }
+                    | Self::FAdd { rhs, .. } | Self::FSub { rhs, .. }
+                    | Self::FMul { rhs, .. } | Self::FDiv { rhs, .. } => uses.push(*rhs),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
             },
@@ -472,22 +459,17 @@ impl Instruction<AArch64> for A64Instr {
                 uses.push(*origin);
                 uses.push(*v);
             },
-            Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
 
-            Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => {
-                uses.push(*origin)
-            },
+            Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
+            Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => uses.push(*origin),
             Self::PtrStore { ptr, src: A64Operand::VReg(v), .. } => {
                 uses.push(*ptr);
                 uses.push(*v);
             },
             Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
-            Self::MovImm { .. }
-            | Self::LdrParam { .. }
-            | Self::FLiteral { .. }
-            | Self::Adr { .. }
-            | Self::Cset { .. } => {},
+            Self::MovImm { .. } | Self::LdrParam { .. } | Self::FLiteral { .. }
+            | Self::Adr { .. } | Self::Cset { .. } => {},
         }
     }
 

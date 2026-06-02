@@ -32,14 +32,14 @@ use token::{Punct, Span, Token, TokenKind, Tokenize};
 /// The Nyx lexer.
 ///
 /// Wraps a [`Cursor`] and exposes an [`Iterator`] of `Result<Token, LexError>`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Lexer<'src> {
     cursor: Cursor<'src>,
     /// set to `true` once we've emitted [`TokenKind::Eof`].
     finished: bool,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Spanned<T> {
     span: Span,
     value: T,
@@ -56,7 +56,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Produces the next token, or `None` after EOF has been emitted.
-    fn next_token(&mut self) -> Result<Option<Token<'src>>, LexError> {
+    fn next_token(&mut self) -> Result<Option<Token<'src>>, LexError<'src>> {
         if self.finished {
             return Ok(None);
         }
@@ -174,7 +174,7 @@ impl<'src> Lexer<'src> {
         Ok(Some(token))
     }
 
-    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError> {
+    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError<'src>> {
         loop {
             self.cursor.consume_while(|ch| ch.is_ascii_whitespace());
 
@@ -190,7 +190,7 @@ impl<'src> Lexer<'src> {
                     self.cursor.advance(); // consume `/`
                     self.cursor.advance(); // consume `*`
 
-                    BlockComment { open_offset: offset as usize }.skip(&mut self.cursor)?;
+                    BlockComment { open_offset: offset }.skip(&mut self.cursor)?;
                 },
                 _ => break,
             }
@@ -214,27 +214,31 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'src> Iterator for Lexer<'src> {
-    type Item = Result<Token<'src>, LexError>;
+    type Item = Result<Token<'src>, LexError<'src>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_token() {
-            Ok(Some(token)) => Some(Ok(token)),
-            Ok(None) => None,
-            Err(e) => {
-                self.finished = true; // stop after first error
-                Some(Err(e))
-            },
-        }
+        self.next_token()
+            .inspect_err(|_e| {
+                self.finished = true;
+            })
+            .transpose()
     }
 }
 
-impl<T: Clone + Copy> Spanned<T> {
-    pub const fn value(&self) -> T {
-        self.value
-    }
-
+impl<T> Spanned<T> {
     pub const fn span(&self) -> Span {
         self.span
+    }
+}
+
+impl<T: Clone> Spanned<T> {
+    pub fn value(&self) -> T {
+        self.value.clone()
+    }
+
+    #[allow(unused)]
+    pub fn value_ref(&self) -> &T {
+        &self.value
     }
 }
 

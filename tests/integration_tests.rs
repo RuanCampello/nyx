@@ -163,18 +163,39 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "enums",
+        file: "tests/single/enums.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "match",
+        file: "tests/single/match.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "cmp_overload",
+        file: "tests/single/cmp_overload.nyx",
+        exit_code: Some(42),
+    },
+    Case {
         name: "overflow",
         file: "tests/single/overflow.nyx",
         exit_code: Some(101),
     },
+    Case {
+        name: "string_len",
+        file: "tests/single/string_len.nyx",
+        exit_code: Some(11),
+    },
+    Case {
+        name: "generics_monomorphization",
+        file: "tests/single/generics_monomorphization.nyx",
+        exit_code: Some(0),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
-    let project = path
-        .file_stem()
-        .unwrap_or_else(|| path.as_os_str())
-        .to_string_lossy()
-        .to_string();
+    let project = path.file_stem().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
     let asm = nyx::compile_project(path, &project).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();

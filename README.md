@@ -4,7 +4,7 @@ A modern, strict, and compiled programming language.
 
 ## Overview
 
-Nyx is a imperative, statically-typed, compiled language designed for performance and clarity. The compiler implements a multi-pass architecture with distinct intermediate representations before emitting native assembly for `x86_64` and `AArch64`.
+Nyx is an imperative, statically-typed, compiled language designed for performance and clarity. The compiler implements a multi-pass architecture with distinct intermediate representations before emitting native assembly for `x86_64` and `AArch64`.
 
 > [!NOTE]
 > This is primarily a learning project, built while working through books, papers, and online resources on compilers and language design. Things may not always be done in the most optimal way, but the intent is always to improve.
@@ -44,7 +44,6 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 - **No object-oriented programming.** No inheritance, no class hierarchies. Structs and their method implementations are the model.
 - **No garbage collector.** Memory is managed through ownership. If you want a GC, use a language designed around one.
-- **No generics or templates** — not planned for the foreseeable future.
 - **No Windows support.** Nyx targets Linux (and eventually other Unix-like systems). Windows is not on the roadmap.
 - **Not a replacement for everything.** Nyx is not trying to be `C++`, `Rust`, or `Zig`. If you need their feature sets, use them.
 
@@ -76,12 +75,14 @@ Resources for native code generation, register usage, and platform calling conve
 
 Inspiration and architectural references for the Nyx compiler and standard library
 
-- [GCC Optimisation Options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) - Documentation on optimisation levels and flags used in modern compilers
+- [GCC Optimisation Options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) - Documentation on optimisation levels and flags used in `gcc` compilers
 - [The Hare Programming Language](https://harelang.org/) - A clean, simple, and statically-typed systems language that served design inspiration
+- [rustc IR guide](https://rustc-dev-guide.rust-lang.org/part-3-intro.html) - Documentation on different levels to represent a rust source code before code generation
+- [rustc architecture overview](https://rustc-dev-guide.rust-lang.org/overview.html) - Overhaul processing of rust compiler pipeline
 
 ### Algorithms
 
-Foundational papers for compiler implemented or used as research in Nyx
+Foundational papers for algorithms implemented or used as research in Nyx
 
 - [Register Allocation and Spilling via Graph Coloring](https://dl.acm.org/doi/epdf/10.1145/872726.806984) - Gregory J. Chaitin's seminal 1982 paper detailing the graph-colouring approach to register allocation and spilling
 

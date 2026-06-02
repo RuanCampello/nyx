@@ -1,0 +1,48 @@
+use std::cmp::{PartialEq};
+use std::default::{Default};
+use std::mem;
+use std::panic;
+
+enum Status {
+    Ready = 1,
+    Done = 2,
+} as u8
+
+struct PackedFlags {
+    a: i8,
+    b: i64,
+    c: i32,
+} as packed, align(4)
+
+impl Status {
+    fn code(&self): u8 { 7 }
+
+    fn touch(&mut self): u8 { 9 }
+}
+
+impl Status with Default {
+    fn default(): Self {
+        Status::Ready
+    }
+}
+
+impl Status with PartialEq<Status> {
+    fn eq(&self, other: &Status): bool {
+        true
+    }
+}
+
+fn main(): i32 {
+    let mut status = Status::default();
+    let other = Status::Done;
+
+    panic::assert(mem::size_of(Status) == 1);
+    panic::assert(mem::align_of(Status) == 1);
+    panic::assert(mem::size_of(PackedFlags) == 16);
+    panic::assert(mem::align_of(PackedFlags) == 4);
+    panic::assert(status.eq(&other));
+    panic::assert(status.touch() == 9);
+    panic::assert(status.code() == 7);
+
+    0
+}
