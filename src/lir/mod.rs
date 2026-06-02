@@ -6,6 +6,8 @@
 //! mechanical. The register allocator works on VRegs and assigns them to
 //! physical registers or stack slots.
 
+#![allow(clippy::too_many_arguments)]
+
 use crate::{
     hir::{Type, TypeKind},
     lir::target::{Emittable, Lowerable, RegClass, Target},

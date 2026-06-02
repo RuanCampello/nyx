@@ -4,7 +4,7 @@ use crate::{
         Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
         Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         TypeckResults,
-        error::{ConstFnViolationKind, HirError, hir_error},
+        error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         place_base_local,
         scope::{GenericEnv, Scope},
@@ -739,6 +739,26 @@ where
                                 .insert(lowered.expr.id, Res::Function(function));
                             return Ok(lowered);
                         }
+
+                        let type_name = match receiver.kind() {
+                            TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                            TypeKind::Enum(id) => self
+                                .scope
+                                .enums
+                                .get(id)
+                                .map(|e| self.symbols.get(e.name).to_string())
+                                .unwrap_or_else(|| receiver.to_string()),
+                            _ => receiver.to_string(),
+                        };
+                        let type_name = self.arena.alloc_str(&type_name);
+                        return Err(hir_error!(
+                            *span,
+                            OperatorRequiresInterface {
+                                op: operator.symbol(),
+                                type_name,
+                                interface_name: operator.required_interface(),
+                            }
+                        ));
                     }
                 }
 
@@ -1852,6 +1872,31 @@ impl BinaryOperator {
             BinaryOperator::GtEq => "ge",
             _ => return None,
         })
+    }
+
+    #[inline(always)]
+    const fn required_interface(&self) -> CmpInterface {
+        match self {
+            BinaryOperator::Eq | BinaryOperator::Ne => CmpInterface::Equality,
+            BinaryOperator::Lt
+            | BinaryOperator::LtEq
+            | BinaryOperator::Gt
+            | BinaryOperator::GtEq => CmpInterface::Ordering,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    #[inline(always)]
+    const fn symbol<'op>(&self) -> &'op str {
+        match self {
+            BinaryOperator::Eq => "==",
+            BinaryOperator::Ne => "!=",
+            BinaryOperator::Lt => "<",
+            BinaryOperator::LtEq => "<=",
+            BinaryOperator::Gt => ">",
+            BinaryOperator::GtEq => ">=",
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
     }
 }
 

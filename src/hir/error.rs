@@ -252,6 +252,13 @@ pub enum HirErrorKind<'h> {
         help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
     )]
     UnsatisfiedBound { type_name: Type, bound_name: &'h str },
+
+    #[diagnostic(
+        message = "operator `{op!}` requires `{interface_name!}`",
+        primary = "`{type_name!}` does not implement `{interface_name!}`",
+        help = "add {`impl {type_name} with {interface_name} {{ … }}`}"
+    )]
+    OperatorRequiresInterface { op: &'h str, type_name: &'h str, interface_name: CmpInterface },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]
@@ -264,10 +271,25 @@ pub enum ConstFnViolationKind<'h> {
     NonConstCall { name: &'h str },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CmpInterface {
+    Equality,
+    Ordering,
+}
+
 impl<'h> HirError<'h> {
     #[inline(always)]
     pub(in crate::hir) fn new(kind: HirErrorKind<'h>, span: Span) -> Self {
         Self { kind, span }
+    }
+}
+
+impl std::fmt::Display for CmpInterface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CmpInterface::Equality => "PartialEq",
+            CmpInterface::Ordering => "PartialOrd",
+        })
     }
 }
 
