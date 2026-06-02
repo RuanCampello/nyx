@@ -43,7 +43,7 @@ pub struct Scope<'hir> {
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
     /// Generic free-function templates keyed by the [`FunctionId`] of their (open) signature.
     pub generic_fns: HashMap<FunctionId, statement::Function<'hir>>,
-    pub generic_fn_envs: HashMap<FunctionId, HashMap<String, Type>>,
+    pub generic_fn_envs: HashMap<FunctionId, GenericEnv>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
 }
 
@@ -54,8 +54,6 @@ pub(in crate::hir) struct FunctionSignature {
     pub return_type: Type,
     pub kind: FunctionKind,
     pub is_const: bool,
-    #[allow(unused)]
-    pub inline: bool,
 }
 
 #[derive(Debug)]
@@ -83,6 +81,7 @@ pub(in crate::hir) type EnumVariants = HashMap<(SymbolId, SymbolId), (EnumId, i6
 pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
+pub(in crate::hir) type GenericEnv = HashMap<String, Type>;
 
 impl<'hir> Scope<'hir> {
     pub fn new(arena: &'hir bumpalo::Bump) -> Self {
@@ -345,7 +344,7 @@ impl<'hir> Scope<'hir> {
             let generic_params: Vec<SymbolId> =
                 interface.generics.iter().map(|g| symbols.insert(g.name)).collect();
 
-            let param_env: HashMap<String, Type> = interface
+            let param_env: GenericEnv = interface
                 .generics
                 .iter()
                 .enumerate()
@@ -390,6 +389,15 @@ impl<'hir> Scope<'hir> {
     where
         'h: 'hir,
     {
+        // register generic impls up-front: a free-function signature like
+        // `fn f(b: &Box<T>)` instantiates `Box$T0` and specialises its methods
+        // from `generic_impls`, which must already be populated
+        for implementation in declarations.impls.iter().copied() {
+            if is_generic_impl(implementation) {
+                self.generic_impls.push(implementation.clone());
+            }
+        }
+
         for function in &declarations.functions {
             if function.receiver.is_some() {
                 return Err(hir_error!(function.span, ReceiverOutsideImpl));
@@ -416,7 +424,6 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind: FunctionKind::Free,
                     is_const: function.is_const,
-                    inline: function.inline,
                 };
                 let id = self.push_signature(sig);
                 self.functions.insert(symbol, id);
@@ -440,7 +447,6 @@ impl<'hir> Scope<'hir> {
                 return_type,
                 kind,
                 is_const: function.is_const,
-                inline: function.inline,
             };
             let id = self.push_signature(sig);
             self.functions.insert(symbol, id);
@@ -459,7 +465,6 @@ impl<'hir> Scope<'hir> {
                     return_type: Type::new(TypeKind::Iptr),
                     kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
                     is_const: false,
-                    inline: false,
                 });
             }
         }
@@ -479,8 +484,8 @@ impl<'hir> Scope<'hir> {
         'h: 'hir,
     {
         for implementation in declarations.impls.iter().copied() {
+            // generic impls were collected in `extend_signatures`; specialised on demand
             if is_generic_impl(implementation) {
-                self.generic_impls.push(implementation.clone());
                 continue;
             }
 
@@ -588,7 +593,6 @@ impl<'hir> Scope<'hir> {
                             return_type,
                             kind,
                             is_const: method.is_const,
-                            inline: method.inline,
                         });
                     },
 
@@ -621,7 +625,6 @@ impl<'hir> Scope<'hir> {
                             params,
                             return_type,
                             is_const: method.is_const,
-                            inline: method.inline,
                             kind: FunctionKind::Free,
                         });
                     },
@@ -639,7 +642,7 @@ impl<'hir> Scope<'hir> {
         implementation: &statement::Impl<'h>,
         receiver_type: Type,
         symbols: &mut SymbolTable,
-    ) -> Result<Option<HashMap<String, Type>>, HirError<'hir>>
+    ) -> Result<Option<GenericEnv>, HirError<'hir>>
     where
         'h: 'hir,
     {
@@ -734,7 +737,7 @@ impl<'hir> Scope<'hir> {
         return_type: Option<&Spanned<statement::Type<'h>>>,
         symbols: &mut SymbolTable,
         self_type: Option<Type>,
-        env: Option<&HashMap<String, Type>>,
+        env: Option<&GenericEnv>,
     ) -> Result<Type, HirError<'hir>>
     where
         'h: 'hir,
@@ -751,7 +754,7 @@ impl<'hir> Scope<'hir> {
         params: &[statement::Parameter<'h>],
         symbols: &mut SymbolTable,
         self_type: Option<Type>,
-        env: Option<&HashMap<String, Type>>,
+        env: Option<&GenericEnv>,
     ) -> Result<Vec<Type>, HirError<'hir>>
     where
         'h: 'hir,
@@ -776,7 +779,7 @@ impl<'hir> Scope<'hir> {
         span: Span,
         symbols: &mut SymbolTable,
         self_type: Option<Type>,
-        env: Option<&HashMap<String, Type>>,
+        env: Option<&GenericEnv>,
     ) -> Result<Type, HirError<'hir>>
     where
         'h: 'hir,
@@ -1029,12 +1032,9 @@ impl<'hir> Scope<'hir> {
         args: &[Type],
         symbols: &mut SymbolTable,
     ) -> Result<(), HirError<'hir>> {
-        let generic_impls = self.generic_impls.clone();
-        for implementation in &generic_impls {
-            if implementation.name != template_name {
-                continue;
-            }
-
+        let matching: Vec<_> =
+            self.generic_impls.iter().filter(|i| i.name == template_name).cloned().collect();
+        for implementation in &matching {
             let impl_env = build_impl_substitution(implementation, args);
 
             if let Some(interface_name) = implementation.interface {
@@ -1092,7 +1092,6 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind,
                     is_const: method.is_const,
-                    inline: method.inline,
                 });
 
                 if method.receiver.is_some() {
@@ -1287,24 +1286,13 @@ fn is_generic_impl(imp: &statement::Impl<'_>) -> bool {
     !imp.generics.is_empty() || matches!(imp.receiver.value_ref(), statement::Type::Generic(..))
 }
 
-fn build_substitution(
-    generics: &[statement::GenericBound<'_>],
-    args: &[Type],
-) -> HashMap<String, Type> {
+fn build_substitution(generics: &[statement::GenericBound<'_>], args: &[Type]) -> GenericEnv {
     generics.iter().zip(args).map(|(g, &arg)| (g.name.to_string(), arg)).collect()
 }
 
-fn build_impl_substitution(
-    implementation: &statement::Impl<'_>,
-    args: &[Type],
-) -> HashMap<String, Type> {
+fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) -> GenericEnv {
     if !implementation.generics.is_empty() {
-        return implementation
-            .generics
-            .iter()
-            .zip(args)
-            .map(|(g, &arg)| (g.name.into(), arg))
-            .collect();
+        return build_substitution(&implementation.generics, args);
     }
 
     let statement::Type::Generic(_, receiver_args) = implementation.receiver.value_ref() else {
@@ -1328,9 +1316,7 @@ fn intrinsic_method(in_std: bool, receiver: &str, method: &str) -> Option<Intrin
     }
 }
 
-pub(in crate::hir) fn generic_param_env(
-    generics: &[statement::GenericBound<'_>],
-) -> HashMap<String, Type> {
+pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]) -> GenericEnv {
     generics
         .iter()
         .enumerate()

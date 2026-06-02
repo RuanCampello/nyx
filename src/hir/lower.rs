@@ -7,7 +7,7 @@ use crate::{
         error::{ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         place_base_local,
-        scope::Scope,
+        scope::{GenericEnv, Scope},
         symbols::Mangler,
         type_resolver::{self, resolve_annotation},
     },
@@ -41,7 +41,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     /// Maps a generic parameter name (`T`) to the concrete type it was instantiated
     /// with, when re-lowering a generic template body for a concrete instance. Empty
     /// for ordinary (non-instance) lowering
-    generic_env: HashMap<String, Type>,
+    generic_env: GenericEnv,
 }
 
 /// A freshly lowered expression
@@ -97,7 +97,7 @@ where
         function: &'f statement::Function<'src>,
         in_std: bool,
         arena: &'hir bumpalo::Bump,
-        generic_env: HashMap<String, Type>,
+        generic_env: GenericEnv,
     ) -> Self {
         let mut builder = Self::new(scope, symbols, function_id, function, in_std, arena);
         builder.generic_env = generic_env;

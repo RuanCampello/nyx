@@ -152,14 +152,6 @@ pub enum HirErrorKind<'h> {
     MissingInitialiser { name: &'h str },
 
     #[diagnostic(
-        message = "method {name!} is missing a receiver",
-        primary = "{name!} must declare {`&self`} or {`&mut self`}",
-        help = "write {`fn {name}(&self, …)`}"
-    )]
-    #[allow(unused)]
-    MissingReceiver { name: &'h str },
-
-    #[diagnostic(
         message = "self receiver outside impl block",
         primary = "receivers are only valid inside method definitions",
         help = "move this function into {`impl Type { … }`}"
@@ -259,7 +251,6 @@ pub enum HirErrorKind<'h> {
         primary = "{type_name!} is used here as {bound_name!}",
         help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
     )]
-    #[allow(unused)]
     UnsatisfiedBound { type_name: Type, bound_name: &'h str },
 }
 

@@ -152,7 +152,6 @@ fn specialise<'hir>(
     let base = symbols.get(open.name).to_string();
     let kind = open.kind;
     let is_const = open.is_const;
-    let inline = open.inline;
 
     let mangled = scope.mangle_generic(&base, args, symbols);
     let name = symbols.insert(&mangled);
@@ -192,7 +191,6 @@ fn specialise<'hir>(
         return_type,
         kind,
         is_const,
-        inline,
     });
     if matches!(kind, FunctionKind::Free) {
         scope.functions.insert(name, id);

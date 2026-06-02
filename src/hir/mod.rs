@@ -473,7 +473,6 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             name: value.name,
             kind: value.kind,
             is_const: value.is_const,
-            inline: value.inline,
         }
     }
 }
@@ -1648,5 +1647,25 @@ mod tests {
             .find(|f| name(f).contains("id$i64"))
             .expect("specialised id$i64 instance");
         assert_eq!(instance.params[0].typ, Type::new(TypeKind::I64));
+    }
+
+    #[test]
+    fn generic_free_fn_resolves_generic_method() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            struct Box<T> { val: T }
+            impl Box<T> { fn get(&self): T { self.val } }
+            fn unwrap<T>(b: &Box<T>): T { b.get() }
+            fn main(): i64 { unwrap::<i64>(&Box::<i64> { val: 7 }) }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+
+        assert!(
+            hir.functions
+                .iter()
+                .any(|f| name(f).contains("Box$i64") && name(f).contains("get")),
+            "expected a specialised get method on Box$i64"
+        );
     }
 }

@@ -4,19 +4,18 @@ use crate::{
     hir::{
         RefTarget, RefTargetKind, SymbolTable, Type, TypeKind,
         error::{HirError, hir_error},
-        scope::{self, Enums, Structs},
+        scope::{self, Enums, GenericEnv, Structs},
     },
     lexer::token::Span,
     parser::statement,
 };
-use std::collections::HashMap;
 
 pub(in crate::hir) struct ResolveCtx<'a> {
     pub symbols: &'a SymbolTable,
     pub struct_map: &'a Structs,
     pub enum_map: &'a Enums,
     pub self_type: Option<Type>,
-    pub env: Option<&'a HashMap<String, Type>>,
+    pub env: Option<&'a GenericEnv>,
 }
 
 /// Resolve an AST type annotation against the current type namespace.
