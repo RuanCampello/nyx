@@ -44,7 +44,6 @@ The goal is to keep Nyx focused. It should feel like a language you can understa
 
 - **No object-oriented programming.** No inheritance, no class hierarchies. Structs and their method implementations are the model.
 - **No garbage collector.** Memory is managed through ownership. If you want a GC, use a language designed around one.
-- **No generics or templates** — not planned for the foreseeable future.
 - **No Windows support.** Nyx targets Linux (and eventually other Unix-like systems). Windows is not on the roadmap.
 - **Not a replacement for everything.** Nyx is not trying to be `C++`, `Rust`, or `Zig`. If you need their feature sets, use them.
 

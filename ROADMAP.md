@@ -46,6 +46,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Reference (`&`)
   - [x] Mutable References (`&mut`)
 - [ ] Type definition
+  - [x] Generics with monomorphisation (`<T>`)
   - [ ] Polymorphism (`Interface`)
     - [x] Static dispatch
     - [ ] Dynamic dispatch
@@ -58,13 +59,14 @@ This document outlines the implementation status and roadmap for Nyx. It include
       - [x] Mutable reference (`&mut self`)
   - [ ] Enumerables / Tag Union
     - [x] Sum enumerable (`enum`)
+    - [x] Payload-carrying variants (tagged union)
     - [ ] C-like `union` representation
 
 ### Expressions & Operators
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
   - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
-  - [ ] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
+  - [x] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
   - [x] Logical Connectives (`&&`, `||`, `!`)
@@ -83,7 +85,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Inline return (`if this return that;`)
 - [x] `while` loops
 - [ ] `for` loops
-- [ ] Pattern matching (**requires** syntax definition)
+- [x] Pattern matching
 
 ### Variables & Functions
 
