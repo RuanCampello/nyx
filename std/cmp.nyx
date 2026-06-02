@@ -138,3 +138,119 @@ impl bool with PartialEq<bool> {
         *self == *other
     }
 }
+
+impl f32 with PartialEq<f32> {
+    fn eq(&self, other: &f32): bool {
+        *self == *other
+    }
+}
+
+impl f64 with PartialEq<f64> {
+    fn eq(&self, other: &f64): bool {
+        *self == *other
+    }
+}
+
+impl i8 with PartialOrd<i8> {
+    fn partial_compare(&self, other: &i8): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl u8 with PartialOrd<u8> {
+    fn partial_compare(&self, other: &u8): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl i16 with PartialOrd<i16> {
+    fn partial_compare(&self, other: &i16): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl u16 with PartialOrd<u16> {
+    fn partial_compare(&self, other: &u16): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl i32 with PartialOrd<i32> {
+    fn partial_compare(&self, other: &i32): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl u32 with PartialOrd<u32> {
+    fn partial_compare(&self, other: &u32): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl i64 with PartialOrd<i64> {
+    fn partial_compare(&self, other: &i64): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl u64 with PartialOrd<u64> {
+    fn partial_compare(&self, other: &u64): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl uptr with PartialOrd<uptr> {
+    fn partial_compare(&self, other: &uptr): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl iptr with PartialOrd<iptr> {
+    fn partial_compare(&self, other: &iptr): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl char with PartialOrd<char> {
+    fn partial_compare(&self, other: &char): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl f32 with PartialOrd<f32> {
+    fn partial_compare(&self, other: &f32): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
+
+impl f64 with PartialOrd<f64> {
+    fn partial_compare(&self, other: &f64): Optional<Ordering> {
+        if *self < *other return Optional::Some(Ordering::Less);
+        if *self > *other return Optional::Some(Ordering::Greater);
+        Optional::Some(Ordering::Equal)
+    }
+}
