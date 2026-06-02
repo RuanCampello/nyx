@@ -205,7 +205,7 @@ fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{ExpressionKind, Statement, Type, TypeKind};
+    use crate::hir::{ExpressionKind, Statement, TypeKind};
     use lasso::Key;
     use std::collections::HashMap;
     use std::io;
@@ -328,7 +328,7 @@ mod tests {
             .iter()
             .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
             .unwrap();
-        assert_eq!(main.return_type, Type::new(TypeKind::I32));
+        assert_eq!(main.return_type, TypeKind::I32.into());
     }
 
     #[test]
@@ -724,7 +724,7 @@ mod tests {
             matches!(a_init.kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(a_init.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(a_init.id), TypeKind::Uptr.into());
 
         let b_init = match &main_fn.body.statements[1] {
             Statement::LetInit { init, .. } => *init,
@@ -734,7 +734,7 @@ mod tests {
             matches!(b_init.kind, ExpressionKind::TypeIntrinsic { .. }),
             "align_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(b_init.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(b_init.id), TypeKind::Uptr.into());
     }
 
     #[test]
@@ -771,7 +771,7 @@ mod tests {
             matches!(body_expr.kind, ExpressionKind::TypeIntrinsic { .. }),
             "size_of should remain a HIR type intrinsic"
         );
-        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), TypeKind::Uptr.into());
     }
 
     #[test]
@@ -810,7 +810,7 @@ mod tests {
             _ => panic!("expected expression or return statement"),
         };
 
-        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), TypeKind::Uptr.into());
     }
 
     #[test]
@@ -842,7 +842,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             _ => panic!("expected expression or return statement"),
         };
-        assert_eq!(main_fn.typeck.type_of(body_expr.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_fn.typeck.type_of(body_expr.id), TypeKind::Uptr.into());
     }
 
     #[test]

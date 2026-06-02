@@ -1,6 +1,6 @@
 use crate::{
     hir::{
-        Enum, EnumId, RefTargetKind, Struct, StructId, SymbolId, Type, TypeKind, Visit,
+        Enum, EnumId, Struct, StructId, SymbolId, Type, TypeKind, Visit,
         index_vec::IndexVec,
     },
     mir::Layout,
@@ -83,7 +83,7 @@ impl LayoutTable {
         let id = match origin.kind() {
             TypeKind::Struct(id) => id,
             TypeKind::Ref { to, .. } => match to.kind() {
-                RefTargetKind::Struct(id) => id,
+                TypeKind::Struct(id) => id,
                 _ => unreachable!("field projection on non-struct"),
             },
             _ => unreachable!("field projection on non-struct"),

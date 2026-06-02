@@ -2,7 +2,7 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, RefTargetKind, Statement, Type,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, Type,
         TypeKind, index_vec::IndexVec,
     },
     mir::{
@@ -536,10 +536,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
             ExpressionKind::Struct { id, fields } => {
                 let id = *id;
-                let dest = self.fresh_temporary(Type::new(TypeKind::Struct(id)));
+                let dest = self.fresh_temporary(Type::structure(id));
 
                 for (sym, value) in *fields {
-                    let layout = self.layouts.field(Type::new(TypeKind::Struct(id)), *sym);
+                    let layout = self.layouts.field(Type::structure(id), *sym);
                     let value_operand = self.lower_expr(value)?;
 
                     self.emit(
@@ -645,11 +645,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     ) -> Result<Operand, MirError> {
         debug_assert_eq!(
             typ,
-            Type::new(TypeKind::Bool),
+            TypeKind::Bool.into(),
             "`&&` and `||` should be perfomed only on booleans"
         );
 
-        let result = self.fresh_temporary(Type::new(TypeKind::Bool));
+        let result = self.fresh_temporary(TypeKind::Bool.into());
         let left_operand = self.lower_expr(left)?;
 
         let right_id = self.new_block();
@@ -816,7 +816,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         return Ok(());
                     },
                 };
-                let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                let cond = self.fresh_temporary(TypeKind::Bool.into());
                 self.emit(
                     cond,
                     Kind::Binary {
@@ -869,7 +869,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     // first branch on the tag: a match continues into `sub_block`,
                     // a mismatch falls through to `fail_block`
                     let _ = match_cond_block;
-                    let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                    let cond = self.fresh_temporary(TypeKind::Bool.into());
                     self.emit(
                         cond,
                         Kind::Binary {
@@ -900,7 +900,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
                 } else {
                     // Just check tag
-                    let cond = self.fresh_temporary(Type::new(TypeKind::Bool));
+                    let cond = self.fresh_temporary(TypeKind::Bool.into());
                     self.emit(
                         cond,
                         Kind::Binary {
@@ -929,16 +929,16 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn emit_write_string(&mut self, text: String) {
         let len = text.len();
         let id = self.intern_owned_string(text);
-        let dest = self.fresh_temporary(Type::new(TypeKind::I32));
+        let dest = self.fresh_temporary(TypeKind::I32.into());
 
         self.emit(
             dest,
             InstructionKind::Syscall {
                 code: crate::hir::SyscallCode::Write,
                 args: vec![
-                    Operand::Const(Const::Int(1, Type::new(TypeKind::I32))),
+                    Operand::Const(Const::Int(1, TypeKind::I32.into())),
                     Operand::Const(Const::Str { id, len }),
-                    Operand::Const(Const::Int(len as i64, Type::new(TypeKind::I32))),
+                    Operand::Const(Const::Int(len as i64, TypeKind::I32.into())),
                 ],
                 returns: false,
             },
@@ -1311,7 +1311,7 @@ fn has_open_generic(func: &hir::Function<'_>) -> bool {
     fn is_open(t: Type) -> bool {
         match t.kind() {
             TypeKind::GenericParam(_) => true,
-            TypeKind::Ref { to, .. } => matches!(to.kind(), RefTargetKind::GenericParam(_)),
+            TypeKind::Ref { to, .. } => matches!(to.kind(), TypeKind::GenericParam(_)),
             _ => false,
         }
     }

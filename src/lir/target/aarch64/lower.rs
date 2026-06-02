@@ -525,15 +525,15 @@ impl<'f> Lower<'f> {
     ) {
         match is_float {
             true => {
-                let lhs = self.ensure_vreg(lhs, Type::new(TypeKind::F64), id);
-                let rhs = self.ensure_vreg(rhs, Type::new(TypeKind::F64), id);
+                let lhs = self.ensure_vreg(lhs, TypeKind::F64.into(), id);
+                let rhs = self.ensure_vreg(rhs, TypeKind::F64.into(), id);
 
                 self.lir.push_instr(id, A64Instr::FCmp { lhs, rhs, bytes });
             },
 
             false => {
-                let lhs = self.ensure_vreg(lhs, Type::new(TypeKind::I64), id);
-                let rhs = self.fit_add_sub_operand(rhs, Type::new(TypeKind::I64), id);
+                let lhs = self.ensure_vreg(lhs, TypeKind::I64.into(), id);
+                let rhs = self.fit_add_sub_operand(rhs, TypeKind::I64.into(), id);
 
                 self.lir.push_instr(id, A64Instr::Cmp { lhs, rhs, bytes });
             },

@@ -11,7 +11,7 @@ use crate::{
         error::{HirError, hir_error},
         lower,
         scope::Scope,
-        symbols::Mangler,
+        symbols::{Mangler, qualified},
         type_resolver,
     },
     parser::{expression, statement, visitor},
@@ -105,7 +105,7 @@ where
         for c in &imp.constants {
             let symbol_id = symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
             if decls.contains_key(&symbol_id) {
-                let name = scope.arena.alloc_str(&format!("{}::{}", imp.name, c.name));
+                let name = qualified(scope.arena, imp.name, c.name);
                 return Err(hir_error!(c.span, DuplicateConstant { name }));
             }
 
@@ -155,7 +155,7 @@ where
             let decl = &self.decls[&symbol_id];
             let name = match decl.impl_type {
                 Some(impl_type) => {
-                    self.arena.alloc_str(&format!("{}::{}", impl_type, decl.ast.name))
+                    qualified(self.arena, impl_type, decl.ast.name)
                 },
                 _ => decl.ast.name,
             };

@@ -47,7 +47,7 @@
 //! functions whose parameters are scalars/references
 
 use crate::hir::{
-    Function, FunctionId, FunctionKind, RefTarget, Res, Type, TypeKind,
+    Function, FunctionId, FunctionKind, Res, Type,
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
@@ -172,10 +172,7 @@ fn specialise<'hir>(
     let mut params =
         Vec::with_capacity(template.params.len() + usize::from(receiver_type.is_some()));
     if let (Some(receiver), Some(receiver_type)) = (template.receiver, receiver_type) {
-        params.push(Type::new(TypeKind::Ref {
-            mutable: receiver.mutable,
-            to: RefTarget::try_from(receiver_type).expect("receiver must be a reference target"),
-        }));
+        params.push(Type::receiver_ref(receiver_type, receiver.mutable));
     }
     params.extend(scope.resolve_params(&template.params, symbols, receiver_type, Some(&env))?);
     let return_type = scope.resolve_return_type(

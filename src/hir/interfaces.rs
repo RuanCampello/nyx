@@ -9,7 +9,7 @@
 
 use crate::{
     hir::{
-        RefTarget, RefTargetKind, SymbolTable, Type, TypeKind,
+        RefTarget, SymbolTable, Type, TypeKind,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         scope::Scope,
@@ -195,10 +195,8 @@ where
 fn substitute_self(typ: Type, self_type: Type) -> Type {
     match typ.kind() {
         TypeKind::SelfType => self_type,
-        TypeKind::Ref { mutable, to } if to.kind() == RefTargetKind::SelfType => {
-            RefTarget::try_from(self_type)
-                .map(|to| Type::new(TypeKind::Ref { mutable, to }))
-                .unwrap_or(typ)
+        TypeKind::Ref { mutable, to } if to.kind() == TypeKind::SelfType => {
+            RefTarget::try_from(self_type).map(|to| Type::refer(to, mutable)).unwrap_or(typ)
         },
         _ => typ,
     }
@@ -211,7 +209,7 @@ fn substitute_self(typ: Type, self_type: Type) -> Type {
 fn build_subst_table(concrete: &[Type], arity: usize) -> Vec<Type> {
     let mut table: Vec<Type> = concrete.to_vec();
     if table.len() < arity {
-        table.resize(arity, Type::new(TypeKind::SelfType));
+        table.resize(arity, TypeKind::SelfType.into());
     }
     table
 }

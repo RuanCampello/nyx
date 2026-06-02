@@ -599,8 +599,8 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Bool),
-                found: Type::new(TypeKind::I32)
+                expected: TypeKind::Bool.into(),
+                found: TypeKind::I32.into()
             }
         )
     }
@@ -670,8 +670,8 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Bool),
-                found: Type::new(TypeKind::I64)
+                expected: TypeKind::Bool.into(),
+                found: TypeKind::I64.into()
             }
         )
     }
@@ -742,8 +742,8 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Bool),
-                found: Type::new(TypeKind::I32)
+                expected: TypeKind::Bool.into(),
+                found: TypeKind::I32.into()
             }
         )
     }
@@ -755,7 +755,7 @@ mod tests {
         let hir = super::lower(statements, &arena).unwrap();
 
         let main = &hir.functions[0];
-        assert_eq!(main.locals[0].typ, Type::new(TypeKind::I32));
+        assert_eq!(main.locals[0].typ, TypeKind::I32.into());
     }
 
     #[test]
@@ -783,16 +783,16 @@ mod tests {
 
         assert_eq!(hir.functions.len(), 2);
         let foo = &hir.functions[0];
-        assert_eq!(foo.return_type, Type::new(TypeKind::I64));
+        assert_eq!(foo.return_type, TypeKind::I64.into());
         assert_eq!(foo.params.len(), 1);
-        assert_eq!(foo.params[0].typ, Type::new(TypeKind::I64));
+        assert_eq!(foo.params[0].typ, TypeKind::I64.into());
 
         let main = &hir.functions[1];
         let call_id = match &main.body.statements[0] {
             Statement::Expr(expr) => *expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(main.typeck.type_of(call_id.id), Type::new(TypeKind::I64));
+        assert_eq!(main.typeck.type_of(call_id.id), TypeKind::I64.into());
         let arg = match &call_id.kind {
             ExpressionKind::Call { args, .. } => {
                 assert_eq!(args.len(), 1);
@@ -800,7 +800,7 @@ mod tests {
             },
             other => panic!("expected Call expression, got {other:?}"),
         };
-        assert_eq!(main.typeck.type_of(arg.id), Type::new(TypeKind::I64));
+        assert_eq!(main.typeck.type_of(arg.id), TypeKind::I64.into());
         assert_eq!(arg.kind, 1.into());
     }
 
@@ -812,7 +812,7 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::F64));
+        assert_eq!(func.locals[0].typ, TypeKind::F64.into());
     }
 
     #[test]
@@ -822,7 +822,7 @@ mod tests {
         let hir = super::lower(statements, &arena).unwrap();
 
         let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I32));
+        assert_eq!(func.locals[0].typ, TypeKind::I32.into());
 
         let stmt = &func.body.statements[0];
         assert!(matches!(stmt, Statement::LetInit { id: LocalId(0), .. }));
@@ -836,7 +836,7 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::F32));
+        assert_eq!(func.locals[0].typ, TypeKind::F32.into());
     }
 
     #[test]
@@ -856,14 +856,14 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
+        assert_eq!(func.locals[0].typ, TypeKind::I64.into());
         assert!(func.locals[0].mutable);
 
         let assign_id = match &func.body.statements[1] {
             Statement::Expr(expr) => *expr,
             other => panic!("expected Expr statement, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(assign_id.id), Type::new(TypeKind::I64));
+        assert_eq!(func.typeck.type_of(assign_id.id), TypeKind::I64.into());
         let (target_id, value) = match &assign_id.kind {
             ExpressionKind::Assign { target, value } => match &target.kind {
                 ExpressionKind::Local(id) => (*id, *value),
@@ -873,7 +873,7 @@ mod tests {
         };
 
         assert_eq!(target_id, LocalId(0));
-        assert_eq!(func.typeck.type_of(value.id), Type::new(TypeKind::I64));
+        assert_eq!(func.typeck.type_of(value.id), TypeKind::I64.into());
         assert_eq!(value.kind, 99.into());
     }
 
@@ -894,8 +894,8 @@ mod tests {
 
         let func = &hir.functions[0];
         assert_eq!(func.locals.len(), 2);
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::I64));
-        assert_eq!(func.locals[1].typ, Type::new(TypeKind::I64));
+        assert_eq!(func.locals[0].typ, TypeKind::I64.into());
+        assert_eq!(func.locals[1].typ, TypeKind::I64.into());
 
         let y_stmt = &func.body.statements[1];
         assert!(matches!(y_stmt, Statement::LetInit { id: LocalId(1), .. }));
@@ -939,8 +939,8 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::Uptr));
-        assert_eq!(func.locals[1].typ, Type::new(TypeKind::Iptr));
+        assert_eq!(func.locals[0].typ, TypeKind::Uptr.into());
+        assert_eq!(func.locals[1].typ, TypeKind::Iptr.into());
     }
 
     #[test]
@@ -960,14 +960,14 @@ mod tests {
             Statement::LetInit { init: e, .. } => *e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(init_a.id), Type::new(TypeKind::Uptr));
+        assert_eq!(func.typeck.type_of(init_a.id), TypeKind::Uptr.into());
         assert_eq!(init_a.kind, 100.into());
 
         let init_b = match &func.body.statements[1] {
             Statement::LetInit { init: e, .. } => *e,
             other => panic!("expected Let with init, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(init_b.id), Type::new(TypeKind::Iptr));
+        assert_eq!(func.typeck.type_of(init_b.id), TypeKind::Iptr.into());
         assert_eq!(init_b.kind, 200.into());
     }
 
@@ -981,9 +981,9 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.return_type, Type::new(TypeKind::Uptr));
-        assert_eq!(func.params[0].typ, Type::new(TypeKind::Uptr));
-        assert_eq!(func.params[1].typ, Type::new(TypeKind::Uptr));
+        assert_eq!(func.return_type, TypeKind::Uptr.into());
+        assert_eq!(func.params[0].typ, TypeKind::Uptr.into());
+        assert_eq!(func.params[1].typ, TypeKind::Uptr.into());
     }
 
     #[test]
@@ -996,9 +996,9 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
         let func = &hir.functions[0];
 
-        assert_eq!(func.return_type, Type::new(TypeKind::Iptr));
-        assert_eq!(func.params[0].typ, Type::new(TypeKind::Iptr));
-        assert_eq!(func.params[1].typ, Type::new(TypeKind::Iptr));
+        assert_eq!(func.return_type, TypeKind::Iptr.into());
+        assert_eq!(func.params[0].typ, TypeKind::Iptr.into());
+        assert_eq!(func.params[1].typ, TypeKind::Iptr.into());
     }
 
     #[test]
@@ -1033,8 +1033,8 @@ mod tests {
         assert_eq!(
             err.kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Iptr),
-                found: Type::new(TypeKind::Uptr)
+                expected: TypeKind::Iptr.into(),
+                found: TypeKind::Uptr.into()
             }
         );
     }
@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(field_names, vec!["a", "b", "c"]);
 
         let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, Type::new(TypeKind::Struct(StructId(0))));
+        assert_eq!(func.locals[0].typ, Type::structure(StructId(0)));
     }
 
     #[test]
@@ -1097,7 +1097,7 @@ mod tests {
             .iter()
             .find(|field| hir.symbols[field.name.0.into_usize()] == "inner")
             .unwrap();
-        assert_eq!(outer_inner.typ, Type::new(TypeKind::Struct(StructId(0))));
+        assert_eq!(outer_inner.typ, Type::structure(StructId(0)));
     }
 
     #[test]
@@ -1339,7 +1339,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::I32));
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
         assert_eq!(ret_expr.kind, 42.into());
     }
 
@@ -1361,7 +1361,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::Uptr));
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
         assert_eq!(ret_expr.kind, 127.into());
     }
 
@@ -1387,7 +1387,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(main_func.typeck.type_of(ret_expr.id), Type::new(TypeKind::Uptr));
+        assert_eq!(main_func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
         assert_eq!(ret_expr.kind, 127.into());
     }
 
@@ -1407,7 +1407,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::I32));
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
         match &ret_expr.kind {
             ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
@@ -1487,7 +1487,7 @@ mod tests {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
-        assert_eq!(func.typeck.type_of(ret_expr.id), Type::new(TypeKind::I32));
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
         assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
     }
 
@@ -1615,8 +1615,8 @@ mod tests {
             .iter()
             .find(|f| name(f).contains("pick$i32"))
             .expect("specialised pick$i32 instance");
-        assert_eq!(pick.params[0].typ, Type::new(TypeKind::I32));
-        assert_eq!(pick.return_type, Type::new(TypeKind::I32));
+        assert_eq!(pick.params[0].typ, TypeKind::I32.into());
+        assert_eq!(pick.return_type, TypeKind::I32.into());
         assert!(
             hir.functions.iter().all(|f| !name(f).ends_with("pick")),
             "the open template body must not be emitted"
@@ -1646,7 +1646,7 @@ mod tests {
             .iter()
             .find(|f| name(f).contains("id$i64"))
             .expect("specialised id$i64 instance");
-        assert_eq!(instance.params[0].typ, Type::new(TypeKind::I64));
+        assert_eq!(instance.params[0].typ, TypeKind::I64.into());
     }
 
     #[test]

@@ -267,7 +267,7 @@ mod tests {
 
         let function = &mir.functions[0];
 
-        assert_eq!(function.return_type, Type::new(TypeKind::Unit));
+        assert_eq!(function.return_type, TypeKind::Unit.into());
         assert_eq!(function.blocks.len(), 1);
         assert_eq!(function.blocks[0].instructions.len(), 0);
         assert_eq!(function.blocks[0].terminator, Terminator::Return(None));
@@ -277,7 +277,7 @@ mod tests {
     fn let_binding_and_return() {
         let mir = parse_and_lower("fn foo(): i32 { let x: i32 = 42; x }");
         let f = &mir.functions[0];
-        assert_eq!(f.return_type, Type::new(TypeKind::I32));
+        assert_eq!(f.return_type, TypeKind::I32.into());
 
         let assigns: Vec<_> = f.blocks[0]
             .instructions
@@ -286,7 +286,7 @@ mod tests {
             .collect();
         assert!(!assigns.is_empty(), "expected at least one Assign instruction");
 
-        assert!(f.locals.iter().any(|(_, t)| *t == Type::new(TypeKind::I32)));
+        assert!(f.locals.iter().any(|(_, t)| *t == TypeKind::I32.into()));
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let f = &mir.functions[0];
 
         assert!(f.locals.len() >= 2);
-        assert!(f.locals.iter().all(|(_, t)| *t == Type::new(TypeKind::I32)));
+        assert!(f.locals.iter().all(|(_, t)| *t == TypeKind::I32.into()));
 
         let has_add = f.blocks[0].instructions.iter().any(|i| {
             matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
@@ -446,7 +446,7 @@ mod tests {
         let has_combined_load = main.blocks[0].instructions.iter().any(|instruction| {
             matches!(
                 instruction.kind,
-                InstructionKind::FieldLoad { offset: 16, typ, .. } if typ == Type::new(TypeKind::I64)
+                InstructionKind::FieldLoad { offset: 16, typ, .. } if typ == TypeKind::I64.into()
             )
         });
 
@@ -476,7 +476,7 @@ mod tests {
                 InstructionKind::FieldStore {
                     offset: 16,
                     value: Operand::Const(Const::Int(5, typ)),
-                } if *typ == Type::new(TypeKind::I64)
+                } if *typ == TypeKind::I64.into()
             )
         });
 
@@ -506,7 +506,7 @@ mod tests {
             })
             .expect("expected a call instruction");
 
-        assert_eq!(call, (Type::new(TypeKind::Struct(crate::hir::StructId(0))), 1));
+        assert_eq!(call, (Type::structure(crate::hir::StructId(0)), 1));
     }
 
     #[test]

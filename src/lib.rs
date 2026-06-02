@@ -173,7 +173,7 @@ impl TargetArch {
     }
 
     #[inline(always)]
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn as_str<'s>(&self) -> &'s str {
         match self {
             Self::X86_64 => "x86_64",
             Self::AArch64 => "aarch64",

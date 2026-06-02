@@ -245,7 +245,7 @@ impl<'h> HasSpan for HirError<'h> {
 mod tests {
     use crate::diagnostic;
     use crate::hir::{
-        self, Type, TypeKind,
+        self, TypeKind,
         error::{ConstFnViolationKind, HirErrorKind},
     };
     use crate::lexer::{self, Lexer, error::LexErrorKind};
@@ -576,8 +576,8 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::I32),
-                found: Type::new(TypeKind::Bool)
+                expected: TypeKind::I32.into(),
+                found: TypeKind::Bool.into()
             }
         );
     }
@@ -588,8 +588,8 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::I32),
-                found: Type::new(TypeKind::Bool)
+                expected: TypeKind::I32.into(),
+                found: TypeKind::Bool.into()
             }
         );
     }
@@ -600,8 +600,8 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Bool),
-                found: Type::new(TypeKind::I32)
+                expected: TypeKind::Bool.into(),
+                found: TypeKind::I32.into()
             }
         );
     }
@@ -612,8 +612,8 @@ mod tests {
         assert_eq!(
             kind,
             HirErrorKind::TypeMismatch {
-                expected: Type::new(TypeKind::Bool),
-                found: Type::new(TypeKind::I32)
+                expected: TypeKind::Bool.into(),
+                found: TypeKind::I32.into()
             }
         );
     }

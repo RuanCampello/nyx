@@ -62,26 +62,6 @@ pub enum TypeKind {
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[rustfmt::skip]
-pub enum RefTargetKind {
-    Unit,
-    I8, U8,
-    I16, U16,
-    I32, U32,
-    I64, U64,
-    F32, F64,
-    Bool,
-    Uptr, Iptr,
-    Char,
-    Str, String,
-    Struct(StructId),
-    Enum(EnumId),
-    SelfType,
-    GenericParam(u8),
-    Never,
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[rustfmt::skip]
 pub enum EnumRepr {
@@ -246,6 +226,32 @@ impl Type {
     }
 
     #[inline]
+    pub const fn structure(id: StructId) -> Self {
+        Self::new(TypeKind::Struct(id))
+    }
+
+    #[inline]
+    pub const fn enumerable(id: EnumId) -> Self {
+        Self::new(TypeKind::Enum(id))
+    }
+
+    #[inline]
+    pub const fn generic_param(idx: u8) -> Self {
+        Self::new(TypeKind::GenericParam(idx))
+    }
+
+    #[inline]
+    pub const fn refer(to: RefTarget, mutable: bool) -> Self {
+        Self::new(TypeKind::Ref { mutable, to })
+    }
+
+    #[inline]
+    pub fn receiver_ref(receiver: Type, mutable: bool) -> Self {
+        let to = RefTarget::try_from(receiver).expect("receiver must be a reference target");
+        Self::refer(to, mutable)
+    }
+
+    #[inline]
     pub const fn kind(self) -> TypeKind {
         let tag = tag(self.0);
         match tag {
@@ -302,9 +308,9 @@ impl Type {
         match self.kind() {
             TypeKind::GenericParam(i) => args.get(i as usize).copied().unwrap_or(self),
             TypeKind::Ref { mutable, to } => match to.kind() {
-                RefTargetKind::GenericParam(i) => match args.get(i as usize).copied() {
+                TypeKind::GenericParam(i) => match args.get(i as usize).copied() {
                     Some(replacement) => match RefTarget::try_from(replacement) {
-                        Ok(to) => Type::new(TypeKind::Ref { mutable, to }),
+                        Ok(to) => Type::refer(to, mutable),
                         Err(_) => self,
                     },
                     None => self,
@@ -382,7 +388,7 @@ impl Type {
             AstType::String => TypeKind::String,
             AstType::SelfType => TypeKind::SelfType,
             AstType::RefSelf => {
-                TypeKind::Ref { mutable: false, to: RefTarget::new(RefTargetKind::SelfType) }
+                TypeKind::Ref { mutable: false, to: RefTarget::new(TypeKind::SelfType) }
             },
             AstType::Never => TypeKind::Never,
             AstType::Named(_) | AstType::Ref(_) | AstType::Generic(_, _) => return None,
@@ -394,74 +400,30 @@ impl Type {
 
 impl RefTarget {
     #[inline]
-    pub const fn new(kind: RefTargetKind) -> Self {
-        match kind {
-            RefTargetKind::Unit => Self(UNIT as u64),
-            RefTargetKind::I8 => Self(I8 as u64),
-            RefTargetKind::U8 => Self(U8 as u64),
-            RefTargetKind::I16 => Self(I16 as u64),
-            RefTargetKind::U16 => Self(U16 as u64),
-            RefTargetKind::I32 => Self(I32 as u64),
-            RefTargetKind::U32 => Self(U32 as u64),
-            RefTargetKind::I64 => Self(I64 as u64),
-            RefTargetKind::U64 => Self(U64 as u64),
-            RefTargetKind::F32 => Self(F32 as u64),
-            RefTargetKind::F64 => Self(F64 as u64),
-            RefTargetKind::Bool => Self(BOOL as u64),
-            RefTargetKind::Uptr => Self(UPTR as u64),
-            RefTargetKind::Iptr => Self(IPTR as u64),
-            RefTargetKind::Char => Self(CHAR as u64),
-            RefTargetKind::Str => Self(STR as u64),
-            RefTargetKind::String => Self(STRING as u64),
-            RefTargetKind::SelfType => Self(SELF_TYPE as u64),
-            RefTargetKind::Struct(id) => Self((STRUCT as u64) | ((id.0 as u64) << 8)),
-            RefTargetKind::Enum(id) => {
-                Self((ENUM as u64) | ((id.0 as u64) << 8) | ((id.1.to_u8() as u64) << 40))
-            },
-            RefTargetKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
-            RefTargetKind::Never => Self(NEVER as u64),
-        }
+    pub const fn new(kind: TypeKind) -> Self {
+        assert!(
+            !matches!(kind, TypeKind::Ref { .. }),
+            "a reference cannot be a reference target"
+        );
+        Self(Type::new(kind).0)
     }
 
-    pub const fn kind(self) -> RefTargetKind {
-        match tag(self.0) {
-            UNIT => RefTargetKind::Unit,
-            I8 => RefTargetKind::I8,
-            U8 => RefTargetKind::U8,
-            I16 => RefTargetKind::I16,
-            U16 => RefTargetKind::U16,
-            I32 => RefTargetKind::I32,
-            U32 => RefTargetKind::U32,
-            I64 => RefTargetKind::I64,
-            U64 => RefTargetKind::U64,
-            F32 => RefTargetKind::F32,
-            F64 => RefTargetKind::F64,
-            BOOL => RefTargetKind::Bool,
-            UPTR => RefTargetKind::Uptr,
-            IPTR => RefTargetKind::Iptr,
-            CHAR => RefTargetKind::Char,
-            STR => RefTargetKind::Str,
-            STRING => RefTargetKind::String,
-            SELF_TYPE => RefTargetKind::SelfType,
-            STRUCT => {
-                let id = (self.0 >> 8) as u32;
-                RefTargetKind::Struct(StructId(id))
-            },
-            ENUM => {
-                let id = ((self.0 >> 8) & 0xFFFFFFFF) as u32;
-                let repr_u8 = ((self.0 >> 40) & 0xFF) as u8;
-                RefTargetKind::Enum(EnumId(id, EnumRepr::from_u8(repr_u8)))
-            },
-            GENERIC_PARAM => RefTargetKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
-            NEVER => RefTargetKind::Never,
-            _ => panic!("invalid RefTarget tag"),
-        }
+    #[inline]
+    pub const fn kind(self) -> TypeKind {
+        Type(self.0).kind()
     }
 }
 
 #[inline(always)]
 pub const fn tag(packed: u64) -> u8 {
     (packed & TAG_MASK) as u8
+}
+
+impl From<TypeKind> for Type {
+    #[inline]
+    fn from(kind: TypeKind) -> Self {
+        Self::new(kind)
+    }
 }
 
 impl From<RefTarget> for Type {
@@ -484,49 +446,68 @@ impl TryFrom<Type> for RefTarget {
     }
 }
 
-impl std::fmt::Display for Type {
+impl TypeKind {
+    const fn scalar_name<'s>(self) -> Option<&'s str> {
+        Some(match self {
+            Self::I8 => "i8",
+            Self::U8 => "u8",
+            Self::I16 => "i16",
+            Self::U16 => "u16",
+            Self::I32 => "i32",
+            Self::U32 => "u32",
+            Self::I64 => "i64",
+            Self::U64 => "u64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::Bool => "bool",
+            Self::Char => "char",
+            Self::Uptr => "uptr",
+            Self::Iptr => "iptr",
+            Self::Unit => "unit",
+            _ => return None,
+        })
+    }
+
+    pub(in crate::hir) fn mangled(self) -> &'static str {
+        self.scalar_name().unwrap_or(match self {
+            Self::Str => "str",
+            Self::String => "string",
+            Self::SelfType => "self",
+            Self::Never => "never",
+            _ => "type",
+        })
+    }
+}
+
+impl std::fmt::Display for TypeKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self.kind() {
-            TypeKind::I8 => "i8",
-            TypeKind::U8 => "u8",
-            TypeKind::I16 => "i16",
-            TypeKind::U16 => "u16",
-            TypeKind::I32 => "i32",
-            TypeKind::U32 => "u32",
-            TypeKind::I64 => "i64",
-            TypeKind::U64 => "u64",
-            TypeKind::F32 => "f32",
-            TypeKind::F64 => "f64",
-            TypeKind::Bool => "bool",
-            TypeKind::Char => "char",
-            TypeKind::Uptr => "uptr",
-            TypeKind::Iptr => "iptr",
-            TypeKind::Str => "&str",
-            TypeKind::String => "String",
-            TypeKind::Unit => "unit",
-            TypeKind::SelfType => "Self",
-            TypeKind::Never => "!",
-            TypeKind::Struct(id) => return write!(f, "struct#{}", id.0),
-            TypeKind::Enum(id) => return write!(f, "enum#{}", id.0),
-            TypeKind::Ref { mutable, to } => {
-                let prefix = match mutable {
+        if let Some(name) = self.scalar_name() {
+            return f.write_str(name);
+        }
+        match *self {
+            Self::Str => f.write_str("&str"),
+            Self::String => f.write_str("String"),
+            Self::SelfType => f.write_str("Self"),
+            Self::Never => f.write_str("!"),
+            Self::GenericParam(i) => write!(f, "T{i}"),
+            Self::Struct(id) => write!(f, "struct#{}", id.0),
+            Self::Enum(id) => write!(f, "enum#{}", id.0),
+            Self::Ref { mutable, to } => {
+                f.write_str(match mutable {
                     true => "&mut ",
                     _ => "&",
-                };
-                f.write_str(prefix)?;
-
-                return match to.kind() {
-                    RefTargetKind::Struct(id) => write!(f, "struct#{}", id.0),
-                    RefTargetKind::Enum(id) => write!(f, "enum#{}", id.0),
-                    RefTargetKind::SelfType => write!(f, "Self"),
-                    RefTargetKind::GenericParam(i) => write!(f, "T{i}"),
-                    _ => write!(f, "{}", Type::from(to)),
-                };
+                })?;
+                to.kind().fmt(f)
             },
-            TypeKind::GenericParam(i) => return write!(f, "T{i}"),
-        };
+            _ => unreachable!("every scalar kind is named by `scalar_name`"),
+        }
+    }
+}
 
-        f.write_str(s)
+impl std::fmt::Display for Type {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind().fmt(f)
     }
 }
 

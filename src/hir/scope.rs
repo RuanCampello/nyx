@@ -1,7 +1,7 @@
 use crate::{
     hir::{
         Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
-        RefTarget, RefTargetKind, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
+        RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
         TypeKind, constants,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
@@ -9,7 +9,7 @@ use crate::{
         interfaces,
         lower::{self},
         structs,
-        symbols::Mangler,
+        symbols::{Mangler, qualified},
     },
     lexer::{Spanned, token::Span},
     parser::statement,
@@ -241,7 +241,7 @@ impl<'hir> Scope<'hir> {
             for field in &mut s.fields {
                 if let TypeKind::Struct(mut id) = field.typ.kind() {
                     id.0 += offset;
-                    field.typ = Type::new(TypeKind::Struct(id));
+                    field.typ = Type::structure(id);
                 }
             }
             self.struct_map.insert(s.name, s.id);
@@ -278,7 +278,7 @@ impl<'hir> Scope<'hir> {
                 hir_error!(
                     enum_decl.repr.span(),
                     TypeMismatch {
-                        expected: Type::new(TypeKind::I32),
+                        expected: TypeKind::I32.into(),
                         found: Type::from_primitive_ast(&enum_decl.repr.value())
                             .unwrap_or_default(),
                     }
@@ -348,7 +348,7 @@ impl<'hir> Scope<'hir> {
                 .generics
                 .iter()
                 .enumerate()
-                .map(|(i, g)| (g.name.to_owned(), Type::new(TypeKind::GenericParam(i as u8))))
+                .map(|(i, g)| (g.name.to_owned(), Type::generic_param(i as u8)))
                 .collect();
 
             let env = (!param_env.is_empty()).then_some(&param_env);
@@ -462,7 +462,7 @@ impl<'hir> Scope<'hir> {
                 self.signatures.push(FunctionSignature {
                     name: syscall_sym,
                     params: vec![],
-                    return_type: Type::new(TypeKind::Iptr),
+                    return_type: TypeKind::Iptr.into(),
                     kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
                     is_const: false,
                 });
@@ -558,12 +558,7 @@ impl<'hir> Scope<'hir> {
                         self.methods.insert((receiver_type, method_symbol), id);
 
                         let mut params = Vec::with_capacity(method.params.len() + 1);
-                        let first_param = Type::new(TypeKind::Ref {
-                            mutable: receiver.mutable,
-                            to: RefTarget::try_from(receiver_type)
-                                .expect("receiver must be a reference target"),
-                        });
-                        params.push(first_param);
+                        params.push(Type::receiver_ref(receiver_type, receiver.mutable));
                         params.extend(self.resolve_params(
                             &method.params,
                             symbols,
@@ -598,9 +593,7 @@ impl<'hir> Scope<'hir> {
 
                     None => {
                         if self.functions.contains_key(&mangled) {
-                            let name = self
-                                .arena
-                                .alloc_str(&format!("{}::{}", implementation.name, method.name));
+                            let name = qualified(self.arena, implementation.name, method.name);
                             return Err(hir_error!(method.span, DuplicateFunction { name }));
                         }
 
@@ -803,31 +796,28 @@ impl<'hir> Scope<'hir> {
                     hir_error!(
                         span,
                         TypeMismatch {
-                            expected: Type::new(TypeKind::Struct(Default::default())),
-                            found: inner,
+                            expected: Type::structure(Default::default()),
+                            found: inner
                         }
                     )
                 })?;
-                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+                Ok(Type::refer(to, false))
             },
 
-            statement::Type::SelfType => Ok(self_type.unwrap_or(Type::new(TypeKind::SelfType))),
+            statement::Type::SelfType => Ok(self_type.unwrap_or(TypeKind::SelfType.into())),
             statement::Type::RefSelf => match self_type {
-                None => Ok(Type::new(TypeKind::Ref {
-                    mutable: false,
-                    to: RefTarget::new(RefTargetKind::SelfType),
-                })),
+                None => Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
                 Some(self_typ) => {
                     let to = RefTarget::try_from(self_typ).map_err(|_| {
                         hir_error!(
                             span,
                             TypeMismatch {
-                                expected: Type::new(TypeKind::Struct(Default::default())),
+                                expected: Type::structure(Default::default()),
                                 found: self_typ,
                             }
                         )
                     })?;
-                    Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+                    Ok(Type::refer(to, false))
                 },
             },
 
@@ -896,7 +886,7 @@ impl<'hir> Scope<'hir> {
             hir_error!(
                 template.repr.span(),
                 TypeMismatch {
-                    expected: Type::new(TypeKind::I32),
+                    expected: TypeKind::I32.into(),
                     found: Type::from_primitive_ast(&template.repr.value()).unwrap_or_default(),
                 }
             )
@@ -937,7 +927,7 @@ impl<'hir> Scope<'hir> {
 
         self.enums[id].variants = variants;
 
-        let receiver_type = Type::new(TypeKind::Enum(id));
+        let receiver_type = Type::enumerable(id);
         self.specialize_impls(template.name, mangled_sym, receiver_type, args, symbols)?;
 
         Ok(receiver_type)
@@ -979,7 +969,7 @@ impl<'hir> Scope<'hir> {
             .collect::<Result<Vec<_>, _>>()?;
         self.structs[id].fields = fields;
 
-        let receiver_type = Type::new(TypeKind::Struct(id));
+        let receiver_type = Type::structure(id);
         self.specialize_impls(template.name, mangled_sym, receiver_type, args, symbols)?;
 
         Ok(receiver_type)
@@ -1058,11 +1048,7 @@ impl<'hir> Scope<'hir> {
 
                 let mut params = Vec::new();
                 if let Some(receiver) = method.receiver {
-                    params.push(Type::new(TypeKind::Ref {
-                        mutable: receiver.mutable,
-                        to: RefTarget::try_from(receiver_type)
-                            .expect("receiver must be a reference target"),
-                    }));
+                    params.push(Type::receiver_ref(receiver_type, receiver.mutable));
                 }
                 params.extend(self.resolve_params(
                     &method.params,
@@ -1129,7 +1115,7 @@ impl<'hir> Scope<'hir> {
                 format!("ref_{}", self.mangle_component(Type::from(to), symbols))
             },
             TypeKind::GenericParam(i) => format!("T{i}"),
-            other => primitive_mangle(other).to_string(),
+            other => other.mangled().to_string(),
         }
     }
 
@@ -1277,8 +1263,8 @@ pub(in crate::hir) fn nominal_type(
     struct_map
         .get(&symbol)
         .copied()
-        .map(|id| Type::new(TypeKind::Struct(id)))
-        .or_else(|| enum_map.get(&symbol).copied().map(|id| Type::new(TypeKind::Enum(id))))
+        .map(Type::structure)
+        .or_else(|| enum_map.get(&symbol).copied().map(Type::enumerable))
 }
 
 #[inline]
@@ -1320,31 +1306,7 @@ pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]
     generics
         .iter()
         .enumerate()
-        .map(|(i, g)| (g.name.to_string(), Type::new(TypeKind::GenericParam(i as u8))))
+        .map(|(i, g)| (g.name.to_string(), Type::generic_param(i as u8)))
         .collect()
 }
 
-fn primitive_mangle<'s>(kind: TypeKind) -> &'s str {
-    match kind {
-        TypeKind::I8 => "i8",
-        TypeKind::U8 => "u8",
-        TypeKind::I16 => "i16",
-        TypeKind::U16 => "u16",
-        TypeKind::I32 => "i32",
-        TypeKind::U32 => "u32",
-        TypeKind::I64 => "i64",
-        TypeKind::U64 => "u64",
-        TypeKind::F32 => "f32",
-        TypeKind::F64 => "f64",
-        TypeKind::Bool => "bool",
-        TypeKind::Uptr => "uptr",
-        TypeKind::Iptr => "iptr",
-        TypeKind::Char => "char",
-        TypeKind::Str => "str",
-        TypeKind::String => "string",
-        TypeKind::SelfType => "self",
-        TypeKind::Never => "never",
-        TypeKind::Unit => "unit",
-        _ => "type",
-    }
-}

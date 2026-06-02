@@ -1462,55 +1462,43 @@ impl<'s> Statement<'s> {
     }
 }
 
-impl<'i> Type<'i> {
-    pub fn from_str(name: &'i str) -> Option<Self> {
-        match name {
-            "i8" => Some(Type::I8),
-            "i16" => Some(Type::I16),
-            "i32" => Some(Type::I32),
-            "i64" => Some(Type::I64),
-            "u8" => Some(Type::U8),
-            "u16" => Some(Type::U16),
-            "u32" => Some(Type::U32),
-            "u64" => Some(Type::U64),
-            "f32" => Some(Type::F32),
-            "f64" => Some(Type::F64),
-            "uptr" => Some(Type::Uptr),
-            "iptr" => Some(Type::Iptr),
-            "bool" => Some(Type::Bool),
-            "char" => Some(Type::Char),
-            "String" => Some(Type::String),
-            "str" => Some(Type::Str),
-            "Self" => Some(Type::SelfType),
-            _ => None,
-        }
-    }
+macro_rules! primitive_spellings {
+    ($($variant:ident => $spelling:literal),+ $(,)?) => {
+        impl<'i> Type<'i> {
+            pub fn from_str(name: &'i str) -> Option<Self> {
+                Some(match name {
+                    $($spelling => Type::$variant,)+
+                    _ => return None,
+                })
+            }
 
+            fn primitive_name<'s>(&self) -> Option<&'s str> {
+                Some(match self {
+                    $(Type::$variant => $spelling,)+
+                    _ => return None,
+                })
+            }
+        }
+    };
+}
+
+primitive_spellings! {
+    I8 => "i8", U8 => "u8", I16 => "i16", U16 => "u16",
+    I32 => "i32", U32 => "u32", I64 => "i64", U64 => "u64",
+    F32 => "f32", F64 => "f64", Bool => "bool", Char => "char",
+    Uptr => "uptr", Iptr => "iptr", Str => "str", String => "String",
+    SelfType => "Self",
+}
+
+impl<'i> Type<'i> {
     pub fn name(&self) -> Option<&'i str> {
         match self {
-            Type::Named(name) => Some(name),
-            Type::Generic(name, _) => Some(name),
-            Type::I8 => Some("i8"),
-            Type::I16 => Some("i16"),
-            Type::I32 => Some("i32"),
-            Type::I64 => Some("i64"),
-            Type::U8 => Some("u8"),
-            Type::U16 => Some("u16"),
-            Type::U32 => Some("u32"),
-            Type::U64 => Some("u64"),
-            Type::F32 => Some("f32"),
-            Type::F64 => Some("f64"),
-            Type::Bool => Some("bool"),
-            Type::Char => Some("char"),
-            Type::Uptr => Some("uptr"),
-            Type::Iptr => Some("iptr"),
-            Type::Str => Some("str"),
-            Type::String => Some("String"),
-            Type::SelfType => Some("Self"),
-            Type::RefSelf => Some("Self"),
+            Type::Named(name) | Type::Generic(name, _) => Some(name),
             Type::Ref(inner) => inner.name(),
+            Type::RefSelf => Some("Self"),
             Type::Unit => Some("unit"),
             Type::Never => Some("!"),
+            other => other.primitive_name(),
         }
     }
 }

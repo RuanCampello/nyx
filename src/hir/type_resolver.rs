@@ -2,7 +2,7 @@
 
 use crate::{
     hir::{
-        RefTarget, RefTargetKind, SymbolTable, Type, TypeKind,
+        RefTarget, SymbolTable, Type, TypeKind,
         error::{HirError, hir_error},
         scope::{self, Enums, GenericEnv, Structs},
     },
@@ -42,33 +42,27 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             let to = RefTarget::try_from(typ).map_err(|_| {
                 hir_error!(
                     span,
-                    TypeMismatch {
-                        expected: Type::new(TypeKind::Struct(Default::default())),
-                        found: typ,
-                    }
+                    TypeMismatch { expected: Type::structure(Default::default()), found: typ }
                 )
             })?;
 
-            Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+            Ok(Type::refer(to, false))
         },
-        statement::Type::SelfType => Ok(ctx.self_type.unwrap_or(Type::new(TypeKind::SelfType))),
+        statement::Type::SelfType => Ok(ctx.self_type.unwrap_or(TypeKind::SelfType.into())),
         statement::Type::RefSelf => ctx.self_type.map_or(
-            Ok(Type::new(TypeKind::Ref {
-                mutable: false,
-                to: RefTarget::new(RefTargetKind::SelfType),
-            })),
+            Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
             |self_typ| {
                 let to = RefTarget::try_from(self_typ).map_err(|_| {
                     hir_error!(
                         span,
                         TypeMismatch {
-                            expected: Type::new(TypeKind::Struct(Default::default())),
+                            expected: Type::structure(Default::default()),
                             found: self_typ,
                         }
                     )
                 })?;
 
-                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+                Ok(Type::refer(to, false))
             },
         ),
         // the only unhandled variant that fails `from_primitive_ast` is `Generic`,

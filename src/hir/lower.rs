@@ -1,14 +1,14 @@
 use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
-        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
-        RefTargetKind, Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
-        TypeKind, TypeckResults,
+        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
+        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        TypeckResults,
         error::{ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         place_base_local,
         scope::{GenericEnv, Scope},
-        symbols::Mangler,
+        symbols::{Mangler, qualified},
         type_resolver::{self, resolve_annotation},
     },
     lexer::{Spanned, token::Span},
@@ -76,7 +76,7 @@ where
             symbols,
             is_const: function.is_const,
             in_std,
-            return_type: Type::new(TypeKind::Unit),
+            return_type: TypeKind::Unit.into(),
             function: Some(function),
             function_id,
             next_local: 0,
@@ -115,7 +115,7 @@ where
             symbols,
             is_const: true,
             in_std,
-            return_type: Type::new(TypeKind::Unit),
+            return_type: TypeKind::Unit.into(),
             function: None,
             function_id: FunctionId(0),
             next_local: 0,
@@ -270,7 +270,7 @@ where
 
             Stmt::While(statement) => {
                 let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(Type::new(TypeKind::Bool), condition.typ, statement.span)?;
+                self.assert_type(TypeKind::Bool, condition.typ, statement.span)?;
 
                 // PERFORMANCE: remove loops with constant false conditions
                 let (body, _) = self.lower_block(&statement.body, false)?;
@@ -532,17 +532,15 @@ where
         match expr {
             // literal coercion: use the hint to widen to the expected numeric type.
             Expr::Integer(value, span) => {
-                let typ = hint
-                    .and_then(|t| t.is_number().then_some(t))
-                    .unwrap_or(Type::new(TypeKind::I32));
+                let typ =
+                    hint.and_then(|t| t.is_number().then_some(t)).unwrap_or(TypeKind::I32.into());
 
                 Ok(self.alloc((*value).into(), typ, *span))
             },
 
             Expr::Float(value, span) => {
-                let typ = hint
-                    .and_then(|t| t.is_float().then_some(t))
-                    .unwrap_or(Type::new(TypeKind::F64));
+                let typ =
+                    hint.and_then(|t| t.is_float().then_some(t)).unwrap_or(TypeKind::F64.into());
 
                 Ok(self.alloc((*value).into(), typ, *span))
             },
@@ -551,17 +549,16 @@ where
                 let sym = self.symbols.insert(value);
                 Ok(self.alloc(
                     ExpressionKind::Literal(Literal::Str(sym)),
-                    Type::new(TypeKind::Str),
+                    TypeKind::Str.into(),
                     *span,
                 ))
             },
 
             Expr::Char(value, span) => {
-                Ok(self.alloc((*value).into(), Type::new(TypeKind::Char), *span))
+                Ok(self.alloc((*value).into(), TypeKind::Char.into(), *span))
             },
-
             Expr::Bool(value, span) => {
-                Ok(self.alloc((*value).into(), Type::new(TypeKind::Bool), *span))
+                Ok(self.alloc((*value).into(), TypeKind::Bool.into(), *span))
             },
 
             Expr::Cast { expr: inner, target_type, span } => {
@@ -592,13 +589,13 @@ where
                 {
                     return Ok(self.alloc(
                         ExpressionKind::Literal(Literal::Int(value)),
-                        Type::new(TypeKind::Enum(id)),
+                        Type::enumerable(id),
                         *span,
                     ));
                 }
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
-                let qualified = self.arena.alloc_str(&format!("{qualifier}::{name}"));
+                let qualified = qualified(self.arena, qualifier, name);
                 let symbol = match self.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
@@ -615,24 +612,21 @@ where
             },
 
             Expr::Unary { operator, expr, span } => {
-                // for negation the hint flows through to the operand
-                let inner_hint = match operator {
+                let hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| {
-                        Type::new(TypeKind::Ref {
-                            mutable: false,
-                            to: match h.kind() {
-                                TypeKind::Struct(id) => RefTarget::new(RefTargetKind::Struct(id)),
-                                TypeKind::Char => RefTarget::new(RefTargetKind::Char),
-                                TypeKind::Ref { to, .. } => to,
-                                _ => RefTarget::new(RefTargetKind::Char),
-                            },
-                        })
+                        let to = match h.kind() {
+                            TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
+                            TypeKind::Char => RefTarget::new(TypeKind::Char),
+                            TypeKind::Ref { to, .. } => to,
+                            _ => RefTarget::new(TypeKind::Char),
+                        };
+                        Type::refer(to, false)
                     }),
                     UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
-                let expr = self.lower_expr(expr, inner_hint)?;
+                let expr = self.lower_expr(expr, hint)?;
 
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
@@ -641,22 +635,19 @@ where
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
-                                TypeMismatch {
-                                    expected: Type::new(TypeKind::I32),
-                                    found: expr.typ
-                                }
+                                TypeMismatch { expected: TypeKind::I32.into(), found: expr.typ }
                             ));
                         },
                     },
 
                     UnaryOperator::Not => {
-                        match expr.typ == Type::new(TypeKind::Bool) || expr.typ.is_integer() {
+                        match expr.typ == TypeKind::Bool.into() || expr.typ.is_integer() {
                             true => expr.typ,
                             _ => {
                                 return Err(hir_error!(
                                     expr.span,
                                     TypeMismatch {
-                                        expected: Type::new(TypeKind::Bool),
+                                        expected: TypeKind::Bool.into(),
                                         found: expr.typ
                                     }
                                 ));
@@ -670,10 +661,7 @@ where
                             return Err(hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::new(TypeKind::Ref {
-                                        mutable: false,
-                                        to: RefTarget::new(RefTargetKind::Char)
-                                    }),
+                                    expected: Type::refer(RefTarget::new(TypeKind::Char), false),
                                     found: expr.typ
                                 }
                             ));
@@ -685,12 +673,12 @@ where
                             hir_error!(
                                 expr.span,
                                 TypeMismatch {
-                                    expected: Type::new(TypeKind::Struct(Default::default())),
+                                    expected: Type::structure(Default::default()),
                                     found: expr.typ
                                 }
                             )
                         })?;
-                        Type::new(TypeKind::Ref { mutable: false, to })
+                        Type::refer(to, false)
                     },
                 };
 
@@ -726,7 +714,7 @@ where
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
                     | BinaryOperator::BitXor => Some(left.typ),
-                    BinaryOperator::And | BinaryOperator::Or => Some(Type::new(TypeKind::Bool)),
+                    BinaryOperator::And | BinaryOperator::Or => Some(TypeKind::Bool.into()),
                     BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
                 let right = self.lower_expr(right, right_hint)?;
@@ -743,7 +731,7 @@ where
                                     left: left.expr,
                                     right: right.expr,
                                 },
-                                Type::new(TypeKind::Bool),
+                                TypeKind::Bool.into(),
                                 *span,
                             );
                             self.typeck
@@ -859,11 +847,7 @@ where
                 }
 
                 let fields = self.arena.alloc_slice_copy(&lowered);
-                Ok(self.alloc(
-                    ExpressionKind::Struct { id, fields },
-                    Type::new(TypeKind::Struct(id)),
-                    *span,
-                ))
+                Ok(self.alloc(ExpressionKind::Struct { id, fields }, Type::structure(id), *span))
             },
 
             Expr::Field { expr: base, field, span } => {
@@ -1011,7 +995,7 @@ where
                     .scope
                     .resolve_function_call(Some(qualifier), name, self.symbols)
                     .ok_or_else(|| {
-                        let name = self.arena.alloc_str(&format!("{qualifier}::{name}"));
+                        let name = qualified(self.arena, qualifier, name);
                         hir_error!(*span, UnknownFunction { name })
                     })?;
 
@@ -1028,7 +1012,7 @@ where
 
                 if !exists {
                     let name = match qualifier {
-                        Some(q) => self.arena.alloc_str(&format!("{q}::{name}")),
+                        Some(q) => qualified(self.arena, q, name),
                         None => name,
                     };
                     return Err(hir_error!(*span, UnknownFunction { name }));
@@ -1043,7 +1027,7 @@ where
 
                 Ok(self.alloc(
                     ExpressionKind::TypeIntrinsic { kind: *kind, typ },
-                    Type::new(TypeKind::Uptr),
+                    TypeKind::Uptr.into(),
                     *span,
                 ))
             },
@@ -1069,7 +1053,7 @@ where
 
             let guard = arm.guard.as_ref().map(|g| self.lower_expr(g, None)).transpose()?;
             if let Some(ref g) = guard {
-                self.assert_type(Type::new(TypeKind::Bool), g.typ, g.span)?;
+                self.assert_type(TypeKind::Bool, g.typ, g.span)?;
             }
 
             let body = self.lower_expr(&arm.body, unified_type)?;
@@ -1090,7 +1074,7 @@ where
             });
         }
 
-        let return_type = unified_type.unwrap_or(Type::new(TypeKind::Unit));
+        let return_type = unified_type.unwrap_or(TypeKind::Unit.into());
         let arms = self.arena.alloc_slice_copy(&arms);
 
         Ok(self.alloc(
@@ -1142,7 +1126,7 @@ where
                                 span,
                                 TypeMismatch {
                                     expected: scrutinee_type,
-                                    found: Type::new(TypeKind::Unit),
+                                    found: TypeKind::Unit.into(),
                                 }
                             ));
                         }
@@ -1171,7 +1155,7 @@ where
                     let matches = self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
                         || self.scope.generic_enums.contains_key(&enum_symbol);
                     if !matches {
-                        let name = self.arena.alloc_str(&format!("{qualifier}::{name}"));
+                        let name = qualified(self.arena, qualifier, name);
                         return Err(hir_error!(span, UnknownType { name }));
                     }
                 }
@@ -1193,10 +1177,7 @@ where
                     _ => {
                         return Err(hir_error!(
                             span,
-                            TypeMismatch {
-                                expected: scrutinee_type,
-                                found: Type::new(TypeKind::Unit)
-                            }
+                            TypeMismatch { expected: scrutinee_type, found: TypeKind::Unit.into() }
                         ));
                     },
                 };
@@ -1212,7 +1193,7 @@ where
         is_tail: bool,
     ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         let condition = self.lower_expr(&if_stmt.condition, None)?;
-        self.assert_type(Type::new(TypeKind::Bool), condition.typ, condition.span)?;
+        self.assert_type(TypeKind::Bool, condition.typ, condition.span)?;
         let condition = condition.expr;
 
         let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
@@ -1432,7 +1413,7 @@ where
             Some(payload) => self.arena.alloc_slice_copy(&[payload]),
             None => &[],
         };
-        let typ = Type::new(TypeKind::Enum(enum_id));
+        let typ = Type::enumerable(enum_id);
         let lowered = self.alloc(ExpressionKind::Call { callee, args: arguments }, typ, span);
         self.typeck
             .type_dependent_defs
@@ -1549,7 +1530,7 @@ where
             .collect::<Result<Vec<_>, _>>()?;
 
         let return_type = match code {
-            SyscallCode::Exit => Type::new(TypeKind::Never),
+            SyscallCode::Exit => TypeKind::Never.into(),
             _ => return_type,
         };
 
@@ -1564,7 +1545,7 @@ where
         match typ.kind() {
             TypeKind::Enum(id) => Ok(id),
             TypeKind::Ref { to, .. } => match to.kind() {
-                RefTargetKind::Enum(id) => Ok(id),
+                TypeKind::Enum(id) => Ok(id),
                 _ => {
                     Err(hir_error!(span, TypeMismatch { expected: Type::new(default), found: typ }))
                 },
@@ -1581,7 +1562,7 @@ where
         span: Span,
     ) -> Result<Type, HirError<'hir>> {
         let type_mismatch =
-            |found| hir_error!(span, TypeMismatch { expected: Type::new(TypeKind::I32), found });
+            |found| hir_error!(span, TypeMismatch { expected: TypeKind::I32.into(), found });
 
         match operator {
             BinaryOperator::Add
@@ -1597,7 +1578,7 @@ where
 
             BinaryOperator::Eq | BinaryOperator::Ne => {
                 self.assert_type(left, right, span)?;
-                Ok(Type::new(TypeKind::Bool))
+                Ok(TypeKind::Bool.into())
             },
 
             BinaryOperator::Lt
@@ -1605,23 +1586,23 @@ where
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() || left == Type::new(TypeKind::Char) {
-                    true => Ok(Type::new(TypeKind::Bool)),
+                match left.is_number() || left == TypeKind::Char.into() {
+                    true => Ok(TypeKind::Bool.into()),
                     _ => Err(type_mismatch(left)),
                 }
             },
 
             BinaryOperator::And | BinaryOperator::Or => {
-                self.assert_type(Type::new(TypeKind::Bool), left, span)?;
-                self.assert_type(Type::new(TypeKind::Bool), right, span)?;
+                self.assert_type(TypeKind::Bool, left, span)?;
+                self.assert_type(TypeKind::Bool, right, span)?;
 
-                Ok(Type::new(TypeKind::Bool))
+                Ok(TypeKind::Bool.into())
             },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
 
-                match left == Type::new(TypeKind::Bool) || left.is_integer() {
+                match left == TypeKind::Bool.into() || left.is_integer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1676,13 +1657,13 @@ where
                     hir_error!(
                         span,
                         TypeMismatch {
-                            expected: Type::new(TypeKind::Struct(Default::default())),
+                            expected: Type::structure(Default::default()),
                             found: self_ty
                         }
                     )
                 })?;
 
-                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+                Ok(Type::refer(to, false))
             },
 
             statement::Type::Ref(inner) => {
@@ -1691,12 +1672,12 @@ where
                     hir_error!(
                         span,
                         TypeMismatch {
-                            expected: Type::new(TypeKind::Struct(Default::default())),
+                            expected: Type::structure(Default::default()),
                             found: inner_type
                         }
                     )
                 })?;
-                Ok(Type::new(TypeKind::Ref { mutable: false, to }))
+                Ok(Type::refer(to, false))
             },
 
             statement::Type::Generic(name, args) => {
@@ -1721,7 +1702,13 @@ where
     }
 
     #[inline(always)]
-    fn assert_type(&self, expected: Type, found: Type, span: Span) -> Result<(), HirError<'hir>> {
+    fn assert_type(
+        &self,
+        expected: impl Into<Type>,
+        found: impl Into<Type>,
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let (expected, found) = (expected.into(), found.into());
         match expected == found {
             true => Ok(()),
             false => Err(hir_error!(span, TypeMismatch { expected, found })),
@@ -1773,14 +1760,14 @@ where
         let sid = match current.kind() {
             TypeKind::Struct(id) => id,
             TypeKind::Ref { to, .. } => match to.kind() {
-                RefTargetKind::Struct(id) => id,
+                TypeKind::Struct(id) => id,
                 _ => return Err(hir_error!(span, TypeMismatch {
-                    expected: Type::new(TypeKind::Struct(Default::default())),
+                    expected: Type::structure(Default::default()),
                     found: current
                 })),
             },
             _ => return Err(hir_error!(span, TypeMismatch {
-                expected: Type::new(TypeKind::Struct(Default::default())),
+                expected: Type::structure(Default::default()),
                 found: current
             })),
         };
@@ -1880,7 +1867,7 @@ fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
     let slot = match param.kind() {
         TypeKind::GenericParam(i) => bindings.get_mut(i as usize).map(|slot| (slot, actual)),
         TypeKind::Ref { to, .. } => match to.kind() {
-            RefTargetKind::GenericParam(i) => {
+            TypeKind::GenericParam(i) => {
                 bindings.get_mut(i as usize).map(|slot| (slot, actual.strip_reference()))
             },
             _ => None,
