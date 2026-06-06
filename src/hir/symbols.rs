@@ -3,8 +3,8 @@ use lasso::Rodeo;
 
 /// Interns all identifiers strings encountered during compilation and maps them
 /// to stable numeric [`SymbolId`]s
-#[derive(Clone)]
-pub(in crate::hir) struct SymbolTable {
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolTable {
     interner: Rodeo,
 }
 
@@ -24,7 +24,7 @@ impl SymbolTable {
     }
 
     #[inline(always)]
-    pub fn insert(&mut self, name: &str) -> SymbolId {
+    pub(in crate::hir) fn insert(&mut self, name: &str) -> SymbolId {
         SymbolId(self.interner.get_or_intern(name))
     }
 
@@ -35,12 +35,14 @@ impl SymbolTable {
 
     #[inline(always)]
     pub fn get(&self, id: SymbolId) -> &str {
-        self.interner.resolve(&id.0)
+        self.interner
+            .try_resolve(&id.0)
+            .expect("compiler bug: SymbolId not present in SymbolTable — symbol tables may have been mixed between compilation units")
     }
 
-    #[inline(always)]
-    pub fn into_symbols(self) -> Vec<String> {
-        self.interner.into_iter().map(|(_, s)| s.to_string()).collect()
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.interner.iter().map(|(_, s)| s)
     }
 }
 

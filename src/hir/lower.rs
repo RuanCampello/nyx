@@ -154,7 +154,7 @@ where
         if let Some(receiver) = function.receiver {
             let typ = signature.receiver_type().expect("receiver in AST without one in signature");
             let symbol = self.symbols.insert("self");
-            let id = self.declare_local(symbol, typ, receiver.mutable)?;
+            let id = self.declare_local(symbol, typ, receiver.mutable, receiver.span)?;
             params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
         }
 
@@ -165,7 +165,7 @@ where
                 .zip(signature.explicit_params().iter())
                 .map(|(parameter, &typ)| -> Result<_, HirError> {
                     let symbol = self.symbols.insert(parameter.name);
-                    let id = self.declare_local(symbol, typ, parameter.mutable)?;
+                    let id = self.declare_local(symbol, typ, parameter.mutable, parameter.span)?;
 
                     Ok(Parameter { typ, id, name: symbol, mutable: parameter.mutable })
                 })
@@ -177,6 +177,7 @@ where
         Ok(Function {
             id,
             name: symbol,
+            decl_span: function.span,
             params,
             locals: self.locals,
             return_type: signature.return_type,
@@ -235,7 +236,7 @@ where
                 };
 
                 let symbol = self.symbols.insert(statement.name);
-                let id = self.declare_local(symbol, typ, statement.mutable)?;
+                let id = self.declare_local(symbol, typ, statement.mutable, statement.name_span)?;
 
                 let mut diverges = false;
                 let stmt = match statement.value {
@@ -1159,7 +1160,7 @@ where
                 }
 
                 let symbol = self.symbols.insert(name);
-                let local_id = self.declare_local(symbol, scrutinee_type, false)?;
+                let local_id = self.declare_local(symbol, scrutinee_type, false, span)?;
                 Ok(Pattern { kind: PatternKind::Binding(local_id), span })
             },
 
@@ -1740,19 +1741,20 @@ where
         name: SymbolId,
         typ: Type,
         mutable: bool,
+        decl_span: Span,
     ) -> Result<LocalId, HirError<'hir>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
             let name = self.arena.alloc_str(self.symbols.get(name));
-            return Err(hir_error!(Span::default(), DuplicateBind { name }));
+            return Err(hir_error!(decl_span, DuplicateBind { name }));
         }
 
         let id = LocalId(self.next_local);
         self.next_local += 1;
 
         scope.insert(name, id);
-        self.locals.push(Local { id, name, typ, mutable });
+        self.locals.push(Local { id, name, typ, mutable, decl_span });
 
         Ok(id)
     }

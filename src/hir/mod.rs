@@ -9,7 +9,6 @@ use crate::{
         error::HirError,
         index_vec::{Idx, IndexVec},
         scope::{FunctionSignature, Scope},
-        symbols::SymbolTable,
     },
     lexer::token::Span,
     parser::{
@@ -22,6 +21,7 @@ use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
 pub(crate) use structs::Visit;
+pub use symbols::SymbolTable;
 pub use types::*;
 
 mod constants;
@@ -40,7 +40,7 @@ pub mod types;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hir<'hir> {
-    pub symbols: Vec<String>,
+    pub symbols: SymbolTable,
     pub structs: IndexVec<StructId, Struct>,
     pub enums: IndexVec<EnumId, Enum>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
@@ -49,8 +49,9 @@ pub struct Hir<'hir> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
     id: StructId,
-    name: SymbolId,
-    /// Fields in source declaration order. Concrete layout belongs to MIR.
+    pub(crate) name: SymbolId,
+    pub(crate) decl_span: Span,
+    /// Fields in source declaration order. Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
     pub(crate) repr: StructRepr,
 }
@@ -65,6 +66,7 @@ pub struct StructField {
 pub struct Enum {
     pub(crate) id: EnumId,
     pub(crate) name: SymbolId,
+    pub(crate) decl_span: Span,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
 }
@@ -131,6 +133,7 @@ pub struct TypeckResults {
 pub struct Function<'hir> {
     pub id: FunctionId,
     pub name: SymbolId,
+    pub decl_span: Span,
     pub kind: FunctionKind,
     pub params: Vec<Parameter>,
     pub locals: IndexVec<LocalId, Local>,
@@ -171,6 +174,7 @@ pub struct Local {
     pub(crate) id: LocalId,
     pub(crate) name: SymbolId,
     pub(crate) typ: Type,
+    pub(crate) decl_span: Span,
     mutable: bool,
 }
 
@@ -354,7 +358,7 @@ pub fn lower<'hir>(
     let functions = mono::monomorphise(functions, &mut scope, &mut symbols, arena)?;
 
     Ok(Hir {
-        symbols: symbols.into_symbols(),
+        symbols,
         structs: scope.structs,
         enums: scope.enums,
         functions,
@@ -539,7 +543,6 @@ impl std::fmt::Debug for SymbolId {
 mod tests {
     use super::*;
     use crate::{hir::error::HirErrorKind, parser::Parser};
-    use lasso::Key;
 
     #[test]
     fn unknown_identifier() {
@@ -1057,11 +1060,8 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
 
         assert_eq!(hir.structs.len(), 1);
-        let field_names: Vec<_> = hir.structs[0]
-            .fields
-            .iter()
-            .map(|field| hir.symbols[field.name.0.into_usize()].as_str())
-            .collect();
+        let field_names: Vec<_> =
+            hir.structs[0].fields.iter().map(|field| hir.symbols.get(field.name)).collect();
         assert_eq!(field_names, vec!["a", "b", "c"]);
 
         let func = &hir.functions[0];
@@ -1095,7 +1095,7 @@ mod tests {
         let outer_inner = hir.structs[1]
             .fields
             .iter()
-            .find(|field| hir.symbols[field.name.0.into_usize()] == "inner")
+            .find(|field| hir.symbols.get(field.name) == "inner")
             .unwrap();
         assert_eq!(outer_inner.typ, Type::structure(StructId(0)));
     }
@@ -1608,7 +1608,7 @@ mod tests {
         "#;
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
 
-        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
 
         let pick = hir
             .functions
@@ -1639,7 +1639,7 @@ mod tests {
             fn main(): i64 { id::<i64>(5) }
         "#;
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
 
         let instance = hir
             .functions
@@ -1659,7 +1659,7 @@ mod tests {
             fn main(): i64 { unwrap::<i64>(&Box::<i64> { val: 7 }) }
         "#;
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let name = |f: &Function| hir.symbols[f.name.0.into_usize()].clone();
+        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
 
         assert!(
             hir.functions

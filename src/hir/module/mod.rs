@@ -6,7 +6,7 @@ mod resolver;
 mod signatures;
 
 use crate::{
-    diagnostic::Diagnostic,
+    diagnostic::{AsDiagnostic, Diagnostic},
     hir::{Hir, SymbolTable, scope::Scope},
     lexer::token::Span,
 };
@@ -133,7 +133,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             functions,
             structs: self.scope.structs.clone(),
             enums: self.scope.enums.clone(),
-            symbols: self.symbols.clone().into_symbols(),
+            symbols: self.symbols.clone(),
         })
     }
 
@@ -173,7 +173,7 @@ impl From<ModuleError> for Diagnostic {
                     ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::Diagnostic(_) => unreachable!(),
                 };
-                crate::diagnostic::AsDiagnostic::into_diagnostic(other, span)
+                AsDiagnostic::into_diagnostic(other, span)
             },
         }
     }
@@ -206,7 +206,6 @@ fn resolve_std_root() -> PathBuf {
 mod tests {
     use super::*;
     use crate::hir::{ExpressionKind, Statement, TypeKind};
-    use lasso::Key;
     use std::collections::HashMap;
     use std::io;
 
@@ -323,11 +322,7 @@ mod tests {
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
 
         assert_eq!(hir.functions.len(), 1);
-        let main = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
         assert_eq!(main.return_type, TypeKind::I32.into());
     }
 
@@ -449,13 +444,8 @@ mod tests {
             );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let add_count = hir
-            .functions
-            .iter()
-            .filter(|f| {
-                hir.symbols.get(f.name.0.into_usize()).map(|s| s == "nyx::add").unwrap_or(false)
-            })
-            .count();
+        let add_count =
+            hir.functions.iter().filter(|f| hir.symbols.get(f.name) == "nyx::add").count();
         assert_eq!(add_count, 1, "add should appear exactly once in the merged HIR");
     }
 
@@ -557,11 +547,7 @@ mod tests {
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.functions.len(), 2);
 
-        let main = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
             let hir::Statement::Expr(id) = stmt else {
                 return false;
@@ -579,11 +565,7 @@ mod tests {
 
         assert!(has_exit_call);
 
-        let exit = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::exit")
-            .unwrap();
+        let exit = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::exit").unwrap();
         let emits_exit_syscall = exit.body.statements.iter().any(|stmt| {
             let hir::Statement::Expr(id) = stmt else {
                 return false;
@@ -631,11 +613,7 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let main = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
 
         let hir::Statement::Expr(id) = &main.body.statements[0] else {
             panic!("expected an expression statement");
@@ -710,11 +688,8 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let main_fn = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main_fn =
+            hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
 
         let a_init = match &main_fn.body.statements[0] {
             Statement::LetInit { init, .. } => *init,
@@ -756,11 +731,8 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let main_fn = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main_fn =
+            hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
             Statement::Expr(expr) => *expr,
@@ -798,11 +770,8 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let main_fn = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main_fn =
+            hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
             Statement::Expr(expr) => *expr,
@@ -830,12 +799,9 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert!(hir.enums.iter().any(|e| hir.symbols[e.name.0.into_usize()] == "Status"));
-        let main_fn = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        assert!(hir.enums.iter().any(|e| hir.symbols.get(e.name) == "Status"));
+        let main_fn =
+            hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
 
         let body_expr = match &main_fn.body.statements[0] {
             Statement::Expr(expr) => *expr,
@@ -890,11 +856,7 @@ mod tests {
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
         assert_eq!(hir.enums.len(), 6);
-        assert!(
-            hir.functions
-                .iter()
-                .any(|f| hir.symbols[f.name.0.into_usize()].contains("Status"))
-        );
+        assert!(hir.functions.iter().any(|f| hir.symbols.get(f.name).contains("Status")));
     }
 
     #[test]
@@ -911,11 +873,8 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        let main_fn = hir
-            .functions
-            .iter()
-            .find(|f| hir.symbols[f.name.0.into_usize()] == "nyx::main")
-            .unwrap();
+        let main_fn =
+            hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
         let body_expr = match &main_fn.body.statements[0] {
             Statement::Expr(expr) => *expr,
             Statement::Return(Some(expr)) => *expr,

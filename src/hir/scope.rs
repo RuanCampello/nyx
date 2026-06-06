@@ -287,7 +287,7 @@ impl<'hir> Scope<'hir> {
             let id = EnumId::new(self.enums.len() as u32, repr);
 
             self.enum_map.insert(symbol, id);
-            self.enums.push(Enum { id, name: symbol, variants: Vec::new(), repr });
+            self.enums.push(Enum { id, name: symbol, decl_span: enum_decl.span, variants: Vec::new(), repr });
 
             let mut seen = HashSet::new();
             let mut next_value = 0;
@@ -894,7 +894,7 @@ impl<'hir> Scope<'hir> {
         let id = EnumId::new(self.enums.len() as u32, repr);
 
         self.enum_map.insert(mangled_sym, id);
-        self.enums.push(Enum { id, name: mangled_sym, variants: Vec::new(), repr });
+        self.enums.push(Enum { id, name: mangled_sym, decl_span: Span::default(), variants: Vec::new(), repr });
 
         let env = build_substitution(&template.generics, args);
         let mut seen = HashSet::new();
@@ -948,6 +948,7 @@ impl<'hir> Scope<'hir> {
         self.structs.push(Struct {
             id,
             name: mangled_sym,
+            decl_span: Span::default(),
             fields: Vec::new(),
             repr: template.repr,
         });

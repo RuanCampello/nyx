@@ -19,7 +19,7 @@ use crate::{
 use std::collections::{HashMap, HashSet};
 
 struct ConstDecl<'d, 's> {
-    impl_type: Option<&'d str>,
+    typ: Option<&'d str>,
     ast: &'d statement::Const<'s>,
 }
 
@@ -98,7 +98,7 @@ where
         if decls.contains_key(&symbol_id) {
             return Err(hir_error!(c.span, DuplicateConstant { name: c.name }));
         }
-        decls.insert(symbol_id, ConstDecl { impl_type: None, ast: c });
+        decls.insert(symbol_id, ConstDecl { typ: None, ast: c });
     }
 
     for imp in &declarations.impls {
@@ -109,7 +109,7 @@ where
                 return Err(hir_error!(c.span, DuplicateConstant { name }));
             }
 
-            decls.insert(symbol_id, ConstDecl { impl_type: Some(imp.name), ast: c });
+            decls.insert(symbol_id, ConstDecl { typ: Some(imp.name), ast: c });
         }
     }
 
@@ -153,10 +153,8 @@ where
 
         if self.visiting.contains(&symbol_id) {
             let decl = &self.decls[&symbol_id];
-            let name = match decl.impl_type {
-                Some(impl_type) => {
-                    qualified(self.arena, impl_type, decl.ast.name)
-                },
+            let name = match decl.typ {
+                Some(impl_type) => qualified(self.arena, impl_type, decl.ast.name),
                 _ => decl.ast.name,
             };
             return Err(hir_error!(decl.ast.span, CircularConstant { name }));
@@ -170,7 +168,7 @@ where
         if let Some(decl) = self.decls.get(&symbol_id) {
             let mut deps = Vec::new();
             let mut walker = DepVisitor {
-                current_impl: decl.impl_type,
+                current_impl: decl.typ,
                 mangler: self.mangler,
                 symbols: self.symbols,
                 decls: self.decls,

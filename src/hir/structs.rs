@@ -1,8 +1,4 @@
-//! Struct lowering: AST → HIR with topological field-type resolution.
-//!
-//! This is an independent pass: it doesn't touch functions, expressions, or
-//! `FunctionBuilder` state. Living in its own module keeps `lower.rs` focused
-//! on function-body lowering.
+//! Struct lowering: AST -> HIR with topological field-type resolution
 
 use crate::hir::{
     Struct, StructField, StructId, SymbolId, SymbolTable, TypeKind,
@@ -86,7 +82,8 @@ pub(in crate::hir) fn lower_struct<'h>(
     }
 
     let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
-    lowered[id] = Some(Struct { id: StructId(id as u32), name, fields, repr });
+    let decl_span = declaration.span;
+    lowered[id] = Some(Struct { id: StructId(id as u32), name, decl_span, fields, repr });
     states[id] = Visit::Visited;
 
     Ok(())
