@@ -2,7 +2,7 @@
 
 use crate::{
     lexer::{
-        HasSpan, Lexer,
+        Lexer,
         error::LexError,
         token::{Keyword, Position, Punct, Span, Token, TokenKind},
     },
@@ -46,8 +46,8 @@ impl<'i> Parser<'i> {
             match self.peek() {
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
                 Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
+                Some(Err(err)) => return Err(ParserError::new((*err).into(), err.span)),
                 None => break,
-                Some(Err(err)) => return Err(ParserError::new((*err).into(), err.span())),
             }
         }
 
@@ -89,10 +89,7 @@ impl<'i> Parser<'i> {
                 self.last = Some(token.span);
                 Ok(Some(token))
             },
-            Some(Err(e)) => {
-                let span = e.span();
-                Err(ParserError::new(e.into(), span))
-            },
+            Some(Err(e)) => Err(ParserError::new(e.into(), e.span)),
             None => Ok(None),
         }
     }

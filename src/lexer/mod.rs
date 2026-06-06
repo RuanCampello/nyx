@@ -46,7 +46,7 @@ pub struct Spanned<T> {
 }
 
 pub trait HasSpan {
-    fn span(&self) -> Span;
+    fn span(&self) -> Option<Span>;
 }
 
 impl<'src> Lexer<'src> {

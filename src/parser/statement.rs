@@ -27,6 +27,7 @@ pub enum Statement<'i> {
 pub struct Let<'i> {
     pub mutable: bool,
     pub name: &'i str,
+    pub name_span: Span,
     pub typ: Option<Spanned<Type<'i>>>,
     pub value: Option<Expression<'i>>,
     pub span: Span,
@@ -431,7 +432,7 @@ impl<'i> Parsable<'i> for Let<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let let_token = parser.expect_token(Keyword::Let)?;
         let mutable = parser.consume_token(Keyword::Mut)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
 
         let typ = match parser.consume_token(Punct::Colon)? {
             true => Some(parser.parse_node::<Spanned<Type>>()?),
@@ -446,7 +447,7 @@ impl<'i> Parsable<'i> for Let<'i> {
         let semicolon = parser.expect_token(Punct::Semicolon)?;
         let span = let_token.span + semicolon.span;
 
-        Ok(Let { mutable, name, typ, value, span })
+        Ok(Let { mutable, name, typ, value, span, name_span })
     }
 }
 

@@ -1,5 +1,4 @@
 use crate::lexer::{
-    HasSpan,
     error::LexError,
     token::{Span, TokenKind},
 };
@@ -63,7 +62,7 @@ impl<'i> ParserError<'i> {
 
 impl<'i> From<&LexError<'i>> for ParserError<'i> {
     fn from(value: &LexError<'i>) -> Self {
-        Self::new(ParseErrorKind::Lexical(*value), value.span())
+        Self::new(ParseErrorKind::Lexical(*value), value.span)
     }
 }
 
