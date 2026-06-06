@@ -1,7 +1,7 @@
 //! A thin `Vec<T>` wrapper that only accepts a typed index `I`
 
 use std::marker::PhantomData;
-use std::ops::{Index, IndexMut};
+use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 pub trait Idx: Copy {
     fn to_usize(self) -> usize;
@@ -105,6 +105,20 @@ impl<I, T> Index<usize> for IndexVec<I, T> {
 impl<I, T> IndexMut<usize> for IndexVec<I, T> {
     fn index_mut(&mut self, idx: usize) -> &mut T {
         &mut self.raw[idx]
+    }
+}
+
+impl<I, T> Deref for IndexVec<I, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
+impl<I, T> DerefMut for IndexVec<I, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.raw
     }
 }
 
