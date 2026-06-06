@@ -121,17 +121,26 @@ impl Builder {
 
 pub trait AsDiagnostic {
     fn into_diagnostic(self, span: Span) -> Diagnostic;
+    fn message(self) -> String;
 }
 
 impl AsDiagnostic for Diagnostic {
     fn into_diagnostic(self, _span: Span) -> Diagnostic {
         self
     }
+
+    fn message(self) -> String {
+        self.rendered
+    }
 }
 
 impl<'src> AsDiagnostic for LexError<'src> {
     fn into_diagnostic(self, _span: Span) -> Diagnostic {
         self.kind.into_diagnostic(self.span)
+    }
+
+    fn message(self) -> String {
+        self.kind.message()
     }
 }
 
@@ -144,6 +153,10 @@ impl<'src> From<LexError<'src>> for Diagnostic {
 impl<'i> AsDiagnostic for ParserError<'i> {
     fn into_diagnostic(self, _span: Span) -> Diagnostic {
         self.kind.into_diagnostic(self.span)
+    }
+
+    fn message(self) -> String {
+        self.kind.message()
     }
 }
 
@@ -224,20 +237,33 @@ impl From<Span> for std::ops::Range<usize> {
 }
 
 impl<'src> HasSpan for LexError<'src> {
-    fn span(&self) -> Span {
-        self.span
+    fn span(&self) -> Option<Span> {
+        Some(self.span)
     }
 }
 
 impl<'p> HasSpan for ParserError<'p> {
-    fn span(&self) -> Span {
-        self.span
+    fn span(&self) -> Option<Span> {
+        Some(self.span)
     }
 }
 
 impl<'h> HasSpan for HirError<'h> {
-    fn span(&self) -> Span {
-        self.span
+    fn span(&self) -> Option<Span> {
+        Some(self.span)
+    }
+}
+
+impl HasSpan for ModuleError {
+    fn span(&self) -> Option<Span> {
+        match self {
+            Self::CircularImport { span, .. } => Some(*span),
+            Self::UnknownRoot { span, .. } => Some(*span),
+            Self::UnknownExport { span, .. } => Some(*span),
+            Self::TopLevelNonFunction { span, .. } => Some(*span),
+            Self::FileNotFound { span: Some(s), .. } => Some(*s),
+            _ => None,
+        }
     }
 }
 

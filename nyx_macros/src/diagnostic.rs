@@ -1,4 +1,4 @@
-use crate::fmt::parse_template;
+use crate::fmt::{parse_template, parse_template_plain};
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
@@ -190,6 +190,45 @@ fn generate_variant_arm(
     })
 }
 
+fn generate_message_arm(
+    enum_name: &Ident,
+    variant: &syn::Variant,
+    attr: &DiagnosticAttr,
+) -> Result<TokenStream> {
+    let variant_name = &variant.ident;
+    let field_bindings = field_bindings_pattern(&variant.fields);
+
+    if attr.transparent {
+        let first_field = match &variant.fields {
+            Fields::Named(n) => {
+                n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id))
+            },
+            Fields::Unnamed(_) => Some(quote!(field_0)),
+            Fields::Unit => None,
+        }
+        .ok_or_else(|| {
+            Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
+        })?;
+
+        return Ok(quote! {
+            #enum_name::#variant_name #field_bindings => {
+                crate::diagnostic::AsDiagnostic::message(#first_field)
+            }
+        });
+    }
+
+    let msg = attr
+        .message
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
+
+    let msg_plain_ts = parse_template_plain(&msg.value(), msg.span())?;
+
+    Ok(quote! {
+        #enum_name::#variant_name #field_bindings => { #msg_plain_ts }
+    })
+}
+
 fn field_bindings_pattern(fields: &Fields) -> TokenStream {
     match fields {
         Fields::Named(named) => {
@@ -210,7 +249,7 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
         return Err(Error::new_spanned(&input, "#[derive(Diagnostic)] only works on enums"));
     };
 
-    let arms = data
+    let pairs = data
         .variants
         .iter()
         .map(|variant| {
@@ -220,10 +259,14 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
                     format!("variant `{}` missing #[diagnostic(...)]", variant.ident),
                 )
             })?;
-            generate_variant_arm(enum_name, variant, &attr)
+            Ok((
+                generate_variant_arm(enum_name, variant, &attr)?,
+                generate_message_arm(enum_name, variant, &attr)?,
+            ))
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let (into_arms, message_arms): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
@@ -234,7 +277,14 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
                 use ariadne::Fmt as _;
 
                 match self {
-                    #(#arms)*
+                    #(#into_arms)*
+                }
+            }
+
+            #[allow(unused_variables)]
+            fn message(self) -> String {
+                match self {
+                    #(#message_arms)*
                 }
             }
         }

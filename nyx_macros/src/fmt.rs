@@ -27,6 +27,11 @@ pub fn parse_template(template: &str, call_site: Span) -> syn::Result<TokenStrea
     Ok(emit_segments(&segments))
 }
 
+pub fn parse_template_plain(template: &str, call_site: Span) -> syn::Result<TokenStream> {
+    let segments = parse_segments(template, call_site)?;
+    Ok(emit_segments_plain(&segments))
+}
+
 fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
     let mut segments = Vec::new();
     let mut chars = input.char_indices().peekable();
@@ -178,6 +183,60 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     }
 
     parts
+}
+
+fn emit_segments_plain(segments: &[Segment]) -> TokenStream {
+    if let [Segment::Literal(s)] = segments {
+        return quote! { #s.to_string() };
+    }
+
+    let parts = segments.iter().map(|seg| match seg {
+        Segment::Literal(s) => quote! { __buf.push_str(#s); },
+        Segment::Field { name, .. } => {
+            let expr: syn::Expr =
+                syn::parse_str(name).unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+            quote! { __buf.push_str(&format!("{}", #expr)); }
+        },
+        Segment::CodeSnippet(parts) => emit_snippet_plain(parts),
+    });
+
+    quote! {
+        {
+            let mut __buf = String::new();
+            #(#parts)*
+            __buf
+        }
+    }
+}
+
+fn emit_snippet_plain(parts: &[SnippetPart]) -> TokenStream {
+    if parts.iter().all(|p| matches!(p, SnippetPart::Literal(_))) {
+        let s: String = parts
+            .iter()
+            .map(|p| match p {
+                SnippetPart::Literal(l) => l.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        return quote! { __buf.push_str(#s); };
+    }
+
+    let mut fmt_str = String::new();
+    let mut args = Vec::new();
+
+    for part in parts {
+        match part {
+            SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
+            SnippetPart::Field(name) => {
+                fmt_str.push_str("{}");
+                let expr: syn::Expr = syn::parse_str(name)
+                    .unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+                args.push(quote! { &#expr });
+            },
+        }
+    }
+
+    quote! { __buf.push_str(&format!(#fmt_str, #(#args),*)); }
 }
 
 fn emit_segments(segments: &[Segment]) -> TokenStream {
