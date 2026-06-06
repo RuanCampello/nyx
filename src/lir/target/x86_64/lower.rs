@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{self, TypeKind};
+use crate::hir::{self, SymbolTable, TypeKind};
 use crate::lir::{
     self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
     target::{
@@ -24,7 +24,7 @@ struct Lower<'f> {
     function: &'f Function,
     lir: lir::Function<X86_64>,
     value: Vec<VReg>,
-    symbols: &'f [String],
+    symbols: &'f SymbolTable,
     all_functions: &'f [Function],
     layouts: Layouts<'f>,
     sret_ptr: Option<VReg>,
@@ -33,17 +33,14 @@ struct Lower<'f> {
 impl Lowerable for X86_64 {
     fn lower(
         function: &Function,
-        symbols: &[String],
+        symbols: &SymbolTable,
         all_functions: &[Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
         let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
 
-        let name = symbols
-            .get(function.name_symbol)
-            .map(|n| assembly_label(n))
-            .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
+        let name = assembly_label(symbols.get(function.name_symbol));
 
         let mut lir = lir::Function::<X86_64>::new(name);
 
@@ -378,11 +375,7 @@ impl<'f> Lower<'f> {
                     );
                 }
 
-                let callee = self
-                    .symbols
-                    .get(callee_fn.name_symbol)
-                    .map(|n| assembly_label(n))
-                    .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
+                let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
 
                 let mut int_idx = 0;
                 let return_type = callee_fn.return_type;

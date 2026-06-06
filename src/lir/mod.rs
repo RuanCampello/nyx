@@ -131,8 +131,8 @@ where
     let main = mir
         .symbols
         .iter()
-        .find(|name| name.as_str() == "main" || name.ends_with("::main"))
-        .map(|name| assembly_label(name));
+        .find(|name| *name == "main" || name.ends_with("::main"))
+        .map(assembly_label);
     if let Some(main) = main {
         Function::<T>::start(&mut out, &main);
     }

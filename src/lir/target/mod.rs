@@ -1,5 +1,5 @@
 use crate::{
-    hir::{SyscallCode, Type, TypeKind},
+    hir::{SymbolTable, SyscallCode, Type, TypeKind},
     lir::{self, BlockId, Layouts, MachineType, VReg, regalloc},
     mir::{self, Const, Operand, ValueId},
 };
@@ -56,7 +56,7 @@ pub trait Target: Sized {
 pub trait Lowerable: Target {
     fn lower(
         function: &mir::Function,
-        symbols: &[String],
+        symbols: &SymbolTable,
         all_functions: &[mir::Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],

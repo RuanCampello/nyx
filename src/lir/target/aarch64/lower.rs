@@ -13,7 +13,7 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{self, Type, TypeKind},
+    hir::{self, SymbolTable, Type, TypeKind},
     lir::{
         self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
         target::{
@@ -30,7 +30,7 @@ struct Lower<'f> {
     lir: lir::Function<AArch64>,
     /// maps MIR ValueId -> LIR VReg
     value: Vec<VReg>,
-    symbols: &'f [String],
+    symbols: &'f SymbolTable,
     all_functions: &'f [Function],
     layouts: Layouts<'f>,
     sret_ptr: Option<VReg>,
@@ -39,17 +39,14 @@ struct Lower<'f> {
 impl Lowerable for AArch64 {
     fn lower(
         function: &Function,
-        symbols: &[String],
+        symbols: &SymbolTable,
         all_functions: &[Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
         let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
 
-        let name = symbols
-            .get(function.name_symbol)
-            .map(|n| assembly_label(n))
-            .unwrap_or_else(|| format!("nyx_func_{}", function.name_symbol));
+        let name = assembly_label(symbols.get(function.name_symbol));
 
         let mut lir = lir::Function::<AArch64>::new(name);
 
@@ -277,11 +274,7 @@ impl<'f> Lower<'f> {
                     );
                 }
 
-                let callee = self
-                    .symbols
-                    .get(callee_fn.name_symbol)
-                    .map(|n| assembly_label(n))
-                    .unwrap_or_else(|| format!("nyx_func_{}", callee_id.0));
+                let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
 
                 let mut moves = Vec::with_capacity(args.len());
                 let mut int_idx = 0;
