@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, SyscallCode, Type, TypeKind},
+    hir::{FunctionId, Intrinsic, SyscallCode, SymbolId, SymbolTable, Type, TypeKind},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
@@ -33,7 +33,7 @@ mod lower;
 /// That's a flat list of functions.
 #[derive(Debug, PartialEq)]
 pub struct Mir {
-    pub(crate) symbols: Vec<String>,
+    pub(crate) symbols: SymbolTable,
     pub(crate) strings: Vec<String>,
     pub(crate) functions: Vec<Function>,
     pub(crate) struct_layouts: Vec<Layout>,
@@ -55,8 +55,8 @@ pub struct Instruction {
 pub struct Function {
     pub(crate) id: FunctionId,
     pub(crate) intrinsic: Option<Intrinsic>,
-    /// index into `Mir::symbols` giving function's source name
-    pub(crate) name_symbol: usize,
+    /// key into `Mir::symbols` giving function's source name
+    pub(crate) name_symbol: SymbolId,
     pub(crate) return_type: Type,
     /// params in declaration order.
     /// these are the first entries of `locals` but are kept separated
@@ -408,7 +408,7 @@ mod tests {
         let main = mir
             .functions
             .iter()
-            .find(|function| mir.symbols[function.name_symbol] == "nyx::main")
+            .find(|function| mir.symbols.get(function.name_symbol) == "nyx::main")
             .unwrap();
 
         let constants = main.blocks[0]

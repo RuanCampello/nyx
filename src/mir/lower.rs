@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, Type,
-        TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, SymbolId,
+        SymbolTable, Type, TypeKind, index_vec::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -12,7 +12,6 @@ use crate::{
     optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
-use lasso::Key;
 use std::collections::HashMap;
 
 struct PartialBlock {
@@ -27,12 +26,12 @@ struct FunctionLower<'a, 'hir> {
     next: u32,
     local_map: IndexVec<LocalId, ValueId>,
     locals: Vec<(ValueId, Type)>,
-    symbols: &'a [String],
+    symbols: &'a SymbolTable,
     strings: &'a mut Vec<String>,
     layouts: &'a LayoutTable,
     enums: &'a IndexVec<hir::EnumId, hir::Enum>,
     typeck: &'a hir::TypeckResults,
-    local_symbols: IndexVec<LocalId, usize>,
+    local_symbols: IndexVec<LocalId, SymbolId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
     functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
@@ -44,7 +43,7 @@ struct InlineContext<'a> {
     local_map: IndexVec<LocalId, ValueId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
-    local_symbols: IndexVec<LocalId, usize>,
+    local_symbols: IndexVec<LocalId, SymbolId>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
     typeck: &'a hir::TypeckResults,
 }
@@ -100,7 +99,7 @@ const fn temp_value_type(typ: Type) -> Type {
 impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn run(
         function: &hir::Function<'hir>,
-        symbols: &'a [String],
+        symbols: &'a SymbolTable,
         layouts: &'a LayoutTable,
         enums: &'a IndexVec<hir::EnumId, hir::Enum>,
         strings: &'a mut Vec<String>,
@@ -109,18 +108,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     ) -> Result<mir::Function, MirError> {
         let id = function.id;
         let intrinsic = function.kind.intrinsic();
-        let name_symbol = function.name.0.into_usize();
+        let name_symbol = function.name;
         let return_type = function.return_type;
         let n_hir_locals = function.locals.len();
 
         let mut local_map = IndexVec::from_elem(ValueId(0), n_hir_locals);
-        let mut local_symbols = IndexVec::from_elem(0usize, n_hir_locals);
+        let local_symbols = function.locals.iter().map(|l| l.name).collect();
         let mut locals = Vec::with_capacity(n_hir_locals);
 
         for local in &function.locals {
             let value_id = ValueId(locals.len() as u32);
             local_map[local.id] = value_id;
-            local_symbols[local.id] = local.name.0.into_usize();
             locals.push((value_id, local.typ))
         }
 
@@ -304,8 +302,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     L::Bool(b) => Operand::Const(Const::Bool(*b)),
                     L::Char(c) => Operand::Const(Const::Int(*c as i64, typ)),
                     L::Str(sym) => {
-                        let s = &self.symbols[sym.0.into_usize()];
-                        let id = self.intern_string(&s.clone());
+                        let s = self.symbols.get(*sym);
+                        let id = self.intern_string(s);
                         let len = s.len();
                         Operand::Const(Const::Str { id, len })
                     },
@@ -948,7 +946,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     #[inline]
     fn push_print_arg(&self, output: &mut String, expr: &Expression<'hir>) {
         if let ExpressionKind::Literal(hir::Literal::Str(sym)) = &expr.kind {
-            let text = &self.symbols[sym.0.into_usize()];
+            let text = self.symbols.get(*sym);
             output.push_str(&self.expand_interpolation(text));
         } else if let Some(text) = self.capture_constant_expr(expr) {
             output.push_str(&text);
@@ -965,7 +963,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     L::Float(f) => f.to_string(),
                     L::Bool(b) => b.to_string(),
                     L::Char(c) => c.to_string(),
-                    L::Str(sym) => self.symbols[sym.0.into_usize()].clone(),
+                    L::Str(sym) => self.symbols.get(*sym).to_owned(),
                     L::Unit => String::new(),
                 })
             },
@@ -1026,7 +1024,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.local_symbols
             .iter()
             .enumerate()
-            .find(|(_, symbol)| self.symbols.get(**symbol).is_some_and(|local| local == name))
+            .find(|(_, symbol)| self.symbols.get(**symbol) == name)
             .and_then(|(idx, _)| self.constant_locals[LocalId(idx as u32)].as_deref())
     }
 
@@ -1170,7 +1168,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ),
             local_symbols: replace(
                 &mut self.local_symbols,
-                callee.locals.iter().map(|l| l.name.0.into_usize()).collect(),
+                callee.locals.iter().map(|l| l.name).collect(),
             ),
             inlined_return_target: self
                 .inlined_return_target
