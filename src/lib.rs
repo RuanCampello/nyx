@@ -1,12 +1,20 @@
 use crate::{diagnostic::Diagnostic, hir::module};
 use std::path::Path;
 
+pub mod analysis;
 pub mod diagnostic;
 pub(crate) mod hir;
 pub(crate) mod lexer;
 pub(crate) mod lir;
 pub(crate) mod mir;
 pub(crate) mod parser;
+pub mod source_map;
+
+pub use diagnostic::{Label, RichDiagnostic, Severity};
+pub use analysis::{Analysis, CheckError, DocumentSymbol, SemanticAnalysis, SymbolKind};
+pub use lexer::HasSpan;
+pub use lexer::token::{BytePos, Span};
+pub use source_map::{FileId, Loc, SourceMap, SpanData};
 
 #[derive(Debug)]
 pub enum NyxError {
@@ -22,7 +30,6 @@ pub enum NyxError {
 pub mod optimisation {
     use std::sync::OnceLock;
 
-    // Optimisation level for code generation
     #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, clap::ValueEnum)]
     pub enum Level {
         /// No optimisations, all runtime safety checks enabled
@@ -66,6 +73,10 @@ pub fn compile(src: &str) -> Result<String, NyxError> {
 
 /// Run the full single-file nyx compilation pipeline for a specific target
 pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
+    diagnostic::reset();
+    // Single file: it gets base 0, so the plain constructor produces global spans.
+    diagnostic::add_file("<source>", src);
+
     let arena = bumpalo::Bump::new();
     let statements = parser::Parser::new(src).parse()?;
     let hir = hir::lower(statements, &arena)?;
@@ -79,10 +90,10 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     Ok(asm)
 }
 
-/// Compile a multi-file `Nyx` project root at `entry`
+/// Compile a multi-file `Nyx` project rooted at `entry`.
 ///
 /// The entry file is typically `main.nyx`. All `use` imports reachable from it
-/// are discovered, type-checked, and merged into a single assembly output
+/// are discovered, type-checked, and merged into a single assembly output.
 pub fn compile_project(entry: &Path, name: &str) -> Result<String, NyxError> {
     compile_project_for(entry, name, TargetArch::host())
 }
@@ -124,7 +135,6 @@ pub fn assemble_for(assembly: &Path, output: &Path, target: TargetArch) -> Resul
 
     if !as_status.success() {
         std::fs::remove_file(output).ok();
-
         return Err(NyxError::Assembler(as_status.code().unwrap_or(-1)));
     }
 
@@ -153,7 +163,6 @@ pub fn link_for(
 
     if !ld_status.success() {
         std::fs::remove_file(output).ok();
-
         return Err(NyxError::Assembler(ld_status.code().unwrap_or(-1)));
     }
 
