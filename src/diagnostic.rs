@@ -1,37 +1,130 @@
 use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
-use crate::lexer::token::Span;
+use crate::lexer::token::{BytePos, Span};
 use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
+use crate::source_map::{FileId, SourceMap};
 use crate::{NyxError, hir::error::HirError};
-use ariadne::{Color, Config, Fmt, Label, Report, ReportKind, Source};
+use ariadne::{Cache, Color, Config, Fmt, Label as AriadneLabel, Report, ReportKind, Source};
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fmt;
+
+/// A diagnostic in structured, plain-text form, the same information the CLI
+/// renders through `ariadne`, but consumable across the crate boundary
+#[derive(Debug, Clone)]
+pub struct RichDiagnostic {
+    pub severity: Severity,
+    pub message: String,
+    pub primary: Option<Label>,
+    pub secondary: Vec<Label>,
+    pub note: Option<String>,
+    pub help: Option<String>,
+}
+
+/// A single labelled span within a [`RichDiagnostic`], carrying plain (no ANSI)
+/// text so consumers like the LSP can present it however they wish
+#[derive(Debug, Clone)]
+pub struct Label {
+    pub span: Span,
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub struct Diagnostic {
+    pub(crate) rendered: String,
+}
+
+pub struct Builder {
+    message: String,
+    labels: Vec<(Span, String, Color)>,
+    note: Option<String>,
+    help: Option<String>,
+}
+
+/// An [`ariadne::Cache`] over the per-thread [`SourceMap`], building one
+/// [`Source`] per file on first use so a single report can span many files
+struct MapCache {
+    sources: HashMap<FileId, Source<String>>,
+    names: HashMap<FileId, String>,
+}
+
+/// Severity of a [`RichDiagnostic`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+pub trait AsDiagnostic {
+    fn into_diagnostic(self, span: Span) -> Diagnostic;
+    fn rich(self, span: Span) -> RichDiagnostic;
+    fn message(self) -> String;
+}
 
 pub(crate) const PRIMARY: Color = Color::Rgb(243, 139, 168);
 pub(crate) const SECONDARY: Color = Color::Rgb(180, 190, 254);
 pub(crate) const HIGHLIGHT: Color = Color::Rgb(137, 180, 250);
+
+thread_local! {
+    static SOURCE_MAP: RefCell<SourceMap> = RefCell::new(SourceMap::default());
+}
 
 #[inline(always)]
 pub(crate) fn hi(s: impl std::fmt::Display) -> impl std::fmt::Display {
     s.fg(HIGHLIGHT)
 }
 
-thread_local! {
-    static SOURCE: RefCell<(String, String)> = const { RefCell::new((String::new(), String::new())) };
+/// Clear the per-thread source map
+/// Call once at the start of a compilation or analysis run before registering files
+pub fn reset() {
+    SOURCE_MAP.with_borrow_mut(|map| *map = SourceMap::default());
 }
 
-pub fn initialise(src: &str, filename: &str) {
-    SOURCE.with_borrow_mut(|s| *s = (src.to_string(), filename.to_string()));
+/// Register a file in the per-thread source map and return its id and the base
+/// offset its spans must be relative to
+pub fn add_file(name: impl Into<std::path::PathBuf>, src: impl Into<String>) -> (FileId, BytePos) {
+    SOURCE_MAP.with_borrow_mut(|map| map.add_file(name, src))
 }
 
-pub fn current_source() -> (String, String) {
-    SOURCE.with_borrow(|s| s.clone())
+/// Move the per-thread source map out, leaving an empty one behind
+/// The caller (e.g. the LSP) takes ownership to resolve spans after a run completes
+pub fn take_source_map() -> SourceMap {
+    SOURCE_MAP.with_borrow_mut(std::mem::take)
 }
 
-#[derive(Debug)]
-pub struct Diagnostic {
-    pub(crate) rendered: String,
+impl RichDiagnostic {
+    pub fn bare(message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            message: message.into(),
+            primary: None,
+            secondary: Vec::new(),
+            note: None,
+            help: None,
+        }
+    }
+}
+
+impl std::fmt::Display for RichDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)?;
+
+        if let Some(primary) = &self.primary
+            && !primary.message.is_empty()
+        {
+            write!(f, "\n{}", primary.message)?;
+        }
+        if let Some(note) = &self.note {
+            write!(f, "\nnote: {note}")?;
+        }
+        if let Some(help) = &self.help {
+            write!(f, "\nhelp: {help}")?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Diagnostic {
@@ -44,24 +137,55 @@ impl Diagnostic {
     }
 }
 
+impl AsDiagnostic for Diagnostic {
+    fn into_diagnostic(self, _span: Span) -> Diagnostic {
+        self
+    }
+
+    fn rich(self, _span: Span) -> RichDiagnostic {
+        RichDiagnostic::bare(self.rendered)
+    }
+
+    fn message(self) -> String {
+        self.rendered
+    }
+}
+
+impl<'src> From<LexError<'src>> for Diagnostic {
+    fn from(e: LexError<'src>) -> Self {
+        e.into_diagnostic(Span::default())
+    }
+}
+
+impl<'i> From<ParserError<'i>> for Diagnostic {
+    fn from(e: ParserError<'i>) -> Self {
+        e.into_diagnostic(Span::default())
+    }
+}
+
+impl<'h> From<HirError<'h>> for Diagnostic {
+    fn from(e: HirError<'h>) -> Self {
+        e.kind.into_diagnostic(e.span)
+    }
+}
+
+impl From<MirError> for Diagnostic {
+    fn from(e: MirError) -> Self {
+        match e.kind {
+            MirErrorKind::Hir(diagnostic) => diagnostic,
+        }
+    }
+}
+
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.rendered)
     }
 }
 
-pub struct Builder {
-    source: (String, String),
-    message: String,
-    labels: Vec<(Span, String, Color)>,
-    note: Option<String>,
-    help: Option<String>,
-}
-
 impl Builder {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            source: current_source(),
             message: message.into(),
             labels: Vec::new(),
             note: None,
@@ -90,18 +214,26 @@ impl Builder {
     }
 
     pub fn build(self) -> Diagnostic {
-        let (src, filename) = &self.source;
-        let id = filename.as_str();
-        let anchor = self.labels.first().map(|(s, _, _)| s.start.offset()).unwrap_or(0);
+        SOURCE_MAP.with_borrow(|map| self.render(map))
+    }
 
-        let mut builder = Report::build(ReportKind::Error, (id, anchor..anchor))
-            .with_config(Config::default().with_compact(false))
-            .with_message(&self.message);
+    fn render(self, map: &SourceMap) -> Diagnostic {
+        if self.labels.is_empty() || map.is_empty() {
+            return Diagnostic { rendered: self.message };
+        }
+
+        let (anchor_file, anchor) = map.local_range(self.labels[0].0);
+        let cache = MapCache::new(map, self.labels.iter().map(|(s, _, _)| map.span_data(*s).file));
+
+        let mut builder =
+            Report::build(ReportKind::Error, (anchor_file, anchor.start..anchor.start))
+                .with_config(Config::default().with_compact(false))
+                .with_message(&self.message);
 
         for (span, text, color) in self.labels {
-            let range: std::ops::Range<usize> = span.into();
-            builder =
-                builder.with_label(Label::new((id, range)).with_message(text).with_color(color));
+            let (file, range) = map.local_range(span);
+            builder = builder
+                .with_label(AriadneLabel::new((file, range)).with_message(text).with_color(color));
         }
 
         if let Some(note) = &self.note {
@@ -111,26 +243,35 @@ impl Builder {
             builder = builder.with_help(help);
         }
 
-        let mut buf: Vec<u8> = Vec::new();
-        builder.finish().write((id, Source::from(src.as_str())), &mut buf).ok();
+        let mut buf = Vec::new();
+        builder.finish().write(cache, &mut buf).ok();
         // SAFETY: ariadne only writes valid UTF-8
         let rendered = unsafe { String::from_utf8_unchecked(buf) };
         Diagnostic { rendered }
     }
 }
 
-pub trait AsDiagnostic {
-    fn into_diagnostic(self, span: Span) -> Diagnostic;
-    fn message(self) -> String;
+impl MapCache {
+    fn new(map: &SourceMap, files: impl IntoIterator<Item = FileId>) -> Self {
+        let mut sources = HashMap::new();
+        let mut names = HashMap::new();
+        for id in files {
+            sources.entry(id).or_insert_with(|| Source::from(map.source(id).to_owned()));
+            names.entry(id).or_insert_with(|| map.path(id).display().to_string());
+        }
+        Self { sources, names }
+    }
 }
 
-impl AsDiagnostic for Diagnostic {
-    fn into_diagnostic(self, _span: Span) -> Diagnostic {
-        self
+impl Cache<FileId> for MapCache {
+    type Storage = String;
+
+    fn fetch(&mut self, id: &FileId) -> Result<&Source<String>, impl fmt::Debug> {
+        self.sources.get(id).ok_or_else(|| format!("unregistered file {id:?}"))
     }
 
-    fn message(self) -> String {
-        self.rendered
+    fn display<'a>(&self, id: &'a FileId) -> Option<impl fmt::Display + 'a> {
+        self.names.get(id).cloned()
     }
 }
 
@@ -139,14 +280,12 @@ impl<'src> AsDiagnostic for LexError<'src> {
         self.kind.into_diagnostic(self.span)
     }
 
+    fn rich(self, _span: Span) -> RichDiagnostic {
+        self.kind.rich(self.span)
+    }
+
     fn message(self) -> String {
         self.kind.message()
-    }
-}
-
-impl<'src> From<LexError<'src>> for Diagnostic {
-    fn from(e: LexError<'src>) -> Self {
-        e.into_diagnostic(Span::default())
     }
 }
 
@@ -155,28 +294,12 @@ impl<'i> AsDiagnostic for ParserError<'i> {
         self.kind.into_diagnostic(self.span)
     }
 
+    fn rich(self, _span: Span) -> RichDiagnostic {
+        self.kind.rich(self.span)
+    }
+
     fn message(self) -> String {
         self.kind.message()
-    }
-}
-
-impl<'i> From<ParserError<'i>> for Diagnostic {
-    fn from(e: ParserError<'i>) -> Self {
-        e.into_diagnostic(Span::default())
-    }
-}
-
-impl<'h> From<HirError<'h>> for Diagnostic {
-    fn from(e: HirError<'h>) -> Self {
-        e.kind.into_diagnostic(e.span)
-    }
-}
-
-impl From<MirError> for Diagnostic {
-    fn from(e: MirError) -> Self {
-        match e.kind {
-            MirErrorKind::Hir(diagnostic) => diagnostic,
-        }
     }
 }
 
@@ -278,7 +401,8 @@ mod tests {
     use crate::parser::{self, Parser, error::ParseErrorKind};
 
     fn hir_err(src: &str) -> hir::error::HirError<'static> {
-        diagnostic::initialise(src, "<test>");
+        diagnostic::reset();
+        diagnostic::add_file("<test>", src);
         // Leak the source and arena so the borrowed error data lives for the whole
         // (short-lived) test process, letting us return a genuinely `'static` error.
         let src: &'static str = Box::leak(src.to_string().into_boxed_str());
@@ -288,7 +412,8 @@ mod tests {
     }
 
     fn parse_err(src: &str) -> parser::error::ParserError<'static> {
-        diagnostic::initialise(src, "<test>");
+        diagnostic::reset();
+        diagnostic::add_file("<test>", src);
         let result = Parser::new(src).parse();
         let err = result.unwrap_err();
         unsafe {
@@ -299,7 +424,8 @@ mod tests {
     }
 
     fn lex_err<'a>(src: &'a str) -> lexer::error::LexError<'a> {
-        diagnostic::initialise(src, "<test>");
+        diagnostic::reset();
+        diagnostic::add_file("<test>", src);
         Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap_err()
     }
 
@@ -451,6 +577,22 @@ mod tests {
     fn hir_unknown_function() {
         let kind = hir_check!("fn main() { foo(); }");
         assert_eq!(kind, HirErrorKind::UnknownFunction { name: "foo" });
+    }
+
+    #[test]
+    fn rich_diagnostic_carries_plain_structure() {
+        use crate::diagnostic::{AsDiagnostic, Severity};
+        let err = hir_err("fn main() { foo(); }");
+        let span = err.span;
+        let rich = err.kind.rich(span);
+
+        assert_eq!(rich.severity, Severity::Error);
+        // plain text, no ANSI escape sequences
+        assert!(!rich.message.contains('\u{1b}'));
+        assert!(rich.message.contains("foo"));
+        let primary = rich.primary.expect("primary label");
+        assert_eq!(primary.span, span);
+        assert!(rich.help.is_some());
     }
 
     #[test]
