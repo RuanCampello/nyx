@@ -8,14 +8,15 @@ name = "nyx"
 path = "src/main.rs"
 
 [workspace]
-members = ["nyx_macros"]
+members = ["nyx-macros", "nyx-lsp"]
+resolver = "2"
 
 [dependencies]
 lasso = "0.7.3"
 bumpalo = "3"
 ariadne = { version = "0.6.0" }
 clap = { version = "4", features = ["derive"] }
-nyx_macros = { path = "./nyx_macros" }
+nyx_macros = { path = "./nyx-macros" }
 
 [dev-dependencies]
 criterion = "0.5"
