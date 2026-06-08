@@ -52,7 +52,14 @@ pub trait HasSpan {
 impl<'src> Lexer<'src> {
     #[inline]
     pub fn new(source: &'src str) -> Self {
-        Self { cursor: Cursor::new(source), finished: false }
+        Self::with_base(source, token::BytePos::default())
+    }
+
+    /// Lex `source` whose first byte sits at global offset `base` in the
+    /// [`SourceMap`](crate::source_map::SourceMap) address space
+    #[inline]
+    pub fn with_base(source: &'src str, base: token::BytePos) -> Self {
+        Self { cursor: Cursor::new(source, base), finished: false }
     }
 
     /// Produces the next token, or `None` after EOF has been emitted.
@@ -208,7 +215,7 @@ impl<'src> Lexer<'src> {
 
     /// Builds a punctuation token from `start` to the current cursor position.
     #[inline]
-    fn token(&self, punct: Punct, start: token::Position) -> Token<'src> {
+    fn token(&self, punct: Punct, start: token::BytePos) -> Token<'src> {
         Token::new(TokenKind::Punct(punct), Span::new(start, self.cursor.position()))
     }
 }
@@ -226,6 +233,10 @@ impl<'src> Iterator for Lexer<'src> {
 }
 
 impl<T> Spanned<T> {
+    pub fn new(value: T, span: Span) -> Self {
+        Self { span, value }
+    }
+
     pub const fn span(&self) -> Span {
         self.span
     }
@@ -239,12 +250,6 @@ impl<T: Clone> Spanned<T> {
     #[allow(unused)]
     pub fn value_ref(&self) -> &T {
         &self.value
-    }
-}
-
-impl<T> Spanned<T> {
-    pub fn new(value: T, span: Span) -> Self {
-        Self { span, value }
     }
 }
 
@@ -458,7 +463,7 @@ mod tests {
         let result: Result<Vec<_>, _> = Lexer::new("42 @ 7").collect();
         let err = result.unwrap_err();
         assert_eq!(err.kind, error::LexErrorKind::UnexpectedChar('@'));
-        assert_eq!(err.span.start.column, 4);
+        assert_eq!(err.span.start.0, 3);
     }
 
     #[test]
@@ -499,17 +504,17 @@ mod tests {
     fn spans_are_correct() {
         let tokens: Vec<_> = Lexer::new("let x = 42;").collect::<Result<Vec<_>, _>>().unwrap();
 
-        // "let" starts at col 1, ends at col 4
-        assert_eq!(tokens[0].span.start.column, 1);
-        assert_eq!(tokens[0].span.end.column, 4);
+        // "let" occupies bytes 0..3
+        assert_eq!(tokens[0].span.start.0, 0);
+        assert_eq!(tokens[0].span.end.0, 3);
 
-        // "x" at col 5
-        assert_eq!(tokens[1].span.start.column, 5);
-        assert_eq!(tokens[1].span.end.column, 6);
+        // "x" at byte 4
+        assert_eq!(tokens[1].span.start.0, 4);
+        assert_eq!(tokens[1].span.end.0, 5);
 
-        // "42" at col 9
-        assert_eq!(tokens[3].span.start.column, 9);
-        assert_eq!(tokens[3].span.end.column, 11);
+        // "42" at bytes 8..10
+        assert_eq!(tokens[3].span.start.0, 8);
+        assert_eq!(tokens[3].span.end.0, 10);
     }
 
     #[test]

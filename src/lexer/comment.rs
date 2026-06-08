@@ -2,10 +2,15 @@
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::{LexError, LexErrorKind};
-use crate::lexer::token::{Position, Span};
+use crate::lexer::token::{BytePos, Span};
 
 /// Tokenizer for single-line comments (`// ...`).
 pub struct LineComment;
+
+/// Tokenizer for block comments (`/* ... */`) with nesting support
+pub struct BlockComment {
+    pub(in crate::lexer) open_offset: usize,
+}
 
 impl LineComment {
     pub fn skip(self, cursor: &mut Cursor<'_>) {
@@ -13,27 +18,14 @@ impl LineComment {
     }
 }
 
-/// Tokenizer for block comments (`/* ... */`) with nesting support.
-pub struct BlockComment {
-    pub(in crate::lexer) open_offset: usize,
-}
-
 impl BlockComment {
     pub fn skip<'src>(self, cursor: &mut Cursor<'src>) -> Result<(), LexError<'src>> {
-        let start_pos = cursor.position();
         let mut depth = 1;
 
         while depth > 0 {
             match cursor.advance() {
                 None => {
-                    let span = Span::new(
-                        Position::new(
-                            self.open_offset as u32,
-                            start_pos.line,
-                            start_pos.column.saturating_sub(2),
-                        ),
-                        cursor.position(),
-                    );
+                    let span = Span::new(BytePos(self.open_offset as u32), cursor.position());
                     return Err(LexError::new(LexErrorKind::UnterminatedComment, span));
                 },
                 Some('/') if cursor.consume_optional('*') => depth += 1,
@@ -52,28 +44,28 @@ mod tests {
 
     #[test]
     fn line_comment() {
-        let mut cursor = Cursor::new("this is a comment\ncode");
+        let mut cursor = Cursor::new("this is a comment\ncode", BytePos(0));
         LineComment.skip(&mut cursor);
         assert_eq!(cursor.peek(), Some('\n'));
     }
 
     #[test]
     fn block_comment_simple() {
-        let mut cursor = Cursor::new(" hello */rest");
+        let mut cursor = Cursor::new(" hello */rest", BytePos(0));
         BlockComment { open_offset: 0 }.skip(&mut cursor).unwrap();
         assert_eq!(cursor.peek(), Some('r'));
     }
 
     #[test]
     fn block_comment_nested() {
-        let mut cursor = Cursor::new(" /* inner */ */after");
+        let mut cursor = Cursor::new(" /* inner */ */after", BytePos(0));
         BlockComment { open_offset: 0 }.skip(&mut cursor).unwrap();
         assert_eq!(cursor.peek(), Some('a'));
     }
 
     #[test]
     fn unterminated_block_comment() {
-        let mut cursor = Cursor::new(" hello");
+        let mut cursor = Cursor::new(" hello", BytePos(0));
         let err = BlockComment { open_offset: 0 }.skip(&mut cursor).unwrap_err();
         assert_eq!(err.kind, LexErrorKind::UnterminatedComment);
     }

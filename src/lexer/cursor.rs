@@ -1,36 +1,40 @@
-//! Zero-copy cursor over source code.
+//! Zero-copy cursor over source code
 //!
-//! Tracks byte offset and human-readable line:column as it advances
-//! through the source character by character.
+//! Tracks a single global byte offset as it advances through the source one
+//! character at a time. Line and column are no longer tracked here, they are
+//! derived on demand from the [`SourceMap`](crate::source_map::SourceMap)
 
-use crate::lexer::token::Position;
+use crate::lexer::token::BytePos;
 use std::iter::Peekable;
 use std::str::Chars;
 
-/// A cursor that walks through source code one character at a time,
-/// maintaining the current [`Position`].
+/// A cursor that walks through one file's source, reporting global byte
+/// positions relative to the file's `base` in the source address space
 #[derive(Debug, Clone)]
 pub struct Cursor<'src> {
-    /// The full source text.
+    /// The full source text of this file
     source: &'src str,
     /// Peekable char iterator.
     chars: Peekable<Chars<'src>>,
-    /// Current position (offset + line + column).
-    position: Position,
+    /// Global offset of this file's first byte
+    base: BytePos,
+    /// Current global byte offset
+    position: BytePos,
 }
 
 impl<'src> Cursor<'src> {
     #[inline]
-    pub fn new(source: &'src str) -> Self {
+    pub fn new(source: &'src str, base: BytePos) -> Self {
         Self {
             source,
             chars: source.chars().peekable(),
-            position: Position::new(0, 1, 1),
+            base,
+            position: base,
         }
     }
 
     #[inline]
-    pub const fn position(&self) -> Position {
+    pub const fn position(&self) -> BytePos {
         self.position
     }
 
@@ -44,26 +48,10 @@ impl<'src> Cursor<'src> {
         self.chars.clone().nth(n - 1)
     }
 
-    #[inline]
-    pub const fn source(&self) -> &'src str {
-        self.source
-    }
-
     /// Consumes and returns the next character, updating position.
     pub fn advance(&mut self) -> Option<char> {
         let c = self.chars.next()?;
-        let len = c.len_utf8();
-
-        match c == '\n' {
-            true => {
-                self.position.line += 1;
-                self.position.column = 1;
-            },
-            _ => self.position.column += 1,
-        }
-
-        self.position.offset += len as u32;
-
+        self.position.0 += c.len_utf8() as u32;
         Some(c)
     }
 
@@ -89,8 +77,13 @@ impl<'src> Cursor<'src> {
         }
     }
 
+    /// Slice of source between the global offset `from` and the current
+    /// position, rebased to this file's own text
     #[inline]
-    pub fn slice_from(&self, from: usize) -> &'src str {
-        &self.source[from..self.position.offset()]
+    pub fn slice_from(&self, from: BytePos) -> &'src str {
+        let lo = (from.0 - self.base.0) as usize;
+        let hi = (self.position.0 - self.base.0) as usize;
+
+        &self.source[lo..hi]
     }
 }

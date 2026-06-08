@@ -4,7 +4,7 @@ use crate::{
     lexer::{
         Lexer,
         error::LexError,
-        token::{Keyword, Position, Punct, Span, Token, TokenKind},
+        token::{BytePos, Keyword, Punct, Span, Token, TokenKind},
     },
     parser::{
         error::{ParseErrorKind, ParserError},
@@ -34,6 +34,16 @@ impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
         Self {
             cursor: Lexer::new(source),
+            buffer: VecDeque::with_capacity(4),
+            last: None,
+        }
+    }
+
+    /// Parse `source` whose first byte sits at global offset `base` in the
+    /// [`SourceMap`](crate::source_map::SourceMap) address space
+    pub fn with_base(source: &'i str, base: BytePos) -> Self {
+        Self {
+            cursor: Lexer::with_base(source, base),
             buffer: VecDeque::with_capacity(4),
             last: None,
         }
@@ -161,11 +171,7 @@ impl<'i> Parser<'i> {
             Some(Ok(t)) if t.is_kind(Punct::Shr) => {
                 let shr = self.next_token()?.unwrap();
                 // Split >>: push back a synthetic > for the second character
-                let mid = Position::new(
-                    shr.span.start.offset + 1,
-                    shr.span.start.line,
-                    shr.span.start.column + 1,
-                );
+                let mid = shr.span.start + 1;
                 self.buffer.push_front(Ok(Token {
                     kind: TokenKind::Punct(Punct::Gt),
                     span: Span::new(mid, shr.span.end),
@@ -213,7 +219,7 @@ impl<'i> Parser<'i> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        lexer::token::Position,
+        lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
             statement::{Let, Return, Type},
@@ -234,8 +240,8 @@ mod tests {
             }
         );
 
-        assert_eq!(err.span.start.column, 14);
-        assert_eq!(err.span.end.column, 14);
+        assert_eq!(err.span.start.0, 13);
+        assert_eq!(err.span.end.0, 13);
     }
 
     #[test]
@@ -246,8 +252,8 @@ mod tests {
             ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Semicolon) }
         );
 
-        assert_eq!(err.span.start.column, 13);
-        assert_eq!(err.span.end.column, 14);
+        assert_eq!(err.span.start.0, 12);
+        assert_eq!(err.span.end.0, 13);
     }
 
     #[test]
@@ -255,8 +261,8 @@ mod tests {
         let err = Parser::new("let 123: i32 = 1;").parse().unwrap_err();
         assert_eq!(err.kind, ParseErrorKind::ExpectedIdentifier { found: TokenKind::Integer(123) });
 
-        assert_eq!(err.span.start.column, 5);
-        assert_eq!(err.span.end.column, 8);
+        assert_eq!(err.span.start.0, 4);
+        assert_eq!(err.span.end.0, 7);
     }
 
     #[test]
@@ -307,21 +313,18 @@ mod tests {
             ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Plus) }
         );
 
-        assert_eq!(err.span.start.column, 8);
-        assert_eq!(err.span.end.column, 9);
+        assert_eq!(err.span.start.0, 7);
+        assert_eq!(err.span.end.0, 8);
 
         let statement = Parser::new("return -1;").parse().unwrap();
         assert_eq!(
             statement,
             vec![Statement::Return(Return {
-                span: Span::new(Position::new(0, 1, 1), Position::new(10, 1, 11)),
+                span: Span::new(BytePos(0), BytePos(10)),
                 value: Some(Expression::Unary {
                     operator: UnaryOperator::Neg,
-                    span: Span::new(Position::new(7, 1, 8), Position::new(9, 1, 10)),
-                    expr: Box::new(Expression::Integer(
-                        1,
-                        Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10))
-                    )),
+                    span: Span::new(BytePos(7), BytePos(9)),
+                    expr: Box::new(Expression::Integer(1, Span::new(BytePos(8), BytePos(9)))),
                 }),
             },)]
         )
@@ -331,18 +334,9 @@ mod tests {
     fn multiplication_is_left_associative() {
         let statements = Parser::new("a * b * c;").parse().unwrap();
 
-        let a = Box::new(Expression::Identifier(
-            "a",
-            Span::new(Position::new(0, 1, 1), Position::new(1, 1, 2)),
-        ));
-        let b = Box::new(Expression::Identifier(
-            "b",
-            Span::new(Position::new(4, 1, 5), Position::new(5, 1, 6)),
-        ));
-        let c = Box::new(Expression::Identifier(
-            "c",
-            Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
-        ));
+        let a = Box::new(Expression::Identifier("a", Span::new(BytePos(0), BytePos(1))));
+        let b = Box::new(Expression::Identifier("b", Span::new(BytePos(4), BytePos(5))));
+        let c = Box::new(Expression::Identifier("c", Span::new(BytePos(8), BytePos(9))));
 
         assert_eq!(
             statements,
@@ -352,13 +346,13 @@ mod tests {
                         left: a,
                         operator: BinaryOperator::Mul,
                         right: b,
-                        span: Span::new(Position::new(0, 1, 1), Position::new(5, 1, 6)),
+                        span: Span::new(BytePos(0), BytePos(5)),
                     }),
                     operator: BinaryOperator::Mul,
                     right: c,
-                    span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
+                    span: Span::new(BytePos(0), BytePos(9)),
                 },
-                Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
+                Span::new(BytePos(0), BytePos(9))
             )]
         );
     }
@@ -367,15 +361,9 @@ mod tests {
     fn assignment_is_right_associative() {
         let statements = Parser::new("a = b = c;").parse().unwrap();
         let b_eq_c = Box::new(Expression::Assignment {
-            target: Box::new(Expression::Identifier(
-                "b",
-                Span::new(Position::new(4, 1, 5), Position::new(5, 1, 6)),
-            )),
-            value: Box::new(Expression::Identifier(
-                "c",
-                Span::new(Position::new(8, 1, 9), Position::new(9, 1, 10)),
-            )),
-            span: Span::new(Position::new(4, 1, 5), Position::new(9, 1, 10)),
+            target: Box::new(Expression::Identifier("b", Span::new(BytePos(4), BytePos(5)))),
+            value: Box::new(Expression::Identifier("c", Span::new(BytePos(8), BytePos(9)))),
+            span: Span::new(BytePos(4), BytePos(9)),
         });
 
         assert_eq!(
@@ -384,12 +372,12 @@ mod tests {
                 Expression::Assignment {
                     target: Box::new(Expression::Identifier(
                         "a",
-                        Span::new(Position::new(0, 1, 1), Position::new(1, 1, 2)),
+                        Span::new(BytePos(0), BytePos(1)),
                     )),
                     value: b_eq_c,
-                    span: Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10)),
+                    span: Span::new(BytePos(0), BytePos(9)),
                 },
-                Span::new(Position::new(0, 1, 1), Position::new(9, 1, 10))
+                Span::new(BytePos(0), BytePos(9))
             )]
         );
     }

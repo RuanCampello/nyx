@@ -2,7 +2,7 @@
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::{LexError, LexErrorKind};
-use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
+use crate::lexer::token::{BytePos, Span, Token, TokenKind, Tokenize};
 
 pub struct CharLiteral;
 
@@ -10,7 +10,7 @@ impl<'src> Tokenize<'src> for CharLiteral {
     fn lex(
         self,
         cursor: &mut Cursor<'src>,
-        start: Position,
+        start: BytePos,
     ) -> Result<Token<'src>, LexError<'src>> {
         // consume the opening `'`
         cursor.advance();
@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     fn tok(src: &str) -> Result<Token<'_>, LexError<'_>> {
-        let mut cursor = Cursor::new(src);
+        let mut cursor = Cursor::new(src, BytePos(0));
         let start = cursor.position();
         CharLiteral.lex(&mut cursor, start)
     }
@@ -190,14 +190,14 @@ mod tests {
 
     #[test]
     fn invalid_hex_escape_does_not_consume_literal_boundary() {
-        let mut cursor = Cursor::new(r"'\x' + 1");
+        let mut cursor = Cursor::new(r"'\x' + 1", BytePos(0));
         let start = cursor.position();
 
         let err = CharLiteral.lex(&mut cursor, start).unwrap_err();
 
         assert_eq!(err.kind, LexErrorKind::InvalidEscape('x'));
-        assert_eq!(err.span.start.column, 2);
-        assert_eq!(err.span.end.column, 4);
+        assert_eq!(err.span.start.0, 1);
+        assert_eq!(err.span.end.0, 3);
         assert_eq!(cursor.peek(), Some('\''));
     }
 }

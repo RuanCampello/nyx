@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::LexError;
-use crate::lexer::token::{Keyword, Position, Span, Token, TokenKind, Tokenize};
+use crate::lexer::token::{BytePos, Keyword, Span, Token, TokenKind, Tokenize};
 
 /// Tokenizer for identifiers, keywords, and boolean literals.
 ///
@@ -16,12 +16,12 @@ impl<'src> Tokenize<'src> for Identifier {
     fn lex(
         self,
         cursor: &mut Cursor<'src>,
-        start: Position,
+        start: BytePos,
     ) -> Result<Token<'src>, LexError<'src>> {
         cursor.advance();
         cursor.consume_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
 
-        let text = cursor.slice_from(start.offset());
+        let text = cursor.slice_from(start);
         let span = Span::new(start, cursor.position());
 
         let kind = match text {
@@ -41,7 +41,7 @@ mod tests {
     use super::*;
 
     fn tok(src: &str) -> Token<'_> {
-        let mut cursor = Cursor::new(src);
+        let mut cursor = Cursor::new(src, BytePos(0));
         let start = cursor.position();
         Identifier.lex(&mut cursor, start).unwrap()
     }

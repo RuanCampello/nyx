@@ -5,24 +5,24 @@ use crate::lexer::error::LexError;
 use std::fmt;
 use std::ops::Add;
 
-/// Trait implemented by every sub-tokenizer.
-///
-/// Each token type (identifier, number, string, …) is a small struct that
-/// implements this trait.  The [`Lexer`](super::Lexer) dispatches to the
-/// appropriate implementor after peeking at the first character.
-///
-pub trait Tokenize<'src> {
-    /// Lex a single token starting at `start`, advancing `cursor` past it.
-    fn lex(self, cursor: &mut Cursor<'src>, start: Position)
-    -> Result<Token<'src>, LexError<'src>>;
-}
-
 /// A single token produced by the lexer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'src> {
     pub kind: TokenKind<'src>,
     pub span: Span,
 }
+
+/// A byte range `[start, end)` in the global source address space
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Span {
+    pub start: BytePos,
+    pub end: BytePos,
+}
+
+/// A byte offset into the global [`SourceMap`](crate::source_map::SourceMap)
+/// address space. File identity and line/column are derived from it on demand
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub struct BytePos(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'src> {
@@ -104,44 +104,17 @@ pub enum Punct {
     Arrow,      // ->
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
-pub struct Position {
-    pub offset: u32,
-    pub line: u16,
-    pub column: u16,
+/// Trait implemented by every sub-tokenizer
+///
+/// Each token type (identifier, number, string, …) is a small struct that
+/// implements this trait. The [`Lexer`](super::Lexer) dispatches to the
+/// appropriate implementor after peeking at the first character
+pub trait Tokenize<'src> {
+    /// Lex a single token starting at `start`, advancing `cursor` past it
+    fn lex(self, cursor: &mut Cursor<'src>, start: BytePos) -> Result<Token<'src>, LexError<'src>>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
-pub struct Span {
-    pub start: Position,
-    pub end: Position,
-}
-
-impl Position {
-    #[inline]
-    pub const fn new(offset: u32, line: u16, column: u16) -> Self {
-        Self { offset, line, column }
-    }
-
-    pub const fn offset(&self) -> usize {
-        self.offset as usize
-    }
-}
-
-impl Span {
-    #[inline]
-    pub const fn new(start: Position, end: Position) -> Self {
-        Self { start, end }
-    }
-}
-
-impl Add<Span> for Span {
-    type Output = Self;
-
-    fn add(self, rhs: Span) -> Self::Output {
-        Span::new(self.start, rhs.end)
-    }
-}
+const _: () = assert!(size_of::<Span>() == 8, "span must stay 8 bytes");
 
 impl<'src> Token<'src> {
     #[inline]
@@ -160,6 +133,87 @@ impl<'src> Token<'src> {
             || self.is_kind(Keyword::Pub)
             || self.is_kind(Keyword::Inline)
             || self.is_kind(Keyword::Const)
+    }
+}
+
+impl Span {
+    #[inline]
+    pub const fn new(start: BytePos, end: BytePos) -> Self {
+        Self { start, end }
+    }
+
+    #[inline(always)]
+    pub const fn lo(self) -> BytePos {
+        self.start
+    }
+
+    #[inline(always)]
+    pub const fn hi(self) -> BytePos {
+        self.end
+    }
+}
+
+impl Add<Span> for Span {
+    type Output = Self;
+
+    fn add(self, rhs: Span) -> Self::Output {
+        Span::new(self.start, rhs.end)
+    }
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}..{}", self.start.0, self.end.0)
+    }
+}
+
+impl BytePos {
+    #[inline(always)]
+    pub const fn offset(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Add<u32> for BytePos {
+    type Output = Self;
+
+    #[inline(always)]
+    fn add(self, rhs: u32) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+
+impl fmt::Display for BytePos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<Punct> for TokenKind<'_> {
+    fn from(value: Punct) -> Self {
+        Self::Punct(value)
+    }
+}
+
+impl From<Keyword> for TokenKind<'_> {
+    fn from(value: Keyword) -> Self {
+        Self::Keyword(value)
+    }
+}
+
+impl fmt::Display for TokenKind<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Integer(n) => write!(f, "{n}"),
+            Self::Float(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+            Self::Char(c) => write!(f, "'{c}'"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Identifier(id) => write!(f, "{id}"),
+            Self::Keyword(kw) => write!(f, "{kw}"),
+            Self::Punct(p) => write!(f, "{p}"),
+            Self::Eof => write!(f, "EOF"),
+        }
     }
 }
 
@@ -220,6 +274,12 @@ impl std::str::FromStr for Keyword {
     }
 }
 
+impl fmt::Display for Keyword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Punct {
     pub const fn as_str<'s>(self) -> &'s str {
         match self {
@@ -255,52 +315,6 @@ impl Punct {
             Self::Dot => ".",
             Self::Arrow => "->",
         }
-    }
-}
-
-impl fmt::Display for TokenKind<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Integer(n) => write!(f, "{n}"),
-            Self::Float(n) => write!(f, "{n}"),
-            Self::String(s) => write!(f, "\"{s}\""),
-            Self::Char(c) => write!(f, "'{c}'"),
-            Self::Bool(b) => write!(f, "{b}"),
-            Self::Identifier(id) => write!(f, "{id}"),
-            Self::Keyword(kw) => write!(f, "{kw}"),
-            Self::Punct(p) => write!(f, "{p}"),
-            Self::Eof => write!(f, "EOF"),
-        }
-    }
-}
-
-impl From<Punct> for TokenKind<'_> {
-    fn from(value: Punct) -> Self {
-        Self::Punct(value)
-    }
-}
-
-impl From<Keyword> for TokenKind<'_> {
-    fn from(value: Keyword) -> Self {
-        Self::Keyword(value)
-    }
-}
-
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line, self.column)
-    }
-}
-
-impl fmt::Display for Span {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
-    }
-}
-
-impl fmt::Display for Keyword {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 

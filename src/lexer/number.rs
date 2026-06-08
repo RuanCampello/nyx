@@ -2,7 +2,7 @@
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::{LexError, LexErrorKind};
-use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
+use crate::lexer::token::{BytePos, Span, Token, TokenKind, Tokenize};
 
 /// Tokenizer for numeric literals.
 ///
@@ -15,7 +15,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
     fn lex(
         self,
         cursor: &mut Cursor<'src>,
-        start: Position,
+        start: BytePos,
     ) -> Result<Token<'src>, LexError<'src>> {
         // consume leading digits and underscores
         consume_digits(cursor);
@@ -32,7 +32,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
             _ => false,
         };
 
-        let text = cursor.slice_from(start.offset());
+        let text = cursor.slice_from(start);
         let span = Span::new(start, cursor.position());
 
         let clean: String;
@@ -73,7 +73,7 @@ mod tests {
     use super::*;
 
     fn tok(src: &str) -> Token<'_> {
-        let mut cursor = Cursor::new(src);
+        let mut cursor = Cursor::new(src, BytePos(0));
         let start = cursor.position();
         NumberLiteral.lex(&mut cursor, start).unwrap()
     }
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn integer_followed_by_dot_no_digit() {
         // `42.` followed by non-digit should parse as integer 42.
-        let mut cursor = Cursor::new("42.x");
+        let mut cursor = Cursor::new("42.x", BytePos(0));
         let start = cursor.position();
         let token = NumberLiteral.lex(&mut cursor, start).unwrap();
 

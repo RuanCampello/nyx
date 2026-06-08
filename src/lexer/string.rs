@@ -2,7 +2,7 @@
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::{LexError, LexErrorKind};
-use crate::lexer::token::{Position, Span, Token, TokenKind, Tokenize};
+use crate::lexer::token::{BytePos, Span, Token, TokenKind, Tokenize};
 
 /// Tokenizer for double-quoted string literals.
 ///
@@ -15,12 +15,12 @@ impl<'src> Tokenize<'src> for StringLiteral {
     fn lex(
         self,
         cursor: &mut Cursor<'src>,
-        start: Position,
+        start: BytePos,
     ) -> Result<Token<'src>, LexError<'src>> {
         // consume the opening `"`
         cursor.advance();
 
-        let content_start = cursor.position().offset();
+        let content_start = cursor.position();
         let mut has_invalid_escape = false;
         let mut invalid_escape_char = ' ';
         let mut invalid_escape_pos = cursor.position();
@@ -34,21 +34,13 @@ impl<'src> Tokenize<'src> for StringLiteral {
                 },
 
                 Some('"') => {
-                    let content_end = cursor.position().offset();
+                    let content = cursor.slice_from(content_start);
                     cursor.advance(); // consume closing `"
                     let span = Span::new(start, cursor.position());
-                    let content = &cursor.source()[content_start..content_end];
                     if has_invalid_escape {
                         return Err(LexError::new(
                             LexErrorKind::InvalidEscape(invalid_escape_char),
-                            Span::new(
-                                invalid_escape_pos,
-                                Position::new(
-                                    invalid_escape_pos.offset + 2,
-                                    invalid_escape_pos.line,
-                                    invalid_escape_pos.column + 2,
-                                ),
-                            ),
+                            Span::new(invalid_escape_pos, invalid_escape_pos + 2),
                         ));
                     }
 
@@ -93,7 +85,7 @@ mod tests {
     use super::*;
 
     fn tok(src: &str) -> Result<Token<'_>, LexError<'_>> {
-        let mut cursor = Cursor::new(src);
+        let mut cursor = Cursor::new(src, BytePos(0));
         let start = cursor.position();
         StringLiteral.lex(&mut cursor, start)
     }
