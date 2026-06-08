@@ -1,6 +1,6 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
-    diagnostic::{self, Diagnostic},
+    diagnostic::Diagnostic,
     hir::{Declarations, SymbolTable, scope::Scope},
     parser::statement::{Interface, Statement},
 };
@@ -17,8 +17,6 @@ pub(super) fn build_signatures<'hir>(
 
     for &idx in order {
         let node = &mut graph.nodes[idx];
-        let path = node.path.clone();
-        diagnostic::initialise(node.source, path.to_str().unwrap_or("<unknown>"));
 
         let declarations =
             Declarations::partition(&mut node.statements, |name| interfaces.get(name))

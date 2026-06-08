@@ -1,6 +1,6 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
-    diagnostic::{self, Diagnostic},
+    diagnostic::Diagnostic,
     hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
     parser::{
         expression::{BinaryOperator, Expression},
@@ -21,16 +21,6 @@ struct ReachabilityVisitor<'a, 'hir> {
     found: &'a mut Vec<FunctionId>,
 }
 
-impl DemandSet {
-    pub(super) fn contains(&self, id: FunctionId) -> bool {
-        self.needed.contains(&id)
-    }
-
-    fn insert(&mut self, id: FunctionId) -> bool {
-        self.needed.insert(id)
-    }
-}
-
 pub(super) fn lower_reachable<'hir, 'src>(
     graph: &mut ModuleGraph<'src>,
     order: &[usize],
@@ -47,7 +37,6 @@ where
 
     for &idx in order {
         let node = &mut graph.nodes[idx];
-        diagnostic::initialise(node.source, node.path.to_str().unwrap_or("<unknown>"));
 
         let declarations =
             Declarations::partition(&mut node.statements, |name| interfaces.get(name))
@@ -168,6 +157,16 @@ fn find_interface_for_method(
                 .then(|| symbols.get(interface_sym).to_string())
         },
     )
+}
+
+impl DemandSet {
+    pub(super) fn contains(&self, id: FunctionId) -> bool {
+        self.needed.contains(&id)
+    }
+
+    fn insert(&mut self, id: FunctionId) -> bool {
+        self.needed.insert(id)
+    }
 }
 
 impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {

@@ -365,6 +365,15 @@ pub fn lower<'hir>(
     })
 }
 
+/// Walk a place expression (`Local`/`Field`) to its base local, if any
+pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
+    match &expr.kind {
+        ExpressionKind::Local(local) => Some(*local),
+        ExpressionKind::Field { base, .. } => place_base_local(base),
+        _ => None,
+    }
+}
+
 impl FunctionKind {
     pub fn intrinsic(&self) -> Option<Intrinsic> {
         match self {
@@ -399,15 +408,6 @@ impl Res {
             Res::Function(id) => Some(id),
             Res::Variant { .. } => None,
         }
-    }
-}
-
-/// Walk a place expression (`Local`/`Field`) to its base local, if any
-pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
-    match &expr.kind {
-        ExpressionKind::Local(local) => Some(*local),
-        ExpressionKind::Field { base, .. } => place_base_local(base),
-        _ => None,
     }
 }
 
@@ -1144,8 +1144,10 @@ mod tests {
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(err.kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
-        assert_eq!(err.span.start.column, 23);
-        assert_eq!(err.span.end.column, 26);
+        let mut map = crate::source_map::SourceMap::default();
+        map.add_file("t", src);
+        assert_eq!(map.loc(err.span.start).col_utf8, 22);
+        assert_eq!(map.loc(err.span.end).col_utf8, 25);
     }
 
     #[test]
@@ -1155,8 +1157,10 @@ mod tests {
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(err.kind, HirErrorKind::DuplicateField { name: "x" });
-        assert_eq!(err.span.start.column, 27);
-        assert_eq!(err.span.end.column, 30);
+        let mut map = crate::source_map::SourceMap::default();
+        map.add_file("t", src);
+        assert_eq!(map.loc(err.span.start).col_utf8, 26);
+        assert_eq!(map.loc(err.span.end).col_utf8, 29);
     }
 
     #[test]
@@ -1166,8 +1170,10 @@ mod tests {
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "p" });
-        assert_eq!(err.span.start.column, 28);
-        assert_eq!(err.span.end.column, 31);
+        let mut map = crate::source_map::SourceMap::default();
+        map.add_file("t", src);
+        assert_eq!(map.loc(err.span.start).col_utf8, 27);
+        assert_eq!(map.loc(err.span.end).col_utf8, 30);
     }
 
     #[test]
@@ -1236,7 +1242,9 @@ mod tests {
             err.kind,
             HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "value" }
         );
-        assert_eq!(err.span.start.column, 17);
+        let mut map = crate::source_map::SourceMap::default();
+        map.add_file("t", src);
+        assert_eq!(map.loc(err.span.start).col_utf8, 16);
     }
 
     #[test]

@@ -27,6 +27,12 @@ pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
     arena: &'hir bumpalo::Bump,
 }
 
+pub(crate) struct FS;
+
+pub struct OverlayFS {
+    pub overlay: std::collections::HashMap<PathBuf, String>,
+}
+
 #[derive(Debug, Diagnostic)]
 #[rustfmt::skip]
 pub enum ModuleError {
@@ -85,8 +91,6 @@ pub(crate) trait FileSystem {
     fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
 }
 
-pub(crate) struct FS;
-
 impl<'hir> ModuleLoader<'hir, FS> {
     pub fn new(name: String, root: PathBuf, arena: &'hir bumpalo::Bump) -> Self {
         Self::with_file_system(name, root, resolve_std_root(), FS, arena)
@@ -117,6 +121,8 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
     pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir<'hir>, ModuleError> {
+        crate::diagnostic::reset();
+
         let arena = self.arena;
         let symbols = &mut self.symbols;
 
@@ -153,6 +159,19 @@ impl FileSystem for FS {
     }
 }
 
+impl FileSystem for OverlayFS {
+    fn read(&self, path: &Path) -> Result<String, std::io::Error> {
+        if let Some(content) = self.overlay.get(path) {
+            return Ok(content.clone());
+        }
+        std::fs::read_to_string(path)
+    }
+
+    fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error> {
+        path.canonicalize()
+    }
+}
+
 impl From<Diagnostic> for ModuleError {
     fn from(value: Diagnostic) -> Self {
         Self::Diagnostic(value)
@@ -166,11 +185,11 @@ impl From<ModuleError> for Diagnostic {
             other => {
                 let span = match &other {
                     ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
-                    ModuleError::CircularImport { span, .. } => *span,
+                    ModuleError::CircularImport { span, .. }
+                    | ModuleError::UnknownRoot { span, .. }
+                    | ModuleError::UnknownExport { span, .. }
+                    | ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::EmptyPath => Span::default(),
-                    ModuleError::UnknownRoot { span, .. } => *span,
-                    ModuleError::UnknownExport { span, .. } => *span,
-                    ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::Diagnostic(_) => unreachable!(),
                 };
                 AsDiagnostic::into_diagnostic(other, span)
@@ -185,7 +204,7 @@ impl From<ModuleError> for Diagnostic {
 /// 1. `NYX_STD_PATH` environment variable
 /// 2. `<binary_dir>/std/`
 /// 3. `std/` relative to CWD
-fn resolve_std_root() -> PathBuf {
+pub(crate) fn resolve_std_root() -> PathBuf {
     if let Ok(env) = std::env::var("NYX_STD_PATH") {
         return PathBuf::from(env);
     }

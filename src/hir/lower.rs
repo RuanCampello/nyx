@@ -282,16 +282,12 @@ where
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
-                Ok(match tail_ret {
-                    // a diverging tail expression (an `exit()`/`panic()` returning
-                    // `!`) produces no value: it needs no `return` wrapper and no
-                    // type assertion, the block simply diverges
-                    true if expr.typ.diverges() => (Statement::Expr(expr.expr), true),
+                Ok(match tail_ret && !expr.typ.diverges() {
                     true => {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         (Statement::Return(Some(expr.expr)), true)
                     },
-                    _ => (Statement::Expr(expr.expr), expr.typ.diverges()),
+                    _ => (Statement::Expr(expr.expr), tail_ret || expr.typ.diverges()),
                 })
             },
             Stmt::Block(block) => {
@@ -303,12 +299,12 @@ where
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
 
-                Ok(match tail_ret {
+                Ok(match tail_ret && !expr.typ.diverges() {
                     true => {
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
                         (Statement::Return(Some(expr.expr)), true)
                     },
-                    _ => (Statement::Expr(expr.expr), false),
+                    _ => (Statement::Expr(expr.expr), tail_ret || expr.typ.diverges()),
                 })
             },
 
@@ -618,9 +614,8 @@ where
                     UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| {
                         let to = match h.kind() {
-                            TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
-                            TypeKind::Char => RefTarget::new(TypeKind::Char),
                             TypeKind::Ref { to, .. } => to,
+                            TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
                             _ => RefTarget::new(TypeKind::Char),
                         };
                         Type::refer(to, false)
@@ -933,10 +928,9 @@ where
                     if signature.receiver_mutable()
                         && base_local.filter(|&id| self[id].mutable).is_none()
                     {
-                        let name = match base_local {
-                            Some(id) => self.arena.alloc_str(self.symbols.get(self[id].name)),
-                            None => "temporary",
-                        };
+                        let name = base_local.map_or("temporary", |id| {
+                            self.arena.alloc_str(self.symbols.get(self[id].name))
+                        });
 
                         return Err(hir_error!(*span, ImmutableBind { name }));
                     }
@@ -1032,10 +1026,7 @@ where
                     self.scope.resolve_function_call(*qualifier, name, self.symbols).is_some();
 
                 if !exists {
-                    let name = match qualifier {
-                        Some(q) => qualified(self.arena, q, name),
-                        None => name,
-                    };
+                    let name = qualifier.map_or(name, |q| qualified(self.arena, q, name));
                     return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
@@ -1372,68 +1363,25 @@ where
         span: Span,
     ) -> Result<Option<Lowered<'hir>>, HirError<'hir>> {
         let qualifier_symbol = self.symbols.insert(qualifier);
-        let enum_id = match self.scope.enum_map.get(&qualifier_symbol).copied() {
-            Some(id) => id,
-            // a generic enum (`Optional`) takes its instantiation from type_args or the hint
-            None if self.scope.generic_enums.contains_key(&qualifier_symbol) => {
-                if !type_args.is_empty() {
-                    let mut resolved = Vec::with_capacity(type_args.len());
-                    for arg in type_args {
-                        resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
-                    }
-                    if let Some(template) = self.scope.generic_enums.get(&qualifier_symbol) {
-                        self.check_bounds(&template.generics, &resolved, span)?;
-                    }
-                    let typ =
-                        self.scope.instantiate_generic(qualifier, &resolved, span, self.symbols)?;
-                    match typ.kind() {
-                        TypeKind::Enum(id) => id,
-                        _ => return Ok(None),
-                    }
-                } else {
-                    match hint.map(|typ| typ.kind()) {
-                        Some(TypeKind::Enum(id)) => id,
-                        _ => return Ok(None),
-                    }
-                }
-            },
-            None => return Ok(None),
+
+        let Some(enum_id) =
+            self.resolve_enum_id(qualifier, qualifier_symbol, type_args, hint, span)?
+        else {
+            return Ok(None);
         };
 
         let variant_symbol = self.symbols.insert(name);
-        let (index, payload_type) = {
-            let enum_def = &self.scope.enums[enum_id];
-            match enum_def.variants.iter().position(|v| v.name == variant_symbol) {
-                Some(index) => (index, enum_def.variants[index].payload),
-                None => return Ok(None),
-            }
+        let enum_def = &self.scope.enums[enum_id];
+        let Some(index) = enum_def.variants.iter().position(|v| v.name == variant_symbol) else {
+            return Ok(None);
         };
 
-        let payload = match (payload_type, args.first()) {
-            (Some(payload_type), Some(arg)) => {
-                let lowered = self.lower_expr(arg, Some(payload_type))?;
-                self.assert_type(payload_type, lowered.typ, lowered.span)?;
-                Some(lowered.expr)
-            },
-            (None, None) => None,
-            (Some(_), None) => {
-                return Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0 }));
-            },
-            (None, Some(_)) => {
-                return Err(hir_error!(
-                    span,
-                    ArityMismatch { name, expected: 0, found: args.len() }
-                ));
-            },
-        };
+        let payload_typ = enum_def.variants[index].payload;
+        let payload = self.lower_variant_payload(name, payload_typ, args, span)?;
 
-        // modelled like rustc: a structural `Call(Path, args)`, with the resolved
-        // constructor recorded in the side-table for MIR to pick up
         let callee = self.alloc(ExpressionKind::Path(variant_symbol), Type::default(), span).expr;
-        let arguments: &[&Expression] = match payload {
-            Some(payload) => self.arena.alloc_slice_copy(&[payload]),
-            None => &[],
-        };
+        let arguments: &[&Expression] = payload.map_or(&[], |p| self.arena.alloc_slice_copy(&[p]));
+
         let typ = Type::enumerable(enum_id);
         let lowered = self.alloc(ExpressionKind::Call { callee, args: arguments }, typ, span);
         self.typeck
@@ -1443,25 +1391,6 @@ where
         Ok(Some(lowered))
     }
 
-    /// Lower a call to a generic free function (a template with an open,
-    /// `GenericParam`-typed signature). The concrete type arguments come from an
-    /// explicit turbofish, or are inferred by unifying the open parameter types
-    /// against the lowered argument types. The resolved target id and the
-    /// substitutions are recorded in the side-tables; `crate::hir::mono` later emits
-    /// one specialised body per distinct `(function, type_args)`.
-    // Current limitation: inference here only recovers a `GenericParam` that
-    // appears *bare* (`T`) or directly under a reference (`&T`). It cannot see a
-    // parameter buried inside a generic aggregate argument (`b: &Box<T>`), because
-    // the name-mangling model erases `T` into a distinct concrete type (`Box$i32`
-    // vs the template's `Box$T0`) — the `T` is no longer present in the `Type` to
-    // unify against, so such calls must use an explicit turbofish for now.
-    //
-    // rustc avoids this entirely: an argument's type is `Adt(Box, [Param(0)])`, so
-    // unifying `Adt(Box, [Param(0)])` against `Adt(Box, [i32])` trivially recovers
-    // `Param(0) = i32`. The fix is the `Adt(id, GenericArgsId)`:
-    // keep generic args *in* the type and unify structurally,
-    // instead of materialising a fresh concrete def per instantiation. See the
-    // matching note in `crate::hir::mono`.
     fn lower_generic_call(
         &mut self,
         function_id: FunctionId,
@@ -1557,6 +1486,27 @@ where
 
         let args = self.arena.alloc_slice_copy(&args);
         Ok(self.alloc(ExpressionKind::Syscall { code, args }, return_type, span))
+    }
+
+    fn lower_variant_payload(
+        &mut self,
+        name: &'src str,
+        typ: Option<Type>,
+        args: &[expression::Expression<'src>],
+        span: Span,
+    ) -> Result<Option<&'hir Expression<'hir>>, HirError<'hir>> {
+        match (typ, args.first()) {
+            (Some(expected), Some(arg)) => {
+                let lowered = self.lower_expr(arg, Some(expected))?;
+                self.assert_type(expected, lowered.typ, lowered.span)?;
+                Ok(Some(lowered.expr))
+            },
+            (None, None) => Ok(None),
+            (Some(_), None) => Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0 })),
+            (None, Some(_)) => {
+                Err(hir_error!(span, ArityMismatch { name, expected: 0, found: args.len() }))
+            },
+        }
     }
 
     #[inline]
@@ -1769,6 +1719,48 @@ where
                 let name = self.arena.alloc_str(self.symbols.get(name));
                 hir_error!(span, UndeclaredIdentifier { name })
             })
+    }
+
+    fn resolve_enum_id(
+        &mut self,
+        qualifier: &str,
+        symbol: SymbolId,
+        type_args: &[Spanned<statement::Type<'src>>],
+        hint: Option<Type>,
+        span: Span,
+    ) -> Result<Option<EnumId>, HirError<'hir>> {
+        // standard non-generic enum
+        if let Some(&id) = self.scope.enum_map.get(&symbol) {
+            return Ok(Some(id));
+        }
+
+        // generic enum template
+        if self.scope.generic_enums.contains_key(&symbol) {
+            // explicit generic arguments passed Enum::<Int>::Variant
+            if !type_args.is_empty() {
+                let mut resolved = Vec::with_capacity(type_args.len());
+                for arg in type_args {
+                    resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
+                }
+
+                if let Some(template) = self.scope.generic_enums.get(&symbol) {
+                    self.check_bounds(&template.generics, &resolved, span)?;
+                }
+
+                let typ =
+                    self.scope.instantiate_generic(qualifier, &resolved, span, self.symbols)?;
+
+                if let TypeKind::Enum(id) = typ.kind() {
+                    return Ok(Some(id));
+                }
+            }
+        }
+        // type infered via type hint: let x: Enum<Int> = Variant;
+        if let Some(TypeKind::Enum(id)) = hint.map(|t| t.kind()) {
+            return Ok(Some(id));
+        }
+
+        Ok(None)
     }
 
     /// Resolve a single field step on `current`, returning `(field_symbol, field_type)`

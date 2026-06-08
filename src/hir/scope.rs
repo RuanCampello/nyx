@@ -1,8 +1,7 @@
 use crate::{
     hir::{
         Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
-        RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
-        TypeKind, constants,
+        RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
@@ -287,7 +286,13 @@ impl<'hir> Scope<'hir> {
             let id = EnumId::new(self.enums.len() as u32, repr);
 
             self.enum_map.insert(symbol, id);
-            self.enums.push(Enum { id, name: symbol, decl_span: enum_decl.span, variants: Vec::new(), repr });
+            self.enums.push(Enum {
+                id,
+                name: symbol,
+                decl_span: enum_decl.span,
+                variants: Vec::new(),
+                repr,
+            });
 
             let mut seen = HashSet::new();
             let mut next_value = 0;
@@ -304,12 +309,11 @@ impl<'hir> Scope<'hir> {
 
                 // resolve a tagged-union variant payload (e.g. `Some(T)`), a concrete
                 // `Type::Generic` here instantiates its template on-demand
-                let payload = match &variant.payload {
-                    Some(typ) => {
-                        Some(self.resolve_type(typ.value_ref(), typ.span(), symbols, None, None)?)
-                    },
-                    None => None,
-                };
+                let payload = variant
+                    .payload
+                    .as_ref()
+                    .map(|typ| self.resolve_type(typ.value_ref(), typ.span(), symbols, None, None))
+                    .transpose()?;
 
                 self.enum_variants.insert((symbol, variant_symbol), (id, value));
                 variants.push(EnumVariant { name: variant_symbol, value, payload });
@@ -646,15 +650,16 @@ impl<'hir> Scope<'hir> {
         let interface_sym = symbols.insert(interface_name);
         self.interface_impls.insert((receiver_type, interface_sym));
 
-        let generic_params: Vec<SymbolId> = match self.interfaces.get(&interface_sym) {
-            Some(interface) if !interface.generic_params.is_empty() => {
-                interface.generic_params.clone()
-            },
-            _ => return Ok(None),
+        let Some(interface) = self
+            .interfaces
+            .get(&interface_sym)
+            .filter(|interface| !interface.generic_params.is_empty())
+        else {
+            return Ok(None);
         };
+        let generic_params = interface.generic_params.clone();
 
-        let explicit_args: Vec<_> = match implementation.interface_type.as_ref().map(|s| s.value())
-        {
+        let explicit_args = match implementation.interface_type.as_ref().map(|s| s.value()) {
             Some(statement::Type::Generic(_, args)) => {
                 let mut resolved = Vec::with_capacity(args.len());
                 for arg in &args {
@@ -735,10 +740,9 @@ impl<'hir> Scope<'hir> {
     where
         'h: 'hir,
     {
-        match return_type {
-            Some(s) => self.resolve_type(s.value_ref(), s.span(), symbols, self_type, env),
-            None => Ok(Type::default()),
-        }
+        return_type.map_or(Ok(Type::default()), |s| {
+            self.resolve_type(s.value_ref(), s.span(), symbols, self_type, env)
+        })
     }
 
     #[inline]
@@ -805,9 +809,9 @@ impl<'hir> Scope<'hir> {
             },
 
             statement::Type::SelfType => Ok(self_type.unwrap_or(TypeKind::SelfType.into())),
-            statement::Type::RefSelf => match self_type {
-                None => Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
-                Some(self_typ) => {
+            statement::Type::RefSelf => self_type.map_or(
+                Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
+                |self_typ| {
                     let to = RefTarget::try_from(self_typ).map_err(|_| {
                         hir_error!(
                             span,
@@ -819,7 +823,7 @@ impl<'hir> Scope<'hir> {
                     })?;
                     Ok(Type::refer(to, false))
                 },
-            },
+            ),
 
             statement::Type::Generic(name, args) => {
                 let mut resolved = Vec::with_capacity(args.len());
@@ -894,7 +898,13 @@ impl<'hir> Scope<'hir> {
         let id = EnumId::new(self.enums.len() as u32, repr);
 
         self.enum_map.insert(mangled_sym, id);
-        self.enums.push(Enum { id, name: mangled_sym, decl_span: Span::default(), variants: Vec::new(), repr });
+        self.enums.push(Enum {
+            id,
+            name: mangled_sym,
+            decl_span: Span::default(),
+            variants: Vec::new(),
+            repr,
+        });
 
         let env = build_substitution(&template.generics, args);
         let mut seen = HashSet::new();
@@ -910,16 +920,13 @@ impl<'hir> Scope<'hir> {
             let value = variant.value.unwrap_or(next_value);
             next_value = value + 1;
 
-            let payload = match &variant.payload {
-                Some(typ) => Some(self.resolve_type(
-                    typ.value_ref(),
-                    typ.span(),
-                    symbols,
-                    None,
-                    Some(&env),
-                )?),
-                None => None,
-            };
+            let payload = variant
+                .payload
+                .as_ref()
+                .map(|typ| {
+                    self.resolve_type(typ.value_ref(), typ.span(), symbols, None, Some(&env))
+                })
+                .transpose()?;
 
             self.enum_variants.insert((mangled_sym, variant_symbol), (id, value));
             variants.push(EnumVariant { name: variant_symbol, value, payload });
@@ -1224,10 +1231,8 @@ impl FunctionSignature {
 
     #[inline]
     pub(in crate::hir) fn receiver_mutable(&self) -> bool {
-        match self.receiver_type().map(|t| t.kind()) {
-            Some(TypeKind::Ref { mutable, .. }) => mutable,
-            _ => false,
-        }
+        self.receiver_type()
+            .map_or(false, |t| matches!(t.kind(), TypeKind::Ref { mutable: true, .. }))
     }
 
     #[inline]
@@ -1289,20 +1294,18 @@ fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) 
     receiver_args
         .iter()
         .zip(args)
-        .filter_map(|(arg, &concrete)| match arg.value_ref() {
-            statement::Type::Named(name) => Some((name.to_string(), concrete)),
-            _ => None,
+        .filter_map(|(arg, &concrete)| {
+            let statement::Type::Named(name) = arg.value_ref() else {
+                return None;
+            };
+            Some((name.to_string(), concrete))
         })
         .collect()
 }
 
 fn intrinsic_method(in_std: bool, receiver: &str, method: &str) -> Option<Intrinsic> {
-    match (in_std, receiver, method) {
-        (true, "str", "len") => Some(Intrinsic::Len),
-        _ => None,
-    }
+    (in_std && receiver == "str" && method == "len").then_some(Intrinsic::Len)
 }
-
 pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]) -> GenericEnv {
     generics
         .iter()
@@ -1310,4 +1313,3 @@ pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]
         .map(|(i, g)| (g.name.to_string(), Type::generic_param(i as u8)))
         .collect()
 }
-

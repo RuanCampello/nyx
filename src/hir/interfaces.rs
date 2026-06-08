@@ -227,7 +227,7 @@ fn format_signature(
                 true => "&mut self",
                 _ => "&self",
             }
-            .to_string(),
+            .into(),
         ])
         .unwrap_or_default();
 

@@ -25,7 +25,6 @@ pub(super) struct ModuleGraph<'src> {
 #[derive(Debug)]
 pub(super) struct ModuleNode<'src> {
     pub(super) path: PathBuf,
-    pub(super) source: &'src str,
     pub(super) statements: Vec<Statement<'src>>,
     pub(super) exports: HashSet<String>,
     pub(super) in_std: bool,
@@ -142,8 +141,8 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
 
         let source = self.arena.alloc_str(&source);
 
-        diagnostic::initialise(source, canonical.to_str().unwrap_or("<unknown>"));
-        let statements = Parser::new(source).parse().map_err(Diagnostic::from)?;
+        let (_, base) = diagnostic::add_file(canonical.clone(), source as &str);
+        let statements = Parser::with_base(source, base).parse().map_err(Diagnostic::from)?;
 
         let idx = self.nodes.len();
         let in_std = canonical.starts_with(self.resolver.std_root());
@@ -152,7 +151,6 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         self.by_path.insert(canonical.clone(), idx);
         self.nodes.push(ModuleNode {
             path: canonical.clone(),
-            source,
             statements,
             exports,
             in_std,

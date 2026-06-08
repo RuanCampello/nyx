@@ -30,11 +30,9 @@ impl ModuleResolver {
         }
 
         let base = match root {
-            root if root == self.name => &self.root,
+            name if name == self.name => &self.root,
             "std" => &self.std,
-            other => {
-                return Err(ModuleError::UnknownRoot { name: other.to_string(), span });
-            },
+            _ => return Err(ModuleError::UnknownRoot { name: root.to_string(), span }),
         };
 
         let (dirs, file_segment) = rest.split_at(rest.len() - 1);
