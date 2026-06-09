@@ -149,7 +149,7 @@ impl LanguageServer for NyxLsp {
             .window
             .as_ref()
             .and_then(|window| window.work_done_progress)
-            .unwrap_or(false);
+            .unwrap_or_default();
         self.state.progress.store(progress, Ordering::Relaxed);
 
         Ok(InitializeResult {
@@ -235,12 +235,20 @@ impl LanguageServer for NyxLsp {
             })
             .min_by_key(|(span, _)| span.end.0 - span.start.0);
 
-        Ok(hit.map(|(span, ty)| Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("```nyx\n{ty}\n```"),
-            }),
-            range: Some(convert::span_to_range(map, *span, encoding)),
+        Ok(hit.map(|(span, info)| {
+            let mut value = format!("```nyx\n{}\n```", info.ty);
+            if let Some((size, align)) = info.layout {
+                let info = format!("\n\n---\nsize = {size} (0x{size:x}), align = 0x{align:x}");
+                value.push_str(info.as_ref());
+            }
+
+            let contents =
+                HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value });
+
+            Hover {
+                contents,
+                range: Some(convert::span_to_range(map, *span, encoding)),
+            }
         }))
     }
 

@@ -1024,7 +1024,10 @@ impl<'i> Parsable<'i> for Enum<'i> {
             .then(|| parser.parse_node())
             .transpose()?
             .unwrap_or_else(|| Spanned::new(Type::I32, enum_token.span));
-        let span = enum_token.span + repr.span();
+        // span the whole declaration (keyword .. closing brace / repr), so the
+        // name is covered for hover/goto, matching how structs are spanned
+        let end = parser.last_span().unwrap_or(enum_token.span);
+        let span = enum_token.span + end;
 
         Ok(Self { name, generics, variants, repr, is_pub, span })
     }

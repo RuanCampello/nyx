@@ -10,7 +10,7 @@ pub(crate) mod mir;
 pub(crate) mod parser;
 pub mod source_map;
 
-pub use analysis::{Analysis, CheckError, DocumentSymbol, SemanticAnalysis, SymbolKind};
+pub use analysis::{Analysis, CheckError, DocumentSymbol, HoverInfo, SemanticAnalysis, SymbolKind};
 pub use diagnostic::{Label, RichDiagnostic, Severity};
 pub use lexer::token::{BytePos, Span};
 pub use lexer::{HasSpan, is_keyword};

@@ -1,7 +1,9 @@
+use crate::hir;
 use crate::hir::{
-    Block, ExpressionKind, Hir, Local, LocalId, Res, Statement, SymbolId, SymbolTable, Type,
-    TypeKind, TypeckResults, index_vec::IndexVec,
+    Block, Enum, ExpressionKind, Function, Hir, Local, LocalId, Res, Statement, Struct, StructId,
+    SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
 };
+use crate::mir::layout::LayoutTable;
 use crate::{
     diagnostic::AsDiagnostic,
     lexer::{HasSpan, token::Span},
@@ -19,8 +21,8 @@ pub struct Analysis {
 #[derive(Debug, Default)]
 pub struct SemanticAnalysis {
     pub diagnostics: Vec<CheckError>,
-    /// `(span, type string)` sorted by `span.start.offset()` for binary search from a cursor position
-    pub hover_types: Vec<(Span, String)>,
+    /// `(span, hover)` sorted by `span.start.offset()` for binary search from a cursor position
+    pub hover_types: Vec<(Span, HoverInfo)>,
     /// identifier-use span to definition-site span
     pub goto_definitions: HashMap<Span, Span>,
     /// `(name_span, type string)` for `let` bindings, hint appears immediately after the binding name
@@ -41,11 +43,21 @@ pub struct DocumentSymbol {
     pub span: Span,
 }
 
+/// A hover result
+///
+/// the inferred type and, when it has a runtime layout, its size and alignment in bytes
+#[derive(Debug, Clone)]
+pub struct HoverInfo {
+    pub ty: String,
+    pub layout: Option<(u32, u32)>,
+}
+
 struct Walker<'a, 'h> {
     typeck: &'a TypeckResults,
     locals: &'a IndexVec<LocalId, Local>,
     hir: &'a Hir<'h>,
-    hover: &'a mut Vec<(Span, String)>,
+    layouts: &'a LayoutTable,
+    hover: &'a mut Vec<(Span, HoverInfo)>,
     defs: &'a mut HashMap<Span, Span>,
     hints: &'a mut Vec<(Span, String)>,
 }
@@ -78,7 +90,7 @@ impl Analysis {
         self
     }
 
-    /// Execute the semantic analysis and return the results.
+    /// Execute the semantic analysis and return the results
     pub fn run(self) -> SemanticAnalysis {
         let root = match self.entry.parent().unwrap_or(Path::new(".")).canonicalize() {
             Ok(r) => r,
@@ -120,13 +132,32 @@ impl<'a, 'h> Walker<'a, 'h> {
         }
     }
 
+    #[inline]
+    fn binding(&mut self, id: LocalId) {
+        let (typ, span) = {
+            let local = &self.locals[id];
+            (local.typ, local.decl_span)
+        };
+
+        self.hints.push((span, format_type(typ, self.hir)));
+        self.hover.push((span, self.hover_info(typ)));
+    }
+
+    #[inline]
+    fn hover_info(&self, typ: Type) -> HoverInfo {
+        HoverInfo {
+            ty: format_type(typ, self.hir),
+            layout: layout_of(self.layouts, typ),
+        }
+    }
+
     fn stmt(&mut self, stmt: &Statement<'h>) {
         match stmt {
             Statement::LetInit { id, init } => {
-                let local = &self.locals[*id];
-                self.hints.push((local.decl_span, format_type(local.typ, self.hir)));
+                self.binding(*id);
                 self.expr(init);
             },
+            Statement::LetUninit { id } => self.binding(*id),
             Statement::Expr(e) | Statement::Return(Some(e)) => self.expr(e),
             Statement::If { condition, then_block, else_block } => {
                 self.expr(condition);
@@ -140,34 +171,41 @@ impl<'a, 'h> Walker<'a, 'h> {
                 self.block(body);
             },
             Statement::Block(b) => self.block(b),
-            Statement::Return(None) | Statement::LetUninit { .. } => {},
+            Statement::Return(None) => {},
         }
     }
 
-    fn expr(&mut self, expr: &crate::hir::Expression<'h>) {
-        self.hover
-            .push((expr.span, format_type(self.typeck.type_of(expr.id), self.hir)));
+    fn expr(&mut self, expr: &hir::Expression<'h>) {
+        let resolved = self
+            .typeck
+            .type_dependent_def(expr.id)
+            .and_then(Res::function)
+            .and_then(|id| self.hir.functions.get(id));
+
+        let hover = match (&expr.kind, resolved) {
+            (ExpressionKind::Call { .. } | ExpressionKind::MethodCall { .. }, Some(target)) => {
+                HoverInfo { ty: signature(target, self.hir), layout: None }
+            },
+            _ => self.hover_info(self.typeck.type_of(expr.id)),
+        };
+
+        self.hover.push((expr.span, hover));
 
         match &expr.kind {
             ExpressionKind::Local(id) => {
                 self.defs.insert(expr.span, self.locals[*id].decl_span);
             },
             ExpressionKind::Call { callee, args } => {
-                if let Some(Res::Function(fn_id)) = self.typeck.type_dependent_def(expr.id) {
-                    if let Some(target) = self.hir.functions.get(fn_id) {
-                        self.defs.insert(callee.span, target.decl_span);
-                    }
+                if let Some(target) = resolved {
+                    self.defs.insert(callee.span, target.decl_span);
                 }
-                self.expr(callee);
                 for arg in *args {
                     self.expr(arg);
                 }
             },
             ExpressionKind::MethodCall { receiver, args, .. } => {
-                if let Some(Res::Function(fn_id)) = self.typeck.type_dependent_def(expr.id) {
-                    if let Some(target) = self.hir.functions.get(fn_id) {
-                        self.defs.insert(expr.span, target.decl_span);
-                    }
+                if let Some(target) = resolved {
+                    self.defs.insert(expr.span, target.decl_span);
                 }
                 self.expr(receiver);
                 for arg in *args {
@@ -215,17 +253,49 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
     let mut hover_types = Vec::new();
     let mut goto_definitions = HashMap::new();
     let mut inlay_hints = Vec::new();
+    let layouts = LayoutTable::build(&hir.structs, &hir.enums);
 
     for func in &hir.functions {
+        if func.decl_span != Span::default() {
+            hover_types
+                .push((func.decl_span, HoverInfo { ty: signature(func, hir), layout: None }));
+        }
+        for param in &func.params {
+            let local = &func.locals[param.id];
+            if local.decl_span != Span::default() {
+                let layout = layout_of(&layouts, param.typ);
+                hover_types
+                    .push((local.decl_span, HoverInfo { ty: format_type(param.typ, hir), layout }));
+            }
+        }
+
         Walker {
             typeck: &func.typeck,
             locals: &func.locals,
             hir,
+            layouts: &layouts,
             hover: &mut hover_types,
             defs: &mut goto_definitions,
             hints: &mut inlay_hints,
         }
         .block(&func.body);
+    }
+
+    for (idx, structure) in hir.structs.iter().enumerate() {
+        if structure.decl_span != Span::default() {
+            let layout = layout_of(&layouts, Type::structure(StructId(idx as u32)));
+            hover_types
+                .push((structure.decl_span, HoverInfo { ty: struct_def(structure, hir), layout }));
+        }
+    }
+    for enumeration in &hir.enums {
+        if enumeration.decl_span != Span::default() {
+            let layout = layout_of(&layouts, Type::enumerable(enumeration.id));
+            hover_types.push((
+                enumeration.decl_span,
+                HoverInfo { ty: enum_def(enumeration, hir), layout },
+            ));
+        }
     }
 
     hover_types.sort_unstable_by_key(|(span, _)| span.start.offset());
@@ -272,6 +342,75 @@ fn collect_symbols<T, N, S>(
 #[inline]
 fn short_name(qualified: &str) -> String {
     qualified.rsplit("::").next().unwrap_or(qualified).to_owned()
+}
+
+#[inline(always)]
+fn layout_of(layouts: &LayoutTable, typ: Type) -> Option<(u32, u32)> {
+    match typ.kind() {
+        TypeKind::Unit | TypeKind::Never | TypeKind::SelfType | TypeKind::GenericParam(_) => None,
+        _ => Some(layouts.type_layout(typ)),
+    }
+}
+
+fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
+    let mut out = String::new();
+    for (flag, word) in [(func.is_pub, "pub "), (func.inline, "inline "), (func.is_const, "const ")]
+    {
+        if flag {
+            out.push_str(word);
+        }
+    }
+    out.push_str("fn ");
+    out.push_str(&short_name(hir.symbols.get(func.name)));
+
+    let params: Vec<_> = func
+        .params
+        .iter()
+        .map(|p| {
+            format!("{}: {}", hir.symbols.get(func.locals[p.id].name), format_type(p.typ, hir))
+        })
+        .collect();
+
+    out.push('(');
+    out.push_str(&params.join(", "));
+    out.push(')');
+
+    let ret = format_type(func.return_type, hir);
+    if ret != "()" {
+        out.push_str(": ");
+        out.push_str(&ret);
+    }
+
+    out
+}
+
+fn struct_def(structure: &Struct, hir: &Hir<'_>) -> String {
+    let name = short_name(hir.symbols.get(structure.name));
+    if structure.fields.is_empty() {
+        return format!("struct {name}");
+    }
+
+    let fields: Vec<_> = structure
+        .fields
+        .iter()
+        .map(|f| format!("    {}: {}", hir.symbols.get(f.name), format_type(f.typ, hir)))
+        .collect();
+
+    format!("struct {name} {{\n{}\n}}", fields.join(",\n"))
+}
+
+fn enum_def(enumeration: &Enum, hir: &Hir<'_>) -> String {
+    let name = short_name(hir.symbols.get(enumeration.name));
+    let variants: Vec<_> = enumeration
+        .variants
+        .iter()
+        .map(|v| match v.payload {
+            Some(typ) => format!("    {}({})", hir.symbols.get(v.name), format_type(typ, hir)),
+            None => format!("    {}", hir.symbols.get(v.name)),
+        })
+        .collect();
+
+    format!("enum {name} {{\n{}\n}}", variants.join(",\n"))
 }
 
 fn format_type(typ: Type, hir: &Hir<'_>) -> String {

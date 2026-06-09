@@ -26,7 +26,7 @@ use crate::{
 pub use lower::lower;
 
 pub mod error;
-mod layout;
+pub(crate) mod layout;
 mod lower;
 
 /// Complete MIR program.
