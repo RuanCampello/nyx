@@ -1,6 +1,6 @@
 use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
-    diagnostic::{self, Diagnostic},
+    diagnostic,
     lexer::token::Span,
     parser::{
         Parser,
@@ -142,19 +142,15 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         let source = self.arena.alloc_str(&source);
 
         let (_, base) = diagnostic::add_file(canonical.clone(), source as &str);
-        let statements = Parser::with_base(source, base).parse().map_err(Diagnostic::from)?;
+        let statements = Parser::with_base(source, base).parse()?;
 
         let idx = self.nodes.len();
         let in_std = canonical.starts_with(self.resolver.std_root());
         let exports = exports(&statements);
 
         self.by_path.insert(canonical.clone(), idx);
-        self.nodes.push(ModuleNode {
-            path: canonical.clone(),
-            statements,
-            exports,
-            in_std,
-        });
+        self.nodes
+            .push(ModuleNode { path: canonical.clone(), statements, exports, in_std });
 
         let uses: Vec<_> = self.nodes[idx]
             .statements

@@ -153,9 +153,9 @@ where
 
         if self.visiting.contains(&symbol_id) {
             let decl = &self.decls[&symbol_id];
-            let name = decl.typ.map_or(decl.ast.name, |impl_type| {
-                qualified(self.arena, impl_type, decl.ast.name)
-            });
+            let name = decl
+                .typ
+                .map_or(decl.ast.name, |impl_type| qualified(self.arena, impl_type, decl.ast.name));
             return Err(hir_error!(decl.ast.span, CircularConstant { name }));
         }
 

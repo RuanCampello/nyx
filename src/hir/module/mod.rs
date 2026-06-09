@@ -6,9 +6,10 @@ mod resolver;
 mod signatures;
 
 use crate::{
-    diagnostic::{AsDiagnostic, Diagnostic},
-    hir::{Hir, SymbolTable, scope::Scope},
+    diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
+    hir::{Hir, SymbolTable, error::HirError, scope::Scope},
     lexer::token::Span,
+    parser::error::ParserError,
 };
 use nyx_macros::Diagnostic;
 use resolver::ModuleResolver;
@@ -83,7 +84,7 @@ pub enum ModuleError {
     TopLevelNonFunction { path: PathBuf, span: Span },
 
     #[diagnostic(transparent)]
-    Diagnostic(Diagnostic),
+    Check(RichDiagnostic),
 }
 
 pub(crate) trait FileSystem {
@@ -132,8 +133,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
         let functions =
             demand::lower_reachable(graph, &order, &interfaces, &mut self.scope, symbols, arena)?;
-        let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)
-            .map_err(Diagnostic::from)?;
+        let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)?;
 
         Ok(Hir {
             functions,
@@ -172,16 +172,22 @@ impl FileSystem for OverlayFS {
     }
 }
 
-impl From<Diagnostic> for ModuleError {
-    fn from(value: Diagnostic) -> Self {
-        Self::Diagnostic(value)
+impl<'h> From<HirError<'h>> for ModuleError {
+    fn from(e: HirError<'h>) -> Self {
+        Self::Check(e.kind.rich(e.span))
+    }
+}
+
+impl<'i> From<ParserError<'i>> for ModuleError {
+    fn from(e: ParserError<'i>) -> Self {
+        Self::Check(e.kind.rich(e.span))
     }
 }
 
 impl From<ModuleError> for Diagnostic {
     fn from(value: ModuleError) -> Diagnostic {
         match value {
-            ModuleError::Diagnostic(d) => d,
+            ModuleError::Check(rich) => rich.into_diagnostic(Span::default()),
             other => {
                 let span = match &other {
                     ModuleError::FileNotFound { span, .. } => span.unwrap_or_default(),
@@ -190,7 +196,7 @@ impl From<ModuleError> for Diagnostic {
                     | ModuleError::UnknownExport { span, .. }
                     | ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::EmptyPath => Span::default(),
-                    ModuleError::Diagnostic(_) => unreachable!(),
+                    ModuleError::Check(_) => unreachable!(),
                 };
                 AsDiagnostic::into_diagnostic(other, span)
             },
@@ -482,7 +488,7 @@ mod tests {
             );
 
         let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
-        assert!(matches!(err, ModuleError::Diagnostic(_)));
+        assert!(matches!(err, ModuleError::Check(_)));
     }
 
     #[test]
@@ -526,7 +532,7 @@ mod tests {
             );
 
         let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
-        assert!(matches!(err, ModuleError::Diagnostic(_)));
+        assert!(matches!(err, ModuleError::Check(_)));
     }
 
     #[test]
@@ -613,7 +619,7 @@ mod tests {
         );
 
         let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
-        assert!(matches!(err, ModuleError::Diagnostic(_)));
+        assert!(matches!(err, ModuleError::Check(_)));
     }
 
     #[test]
@@ -688,7 +694,7 @@ mod tests {
             );
 
         let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
-        assert!(matches!(err, ModuleError::Diagnostic(_)));
+        assert!(matches!(err, ModuleError::Check(_)));
     }
 
     #[test]

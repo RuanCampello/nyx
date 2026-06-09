@@ -107,6 +107,33 @@ impl RichDiagnostic {
     }
 }
 
+impl AsDiagnostic for RichDiagnostic {
+    fn into_diagnostic(self, _span: Span) -> Diagnostic {
+        let mut builder = Builder::new(self.message);
+        if let Some(primary) = self.primary {
+            builder = builder.primary(primary.span, primary.message);
+        }
+        for label in self.secondary {
+            builder = builder.secondary(label.span, label.message);
+        }
+        if let Some(note) = self.note {
+            builder = builder.note(note);
+        }
+        if let Some(help) = self.help {
+            builder = builder.help(help);
+        }
+        builder.build()
+    }
+
+    fn rich(self, _span: Span) -> RichDiagnostic {
+        self
+    }
+
+    fn message(self) -> String {
+        self.message
+    }
+}
+
 impl std::fmt::Display for RichDiagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)?;

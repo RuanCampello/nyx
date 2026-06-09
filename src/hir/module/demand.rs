@@ -1,6 +1,5 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
-    diagnostic::Diagnostic,
     hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
     parser::{
         expression::{BinaryOperator, Expression},
@@ -39,18 +38,15 @@ where
         let node = &mut graph.nodes[idx];
 
         let declarations =
-            Declarations::partition(&mut node.statements, |name| interfaces.get(name))
-                .map_err(Diagnostic::from)?;
+            Declarations::partition(&mut node.statements, |name| interfaces.get(name))?;
 
-        let mut lowered = scope
-            .lower_matching_functions(
-                &declarations,
-                symbols,
-                node.in_std,
-                |id| demand.contains(id),
-                arena,
-            )
-            .map_err(Diagnostic::from)?;
+        let mut lowered = scope.lower_matching_functions(
+            &declarations,
+            symbols,
+            node.in_std,
+            |id| demand.contains(id),
+            arena,
+        )?;
 
         functions.append(&mut lowered);
     }
@@ -109,8 +105,7 @@ fn collect_functions<'a, 'hir, 'src>(
     for &idx in order {
         let node = &mut graph.nodes[idx];
         let declarations =
-            Declarations::partition(&mut node.statements, |name| interfaces.get(name))
-                .map_err(Diagnostic::from)?;
+            Declarations::partition(&mut node.statements, |name| interfaces.get(name))?;
 
         for function in declarations.functions() {
             if let Some(id) = lookup_declaration_id(function, scope, symbols) {

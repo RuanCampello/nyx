@@ -182,13 +182,7 @@ fn specialise<'hir>(
         Some(&env),
     )?;
 
-    let id = scope.push_signature(FunctionSignature {
-        name,
-        params,
-        return_type,
-        kind,
-        is_const,
-    });
+    let id = scope.push_signature(FunctionSignature { name, params, return_type, kind, is_const });
     if matches!(kind, FunctionKind::Free) {
         scope.functions.insert(name, id);
     }
