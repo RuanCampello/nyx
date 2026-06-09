@@ -1,11 +1,13 @@
 //! The Nyx language server: state, request handlers, and the debounced,
 //! cancellable analysis pipeline
 
-use crate::analysis::{self, DEBOUNCE};
 use crate::convert::{self, Encoding};
 use crate::document::{self, Documents};
+use crate::feature::diagnostics::{self, DEBOUNCE};
+use crate::feature::{highlight, tokens};
 use nyx::{SemanticAnalysis, SymbolKind};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tower_lsp::lsp_types::*;
@@ -23,10 +25,21 @@ struct State {
     /// per-document analysis generation, bumped on every change so stale runs
     /// can be discarded before they publish
     generations: Mutex<HashMap<Url, u64>>,
+    /// the generation each stored analysis was produced for, a request whose
+    /// document has moved past it is answered with `ContentModified`
+    analysed: Mutex<HashMap<Url, u64>>,
     /// per-entry set of file urls we last published diagnostics to, so we can
     /// clear the ones that no longer have any
     published: Mutex<HashMap<Url, HashSet<Url>>>,
+    /// whether the client renders work-done progress
+    progress: AtomicBool,
 }
+
+/// floor on how long the load spinner stays up, so a near-instant analysis is
+/// still perceptible as "loading … done" rather than an invisible flash
+const MIN_PROGRESS: std::time::Duration = std::time::Duration::from_millis(500);
+
+static PROGRESS_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl NyxLsp {
     pub fn new(client: Client) -> Self {
@@ -37,7 +50,9 @@ impl NyxLsp {
                 analyses: RwLock::new(HashMap::new()),
                 encoding: RwLock::new(Encoding::Utf16),
                 generations: Mutex::new(HashMap::new()),
+                analysed: Mutex::new(HashMap::new()),
                 published: Mutex::new(HashMap::new()),
+                progress: AtomicBool::new(false),
             }),
         }
     }
@@ -63,16 +78,37 @@ impl NyxLsp {
                 (entry, documents.snapshot(), *state.encoding.read().await)
             };
 
-            let analysis = tokio::task::spawn_blocking(move || analysis::run(entry, overlays));
-            let Ok(analysis) = analysis.await else {
-                return;
+            let started = std::time::Instant::now();
+            let progress = match state.progress.load(Ordering::Relaxed)
+                && state.analyses.read().await.get(&url).is_none()
+            {
+                true => progress_begin(&client, "nyx: analysing project").await,
+                false => None,
             };
 
-            if state.generation(&url) != generation {
-                return;
+            let analysis =
+                tokio::task::spawn_blocking(move || diagnostics::run(entry, overlays)).await;
+
+            if let Ok(analysis) = analysis
+                && state.generation(&url) == generation
+            {
+                let ok = analysis.ok;
+                state.publish(&client, &url, encoding, analysis).await;
+
+                if ok {
+                    state.mark_analysed(&url, generation);
+                    client.inlay_hint_refresh().await.ok();
+                }
             }
 
-            state.publish(&client, &url, encoding, analysis).await;
+            // a small project analyses in a few ms, far too fast to see, hold the
+            // spinner to a floor so the load is actually perceptible, then close it
+            if progress.is_some() {
+                if let Some(remaining) = MIN_PROGRESS.checked_sub(started.elapsed()) {
+                    tokio::time::sleep(remaining).await;
+                }
+                progress_end(&client, progress).await;
+            }
         });
     }
 
@@ -108,6 +144,14 @@ impl LanguageServer for NyxLsp {
         let encoding = negotiate_encoding(&params.capabilities);
         *self.state.encoding.write().await = encoding;
 
+        let progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+        self.state.progress.store(progress, Ordering::Relaxed);
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 position_encoding: Some(match encoding {
@@ -121,6 +165,16 @@ impl LanguageServer for NyxLsp {
                 definition_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: tokens::legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(false),
+                            work_done_progress_options: Default::default(),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo { name: "nyx-lsp".into(), version: Some(VERSION.into()) }),
@@ -221,6 +275,10 @@ impl LanguageServer for NyxLsp {
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let url = &params.text_document.uri;
         let range = params.range;
+
+        if !self.state.is_fresh(url) {
+            return Err(content_modified());
+        }
 
         let Some((analysis, encoding)) = self.state.get_analysis_and_encoding(url).await else {
             return Ok(None);
@@ -361,9 +419,15 @@ impl LanguageServer for NyxLsp {
 
     async fn semantic_tokens_full(
         &self,
-        _: SemanticTokensParams,
+        params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        Ok(None)
+        let Some(text) = self.state.documents.read().await.text(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let encoding = *self.state.encoding.read().await;
+        let data = tokens::encode(&highlight::highlight(&text), encoding);
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data })))
     }
 
     async fn symbol(&self, _: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
@@ -380,8 +444,19 @@ impl State {
         *counter
     }
 
+    #[inline]
     fn generation(&self, url: &Url) -> u64 {
         self.generations.lock().unwrap().get(url).copied().unwrap_or(0)
+    }
+
+    #[inline]
+    fn mark_analysed(&self, url: &Url, generation: u64) {
+        self.analysed.lock().unwrap().insert(url.clone(), generation);
+    }
+
+    #[inline]
+    fn is_fresh(&self, url: &Url) -> bool {
+        self.analysed.lock().unwrap().get(url).copied() == Some(self.generation(url))
     }
 
     async fn publish(
@@ -391,12 +466,19 @@ impl State {
         encoding: Encoding,
         analysis: SemanticAnalysis,
     ) {
-        let by_url = analysis::diagnostics_by_url(&analysis, entry, encoding);
+        let by_url = diagnostics::diagnostics_by_url(&analysis, entry, encoding);
         let fresh: HashSet<Url> = by_url.keys().cloned().collect();
 
-        self.analyses.write().await.insert(entry.clone(), analysis);
+        // swap in the feature data (hover/goto/inlay/symbols) only when the
+        // project actually analysed, otherwise keep the last good results
+        {
+            let mut analyses = self.analyses.write().await;
+            let previous = analyses.remove(entry);
+            analyses.insert(entry.clone(), latest_good(previous, analysis));
+        }
 
-        // clear files that previously had diagnostics from this entry but no longer do :X
+        // diagnostics always reflect the latest state, clear files that used to
+        // have diagnostics from this entry but no longer do
         let stale: Vec<_> = {
             let mut published = self.published.lock().unwrap();
             let previous = published.get(entry).cloned().unwrap_or_default();
@@ -454,5 +536,101 @@ const fn symbol_kind(kind: SymbolKind) -> tower_lsp::lsp_types::SymbolKind {
         SymbolKind::Function => tower_lsp::lsp_types::SymbolKind::FUNCTION,
         SymbolKind::Struct => tower_lsp::lsp_types::SymbolKind::STRUCT,
         SymbolKind::Enum => tower_lsp::lsp_types::SymbolKind::ENUM,
+    }
+}
+
+#[inline(always)]
+fn latest_good(previous: Option<SemanticAnalysis>, next: SemanticAnalysis) -> SemanticAnalysis {
+    match next.ok {
+        true => next,
+        false => previous.unwrap_or(next),
+    }
+}
+
+/// the lsp `ContentModified` error: the document changed under a request, so the
+/// client should keep its current results and re-pull after the next refresh
+fn content_modified() -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error {
+        code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
+        message: "content modified".into(),
+        data: None,
+    }
+}
+
+/// open a work-done progress (the editor's load spinner), returning the token to
+/// close it with via [`progress_end`]
+///
+/// `none` if the client declined to create it
+async fn progress_begin(client: &Client, title: &str) -> Option<ProgressToken> {
+    let token = format!("nyx/{}", PROGRESS_SEQ.fetch_add(1, Ordering::Relaxed));
+    let token = ProgressToken::String(token);
+
+    client
+        .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+            token: token.clone(),
+        })
+        .await
+        .ok()?;
+
+    client
+        .send_notification::<notification::Progress>(ProgressParams {
+            token: token.clone(),
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: title.to_owned(),
+                cancellable: Some(false),
+                message: None,
+                percentage: None,
+            })),
+        })
+        .await;
+
+    Some(token)
+}
+
+async fn progress_end(client: &Client, token: Option<ProgressToken>) {
+    let Some(token) = token else {
+        return;
+    };
+
+    client
+        .send_notification::<notification::Progress>(ProgressParams {
+            token,
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                message: None,
+            })),
+        })
+        .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analysis(ok: bool, hints: usize) -> SemanticAnalysis {
+        SemanticAnalysis {
+            ok,
+            inlay_hints: (0..hints).map(|_| (nyx::Span::default(), "i32".to_string())).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn failed_reanalysis_keeps_last_good_hints() {
+        let kept = latest_good(Some(analysis(true, 2)), analysis(false, 0));
+        assert!(kept.ok, "should retain the previous good analysis");
+        assert_eq!(kept.inlay_hints.len(), 2, "hints must survive the broken edit");
+    }
+
+    #[test]
+    fn successful_reanalysis_replaces() {
+        let kept = latest_good(Some(analysis(true, 2)), analysis(true, 3));
+        assert_eq!(kept.inlay_hints.len(), 3, "fresh hints replace the old ones");
+    }
+
+    #[test]
+    fn first_result_is_kept_even_when_broken() {
+        let kept = latest_good(None, analysis(false, 0));
+        assert!(!kept.ok);
+        assert!(kept.inlay_hints.is_empty());
     }
 }

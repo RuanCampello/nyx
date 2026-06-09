@@ -34,7 +34,13 @@ impl Documents {
         self.overlays.clone()
     }
 
-    /// The project entry to analyse `uri` from: the nearest `main.nyx` walking
+    /// the current buffer text for `uri`, if it is open
+    #[inline]
+    pub fn text(&self, uri: &Url) -> Option<String> {
+        self.overlays.get(&canonical(uri)?).cloned()
+    }
+
+    /// the project entry to analyse `uri` from: the nearest `main.nyx` walking
     /// up to the workspace root, or the file itself when there is none
     pub fn entry(&self, uri: &Url) -> Option<PathBuf> {
         let file = canonical(uri)?;

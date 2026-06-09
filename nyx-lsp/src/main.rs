@@ -1,6 +1,6 @@
-mod analysis;
 mod convert;
 mod document;
+mod feature;
 mod server;
 
 use server::NyxLsp;

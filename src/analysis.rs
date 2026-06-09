@@ -28,6 +28,9 @@ pub struct SemanticAnalysis {
     pub document_symbols: Vec<DocumentSymbol>,
     /// Resolves the global spans above to concrete files and line/column.
     pub source_map: SourceMap,
+    /// whether the project analysed into hir. when false the feature data above
+    /// is empty and an editor should keep its previous results rather than blank them on a transient parse error
+    pub ok: bool,
 }
 
 /// A top-level declared symbol for the document outline
@@ -54,8 +57,7 @@ pub enum SymbolKind {
     Enum,
 }
 
-/// A single compile-time error in structured form (heading, labels, note,
-/// help) so consumers can render it as richly as the CLI.
+/// A single compile-time error in structured form so consumers can render it as richly as the CLI
 pub type CheckError = crate::diagnostic::RichDiagnostic;
 
 impl Analysis {
@@ -243,6 +245,7 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
         inlay_hints,
         document_symbols: symbols,
         source_map: SourceMap::default(),
+        ok: true,
     }
 }
 
@@ -285,5 +288,36 @@ fn format_type(typ: Type, hir: &Hir<'_>) -> String {
             }
         },
         kind => kind.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analyse(tag: &str, content: &str) -> SemanticAnalysis {
+        let entry = std::env::temp_dir().join(format!("nyx_analysis_{tag}.nyx"));
+        std::fs::write(&entry, "").unwrap();
+        let entry = std::fs::canonicalize(&entry).unwrap();
+        let analysis = Analysis::new(entry.clone()).with_overlay(entry.clone(), content).run();
+        std::fs::remove_file(&entry).ok();
+
+        analysis
+    }
+
+    #[test]
+    fn valid_buffer_analyses_with_hints() {
+        let a = analyse("valid", "fn main() { let x = 232; }");
+        assert!(a.ok, "valid source must analyse into HIR");
+        assert!(a.diagnostics.is_empty());
+        assert!(a.inlay_hints.iter().any(|(_, ty)| ty == "i32"), "expected the `: i32` hint");
+    }
+
+    #[test]
+    fn broken_buffer_is_not_ok_and_yields_no_features() {
+        let a = analyse("broken", "fn main() { let x = ");
+        assert!(!a.ok, "a parse error must leave the analysis incomplete");
+        assert!(a.inlay_hints.is_empty(), "no feature data when analysis fails");
+        assert!(!a.diagnostics.is_empty(), "the error should still be reported");
     }
 }

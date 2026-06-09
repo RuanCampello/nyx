@@ -226,6 +226,7 @@ fn generate_rich_arm(
         .as_ref()
         .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
 
+    let code = to_kebab_case(&variant_name.to_string());
     let msg_ts = parse_template_plain(&msg.value(), msg.span())?;
     let prim_ts = parse_template_plain(&prim.value(), prim.span())?;
 
@@ -256,6 +257,7 @@ fn generate_rich_arm(
         #enum_name::#variant_name #field_bindings => {
             crate::diagnostic::RichDiagnostic {
                 severity: crate::diagnostic::Severity::Error,
+                code: ::core::option::Option::Some(#code),
                 message: #msg_ts,
                 primary: ::core::option::Option::Some(crate::diagnostic::Label {
                     span: __span,
@@ -306,6 +308,19 @@ fn generate_message_arm(
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => { #msg_plain_ts }
     })
+}
+
+#[inline]
+fn to_kebab_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.char_indices() {
+        if ch.is_uppercase() && i != 0 {
+            out.push('-');
+        }
+        out.extend(ch.to_lowercase());
+    }
+
+    out
 }
 
 fn field_bindings_pattern(fields: &Fields) -> TokenStream {

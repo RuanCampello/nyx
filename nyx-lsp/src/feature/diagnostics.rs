@@ -6,19 +6,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Url,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString, Url,
 };
 
-/// How long to wait after the last keystroke before re-analysing
+/// how long to wait after the last keystroke before re-analysing
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
 
-/// CPU-bound, intended to run inside [`tokio::task::spawn_blocking`]
+/// cpu-bound, intended to run inside [`tokio::task::spawn_blocking`]
 pub fn run(entry: PathBuf, overlays: HashMap<PathBuf, String>) -> SemanticAnalysis {
     Analysis::new(entry).with_overlays(overlays).run()
 }
 
-/// LSP diagnostics routed to the file each one belongs to
-/// Diagnostics with no resolvable primary span (e.g. I/O errors) are attached to `entry_url`
+/// lsp diagnostics routed to the file each one belongs to
+/// diagnostics with no resolvable primary span are attached to `entry_url`
 pub fn diagnostics_by_url(
     analysis: &SemanticAnalysis,
     entry_url: &Url,
@@ -42,6 +42,7 @@ pub fn diagnostics_by_url(
         out.entry(url).or_default().push(Diagnostic {
             range,
             severity: Some(severity(error.severity)),
+            code: error.code.map(|c| NumberOrString::String(c.to_string())),
             message: error.to_string(),
             source: Some("nyx".into()),
             related_information: related_information(map, error, encoding),

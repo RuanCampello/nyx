@@ -16,6 +16,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub struct RichDiagnostic {
     pub severity: Severity,
+    pub code: Option<&'static str>,
     pub message: String,
     pub primary: Option<Label>,
     pub secondary: Vec<Label>,
@@ -98,6 +99,7 @@ impl RichDiagnostic {
     pub fn bare(message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
+            code: None,
             message: message.into(),
             primary: None,
             secondary: Vec::new(),
