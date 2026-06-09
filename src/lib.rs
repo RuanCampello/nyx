@@ -10,10 +10,10 @@ pub(crate) mod mir;
 pub(crate) mod parser;
 pub mod source_map;
 
-pub use diagnostic::{Label, RichDiagnostic, Severity};
 pub use analysis::{Analysis, CheckError, DocumentSymbol, SemanticAnalysis, SymbolKind};
-pub use lexer::HasSpan;
+pub use diagnostic::{Label, RichDiagnostic, Severity};
 pub use lexer::token::{BytePos, Span};
+pub use lexer::{HasSpan, is_keyword};
 pub use source_map::{FileId, Loc, SourceMap, SpanData};
 
 #[derive(Debug)]

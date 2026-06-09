@@ -61,10 +61,7 @@ pub type CheckError = crate::diagnostic::RichDiagnostic;
 impl Analysis {
     /// Create a new analysis builder starting at the given entry path.
     pub fn new(entry: impl Into<PathBuf>) -> Self {
-        Self {
-            entry: entry.into(),
-            overlays: HashMap::new(),
-        }
+        Self { entry: entry.into(), overlays: HashMap::new() }
     }
 
     /// Add a single in-memory file overlay (e.g. unsaved editor buffer).
@@ -91,20 +88,14 @@ impl Analysis {
             },
         };
 
-        let name = root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
+        let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
 
         let arena = bumpalo::Bump::new();
         let mut loader = crate::hir::module::ModuleLoader::with_file_system(
             name,
             root,
             crate::hir::module::resolve_std_root(),
-            crate::hir::module::OverlayFS {
-                overlay: self.overlays,
-            },
+            crate::hir::module::OverlayFS { overlay: self.overlays },
             &arena,
         );
 
@@ -112,10 +103,7 @@ impl Analysis {
             Ok(hir) => walk_hir(&hir),
             Err(e) => {
                 let span = e.span().unwrap_or_default();
-                SemanticAnalysis {
-                    diagnostics: vec![e.rich(span)],
-                    ..Default::default()
-                }
+                SemanticAnalysis { diagnostics: vec![e.rich(span)], ..Default::default() }
             },
         };
         analysis.source_map = crate::diagnostic::take_source_map();
