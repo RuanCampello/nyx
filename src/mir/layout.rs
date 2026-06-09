@@ -1,8 +1,5 @@
 use crate::{
-    hir::{
-        Enum, EnumId, Struct, StructId, SymbolId, Type, TypeKind, Visit,
-        index_vec::IndexVec,
-    },
+    hir::{Enum, EnumId, Struct, StructId, SymbolId, Type, TypeKind, Visit, index_vec::IndexVec},
     mir::Layout,
     parser::statement::{StructRepr, StructReprKind},
 };

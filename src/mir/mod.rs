@@ -19,7 +19,7 @@
 //!
 
 use crate::{
-    hir::{FunctionId, Intrinsic, SyscallCode, SymbolId, SymbolTable, Type, TypeKind},
+    hir::{FunctionId, Intrinsic, SymbolId, SymbolTable, SyscallCode, Type, TypeKind},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
