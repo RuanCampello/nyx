@@ -108,3 +108,17 @@ The semantic analyzer enforces the following rules:
 Nyx implements **static dispatch** for interface methods. Method resolution occurs during HIR semantic analysis, mapping call sites directly to the mangled implementation function (e.g. `Rectangle__area`).
 
 Dynamic dispatch (vtable-based trait objects) is not supported.
+
+## Generics
+
+### Semantic Model
+
+Generic type parameters parameterise functions, `struct`s, and `enum`s. Interface bounds restrict these parameters to enforce semantic constraints at compile time:
+
+```rust
+pub fn assert_eq<A, B>(left: A, right: B) where A: PartialEq<B> { ... }
+```
+
+### Compilation Model
+
+Nyx uses static monomorphisation. Generic definitions are stored as template representations in the High-level IR (HIR) and lowered on-demand. When a generic definition is referenced with concrete type arguments, the compiler specialises the function or type, name-mangling the resulting instance (e.g. `Optional$i32`) to produce a distinct monomorphic definition in the Mid-level IR (MIR).
