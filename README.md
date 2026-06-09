@@ -53,6 +53,15 @@ Nyx is currently in early development. However, the core compiler pipeline, from
 
 For a detailed breakdown of completed features and active development goals, please see the [ROADMAP](ROADMAP.md).
 
+## Language Server
+
+Nyx ships an LSP server (`nyx-lsp`) that brings diagnostics, hover types, inlay hints, semantic-token highlighting and document symbols to your editor.
+
+See [`nyx-lsp/README.md`](nyx-lsp/README.md) for build and editor setup, currently documented for **Neovim** and **Vim**.
+
+> [!NOTE]
+> For a simplier highlighting, check the [vim](nyx.vim) syntax rules.
+
 ## Philosophy
 
 - **Strict by Design**: Minimal implicit behaviour, maximizing type safety.

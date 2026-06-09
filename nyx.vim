@@ -1,3 +1,7 @@
+" nyx basic syntax highlighting 
+" semantic tokens with lsp setup is highly prefereable instead if supported in
+" your code editor
+"
 " autocmd BufRead,BufNewFile *.nyx set filetype=nyx
 
 if exists("b:current_syntax")
