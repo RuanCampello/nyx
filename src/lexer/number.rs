@@ -12,11 +12,7 @@ use crate::lexer::token::{BytePos, Span, Token, TokenKind, Tokenize};
 pub struct NumberLiteral;
 
 impl<'src> Tokenize<'src> for NumberLiteral {
-    fn lex(
-        self,
-        cursor: &mut Cursor<'src>,
-        start: BytePos,
-    ) -> Result<Token<'src>, LexError<'src>> {
+    fn lex(self, cursor: &mut Cursor<'src>, start: BytePos) -> Result<Token<'src>, LexError<'src>> {
         // consume leading digits and underscores
         consume_digits(cursor);
 

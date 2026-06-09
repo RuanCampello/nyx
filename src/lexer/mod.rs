@@ -253,6 +253,14 @@ impl<T: Clone> Spanned<T> {
     }
 }
 
+/// whether `word` is a reserved nyx keyword, the single source of truth for
+/// editor tooling that classifies identifiers without a full lex
+#[inline]
+pub fn is_keyword(word: &str) -> bool {
+    use std::str::FromStr;
+    token::Keyword::from_str(word).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
