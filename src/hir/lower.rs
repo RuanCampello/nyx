@@ -38,9 +38,6 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
-    /// Maps a generic parameter name (`T`) to the concrete type it was instantiated
-    /// with, when re-lowering a generic template body for a concrete instance. Empty
-    /// for ordinary (non-instance) lowering
     generic_env: GenericEnv,
 }
 
@@ -198,17 +195,17 @@ where
         self.push_scope();
         let last_idx = block.statements.len().saturating_sub(1);
 
-        let (statements_vec, returns) = block.statements.iter().enumerate().try_fold(
-            (Vec::new(), false),
-            |(mut statements, mut returns), (idx, statement)| -> Result<_, HirError> {
-                let (statement, did_return) =
-                    self.lower_statement(statement, is_tail && idx == last_idx)?;
-                statements.push(statement);
-
-                returns |= did_return;
-                Ok((statements, returns))
-            },
-        )?;
+        let mut statements_vec = Vec::with_capacity(block.statements.len());
+        let mut returns = false;
+        for (idx, statement) in block.statements.iter().enumerate() {
+            match self.lower_statement(statement, is_tail && idx == last_idx) {
+                Ok((statement, did_return)) => {
+                    statements_vec.push(statement);
+                    returns |= did_return;
+                },
+                Err(error) => self.soft(error)?,
+            }
+        }
 
         self.pop_scope();
         let statements = self.arena.alloc_slice_copy(&statements_vec);
@@ -225,8 +222,10 @@ where
         match statement {
             Stmt::Let(statement) => {
                 let typ = match (statement.typ.as_ref(), statement.value.as_ref()) {
-                    (Some(typ), _) => self.resolve_type(&typ.value(), typ.span())?,
-                    (_, Some(expr)) => self.infer(expr)?,
+                    (Some(typ), _) => {
+                        self.resolve_type(&typ.value(), typ.span()).or_else(|e| self.poison(e))?
+                    },
+                    (_, Some(expr)) => self.infer(expr).or_else(|e| self.poison(e))?,
                     (None, None) => {
                         return Err(hir_error!(
                             statement.span,
@@ -1526,7 +1525,7 @@ where
     }
 
     fn type_for_binary(
-        &self,
+        &mut self,
         operator: &BinaryOperator,
         left: Type,
         right: Type,
@@ -1674,15 +1673,37 @@ where
 
     #[inline(always)]
     fn assert_type(
-        &self,
+        &mut self,
         expected: impl Into<Type>,
         found: impl Into<Type>,
         span: Span,
     ) -> Result<(), HirError<'hir>> {
         let (expected, found) = (expected.into(), found.into());
-        match expected == found {
-            true => Ok(()),
-            false => Err(hir_error!(span, TypeMismatch { expected, found })),
+        // a poison type is compatible with everything, so it never cascades
+        if expected.is_error() || found.is_error() || expected == found {
+            return Ok(());
+        }
+
+        self.soft(hir_error!(span, TypeMismatch { expected, found }))
+    }
+
+    /// record `error` and yield a poison [`Type`] so lowering can continue, or
+    /// propagate it unchanged when not in recovery mode
+    fn poison(&mut self, error: HirError<'hir>) -> Result<Type, HirError<'hir>> {
+        match self.scope.recover {
+            true => Ok(Type::error(self.scope.diagnostics.emit(error.into()))),
+            false => Err(error),
+        }
+    }
+
+    /// record `error` and continue, or propagate it when not recovering
+    fn soft(&mut self, error: HirError<'hir>) -> Result<(), HirError<'hir>> {
+        match self.scope.recover {
+            true => {
+                self.scope.diagnostics.emit(error.into());
+                Ok(())
+            },
+            false => Err(error),
         }
     }
 

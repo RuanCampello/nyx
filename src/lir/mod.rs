@@ -353,6 +353,7 @@ impl Type {
                 unreachable!("GenericParam must be resolved before LIR lowering")
             },
             TypeKind::Never => MachineType::Int { bytes: 4, signed: true },
+            TypeKind::Error => unreachable!("poisoned types must not reach LIR lowering"),
         }
     }
 }

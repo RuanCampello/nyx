@@ -1,3 +1,4 @@
+use crate::hir::diagnostics::ErrorGuaranteed;
 use crate::parser::statement;
 
 /// A manually bit-packed 64-bit representation of a type.
@@ -60,6 +61,13 @@ pub enum TypeKind {
     },
     GenericParam(u8),
     Never,
+    /// A poison type produced during error recovery
+    ///
+    /// Compatible with everything so it never cascades
+    ///
+    /// Only constructible via [`Type::error`], which
+    /// demands an [`ErrorGuaranteed`] proving a diagnostic was already reported
+    Error,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -101,6 +109,8 @@ const REF: u8 = 20;
 
 const GENERIC_PARAM: u8 = 21;
 const NEVER: u8 = 22;
+
+const ERROR: u8 = 23;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -222,7 +232,22 @@ impl Type {
             },
             TypeKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
             TypeKind::Never => Self(NEVER as u64),
+            TypeKind::Error => Self(ERROR as u64),
         }
+    }
+
+    /// The poison type
+    ///
+    /// Requires an [`ErrorGuaranteed`] so a value of type
+    /// `Error` cannot be produced unless a diagnostic was already reported
+    #[inline]
+    pub(crate) const fn error(_guaranteed: ErrorGuaranteed) -> Self {
+        Self(ERROR as u64)
+    }
+
+    #[inline(always)]
+    pub(crate) const fn is_error(self) -> bool {
+        tag(self.0) == ERROR
     }
 
     #[inline]
@@ -292,6 +317,7 @@ impl Type {
             },
             GENERIC_PARAM => TypeKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
             NEVER => TypeKind::Never,
+            ERROR => TypeKind::Error,
             _ => panic!("invalid Type tag"),
         }
     }
@@ -499,6 +525,7 @@ impl std::fmt::Display for TypeKind {
                 })?;
                 to.kind().fmt(f)
             },
+            Self::Error => f.write_str("{unknown}"),
             _ => unreachable!("every scalar kind is named by `scalar_name`"),
         }
     }

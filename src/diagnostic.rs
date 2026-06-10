@@ -13,7 +13,7 @@ use std::fmt;
 
 /// A diagnostic in structured, plain-text form, the same information the CLI
 /// renders through `ariadne`, but consumable across the crate boundary
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RichDiagnostic {
     pub severity: Severity,
     pub code: Option<&'static str>,
@@ -26,7 +26,7 @@ pub struct RichDiagnostic {
 
 /// A single labelled span within a [`RichDiagnostic`], carrying plain (no ANSI)
 /// text so consumers like the LSP can present it however they wish
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Label {
     pub span: Span,
     pub message: String,

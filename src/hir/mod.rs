@@ -4,6 +4,7 @@
 //! Identifiers are lowered to stable numeric IDs.
 
 use crate::{
+    diagnostic,
     hir::{
         declarations::Declarations,
         error::HirError,
@@ -26,6 +27,7 @@ pub use types::*;
 
 mod constants;
 mod declarations;
+pub(crate) mod diagnostics;
 pub mod error;
 pub mod index_vec;
 mod interfaces;
@@ -44,6 +46,9 @@ pub struct Hir<'hir> {
     pub structs: IndexVec<StructId, Struct>,
     pub enums: IndexVec<EnumId, Enum>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
+    /// Recoverable lowering diagnostics
+    /// Empty unless recovery mode was on
+    pub diagnostics: Vec<diagnostic::RichDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +56,8 @@ pub struct Struct {
     id: StructId,
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
-    /// Fields in source declaration order. Concrete layout belongs to MIR
+    /// Fields in source declaration order
+    /// Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
     pub(crate) repr: StructRepr,
 }
@@ -362,6 +368,7 @@ pub fn lower<'hir>(
         structs: scope.structs,
         enums: scope.enums,
         functions,
+        diagnostics: scope.diagnostics.take_errors(),
     })
 }
 

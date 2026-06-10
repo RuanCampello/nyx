@@ -1,7 +1,7 @@
-use crate::hir;
+use crate::hir::module;
 use crate::hir::{
-    Block, Enum, ExpressionKind, Function, Hir, Local, LocalId, Res, Statement, Struct, StructId,
-    SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
+    self, Block, Enum, ExpressionKind, Function, Hir, Local, LocalId, Res, Statement, Struct,
+    StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
 };
 use crate::mir::layout::LayoutTable;
 use crate::{
@@ -105,16 +105,24 @@ impl Analysis {
         let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
 
         let arena = bumpalo::Bump::new();
-        let mut loader = crate::hir::module::ModuleLoader::with_file_system(
+        let mut loader = module::ModuleLoader::with_file_system(
             name,
             root,
-            crate::hir::module::resolve_std_root(),
-            crate::hir::module::OverlayFS { overlay: self.overlays },
+            module::resolve_std_root(),
+            module::OverlayFS { overlay: self.overlays },
             &arena,
-        );
+        )
+        .recovering();
 
         let mut analysis = match loader.load(&self.entry) {
-            Ok(hir) => walk_hir(&hir),
+            // recovery keeps a (partial) HIR even with errors: surface every
+            // recovered diagnostic while still serving features for what resolved
+            Ok(hir) => {
+                let mut analysis = walk_hir(&hir);
+                analysis.ok = hir.diagnostics.is_empty();
+                analysis.diagnostics = hir.diagnostics;
+                analysis
+            },
             Err(e) => {
                 let span = e.span().unwrap_or_default();
                 SemanticAnalysis { diagnostics: vec![e.rich(span)], ..Default::default() }
@@ -347,19 +355,21 @@ fn short_name(qualified: &str) -> String {
 #[inline(always)]
 fn layout_of(layouts: &LayoutTable, typ: Type) -> Option<(u32, u32)> {
     match typ.kind() {
-        TypeKind::Unit | TypeKind::Never | TypeKind::SelfType | TypeKind::GenericParam(_) => None,
+        TypeKind::Unit
+        | TypeKind::Never
+        | TypeKind::SelfType
+        | TypeKind::GenericParam(_)
+        | TypeKind::Error => None,
         _ => Some(layouts.type_layout(typ)),
     }
 }
 
 fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
     let mut out = String::new();
-    for (flag, word) in [(func.is_pub, "pub "), (func.inline, "inline "), (func.is_const, "const ")]
-    {
-        if flag {
-            out.push_str(word);
-        }
-    }
+    let flags = [(func.is_pub, "pub "), (func.inline, "inline "), (func.is_const, "const ")];
+
+    out.extend(flags.into_iter().filter_map(|(flag, word)| flag.then_some(word)));
+
     out.push_str("fn ");
     out.push_str(&short_name(hir.symbols.get(func.name)));
 

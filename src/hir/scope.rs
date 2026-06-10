@@ -3,6 +3,7 @@ use crate::{
         Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
         RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
+        diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
         interfaces,
@@ -40,10 +41,17 @@ pub struct Scope<'hir> {
 
     pub generic_structs: HashMap<SymbolId, statement::Struct<'hir>>,
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
-    /// Generic free-function templates keyed by the [`FunctionId`] of their (open) signature.
+    /// Generic free-function templates keyed by the [`FunctionId`] of their (open) signature
     pub generic_fns: HashMap<FunctionId, statement::Function<'hir>>,
     pub generic_fn_envs: HashMap<FunctionId, GenericEnv>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
+
+    /// When set, recoverable lowering errors are accumulated in [diagnostics]
+    /// and the offending nodes are poisoned instead of aborting the whole pass
+    ///
+    /// [diagnostics]: Scope::diagnostics
+    pub(in crate::hir) recover: bool,
+    pub(in crate::hir) diagnostics: Diagnostics,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +88,9 @@ pub(in crate::hir) type EnumVariants = HashMap<(SymbolId, SymbolId), (EnumId, i6
 pub(in crate::hir) type Methods = HashMap<(Type, SymbolId), FunctionId>;
 pub(in crate::hir) type Interfaces = HashMap<SymbolId, InterfaceSignature>;
 pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
+/// Maps a generic parameter name (`T`) to the concrete type it was instantiated
+/// with, when re-lowering a generic template body for a concrete instance
+/// Empty for ordinary (non-instance) lowering
 pub(in crate::hir) type GenericEnv = HashMap<String, Type>;
 
 impl<'hir> Scope<'hir> {
@@ -103,6 +114,8 @@ impl<'hir> Scope<'hir> {
             generic_fns: HashMap::new(),
             generic_fn_envs: HashMap::new(),
             generic_impls: Vec::new(),
+            recover: false,
+            diagnostics: Diagnostics::default(),
         }
     }
 
@@ -1021,7 +1034,7 @@ impl<'hir> Scope<'hir> {
     }
 
     /// Instantiate every `impl Name<T>` block from `generic_impls` that matches `template_name`
-    /// into `receiver_type`, using `args` as the substitution.
+    /// into `receiver_type`, using `args` as the substitution
     fn specialize_impls(
         &mut self,
         template_name: &str,

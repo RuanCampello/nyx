@@ -117,6 +117,12 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         }
     }
 
+    #[inline]
+    pub(crate) fn recovering(mut self) -> Self {
+        self.scope.recover = true;
+        self
+    }
+
     /// Load all modules reacheable from the `entry` point and produce a merged `HIR`
     ///
     /// Modules are merged in dependency-first order. The entry module is always last,
@@ -134,12 +140,14 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         let functions =
             demand::lower_reachable(graph, &order, &interfaces, &mut self.scope, symbols, arena)?;
         let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)?;
+        let diagnostics = self.scope.diagnostics.take_errors();
 
         Ok(Hir {
             functions,
             structs: self.scope.structs.clone(),
             enums: self.scope.enums.clone(),
             symbols: self.symbols.clone(),
+            diagnostics,
         })
     }
 

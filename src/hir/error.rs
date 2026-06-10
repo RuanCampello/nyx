@@ -1,3 +1,4 @@
+use crate::diagnostic;
 use crate::hir::Type;
 use crate::lexer::token::Span;
 use nyx_macros::Diagnostic;
@@ -281,6 +282,14 @@ impl<'h> HirError<'h> {
     #[inline(always)]
     pub(in crate::hir) fn new(kind: HirErrorKind<'h>, span: Span) -> Self {
         Self { kind, span }
+    }
+}
+
+impl<'h> From<HirError<'h>> for diagnostic::RichDiagnostic {
+    fn from(value: HirError<'h>) -> Self {
+        use diagnostic::AsDiagnostic;
+
+        value.kind.rich(value.span)
     }
 }
 
