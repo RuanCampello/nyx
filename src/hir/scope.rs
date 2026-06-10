@@ -119,6 +119,22 @@ impl<'hir> Scope<'hir> {
         }
     }
 
+    /// Record `error` and yield a poison [`Type`] so analysis can continue, or
+    /// propagate it unchanged when not in recovery mode
+    pub(in crate::hir) fn poison(&mut self, error: HirError<'hir>) -> Result<Type, HirError<'hir>> {
+        self.recover
+            .then(|| Type::error(self.diagnostics.emit(error.into())))
+            .ok_or(error)
+    }
+
+    /// Record `error` and continue, or propagate it when not recovering
+    pub(in crate::hir) fn soft(&mut self, error: HirError<'hir>) -> Result<(), HirError<'hir>> {
+        self.recover
+            .then(|| self.diagnostics.emit(error.into()))
+            .ok_or(error)
+            .map(|_| ())
+    }
+
     /// Analyse `declarations` and extend this scope with their declarations
     ///
     /// Ids are assigned relative to what is already in the scope so this can be called
@@ -167,35 +183,39 @@ impl<'hir> Scope<'hir> {
     where
         's: 'hir,
     {
-        declarations
-            .functions()
-            .filter_map(|function| {
-                // generic templates carry open `GenericParam`s, they are not lowered here
-                // but specialised on-demand during MIR monomorphisation
-                if self.is_generic_function(function, symbols) {
-                    return None;
-                }
+        let mut lowered = IndexVec::new();
+        // under recovery a duplicate declaration resolves to the surviving id
+        // lowering it again would clone the function
+        let mut seen = HashSet::new();
+        for function in declarations.functions() {
+            if self.is_generic_function(function, symbols) {
+                continue;
+            }
 
-                let id = match self.function_id(function, symbols, None, |name| {
-                    HirErrorKind::UnknownFunction { name }
-                }) {
-                    Ok(id) => id,
-                    Err(e) => return Some(Err(e)),
-                };
+            let id = match self
+                .function_id(function, symbols, None, |name| HirErrorKind::UnknownFunction { name })
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    self.soft(e)?;
+                    continue;
+                },
+            };
 
-                if !should_lower(id) {
-                    return None;
-                }
+            let is_intrinsic = matches!(self.signatures[id].kind, FunctionKind::Intrinsic(_));
 
-                if matches!(self.signatures[id].kind, FunctionKind::Intrinsic(_)) {
-                    return None;
-                }
+            if !should_lower(id) || is_intrinsic || !seen.insert(id) {
+                continue;
+            }
 
-                Some(
-                    lower::FunctionBuilder::new(self, symbols, id, function, in_std, arena).lower(),
-                )
-            })
-            .collect()
+            match lower::FunctionBuilder::new(self, symbols, id, function, in_std, arena).lower() {
+                Ok(function) => lowered.push(function),
+                // anything that escaped body-level recovery taints only this function
+                Err(error) => self.soft(error)?,
+            }
+        }
+
+        Ok(lowered)
     }
 
     fn extend_structs<'d, 's>(
@@ -218,10 +238,11 @@ impl<'hir> Scope<'hir> {
                 || local_map.contains_key(&symbol);
 
             if already_exists {
-                return Err(hir_error!(
+                self.soft(hir_error!(
                     struct_decl.span,
                     DuplicateStruct { name: struct_decl.name }
-                ));
+                ))?;
+                continue;
             }
 
             if !struct_decl.generics.is_empty() {
@@ -246,6 +267,7 @@ impl<'hir> Scope<'hir> {
             &self.enum_map,
             symbols,
             &mut lowered,
+            self.recover.then_some(&mut self.diagnostics),
         )?;
 
         for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
@@ -278,7 +300,8 @@ impl<'hir> Scope<'hir> {
                 || self.generic_enums.contains_key(&symbol)
                 || declarations.structs.iter().any(|s| s.name == enum_decl.name)
             {
-                return Err(hir_error!(enum_decl.span, DuplicateEnum { name: enum_decl.name }));
+                self.soft(hir_error!(enum_decl.span, DuplicateEnum { name: enum_decl.name }))?;
+                continue;
             }
 
             if !enum_decl.generics.is_empty() {
@@ -286,16 +309,20 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let repr = enum_decl.repr.value().try_into().map_err(|_| {
-                hir_error!(
-                    enum_decl.repr.span(),
-                    TypeMismatch {
-                        expected: TypeKind::I32.into(),
-                        found: Type::from_primitive_ast(&enum_decl.repr.value())
-                            .unwrap_or_default(),
-                    }
-                )
-            })?;
+            let repr = match enum_decl.repr.value().try_into() {
+                Ok(repr) => repr,
+                Err(_) => {
+                    self.soft(hir_error!(
+                        enum_decl.repr.span(),
+                        TypeMismatch {
+                            expected: TypeKind::I32.into(),
+                            found: Type::from_primitive_ast(&enum_decl.repr.value())
+                                .unwrap_or_default(),
+                        }
+                    ))?;
+                    continue;
+                },
+            };
             let id = EnumId::new(self.enums.len() as u32, repr);
 
             self.enum_map.insert(symbol, id);
@@ -314,7 +341,8 @@ impl<'hir> Scope<'hir> {
             for variant in &enum_decl.variants {
                 let variant_symbol = symbols.insert(variant.name);
                 if !seen.insert(variant_symbol) {
-                    return Err(hir_error!(variant.span, DuplicateVariant { name: variant.name }));
+                    self.soft(hir_error!(variant.span, DuplicateVariant { name: variant.name }))?;
+                    continue;
                 }
 
                 let value = variant.value.unwrap_or(next_value);
@@ -322,11 +350,13 @@ impl<'hir> Scope<'hir> {
 
                 // resolve a tagged-union variant payload (e.g. `Some(T)`), a concrete
                 // `Type::Generic` here instantiates its template on-demand
-                let payload = variant
-                    .payload
-                    .as_ref()
-                    .map(|typ| self.resolve_type(typ.value_ref(), typ.span(), symbols, None, None))
-                    .transpose()?;
+                let payload = match variant.payload.as_ref() {
+                    None => None,
+                    Some(typ) => Some(
+                        self.resolve_type(typ.value_ref(), typ.span(), symbols, None, None)
+                            .or_else(|error| self.poison(error))?,
+                    ),
+                };
 
                 self.enum_variants.insert((symbol, variant_symbol), (id, value));
                 variants.push(EnumVariant { name: variant_symbol, value, payload });
@@ -349,10 +379,8 @@ impl<'hir> Scope<'hir> {
         for interface in &declarations.interfaces {
             let name = symbols.insert(interface.name);
             if self.interfaces.contains_key(&name) {
-                return Err(hir_error!(
-                    interface.span,
-                    DuplicateInterface { name: interface.name }
-                ));
+                self.soft(hir_error!(interface.span, DuplicateInterface { name: interface.name }))?;
+                continue;
             }
 
             let superinterfaces =
@@ -417,12 +445,14 @@ impl<'hir> Scope<'hir> {
 
         for function in &declarations.functions {
             if function.receiver.is_some() {
-                return Err(hir_error!(function.span, ReceiverOutsideImpl));
+                self.soft(hir_error!(function.span, ReceiverOutsideImpl))?;
+                continue;
             }
 
             let symbol = symbols.insert(&self.mangler.item(function.name));
             if self.functions.contains_key(&symbol) {
-                return Err(hir_error!(function.span, DuplicateFunction { name: function.name }));
+                self.soft(hir_error!(function.span, DuplicateFunction { name: function.name }))?;
+                continue;
             }
 
             if !function.generics.is_empty() {
@@ -506,41 +536,14 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let receiver_type = match resolve_primitive_type(implementation.name) {
-                Some(primitive) if in_std => primitive,
-                Some(_) => {
-                    return Err(hir_error!(
-                        implementation.span,
-                        OrphanImpl { name: implementation.name }
-                    ));
-                },
-
-                _ => {
-                    let is_local =
-                        declarations.structs.iter().any(|s| s.name == implementation.name)
-                            || declarations.enums.iter().any(|e| e.name == implementation.name);
-                    if !is_local {
-                        let symbol = symbols.insert(implementation.name);
-                        return match self.nominal_type(symbol) {
-                            Some(_) => Err(hir_error!(
-                                implementation.span,
-                                OrphanImpl { name: implementation.name }
-                            )),
-
-                            _ => Err(hir_error!(
-                                implementation.span,
-                                UnknownType { name: implementation.name }
-                            )),
-                        };
-                    }
-
-                    let symbol = symbols.insert(implementation.name);
-                    self.nominal_type(symbol).ok_or(HirError {
-                        kind: HirErrorKind::UnknownType { name: implementation.name },
-                        span: implementation.span,
-                    })?
-                },
-            };
+            let receiver_type =
+                match self.impl_receiver_type(implementation, declarations, symbols, in_std) {
+                    Ok(receiver_type) => receiver_type,
+                    Err(error) => {
+                        self.soft(error)?;
+                        continue;
+                    },
+                };
 
             let impl_param_env =
                 self.build_impl_param_env(implementation, receiver_type, symbols)?;
@@ -562,13 +565,14 @@ impl<'hir> Scope<'hir> {
                 match method.receiver {
                     Some(receiver) => {
                         if self.methods.contains_key(&(receiver_type, method_symbol)) {
-                            return Err(hir_error!(
+                            self.soft(hir_error!(
                                 method.span,
                                 DuplicateMethod {
                                     struct_name: implementation.name,
                                     name: method.name,
                                 }
-                            ));
+                            ))?;
+                            continue;
                         }
 
                         let id = FunctionId(self.signatures.len() as u32);
@@ -611,7 +615,8 @@ impl<'hir> Scope<'hir> {
                     None => {
                         if self.functions.contains_key(&mangled) {
                             let name = qualified(self.arena, implementation.name, method.name);
-                            return Err(hir_error!(method.span, DuplicateFunction { name }));
+                            self.soft(hir_error!(method.span, DuplicateFunction { name }))?;
+                            continue;
                         }
 
                         let id = FunctionId(self.signatures.len() as u32);
@@ -642,6 +647,41 @@ impl<'hir> Scope<'hir> {
             }
         }
         Ok(())
+    }
+
+    /// Resolve the receiver type an `impl` block attaches to, enforcing the orphan rule
+    fn impl_receiver_type<'h>(
+        &mut self,
+        implementation: &statement::Impl<'h>,
+        declarations: &Declarations<'_, 'h>,
+        symbols: &mut SymbolTable,
+        in_std: bool,
+    ) -> Result<Type, HirError<'hir>>
+    where
+        'h: 'hir,
+    {
+        if let Some(primitive) = resolve_primitive_type(implementation.name) {
+            return match in_std {
+                true => Ok(primitive),
+                false => {
+                    Err(hir_error!(implementation.span, OrphanImpl { name: implementation.name }))
+                },
+            };
+        }
+
+        let is_local = declarations.structs.iter().any(|s| s.name == implementation.name)
+            || declarations.enums.iter().any(|e| e.name == implementation.name);
+        let symbol = symbols.insert(implementation.name);
+
+        match (self.nominal_type(symbol), is_local) {
+            (Some(typ), true) => Ok(typ),
+            (Some(_), false) => {
+                Err(hir_error!(implementation.span, OrphanImpl { name: implementation.name }))
+            },
+            (None, _) => {
+                Err(hir_error!(implementation.span, UnknownType { name: implementation.name }))
+            },
+        }
     }
 
     /// Register a `impl T with Iface` relation and, if `Iface` is generic,
@@ -676,13 +716,16 @@ impl<'hir> Scope<'hir> {
             Some(statement::Type::Generic(_, args)) => {
                 let mut resolved = Vec::with_capacity(args.len());
                 for arg in &args {
-                    resolved.push(self.resolve_type(
-                        arg.value_ref(),
-                        arg.span(),
-                        symbols,
-                        Some(receiver_type),
-                        None,
-                    )?);
+                    let typ = self
+                        .resolve_type(
+                            arg.value_ref(),
+                            arg.span(),
+                            symbols,
+                            Some(receiver_type),
+                            None,
+                        )
+                        .or_else(|error| self.poison(error))?;
+                    resolved.push(typ);
                 }
                 resolved
             },
@@ -755,6 +798,7 @@ impl<'hir> Scope<'hir> {
     {
         return_type.map_or(Ok(Type::default()), |s| {
             self.resolve_type(s.value_ref(), s.span(), symbols, self_type, env)
+                .or_else(|error| self.poison(error))
         })
     }
 
@@ -771,13 +815,10 @@ impl<'hir> Scope<'hir> {
     {
         let mut out = Vec::with_capacity(params.len());
         for p in params {
-            out.push(self.resolve_type(
-                p.typ.value_ref(),
-                p.typ.span(),
-                symbols,
-                self_type,
-                env,
-            )?);
+            let typ = self
+                .resolve_type(p.typ.value_ref(), p.typ.span(), symbols, self_type, env)
+                .or_else(|error| self.poison(error))?;
+            out.push(typ);
         }
         Ok(out)
     }
@@ -933,13 +974,13 @@ impl<'hir> Scope<'hir> {
             let value = variant.value.unwrap_or(next_value);
             next_value = value + 1;
 
-            let payload = variant
-                .payload
-                .as_ref()
-                .map(|typ| {
+            let payload = match variant.payload.as_ref() {
+                None => None,
+                Some(typ) => Some(
                     self.resolve_type(typ.value_ref(), typ.span(), symbols, None, Some(&env))
-                })
-                .transpose()?;
+                        .or_else(|error| self.poison(error))?,
+                ),
+            };
 
             self.enum_variants.insert((mangled_sym, variant_symbol), (id, value));
             variants.push(EnumVariant { name: variant_symbol, value, payload });
@@ -974,20 +1015,13 @@ impl<'hir> Scope<'hir> {
         });
 
         let env = build_substitution(&template.generics, args);
-        let fields = template
-            .fields
-            .iter()
-            .map(|field| {
-                let typ = self.resolve_type(
-                    field.typ.value_ref(),
-                    field.typ.span(),
-                    symbols,
-                    None,
-                    Some(&env),
-                )?;
-                Ok::<_, HirError>(StructField { name: symbols.insert(field.name), typ })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut fields = Vec::with_capacity(template.fields.len());
+        for field in &template.fields {
+            let typ = self
+                .resolve_type(field.typ.value_ref(), field.typ.span(), symbols, None, Some(&env))
+                .or_else(|error| self.poison(error))?;
+            fields.push(StructField { name: symbols.insert(field.name), typ });
+        }
         self.structs[id].fields = fields;
 
         let receiver_type = Type::structure(id);
@@ -1245,7 +1279,7 @@ impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn receiver_mutable(&self) -> bool {
         self.receiver_type()
-            .map_or(false, |t| matches!(t.kind(), TypeKind::Ref { mutable: true, .. }))
+            .is_some_and(|t| matches!(t.kind(), TypeKind::Ref { mutable: true, .. }))
     }
 
     #[inline]

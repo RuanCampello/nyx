@@ -57,16 +57,28 @@ where
     's: 'hir,
 {
     let decls = collect(scope, declarations, symbols)?;
-    let sorted = topo_sort(&decls, &scope.mangler, symbols, arena)?;
+    let sorted = match topo_sort(&decls, &scope.mangler, symbols, arena) {
+        Ok(sorted) => sorted,
+        // a dependency cycle leaves no usable order, skip the whole batch
+        Err(error) => return scope.soft(error),
+    };
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
         let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map);
         let expected_type =
-            type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())?;
+            type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())
+                .or_else(|error| scope.poison(error))?;
 
         let (value, typeck) =
-            lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std, arena)?;
+            match lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std, arena)
+            {
+                Ok(lowered) => lowered,
+                Err(error) => {
+                    scope.soft(error)?;
+                    continue;
+                },
+            };
 
         scope.constants.insert(
             symbol_id,
@@ -84,7 +96,7 @@ where
 }
 
 fn collect<'hir, 'd, 's>(
-    scope: &Scope<'hir>,
+    scope: &mut Scope<'hir>,
     declarations: &Declarations<'d, 's>,
     symbols: &mut SymbolTable,
 ) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'hir>>
@@ -96,7 +108,8 @@ where
     for c in &declarations.constants {
         let symbol_id = symbols.insert(&scope.mangler.item(c.name));
         if decls.contains_key(&symbol_id) {
-            return Err(hir_error!(c.span, DuplicateConstant { name: c.name }));
+            scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name }))?;
+            continue;
         }
         decls.insert(symbol_id, ConstDecl { typ: None, ast: c });
     }
@@ -106,7 +119,8 @@ where
             let symbol_id = symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
             if decls.contains_key(&symbol_id) {
                 let name = qualified(scope.arena, imp.name, c.name);
-                return Err(hir_error!(c.span, DuplicateConstant { name }));
+                scope.soft(hir_error!(c.span, DuplicateConstant { name }))?;
+                continue;
             }
 
             decls.insert(symbol_id, ConstDecl { typ: Some(imp.name), ast: c });

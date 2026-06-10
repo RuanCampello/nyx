@@ -226,12 +226,10 @@ where
                         self.resolve_type(&typ.value(), typ.span()).or_else(|e| self.poison(e))?
                     },
                     (_, Some(expr)) => self.infer(expr).or_else(|e| self.poison(e))?,
-                    (None, None) => {
-                        return Err(hir_error!(
-                            statement.span,
-                            MissingInitialiser { name: statement.name }
-                        ));
-                    },
+                    (None, None) => self.poison(hir_error!(
+                        statement.span,
+                        MissingInitialiser { name: statement.name }
+                    ))?,
                 };
 
                 let symbol = self.symbols.insert(statement.name);
@@ -239,13 +237,19 @@ where
 
                 let mut diverges = false;
                 let stmt = match statement.value {
-                    Some(ref expr) => {
-                        let expr = self.lower_expr(expr, Some(typ))?;
-                        self.assert_type(typ, expr.typ, expr.span)?;
+                    Some(ref expr) => match self.lower_expr(expr, Some(typ)) {
+                        Ok(expr) => {
+                            self.assert_type(typ, expr.typ, expr.span)?;
+                            diverges = expr.typ.diverges();
 
-                        diverges = expr.typ.diverges();
-
-                        Statement::LetInit { id, init: expr.expr }
+                            Statement::LetInit { id, init: expr.expr }
+                        },
+                        // a broken initialiser must not take the binding with it:
+                        // keep it declared so its uses do not cascade
+                        Err(error) => {
+                            self.soft(error)?;
+                            Statement::LetUninit { id }
+                        },
                     },
                     _ => Statement::LetUninit { id },
                 };
@@ -1687,24 +1691,14 @@ where
         self.soft(hir_error!(span, TypeMismatch { expected, found }))
     }
 
-    /// record `error` and yield a poison [`Type`] so lowering can continue, or
-    /// propagate it unchanged when not in recovery mode
+    #[inline(always)]
     fn poison(&mut self, error: HirError<'hir>) -> Result<Type, HirError<'hir>> {
-        match self.scope.recover {
-            true => Ok(Type::error(self.scope.diagnostics.emit(error.into()))),
-            false => Err(error),
-        }
+        self.scope.poison(error)
     }
 
-    /// record `error` and continue, or propagate it when not recovering
+    #[inline(always)]
     fn soft(&mut self, error: HirError<'hir>) -> Result<(), HirError<'hir>> {
-        match self.scope.recover {
-            true => {
-                self.scope.diagnostics.emit(error.into());
-                Ok(())
-            },
-            false => Err(error),
-        }
+        self.scope.soft(error)
     }
 
     fn declare_local(

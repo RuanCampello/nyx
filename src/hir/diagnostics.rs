@@ -24,7 +24,15 @@ pub(crate) struct Diagnostics {
 
 impl Diagnostics {
     pub(crate) fn emit(&mut self, diagnostic: RichDiagnostic) -> ErrorGuaranteed {
-        self.errors.push(diagnostic);
+        // PERFORMANCE: linear search in this case is mostly fine
+        // but I need to do a more robust benchmark on that :D
+
+        // the same source error can surface through several recovery paths
+        // (e.g. inference and lowering of one initialiser), report it once
+        if !self.errors.contains(&diagnostic) {
+            self.errors.push(diagnostic);
+        }
+
         ErrorGuaranteed(())
     }
 

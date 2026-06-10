@@ -83,8 +83,10 @@ pub enum ModuleError {
     )]
     TopLevelNonFunction { path: PathBuf, span: Span },
 
+    // boxed so the `Err` variant stays small: every loader function returns
+    // `Result<_, ModuleError>` and pays for the variant size on the happy path
     #[diagnostic(transparent)]
-    Check(RichDiagnostic),
+    Check(Box<RichDiagnostic>),
 }
 
 pub(crate) trait FileSystem {
@@ -121,6 +123,12 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
     pub(crate) fn recovering(mut self) -> Self {
         self.scope.recover = true;
         self
+    }
+
+    /// Drain whatever diagnostics were recovered before a fatal error aborted [load](ModuleLoader::load)
+    #[inline]
+    pub(crate) fn take_diagnostics(&mut self) -> Vec<RichDiagnostic> {
+        self.scope.diagnostics.take_errors()
     }
 
     /// Load all modules reacheable from the `entry` point and produce a merged `HIR`
@@ -182,13 +190,13 @@ impl FileSystem for OverlayFS {
 
 impl<'h> From<HirError<'h>> for ModuleError {
     fn from(e: HirError<'h>) -> Self {
-        Self::Check(e.kind.rich(e.span))
+        Self::Check(Box::new(e.kind.rich(e.span)))
     }
 }
 
 impl<'i> From<ParserError<'i>> for ModuleError {
     fn from(e: ParserError<'i>) -> Self {
-        Self::Check(e.kind.rich(e.span))
+        Self::Check(Box::new(e.kind.rich(e.span)))
     }
 }
 

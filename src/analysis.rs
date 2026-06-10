@@ -1,7 +1,7 @@
 use crate::hir::module;
 use crate::hir::{
-    self, Block, Enum, ExpressionKind, Function, Hir, Local, LocalId, Res, Statement, Struct,
-    StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
+    self, Block, Enum, ExpressionKind, Function, FunctionId, Hir, Local, LocalId, Res, Statement,
+    Struct, StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
 };
 use crate::mir::layout::LayoutTable;
 use crate::{
@@ -30,8 +30,10 @@ pub struct SemanticAnalysis {
     pub document_symbols: Vec<DocumentSymbol>,
     /// Resolves the global spans above to concrete files and line/column.
     pub source_map: SourceMap,
-    /// whether the project analysed into hir. when false the feature data above
-    /// is empty and an editor should keep its previous results rather than blank them on a transient parse error
+    /// whether the project analysed into hir, recovered diagnostics do not clear it,
+    /// the feature data above stays valid alongside them. when false (a parse or module
+    /// failure) the feature data is empty and an editor should keep its previous
+    /// results rather than blank them
     pub ok: bool,
 }
 
@@ -56,6 +58,9 @@ struct Walker<'a, 'h> {
     typeck: &'a TypeckResults,
     locals: &'a IndexVec<LocalId, Local>,
     hir: &'a Hir<'h>,
+    /// resolves a callee by its signature id, [Function::id] is not the
+    /// position in [Hir::functions], so positional indexing is wrong
+    functions: &'a HashMap<FunctionId, &'a Function<'h>>,
     layouts: &'a LayoutTable,
     hover: &'a mut Vec<(Span, HoverInfo)>,
     defs: &'a mut HashMap<Span, Span>,
@@ -119,13 +124,14 @@ impl Analysis {
             // recovered diagnostic while still serving features for what resolved
             Ok(hir) => {
                 let mut analysis = walk_hir(&hir);
-                analysis.ok = hir.diagnostics.is_empty();
                 analysis.diagnostics = hir.diagnostics;
                 analysis
             },
             Err(e) => {
                 let span = e.span().unwrap_or_default();
-                SemanticAnalysis { diagnostics: vec![e.rich(span)], ..Default::default() }
+                let mut diagnostics = loader.take_diagnostics();
+                diagnostics.push(e.rich(span));
+                SemanticAnalysis { diagnostics, ..Default::default() }
             },
         };
         analysis.source_map = crate::diagnostic::take_source_map();
@@ -184,17 +190,18 @@ impl<'a, 'h> Walker<'a, 'h> {
     }
 
     fn expr(&mut self, expr: &hir::Expression<'h>) {
-        let resolved = self
-            .typeck
-            .type_dependent_def(expr.id)
-            .and_then(Res::function)
-            .and_then(|id| self.hir.functions.get(id));
+        let resolved = match &expr.kind {
+            ExpressionKind::Call { .. } | ExpressionKind::MethodCall { .. } => self
+                .typeck
+                .type_dependent_def(expr.id)
+                .and_then(Res::function)
+                .and_then(|id| self.functions.get(&id).copied()),
+            _ => None,
+        };
 
-        let hover = match (&expr.kind, resolved) {
-            (ExpressionKind::Call { .. } | ExpressionKind::MethodCall { .. }, Some(target)) => {
-                HoverInfo { ty: signature(target, self.hir), layout: None }
-            },
-            _ => self.hover_info(self.typeck.type_of(expr.id)),
+        let hover = match resolved {
+            Some(target) => HoverInfo { ty: signature(target, self.hir), layout: None },
+            None => self.hover_info(self.typeck.type_of(expr.id)),
         };
 
         self.hover.push((expr.span, hover));
@@ -262,6 +269,8 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
     let mut goto_definitions = HashMap::new();
     let mut inlay_hints = Vec::new();
     let layouts = LayoutTable::build(&hir.structs, &hir.enums);
+    let functions: HashMap<FunctionId, &Function> =
+        hir.functions.iter().map(|function| (function.id, function)).collect();
 
     for func in &hir.functions {
         if func.decl_span != Span::default() {
@@ -281,6 +290,7 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
             typeck: &func.typeck,
             locals: &func.locals,
             hir,
+            functions: &functions,
             layouts: &layouts,
             hover: &mut hover_types,
             defs: &mut goto_definitions,
@@ -468,5 +478,74 @@ mod tests {
         assert!(!a.ok, "a parse error must leave the analysis incomplete");
         assert!(a.inlay_hints.is_empty(), "no feature data when analysis fails");
         assert!(!a.diagnostics.is_empty(), "the error should still be reported");
+    }
+
+    #[test]
+    fn unknown_param_type_keeps_features_alive() {
+        let a =
+            analyse("param", "fn poisoned(a: Nonexistent): i32 { 1 }\nfn main() { let x = 232; }");
+        assert!(a.ok, "recovery must still produce a HIR with live features");
+        assert_eq!(a.diagnostics.len(), 1, "exactly the unknown type: {:?}", a.diagnostics);
+        assert!(a.inlay_hints.iter().any(|(_, ty)| ty == "i32"), "main still gets its hint");
+        assert!(
+            a.hover_types.iter().any(|(_, h)| h.ty.contains("fn poisoned")),
+            "the poisoned function still hovers as a signature"
+        );
+    }
+
+    #[test]
+    fn errors_in_two_functions_are_both_reported() {
+        let a = analyse(
+            "two_fns",
+            r#"
+            fn first(): i32 { true }
+            fn second() { let x: bool = 232; }
+            fn main() { let y = 1; }
+            "#,
+        );
+        assert!(a.ok, "recovery must still produce a HIR with live features");
+        assert_eq!(a.diagnostics.len(), 2, "one error per function: {:?}", a.diagnostics);
+        assert!(a.inlay_hints.iter().any(|(_, ty)| ty == "i32"), "main still gets its hint");
+    }
+
+    #[test]
+    fn unknown_struct_field_type_still_registers_the_struct() {
+        let a = analyse(
+            "struct_field",
+            r#"
+            struct Holder { value: Missing, count: i32 }
+            fn main() { let h = 1; }
+            "#,
+        );
+        assert!(a.ok, "recovery must still produce a HIR with live features");
+        assert_eq!(a.diagnostics.len(), 1, "{:?}", a.diagnostics);
+        assert!(
+            a.hover_types.iter().any(|(_, h)| h.ty.contains("struct Holder")),
+            "the struct must survive a poisoned field"
+        );
+        assert!(
+            a.document_symbols.iter().any(|s| s.name == "Holder"),
+            "the outline still lists the struct"
+        );
+    }
+
+    #[test]
+    fn broken_initialiser_keeps_the_binding_alive() {
+        let a = analyse("broken_init", "fn main() { let d = unknown_fn(); let e = d; }");
+        assert!(a.ok, "recovery must still produce a HIR with live features");
+        assert_eq!(a.diagnostics.len(), 1, "only the unknown call, once: {:?}", a.diagnostics);
+        assert!(
+            a.inlay_hints.iter().any(|(_, ty)| ty == "{unknown}"),
+            "d stays declared with a poison hint: {:?}",
+            a.inlay_hints
+        );
+    }
+
+    #[test]
+    fn duplicate_functions_report_without_killing_analysis() {
+        let a = analyse("dup_fn", "fn twice() {}\nfn twice() {}\nfn main() { let z = 42; }");
+        assert!(a.ok, "recovery must still produce a HIR with live features");
+        assert!(!a.diagnostics.is_empty());
+        assert!(a.inlay_hints.iter().any(|(_, ty)| ty == "i32"), "main still gets its hint");
     }
 }

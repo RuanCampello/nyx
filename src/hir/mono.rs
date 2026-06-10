@@ -87,7 +87,18 @@ pub(in crate::hir) fn monomorphise<'hir>(
         if collector.instances.contains_key(&key) {
             continue;
         }
-        let (id, function) = specialise(&key, scope, symbols, arena)?;
+
+        let (id, function) = match specialise(&key, scope, symbols, arena) {
+            Ok(instance) => instance,
+            Err(error) => {
+                // a failed specialisation keeps its call sites pointed at the open
+                // template, record it so the instance is not re-attempted
+                scope.soft(error)?;
+                let template = key.0;
+                collector.instances.insert(key, template);
+                continue;
+            },
+        };
         collector.instances.insert(key, id);
         collector.collect(&function, scope);
         functions.push(function);

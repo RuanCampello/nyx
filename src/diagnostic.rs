@@ -136,6 +136,20 @@ impl AsDiagnostic for RichDiagnostic {
     }
 }
 
+impl AsDiagnostic for Box<RichDiagnostic> {
+    fn into_diagnostic(self, span: Span) -> Diagnostic {
+        (*self).into_diagnostic(span)
+    }
+
+    fn rich(self, span: Span) -> RichDiagnostic {
+        (*self).rich(span)
+    }
+
+    fn message(self) -> String {
+        (*self).message()
+    }
+}
+
 impl std::fmt::Display for RichDiagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)?;

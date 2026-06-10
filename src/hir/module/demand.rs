@@ -72,10 +72,20 @@ fn build_demand<'hir, 'src>(
         stack.push(main);
     }
 
+    // an editor analyses every project function, reachable from `main` or not
+    // std stays demand-driven so unused library code is never lowered
+    if scope.recover {
+        for (&id, &(_, seed)) in declarations.iter() {
+            if seed && demand.insert(id) {
+                stack.push(id);
+            }
+        }
+    }
+
     while let Some(id) = stack.pop() {
         use visitor::Visitor;
 
-        let Some(function) = declarations.get(&id) else {
+        let Some((function, _)) = declarations.get(&id) else {
             continue;
         };
 
@@ -93,23 +103,27 @@ fn build_demand<'hir, 'src>(
     Ok(demand)
 }
 
+/// Collect every declared function keyed by its signature id, paired with
+/// whether it belongs to the project (or entry module) rather than to std
 fn collect_functions<'a, 'hir, 'src>(
     graph: &'a mut ModuleGraph<'src>,
     order: &[usize],
     interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'hir>,
     symbols: &SymbolTable,
-) -> Result<HashMap<FunctionId, Function<'src>>, ModuleError> {
+) -> Result<HashMap<FunctionId, (Function<'src>, bool)>, ModuleError> {
     let mut functions = HashMap::new();
+    let entry = order.last().copied();
 
     for &idx in order {
         let node = &mut graph.nodes[idx];
+        let in_project = !node.in_std || entry == Some(idx);
         let declarations =
             Declarations::partition(&mut node.statements, |name| interfaces.get(name))?;
 
         for function in declarations.functions() {
             if let Some(id) = lookup_declaration_id(function, scope, symbols) {
-                functions.insert(id, function.clone());
+                functions.insert(id, (function.clone(), in_project));
             }
         }
     }
