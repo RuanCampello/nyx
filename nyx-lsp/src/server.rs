@@ -13,7 +13,7 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result};
 
-pub struct NyxLsp {
+pub struct Lsp {
     client: Client,
     state: Arc<State>,
 }
@@ -41,7 +41,7 @@ const MIN_PROGRESS: std::time::Duration = std::time::Duration::from_millis(500);
 
 static PROGRESS_SEQ: AtomicU64 = AtomicU64::new(0);
 
-impl NyxLsp {
+impl Lsp {
     pub fn new(client: Client) -> Self {
         Self {
             client,
@@ -128,7 +128,7 @@ impl NyxLsp {
 }
 
 #[tower_lsp::async_trait]
-impl LanguageServer for NyxLsp {
+impl LanguageServer for Lsp {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -474,8 +474,9 @@ impl State {
         encoding: Encoding,
         analysis: SemanticAnalysis,
     ) {
-        let by_url = diagnostics::diagnostics_by_url(&analysis, entry, encoding);
-        let fresh: HashSet<Url> = by_url.keys().cloned().collect();
+        let mut by_url = diagnostics::diagnostics_by_url(&analysis, entry, encoding);
+        by_url.entry(entry.clone()).or_default();
+        let fresh: HashSet<_> = by_url.keys().cloned().collect();
 
         // swap in the feature data (hover/goto/inlay/symbols) only when the
         // project actually analysed, otherwise keep the last good results
@@ -566,7 +567,7 @@ fn content_modified() -> tower_lsp::jsonrpc::Error {
 }
 
 /// open a work-done progress (the editor's load spinner), returning the token to
-/// close it with via [`progress_end`]
+/// close it with via [progress_end]
 ///
 /// `none` if the client declined to create it
 async fn progress_begin(client: &Client, title: &str) -> Option<ProgressToken> {

@@ -211,13 +211,14 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
 }
 
 /// The opening bracket (`(`, `{`, `[`) of the group immediately containing each
-/// token, so a `name:` can be read as a parameter inside `(…)` or a field in `{…}`.
+/// token, so a `name:` can be read as a parameter inside `(…)` or a field in `{…}`
 fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<char>> {
     let mut out = vec![None; raws.len()];
     let mut stack: Vec<char> = Vec::new();
 
     for (i, raw) in raws.iter().enumerate() {
-        let bracket = (raw.kind == RawKind::Punct).then(|| raw.text).and_then(|t| t.chars().next());
+        let bracket =
+            (raw.kind == RawKind::Punct).then_some(raw.text).and_then(|t| t.chars().next());
         match bracket {
             Some(open @ ('(' | '{' | '[')) => {
                 out[i] = stack.last().copied();
