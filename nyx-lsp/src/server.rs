@@ -236,7 +236,11 @@ impl LanguageServer for Lsp {
             .min_by_key(|(span, _)| span.end.0 - span.start.0);
 
         Ok(hit.map(|(span, info)| {
-            let mut value = format!("```nyx\n{}\n```", info.ty);
+            let mut value = String::new();
+            if let Some(path) = &info.path {
+                value.push_str(&format!("{}\n\n", fenced_text(path)));
+            }
+            value.push_str(&fenced_text(&info.ty));
             if let Some((size, align)) = info.layout {
                 let info = format!("\n\n---\nsize = {size} (0x{size:x}), align = 0x{align:x}");
                 value.push_str(info.as_ref());
@@ -609,6 +613,16 @@ async fn progress_end(client: &Client, token: Option<ProgressToken>) {
             })),
         })
         .await;
+}
+
+#[inline]
+pub fn fenced_text(text: impl AsRef<str>) -> String {
+    /// the language tag on hover code fences, editors have no nyx grammar to
+    /// highlight `nyx` fences with (they render as plain text), and nyx syntax is
+    /// close enough to rust that its highlighter colourises hovers correctly
+    const FENCE: &str = "rust";
+
+    format!("```{FENCE}\n{text}\n```", text = text.as_ref())
 }
 
 #[cfg(test)]

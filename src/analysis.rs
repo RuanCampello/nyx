@@ -1,13 +1,14 @@
 use crate::hir::module;
 use crate::hir::{
-    self, Block, Enum, ExpressionKind, Function, FunctionId, Hir, Local, LocalId, Res, Statement,
-    Struct, StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
+    self, Block, Enum, ExpressionKind, Function, FunctionId, FunctionKind, Hir, Local, LocalId,
+    Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults,
+    index_vec::IndexVec,
 };
 use crate::mir::layout::LayoutTable;
 use crate::{
     diagnostic::AsDiagnostic,
     lexer::{HasSpan, token::Span},
-    source_map::SourceMap,
+    source_map::{FileId, SourceMap},
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +51,9 @@ pub struct DocumentSymbol {
 /// the inferred type and, when it has a runtime layout, its size and alignment in bytes
 #[derive(Debug, Clone)]
 pub struct HoverInfo {
+    /// fully-qualified container of the hovered item (`project::util`, or
+    /// `project::util::Point` for members), shown above the declaration
+    pub path: Option<String>,
     pub ty: String,
     pub layout: Option<(u32, u32)>,
 }
@@ -62,6 +66,8 @@ struct Walker<'a, 'h> {
     /// position in [Hir::functions], so positional indexing is wrong
     functions: &'a HashMap<FunctionId, &'a Function<'h>>,
     layouts: &'a LayoutTable,
+    map: &'a SourceMap,
+    modules: &'a HashMap<FileId, String>,
     hover: &'a mut Vec<(Span, HoverInfo)>,
     defs: &'a mut HashMap<Span, Span>,
     hints: &'a mut Vec<(Span, String)>,
@@ -73,6 +79,9 @@ pub enum SymbolKind {
     Struct,
     Enum,
 }
+
+/// How many fields/variants a hover shows before truncating with `/* … */`
+const MAX_HOVER_ITEMS: usize = 5;
 
 /// A single compile-time error in structured form so consumers can render it as richly as the CLI
 pub type CheckError = crate::diagnostic::RichDiagnostic;
@@ -108,22 +117,28 @@ impl Analysis {
         };
 
         let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
+        let std_root = module::resolve_std_root();
+        let std_root = std_root.canonicalize().unwrap_or(std_root);
 
         let arena = bumpalo::Bump::new();
         let mut loader = module::ModuleLoader::with_file_system(
-            name,
-            root,
-            module::resolve_std_root(),
+            name.clone(),
+            root.clone(),
+            std_root.clone(),
             module::OverlayFS { overlay: self.overlays },
             &arena,
         )
         .recovering();
 
-        let mut analysis = match loader.load(&self.entry) {
+        let result = loader.load(&self.entry);
+        let source_map = crate::diagnostic::take_source_map();
+
+        let mut analysis = match result {
             // recovery keeps a (partial) HIR even with errors: surface every
             // recovered diagnostic while still serving features for what resolved
             Ok(hir) => {
-                let mut analysis = walk_hir(&hir);
+                let modules = module_paths(&source_map, &name, &root, &std_root);
+                let mut analysis = walk_hir(&hir, &source_map, &modules);
                 analysis.diagnostics = hir.diagnostics;
                 analysis
             },
@@ -134,7 +149,7 @@ impl Analysis {
                 SemanticAnalysis { diagnostics, ..Default::default() }
             },
         };
-        analysis.source_map = crate::diagnostic::take_source_map();
+        analysis.source_map = source_map;
         analysis
     }
 }
@@ -160,6 +175,7 @@ impl<'a, 'h> Walker<'a, 'h> {
     #[inline]
     fn hover_info(&self, typ: Type) -> HoverInfo {
         HoverInfo {
+            path: None,
             ty: format_type(typ, self.hir),
             layout: layout_of(self.layouts, typ),
         }
@@ -199,9 +215,22 @@ impl<'a, 'h> Walker<'a, 'h> {
             _ => None,
         };
 
-        let hover = match resolved {
-            Some(target) => HoverInfo { ty: signature(target, self.hir), layout: None },
-            None => self.hover_info(self.typeck.type_of(expr.id)),
+        let hover = match (resolved, &expr.kind) {
+            (Some(target), _) => fn_hover(target, self.hir, self.map, self.modules),
+            // expressions that name a type: struct literals, paths, and enum
+            // variant references (lowered to enum-typed literals) show its
+            // full declaration, like the declaration site does
+            (
+                None,
+                ExpressionKind::Struct { .. }
+                | ExpressionKind::Path(_)
+                | ExpressionKind::Literal(_),
+            ) => {
+                let typ = self.typeck.type_of(expr.id);
+                type_hover(typ, self.hir, self.layouts, self.map, self.modules)
+                    .unwrap_or_else(|| self.hover_info(typ))
+            },
+            _ => self.hover_info(self.typeck.type_of(expr.id)),
         };
 
         self.hover.push((expr.span, hover));
@@ -264,7 +293,7 @@ impl<'a, 'h> Walker<'a, 'h> {
     }
 }
 
-fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
+fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -> SemanticAnalysis {
     let mut hover_types = Vec::new();
     let mut goto_definitions = HashMap::new();
     let mut inlay_hints = Vec::new();
@@ -274,15 +303,16 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
 
     for func in &hir.functions {
         if func.decl_span != Span::default() {
-            hover_types
-                .push((func.decl_span, HoverInfo { ty: signature(func, hir), layout: None }));
+            hover_types.push((func.decl_span, fn_hover(func, hir, map, modules)));
         }
         for param in &func.params {
             let local = &func.locals[param.id];
             if local.decl_span != Span::default() {
                 let layout = layout_of(&layouts, param.typ);
-                hover_types
-                    .push((local.decl_span, HoverInfo { ty: format_type(param.typ, hir), layout }));
+                hover_types.push((
+                    local.decl_span,
+                    HoverInfo { path: None, ty: format_type(param.typ, hir), layout },
+                ));
             }
         }
 
@@ -292,6 +322,8 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
             hir,
             functions: &functions,
             layouts: &layouts,
+            map,
+            modules,
             hover: &mut hover_types,
             defs: &mut goto_definitions,
             hints: &mut inlay_hints,
@@ -300,19 +332,19 @@ fn walk_hir(hir: &Hir<'_>) -> SemanticAnalysis {
     }
 
     for (idx, structure) in hir.structs.iter().enumerate() {
-        if structure.decl_span != Span::default() {
-            let layout = layout_of(&layouts, Type::structure(StructId(idx as u32)));
-            hover_types
-                .push((structure.decl_span, HoverInfo { ty: struct_def(structure, hir), layout }));
+        if structure.decl_span != Span::default()
+            && let Some(info) =
+                type_hover(Type::structure(StructId(idx as u32)), hir, &layouts, map, modules)
+        {
+            hover_types.push((structure.decl_span, info));
         }
     }
     for enumeration in &hir.enums {
-        if enumeration.decl_span != Span::default() {
-            let layout = layout_of(&layouts, Type::enumerable(enumeration.id));
-            hover_types.push((
-                enumeration.decl_span,
-                HoverInfo { ty: enum_def(enumeration, hir), layout },
-            ));
+        if enumeration.decl_span != Span::default()
+            && let Some(info) =
+                type_hover(Type::enumerable(enumeration.id), hir, &layouts, map, modules)
+        {
+            hover_types.push((enumeration.decl_span, info));
         }
     }
 
@@ -374,6 +406,106 @@ fn layout_of(layouts: &LayoutTable, typ: Type) -> Option<(u32, u32)> {
     }
 }
 
+/// The module path of every registered file, in `use`-path form: files under
+/// the project root become `project::dir::file` (`main.nyx` is the root itself),
+/// files under the std root become `std::file`
+fn module_paths(
+    map: &SourceMap,
+    project: &str,
+    root: &Path,
+    std_root: &Path,
+) -> HashMap<FileId, String> {
+    map.files()
+        .map(|file| {
+            let module = match file.name.strip_prefix(root) {
+                Ok(relative) => module_path(project, relative),
+                Err(_) => match file.name.strip_prefix(std_root) {
+                    Ok(relative) => module_path("std", relative),
+                    Err(_) => file
+                        .name
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| project.to_owned()),
+                },
+            };
+            (file.id, module)
+        })
+        .collect()
+}
+
+fn module_path(root: &str, relative: &Path) -> String {
+    let mut segments = vec![root.to_owned()];
+    let relative = relative.with_extension("");
+    segments.extend(relative.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+
+    // the entry file is its directory's module
+    if segments.len() > 1 && segments.last().is_some_and(|segment| segment == "main") {
+        segments.pop();
+    }
+
+    segments.join("::")
+}
+
+#[inline]
+fn module_of(map: &SourceMap, modules: &HashMap<FileId, String>, span: Span) -> Option<String> {
+    match span == Span::default() {
+        true => None,
+        false => modules.get(&map.span_data(span).file).cloned(),
+    }
+}
+
+fn type_hover(
+    typ: Type,
+    hir: &Hir<'_>,
+    layouts: &LayoutTable,
+    map: &SourceMap,
+    modules: &HashMap<FileId, String>,
+) -> Option<HoverInfo> {
+    let (path, ty) = match typ.kind() {
+        TypeKind::Struct(id) => {
+            let structure = &hir.structs[id];
+            (module_of(map, modules, structure.decl_span), struct_def(structure, hir))
+        },
+        TypeKind::Enum(id) => {
+            let enumeration = &hir.enums[id];
+            (module_of(map, modules, enumeration.decl_span), enum_def(enumeration, hir))
+        },
+        _ => return None,
+    };
+
+    Some(HoverInfo { path, ty, layout: layout_of(layouts, typ) })
+}
+
+fn fn_hover(
+    func: &Function<'_>,
+    hir: &Hir<'_>,
+    map: &SourceMap,
+    modules: &HashMap<FileId, String>,
+) -> HoverInfo {
+    let implementor = implementor_of(func, hir);
+    let mut path = module_of(map, modules, func.decl_span);
+    let mut ty = signature(func, hir);
+
+    if let Some(implementor) = implementor {
+        path = path.map(|module| format!("{module}::{implementor}"));
+        ty = format!("impl {implementor}\n{ty}");
+    }
+
+    HoverInfo { path, ty, layout: None }
+}
+
+fn implementor_of(func: &Function<'_>, hir: &Hir<'_>) -> Option<String> {
+    match &func.kind {
+        FunctionKind::Method(method) => Some(format_type(method.receiver, hir)),
+        _ => {
+            let qualified = hir.symbols.get(func.name);
+            let mut segments = qualified.split("::");
+            let (_, scope, item) = (segments.next()?, segments.next()?, segments.next());
+            item.is_some().then(|| scope.to_owned())
+        },
+    }
+}
+
 fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
     let mut out = String::new();
     let flags = [(func.is_pub, "pub "), (func.inline, "inline "), (func.is_const, "const ")];
@@ -386,8 +518,13 @@ fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
     let params: Vec<_> = func
         .params
         .iter()
-        .map(|p| {
-            format!("{}: {}", hir.symbols.get(func.locals[p.id].name), format_type(p.typ, hir))
+        .map(|p| match hir.symbols.get(func.locals[p.id].name) {
+            "self" => match p.typ.kind() {
+                TypeKind::Ref { mutable: true, .. } => "&mut self".into(),
+                TypeKind::Ref { .. } => "&self".into(),
+                _ => "self".into(),
+            },
+            name => format!("{name}: {}", format_type(p.typ, hir)),
         })
         .collect();
 
@@ -410,27 +547,36 @@ fn struct_def(structure: &Struct, hir: &Hir<'_>) -> String {
         return format!("struct {name}");
     }
 
-    let fields: Vec<_> = structure
+    let fields = structure
         .fields
         .iter()
-        .map(|f| format!("    {}: {}", hir.symbols.get(f.name), format_type(f.typ, hir)))
-        .collect();
+        .map(|f| format!("    {}: {},", hir.symbols.get(f.name), format_type(f.typ, hir)));
 
-    format!("struct {name} {{\n{}\n}}", fields.join(",\n"))
+    format!("struct {name} {{\n{}\n}}", truncated(fields, structure.fields.len()))
 }
 
 fn enum_def(enumeration: &Enum, hir: &Hir<'_>) -> String {
     let name = short_name(hir.symbols.get(enumeration.name));
-    let variants: Vec<_> = enumeration
-        .variants
-        .iter()
-        .map(|v| match v.payload {
-            Some(typ) => format!("    {}({})", hir.symbols.get(v.name), format_type(typ, hir)),
-            None => format!("    {}", hir.symbols.get(v.name)),
-        })
-        .collect();
+    if enumeration.variants.is_empty() {
+        return format!("enum {name}");
+    }
 
-    format!("enum {name} {{\n{}\n}}", variants.join(",\n"))
+    let variants = enumeration.variants.iter().map(|v| match v.payload {
+        Some(typ) => format!("    {}({}),", hir.symbols.get(v.name), format_type(typ, hir)),
+        None => format!("    {},", hir.symbols.get(v.name)),
+    });
+
+    format!("enum {name} {{\n{}\n}}", truncated(variants, enumeration.variants.len()))
+}
+
+/// join the first [`MAX_HOVER_ITEMS`] lines, eliding the rest with `/* … */`
+fn truncated(lines: impl Iterator<Item = String>, total: usize) -> String {
+    let mut lines: Vec<_> = lines.take(MAX_HOVER_ITEMS).collect();
+    if total > MAX_HOVER_ITEMS {
+        lines.push("    /* … */".to_owned());
+    }
+
+    lines.join("\n")
 }
 
 fn format_type(typ: Type, hir: &Hir<'_>) -> String {

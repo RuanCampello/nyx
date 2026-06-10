@@ -84,6 +84,11 @@ impl SourceMap {
         self.files.is_empty()
     }
 
+    #[inline]
+    pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
+        self.files.iter()
+    }
+
     pub fn file(&self, id: FileId) -> &SourceFile {
         self.files.get(id.0 as usize).expect("FileId must refer to a registered file")
     }

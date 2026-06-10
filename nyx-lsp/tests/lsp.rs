@@ -1,4 +1,5 @@
 mod support;
+use nyx_lsp::fenced_text;
 use support::{CONTENT_MODIFIED, TestClient, position_of, position_of_nth, position_of_utf16};
 use tower_lsp::lsp_types::*;
 
@@ -79,16 +80,79 @@ async fn hover_parameter_shows_type() {
 }
 
 #[tokio::test]
-async fn hover_struct_shows_definition_and_layout() {
+async fn hover_struct_shows_path_definition_and_layout() {
     let src = "struct Point { x: i64, y: i64 }\nfn main() { let p = Point { x: 1, y: 2 }; }";
     let mut client = TestClient::start().await;
     let url = client.open("main.nyx", src).await;
     client.wait_diagnostics(&url).await;
 
     let text = client.hover_text(&url, position_of(src, "Point")).await;
+    assert!(text.contains(&fenced_text("project")), "expected the module path: {text}");
     assert!(text.contains("struct Point"), "expected the definition: {text}");
     assert!(text.contains("x: i64"), "expected the fields: {text}");
     assert!(text.contains("size = 16 (0x10), align = 0x8"), "expected the layout: {text}");
+}
+
+#[tokio::test]
+async fn hover_struct_literal_shows_the_definition() {
+    let src = "struct Point { x: i64, y: i64 }\nfn main() { let p = Point { x: 1, y: 2 }; }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    // the second `Point` is the literal in main's body, not the declaration
+    let text = client.hover_text(&url, position_of_nth(src, "Point", 1)).await;
+    assert!(text.contains("struct Point"), "a type use hovers as its declaration: {text}");
+    assert!(text.contains("size = 16 (0x10), align = 0x8"), "expected the layout: {text}");
+}
+
+#[tokio::test]
+async fn hover_truncates_long_field_lists() {
+    let src = "struct Wide { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32 }\n\
+               fn main() { let w = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }; }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let text = client.hover_text(&url, position_of(src, "Wide")).await;
+    assert!(text.contains("e: i32"), "the first five fields are shown: {text}");
+    assert!(!text.contains("f: i32"), "fields past the fifth are elided: {text}");
+    assert!(text.contains("/* … */"), "the elision marker is shown: {text}");
+}
+
+#[tokio::test]
+async fn hover_enum_shows_path_definition_and_layout() {
+    let src = "enum Status { Ready, Done = 7 } as u16\nfn main() { let s = Status::Ready; }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let text = client.hover_text(&url, position_of(src, "Status")).await;
+    assert!(text.contains(&fenced_text("project")), "expected the module path: {text}");
+    assert!(text.contains("enum Status"), "expected the definition: {text}");
+    assert!(text.contains("Ready"), "expected the variants: {text}");
+    assert!(text.contains("size = 2 (0x2), align = 0x2"), "expected the layout: {text}");
+
+    let used = client.hover_text(&url, position_of_nth(src, "Status", 1)).await;
+    assert!(used.contains("enum Status"), "an enum use hovers as its declaration: {used}");
+}
+
+#[tokio::test]
+async fn hover_method_shows_implementor_and_path() {
+    let src = "struct Point { x: i64, y: i64 }\n\
+               impl Point {\n    fn norm(&self): i64 { self.x }\n}\n\
+               fn main() { let p = Point { x: 1, y: 2 }; let n = p.norm(); }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let text = client.hover_text(&url, position_of(src, "norm")).await;
+    assert!(
+        text.contains(&fenced_text("project")),
+        "the path is qualified by the implementor: {text}"
+    );
+    assert!(text.contains("impl Point"), "expected the implementor line: {text}");
+    assert!(text.contains("fn norm("), "expected the signature: {text}");
 }
 
 #[tokio::test]
