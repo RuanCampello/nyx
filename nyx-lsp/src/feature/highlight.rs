@@ -5,7 +5,7 @@
 //! not parse yet. Identifier roles are inferred syntactically from neighbouring
 //! tokens (declarations, calls, types, fields, paths)
 
-use nyx::is_keyword;
+use nyx::{is_keyword, is_primitive};
 
 /// A classified, single-line highlight span
 ///
@@ -53,6 +53,15 @@ pub enum TokenType {
     Number,
     Boolean,
     Operator,
+    EnumMember,
+}
+
+/// the bracket group immediately containing a token, and whether that group
+/// is an `enum` body (whose words are variants)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Encloser {
+    bracket: char,
+    enum_body: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +194,7 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
     }
 
     let enclosers = enclosers(raws);
+    let parameters = parameter_uses(raws, &next_code);
     let starts = line_starts(src);
     let mut out = Vec::with_capacity(n);
 
@@ -200,6 +210,7 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
             RawKind::Word => match raw.text {
                 "true" | "false" => (TokenType::Boolean, TokenModifiers::default()),
                 word if is_keyword(word) => (TokenType::Keyword, TokenModifiers::default()),
+                _ if parameters[i] => (TokenType::Parameter, TokenModifiers::default()),
                 _ => classify_word(raws, &prev_code, &next_code, &enclosers, i),
             },
         };
@@ -210,22 +221,127 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
     out
 }
 
-/// The opening bracket (`(`, `{`, `[`) of the group immediately containing each
-/// token, so a `name:` can be read as a parameter inside `(…)` or a field in `{…}`
-fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<char>> {
+/// parameter names highlighted at their *uses* inside the function body,
+/// like rust-analyzer does: collect the `name:` words of each `fn`'s
+/// signature, then mark matching words up to the body's closing brace
+fn parameter_uses(raws: &[Raw<'_>], next_code: &[Option<usize>]) -> Vec<bool> {
+    let mut marks = vec![false; raws.len()];
+    let mut i = 0;
+
+    while i < raws.len() {
+        if !(raws[i].kind == RawKind::Word && raws[i].text == "fn") {
+            i += 1;
+            continue;
+        }
+
+        let Some((params, body)) = signature_of(raws, next_code, i) else {
+            i += 1;
+            continue;
+        };
+
+        let mut depth = 0;
+        let mut at = body;
+        while at < raws.len() {
+            match (raws[at].kind, raws[at].text) {
+                (RawKind::Punct, "{") => depth += 1,
+                (RawKind::Punct, "}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                },
+                (RawKind::Word, word) if params.contains(&word) => {
+                    // not a field access, and not a fresh `name:` binding
+                    let named = next_code[at].is_some_and(|n| raws[n].text == ":");
+                    let field = at.checked_sub(1).is_some_and(|p| raws[p].text == ".");
+                    if !named && !field {
+                        marks[at] = true;
+                    }
+                },
+                _ => {},
+            }
+            at += 1;
+        }
+
+        i = body + 1;
+    }
+
+    marks
+}
+
+fn signature_of<'s>(
+    raws: &[Raw<'s>],
+    next_code: &[Option<usize>],
+    at: usize,
+) -> Option<(Vec<&'s str>, usize)> {
+    let mut i = at + 1;
+    while i < raws.len() && raws[i].text != "(" {
+        match raws[i].text {
+            "{" | "}" | ";" => return None,
+            _ => i += 1,
+        }
+    }
+
+    let mut params = Vec::new();
+    let mut depth = 0;
+    while i < raws.len() {
+        match (raws[i].kind, raws[i].text) {
+            (RawKind::Punct, "(") => depth += 1,
+            (RawKind::Punct, ")") => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            },
+            (RawKind::Word, word)
+                if depth == 1 && next_code[i].is_some_and(|n| raws[n].text == ":") =>
+            {
+                params.push(word);
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+
+    while i < raws.len() && raws[i].text != "{" {
+        match raws[i].text {
+            ";" | "}" => return None,
+            _ => i += 1,
+        }
+    }
+
+    (i < raws.len() && !params.is_empty()).then_some((params, i))
+}
+
+/// the bracket group immediately containing each token, so a `name:` can be
+/// read as a parameter inside `(…)` or a field in `{…}`, and a word inside an
+/// `enum` body as a variant
+fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<Encloser>> {
     let mut out = vec![None; raws.len()];
-    let mut stack: Vec<char> = Vec::new();
+    let mut stack: Vec<Encloser> = Vec::new();
+    let mut pending_enum = false;
 
     for (i, raw) in raws.iter().enumerate() {
+        if raw.kind == RawKind::Word && raw.text == "enum" {
+            pending_enum = true;
+        }
+
         let bracket =
             (raw.kind == RawKind::Punct).then_some(raw.text).and_then(|t| t.chars().next());
         match bracket {
             Some(open @ ('(' | '{' | '[')) => {
                 out[i] = stack.last().copied();
-                stack.push(open);
+                stack.push(Encloser {
+                    bracket: open,
+                    enum_body: open == '{' && std::mem::take(&mut pending_enum),
+                });
             },
             Some(')' | '}' | ']') => {
                 stack.pop();
+                out[i] = stack.last().copied();
+            },
+            Some(';') => {
+                pending_enum = false;
                 out[i] = stack.last().copied();
             },
             _ => out[i] = stack.last().copied(),
@@ -239,12 +355,19 @@ fn classify_word(
     raws: &[Raw<'_>],
     prev_code: &[Option<usize>],
     next_code: &[Option<usize>],
-    enclosers: &[Option<char>],
+    enclosers: &[Option<Encloser>],
     i: usize,
 ) -> (TokenType, TokenModifiers) {
     let text = raws[i].text;
+    // the receiver reads as a keyword
     if text == "self" {
-        return (TokenType::Variable, TokenModifiers::default());
+        return (TokenType::Keyword, TokenModifiers::default());
+    }
+
+    // a word directly inside an `enum { … }` body is a variant declaration
+    // (payload types sit one group deeper, inside their `(…)`)
+    if enclosers[i].is_some_and(|e| e.enum_body) {
+        return (TokenType::EnumMember, TokenModifiers::DECLARATION);
     }
 
     let prev = prev_code[i].map(|j| raws[j].text);
@@ -267,7 +390,10 @@ fn classify_word(
                 _ => (TokenType::Type, none),
             })
         },
-        Some(":" | "->") => Some((TokenType::Type, none)),
+        // `:` introduces a type in annotations, but a value in struct literals
+        // (`Point { x: x }`), primitives and capitalised names read as types
+        Some(":") if capitalised || is_primitive(text) => Some((TokenType::Type, none)),
+        Some(":") => Some((TokenType::Variable, none)),
         Some(".") => Some(match next {
             Some("(") => (TokenType::Method, none),
             _ => (TokenType::Property, none),
@@ -278,21 +404,51 @@ fn classify_word(
         return role;
     }
 
-    // a `name:` binding: a parameter inside `(…)`, a struct field inside `{…}`
+    // a 'name:' binding: a parameter inside '(…)', a struct field inside '{…}'
+    // unless it is a 'where T: Bound' type parameter
     if next == Some(":") {
-        match enclosers[i] {
+        if prev == Some("where") || is_type_param(text) {
+            return (TokenType::Type, none);
+        }
+        match enclosers[i].map(|e| e.bracket) {
             Some('(') => return (TokenType::Parameter, TokenModifiers::DECLARATION),
             Some('{') => return (TokenType::Property, none),
             _ => {},
         }
     }
 
+    // a capitalised constructor, a qualified variant,
+    // or a bare variant in a match arm
+    let variant = capitalised
+        && !is_screaming_case(text)
+        && (next == Some("(") || next == Some("->") || prev == Some("::"));
+    if variant {
+        return (TokenType::EnumMember, none);
+    }
+
     match next {
         Some("(") => (TokenType::Function, none),
         Some("::") => (TokenType::Namespace, none),
+        _ if is_screaming_case(text) => (TokenType::Variable, TokenModifiers::READONLY),
+        _ if is_primitive(text) => (TokenType::Type, none),
         _ if capitalised => (TokenType::Type, none),
+        // the tail of a `use` path (`use std::panic;`) is still a module
+        _ if prev == Some("::") => (TokenType::Namespace, none),
         _ => (TokenType::Variable, none),
     }
+}
+
+/// a single uppercase letter is a type parameter (`T`, `S`) by convention
+#[inline]
+fn is_type_param(text: &str) -> bool {
+    text.len() == 1 && text.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// `SCREAMING_CASE` names are constants by convention
+fn is_screaming_case(text: &str) -> bool {
+    text.len() > 1
+        && text.chars().any(|c| c.is_ascii_uppercase())
+        && text.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// append `start..end` as one token per line it covers
@@ -390,6 +546,7 @@ fn is_operator(text: &str) -> bool {
 
 impl TokenModifiers {
     const DECLARATION: Self = Self { declaration: true, readonly: false, mutable: false };
+    const READONLY: Self = Self { declaration: false, readonly: true, mutable: false };
     const READONLY_DECL: Self = Self { declaration: true, readonly: true, mutable: false };
     const MUTABLE_DECL: Self = Self { declaration: true, readonly: false, mutable: true };
 }
@@ -446,6 +603,7 @@ mod tests {
             TokenType::Number => "number",
             TokenType::Boolean => "boolean",
             TokenType::Operator => "operator",
+            TokenType::EnumMember => "enumMember",
         }
     }
 
@@ -461,9 +619,9 @@ mod tests {
             parameter.declaration b
             type i32
             type i32
-            variable a
+            parameter a
             operator +
-            variable b"#]],
+            parameter b"#]],
         );
     }
 
@@ -528,6 +686,94 @@ mod tests {
             operator =
             variable c
             method get"#]],
+        );
+    }
+
+    #[test]
+    fn use_path_tail_is_a_namespace() {
+        check(
+            "use std::panic;",
+            expect![[r#"
+            keyword use
+            namespace std
+            namespace panic"#]],
+        );
+    }
+
+    #[test]
+    fn variant_constructors_match_bare_variants() {
+        check(
+            "match self { Some(value) -> value, None -> false, }",
+            expect![[r#"
+            keyword match
+            keyword self
+            enumMember Some
+            variable value
+            operator ->
+            variable value
+            enumMember None
+            operator ->
+            boolean false"#]],
+        );
+    }
+
+    #[test]
+    fn enum_declaration_variants_are_members() {
+        check(
+            "enum Status { Ready, Done(T) } as u16",
+            expect![[r#"
+            keyword enum
+            type.declaration Status
+            enumMember.declaration Ready
+            enumMember.declaration Done
+            type T
+            keyword as
+            type u16"#]],
+        );
+    }
+
+    #[test]
+    fn receivers_parameters_and_primitives_in_signatures() {
+        check(
+            "fn expect(self, msg: &str): S { panic::panic(msg) }",
+            expect![[r#"
+            keyword fn
+            function.declaration expect
+            keyword self
+            parameter.declaration msg
+            operator &
+            type str
+            type S
+            namespace panic
+            function panic
+            parameter msg"#]],
+        );
+    }
+
+    #[test]
+    fn screaming_case_uses_are_readonly() {
+        check(
+            "syscall(SYS_EXIT, i32::MAX);",
+            expect![[r#"
+            function syscall
+            variable.readonly SYS_EXIT
+            namespace i32
+            variable.readonly MAX"#]],
+        );
+    }
+
+    #[test]
+    fn where_bounds_are_types() {
+        check(
+            "fn or_default(self): T where T: Default {",
+            expect![[r#"
+            keyword fn
+            function.declaration or_default
+            keyword self
+            type T
+            keyword where
+            type T
+            type Default"#]],
         );
     }
 

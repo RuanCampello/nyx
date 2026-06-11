@@ -126,7 +126,14 @@ impl<'a, 'h> Lowering<'a, 'h> {
 
         let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
         let decl_span = declaration.span;
-        lowered[id] = Some(Struct { id: StructId(id as u32), name, decl_span, fields, repr });
+        lowered[id] = Some(Struct {
+            id: StructId(id as u32),
+            name,
+            decl_span,
+            fields,
+            repr,
+            generics: Vec::new(),
+        });
         self.states[id] = Visit::Visited;
 
         Ok(())

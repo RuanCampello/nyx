@@ -14,6 +14,7 @@ pub use analysis::{Analysis, CheckError, DocumentSymbol, HoverInfo, SemanticAnal
 pub use diagnostic::{Label, RichDiagnostic, Severity};
 pub use lexer::token::{BytePos, Span};
 pub use lexer::{HasSpan, is_keyword};
+pub use parser::statement::is_primitive;
 pub use source_map::{FileId, Loc, SourceMap, SpanData};
 
 #[derive(Debug)]

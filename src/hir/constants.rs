@@ -88,6 +88,7 @@ where
                 typeck,
                 value,
                 is_pub: decl.ast.is_pub,
+                decl_span: decl.ast.span,
             },
         );
     }

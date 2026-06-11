@@ -47,13 +47,14 @@
 //! functions whose parameters are scalars/references
 
 use crate::hir::{
-    Function, FunctionId, FunctionKind, Res, Type,
+    Function, FunctionId, FunctionKind, Res, Type, TypeKind,
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
     scope::{FunctionSignature, Scope},
     symbols::SymbolTable,
 };
+use crate::lexer::token::Span;
 use std::collections::HashMap;
 
 /// A concrete instantiation request
@@ -109,6 +110,68 @@ pub(in crate::hir) fn monomorphise<'hir>(
     }
 
     Ok(functions)
+}
+
+/// Lower a feature-only *identity* instance of every generic template
+/// (`Optional<T>` becomes `Optional$T0`), so editors get hover and inlay hints
+/// inside template bodies that no concrete instantiation ever demands
+pub(in crate::hir) fn analyse_templates<'hir>(
+    scope: &mut Scope<'hir>,
+    symbols: &mut SymbolTable,
+    arena: &'hir bumpalo::Bump,
+) -> Vec<Function<'hir>> {
+    let adts: Vec<(String, usize, Span)> = scope
+        .generic_structs
+        .values()
+        .map(|s| (s.name.to_owned(), s.generics.len(), s.span))
+        .chain(
+            scope
+                .generic_enums
+                .values()
+                .map(|e| (e.name.to_owned(), e.generics.len(), e.span)),
+        )
+        .collect();
+
+    for (name, arity, span) in adts {
+        let Ok(typ) = scope.instantiate_generic(&name, &identity_args(arity), span, symbols) else {
+            continue;
+        };
+
+        // the identity instance stands in for the template at its declaration
+        match typ.kind() {
+            TypeKind::Struct(id) => scope.structs[id].decl_span = span,
+            TypeKind::Enum(id) => scope.enums[id].decl_span = span,
+            _ => {},
+        }
+    }
+
+    let templates: Vec<_> = scope
+        .generic_fns
+        .keys()
+        .copied()
+        .filter(|&id| is_open_template(scope, id))
+        .collect();
+
+    let mut lowered = Vec::new();
+    for id in templates {
+        let arity = scope.generic_fns[&id].generics.len();
+        if let Ok((_, function)) = specialise(&(id, identity_args(arity)), scope, symbols, arena) {
+            lowered.push(function);
+        }
+    }
+
+    lowered
+}
+
+#[inline]
+fn identity_args(arity: usize) -> Vec<Type> {
+    (0..arity).map(|i| Type::generic_param(i as u8)).collect()
+}
+
+fn is_open_template(scope: &Scope<'_>, id: FunctionId) -> bool {
+    scope.generic_fn_envs.get(&id).is_none_or(|env| {
+        env.is_empty() || env.values().any(|typ| matches!(typ.kind(), TypeKind::GenericParam(_)))
+    })
 }
 
 impl Collector {

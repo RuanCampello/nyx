@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, RwLockReadGuard};
-use tower_lsp::lsp_types::*;
+use tower_lsp::lsp_types::{self, *};
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result};
 
 pub struct Lsp {
@@ -544,11 +544,12 @@ fn already_annotated(map: &nyx::SourceMap, span: nyx::Span) -> bool {
 }
 
 #[inline(always)]
-const fn symbol_kind(kind: SymbolKind) -> tower_lsp::lsp_types::SymbolKind {
+const fn symbol_kind(kind: SymbolKind) -> lsp_types::SymbolKind {
     match kind {
-        SymbolKind::Function => tower_lsp::lsp_types::SymbolKind::FUNCTION,
-        SymbolKind::Struct => tower_lsp::lsp_types::SymbolKind::STRUCT,
-        SymbolKind::Enum => tower_lsp::lsp_types::SymbolKind::ENUM,
+        SymbolKind::Function => lsp_types::SymbolKind::FUNCTION,
+        SymbolKind::Struct => lsp_types::SymbolKind::STRUCT,
+        SymbolKind::Enum => lsp_types::SymbolKind::ENUM,
+        SymbolKind::Constant => lsp_types::SymbolKind::CONSTANT,
     }
 }
 

@@ -46,6 +46,7 @@ pub struct Hir<'hir> {
     pub structs: IndexVec<StructId, Struct>,
     pub enums: IndexVec<EnumId, Enum>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
+    pub constants: Vec<Constant<'hir>>,
     /// Recoverable lowering diagnostics
     /// Empty unless recovery mode was on
     pub diagnostics: Vec<diagnostic::RichDiagnostic>,
@@ -60,6 +61,9 @@ pub struct Struct {
     /// Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
     pub(crate) repr: StructRepr,
+    /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
+    /// Populated only on open (identity) template instances, for display
+    pub(crate) generics: Vec<SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,6 +79,9 @@ pub struct Enum {
     pub(crate) decl_span: Span,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
+    /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
+    /// Populated only on open (identity) template instances, for display
+    pub(crate) generics: Vec<SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -133,6 +140,8 @@ pub struct TypeckResults {
     type_dependent_defs: HashMap<ExprId, Res>,
     /// Generic arguments applied at a node
     node_args: HashMap<ExprId, Vec<Type>>,
+    /// Constant uses spliced into this body: root expression id -> constant name
+    const_uses: HashMap<ExprId, SymbolId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +158,9 @@ pub struct Function<'hir> {
     pub inline: bool,
     pub typeck: TypeckResults,
     pub body: Block<'hir>,
+    /// Declared generic parameter names, indexed by [TypeKind::GenericParam]
+    /// Populated only on open (identity) template instances, for display
+    pub generics: Vec<SymbolId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +170,7 @@ pub struct Constant<'hir> {
     pub value: &'hir Expression<'hir>,
     pub typeck: TypeckResults,
     pub is_pub: bool,
+    pub decl_span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +381,7 @@ pub fn lower<'hir>(
         structs: scope.structs,
         enums: scope.enums,
         functions,
+        constants: scope.constants.into_values().collect(),
         diagnostics: scope.diagnostics.take_errors(),
     })
 }
@@ -404,6 +418,11 @@ impl TypeckResults {
     #[inline(always)]
     pub(crate) fn node_args(&self, id: ExprId) -> Option<&[Type]> {
         self.node_args.get(&id).map(Vec::as_slice)
+    }
+
+    #[inline(always)]
+    pub(crate) fn const_use(&self, id: ExprId) -> Option<SymbolId> {
+        self.const_uses.get(&id).copied()
     }
 }
 

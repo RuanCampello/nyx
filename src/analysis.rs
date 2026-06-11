@@ -1,8 +1,8 @@
 use crate::hir::module;
 use crate::hir::{
-    self, Block, Enum, ExpressionKind, Function, FunctionId, FunctionKind, Hir, Local, LocalId,
-    Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind, TypeckResults,
-    index_vec::IndexVec,
+    self, Block, Constant, Enum, ExpressionKind, Function, FunctionId, FunctionKind, Hir, Literal,
+    Local, LocalId, Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
+    TypeckResults, index_vec::IndexVec,
 };
 use crate::mir::layout::LayoutTable;
 use crate::{
@@ -65,6 +65,10 @@ struct Walker<'a, 'h> {
     /// resolves a callee by its signature id, [Function::id] is not the
     /// position in [Hir::functions], so positional indexing is wrong
     functions: &'a HashMap<FunctionId, &'a Function<'h>>,
+    /// resolves a spliced constant use back to its declaration
+    constants: &'a HashMap<SymbolId, &'a Constant<'h>>,
+    /// the enclosing function's declared generic parameter names
+    generics: &'a [SymbolId],
     layouts: &'a LayoutTable,
     map: &'a SourceMap,
     modules: &'a HashMap<FileId, String>,
@@ -78,6 +82,7 @@ pub enum SymbolKind {
     Function,
     Struct,
     Enum,
+    Constant,
 }
 
 /// How many fields/variants a hover shows before truncating with `/* … */`
@@ -168,16 +173,21 @@ impl<'a, 'h> Walker<'a, 'h> {
             (local.typ, local.decl_span)
         };
 
-        self.hints.push((span, format_type(typ, self.hir)));
+        self.hints.push((span, format_type(typ, self.hir, self.generics)));
         self.hover.push((span, self.hover_info(typ)));
     }
 
     #[inline]
     fn hover_info(&self, typ: Type) -> HoverInfo {
+        let layout = match is_open(typ, self.hir) {
+            true => None,
+            false => layout_of(self.layouts, typ),
+        };
+
         HoverInfo {
             path: None,
-            ty: format_type(typ, self.hir),
-            layout: layout_of(self.layouts, typ),
+            ty: format_type(typ, self.hir, self.generics),
+            layout,
         }
     }
 
@@ -206,6 +216,19 @@ impl<'a, 'h> Walker<'a, 'h> {
     }
 
     fn expr(&mut self, expr: &hir::Expression<'h>) {
+        if let Some(symbol) = self.typeck.const_use(expr.id)
+            && let Some(constant) = self.constants.get(&symbol)
+        {
+            self.hover.push((
+                expr.span,
+                const_hover(constant, self.hir, self.layouts, self.map, self.modules),
+            ));
+            if constant.decl_span != Span::default() {
+                self.defs.insert(expr.span, constant.decl_span);
+            }
+            return;
+        }
+
         let resolved = match &expr.kind {
             ExpressionKind::Call { .. } | ExpressionKind::MethodCall { .. } => self
                 .typeck
@@ -300,6 +323,8 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
     let layouts = LayoutTable::build(&hir.structs, &hir.enums);
     let functions: HashMap<FunctionId, &Function> =
         hir.functions.iter().map(|function| (function.id, function)).collect();
+    let constants: HashMap<SymbolId, &Constant> =
+        hir.constants.iter().map(|constant| (constant.name, constant)).collect();
 
     for func in &hir.functions {
         if func.decl_span != Span::default() {
@@ -311,7 +336,11 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
                 let layout = layout_of(&layouts, param.typ);
                 hover_types.push((
                     local.decl_span,
-                    HoverInfo { path: None, ty: format_type(param.typ, hir), layout },
+                    HoverInfo {
+                        path: None,
+                        ty: format_type(param.typ, hir, &func.generics),
+                        layout,
+                    },
                 ));
             }
         }
@@ -321,6 +350,8 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
             locals: &func.locals,
             hir,
             functions: &functions,
+            constants: &constants,
+            generics: &func.generics,
             layouts: &layouts,
             map,
             modules,
@@ -347,6 +378,12 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
             hover_types.push((enumeration.decl_span, info));
         }
     }
+    for constant in &hir.constants {
+        if constant.decl_span != Span::default() {
+            hover_types
+                .push((constant.decl_span, const_hover(constant, hir, &layouts, map, modules)));
+        }
+    }
 
     hover_types.sort_unstable_by_key(|(span, _)| span.start.offset());
 
@@ -356,6 +393,8 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
     collect_symbols(fns, SymbolKind::Function, sym, &mut symbols, |f| f.name, |f| f.decl_span);
     collect_symbols(structs, SymbolKind::Struct, sym, &mut symbols, |s| s.name, |s| s.decl_span);
     collect_symbols(enums, SymbolKind::Enum, sym, &mut symbols, |e| e.name, |e| e.decl_span);
+    let consts = &hir.constants;
+    collect_symbols(consts, SymbolKind::Constant, sym, &mut symbols, |c| c.name, |c| c.decl_span);
     symbols.sort_unstable_by_key(|s| s.span.start.offset());
 
     SemanticAnalysis {
@@ -391,7 +430,30 @@ fn collect_symbols<T, N, S>(
 
 #[inline]
 fn short_name(qualified: &str) -> String {
-    qualified.rsplit("::").next().unwrap_or(qualified).to_owned()
+    pretty_args(qualified.rsplit("::").next().unwrap_or(qualified))
+}
+
+fn pretty_args(name: &str) -> String {
+    match name.split_once('$') {
+        Some((base, args)) => format!("{base}<{}>", args.replace('$', ", ")),
+        None => name.to_owned(),
+    }
+}
+
+fn is_open(typ: Type, hir: &Hir<'_>) -> bool {
+    let carries_generic = |typ: Type| match typ.kind() {
+        TypeKind::GenericParam(_) => true,
+        TypeKind::Ref { to, .. } => matches!(to.kind(), TypeKind::GenericParam(_)),
+        _ => false,
+    };
+
+    match typ.kind() {
+        TypeKind::Struct(id) => hir.structs[id].fields.iter().any(|f| carries_generic(f.typ)),
+        TypeKind::Enum(id) => {
+            hir.enums[id].variants.iter().any(|v| v.payload.is_some_and(carries_generic))
+        },
+        _ => false,
+    }
 }
 
 #[inline(always)]
@@ -473,7 +535,134 @@ fn type_hover(
         _ => return None,
     };
 
-    Some(HoverInfo { path, ty, layout: layout_of(layouts, typ) })
+    let layout = match is_open(typ, hir) {
+        true => None,
+        false => layout_of(layouts, typ),
+    };
+
+    Some(HoverInfo { path, ty, layout })
+}
+
+fn const_hover(
+    constant: &Constant<'_>,
+    hir: &Hir<'_>,
+    layouts: &LayoutTable,
+    map: &SourceMap,
+    modules: &HashMap<FileId, String>,
+) -> HoverInfo {
+    let qualified = hir.symbols.get(constant.name);
+    let implementor = implementor_from_name(qualified);
+    let path = module_of(map, modules, constant.decl_span).map(|module| match &implementor {
+        Some(implementor) => format!("{module}::{implementor}"),
+        None => module,
+    });
+
+    let mut ty = String::new();
+    if constant.is_pub {
+        ty.push_str("pub ");
+    }
+    ty.push_str("const ");
+    ty.push_str(&short_name(qualified));
+    ty.push_str(": ");
+    ty.push_str(&format_type(constant.typ, hir, &[]));
+    if let Some(value) = const_value(constant, hir, layouts) {
+        ty.push_str(" = ");
+        ty.push_str(&value);
+    }
+
+    HoverInfo { path, ty, layout: None }
+}
+
+// TODO: those things should be better integrated with the compiler
+// in the future instead of ad-hoc resolution here
+
+fn const_value(constant: &Constant<'_>, hir: &Hir<'_>, layouts: &LayoutTable) -> Option<String> {
+    use crate::parser::expression::UnaryOperator;
+
+    match &constant.value.kind {
+        ExpressionKind::Literal(Literal::Float(value)) => Some(value.to_string()),
+        ExpressionKind::Literal(Literal::Bool(value)) => Some(value.to_string()),
+        ExpressionKind::Literal(Literal::Char(value)) => Some(format!("'{value}'")),
+        ExpressionKind::Literal(Literal::Str(symbol)) => {
+            Some(format!("\"{}\"", hir.symbols.get(*symbol)))
+        },
+        ExpressionKind::Unary { operator: UnaryOperator::Neg, expr }
+            if matches!(expr.kind, ExpressionKind::Literal(Literal::Float(_))) =>
+        {
+            let ExpressionKind::Literal(Literal::Float(value)) = expr.kind else {
+                return None;
+            };
+            Some((-value).to_string())
+        },
+        _ => {
+            let value = eval_const_int(constant.value, layouts)?;
+            Some(render_int(value, constant.typ))
+        },
+    }
+}
+
+fn eval_const_int(expr: &hir::Expression<'_>, layouts: &LayoutTable) -> Option<i128> {
+    use crate::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
+
+    match &expr.kind {
+        ExpressionKind::Literal(Literal::Int(value)) => Some(*value as i128),
+        ExpressionKind::Unary { operator: UnaryOperator::Neg, expr } => {
+            eval_const_int(expr, layouts).map(i128::wrapping_neg)
+        },
+        ExpressionKind::Unary { operator: UnaryOperator::Not, expr } => {
+            eval_const_int(expr, layouts).map(|value| !value)
+        },
+        ExpressionKind::Cast { from, .. } => eval_const_int(from, layouts),
+        ExpressionKind::TypeIntrinsic { kind, typ } => {
+            let (size, align) = layout_of(layouts, *typ)?;
+            Some(match kind {
+                TypeIntrinsicKind::SizeOf => size as i128,
+                TypeIntrinsicKind::AlignOf => align as i128,
+            })
+        },
+        ExpressionKind::Binary { operator, left, right } => {
+            let left = eval_const_int(left, layouts)?;
+            let right = eval_const_int(right, layouts)?;
+            match operator {
+                BinaryOperator::Add => left.checked_add(right),
+                BinaryOperator::Sub => left.checked_sub(right),
+                BinaryOperator::Mul => left.checked_mul(right),
+                BinaryOperator::Div => left.checked_div(right),
+                BinaryOperator::Shl => left.checked_shl(u32::try_from(right).ok()?),
+                BinaryOperator::Shr => left.checked_shr(u32::try_from(right).ok()?),
+                BinaryOperator::BitAnd => Some(left & right),
+                BinaryOperator::BitOr => Some(left | right),
+                BinaryOperator::BitXor => Some(left ^ right),
+                _ => None,
+            }
+        },
+        _ => None,
+    }
+}
+
+fn render_int(value: i128, typ: Type) -> String {
+    let bits = match typ.kind() {
+        TypeKind::I8 | TypeKind::U8 => 8,
+        TypeKind::I16 | TypeKind::U16 => 16,
+        TypeKind::I32 | TypeKind::U32 | TypeKind::Char => 32,
+        _ => 64,
+    };
+    let unsigned = matches!(
+        typ.kind(),
+        TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 | TypeKind::Uptr
+    );
+
+    let truncated = (value as u128) & (u128::MAX >> (128 - bits));
+    match unsigned {
+        true => truncated.to_string(),
+        false => {
+            let signed = ((truncated << (128 - bits)) as i128) >> (128 - bits);
+            match signed < 0 {
+                true => format!("{signed} (0x{truncated:X})"),
+                false => signed.to_string(),
+            }
+        },
+    }
 }
 
 fn fn_hover(
@@ -494,16 +683,19 @@ fn fn_hover(
     HoverInfo { path, ty, layout: None }
 }
 
+#[inline]
 fn implementor_of(func: &Function<'_>, hir: &Hir<'_>) -> Option<String> {
     match &func.kind {
-        FunctionKind::Method(method) => Some(format_type(method.receiver, hir)),
-        _ => {
-            let qualified = hir.symbols.get(func.name);
-            let mut segments = qualified.split("::");
-            let (_, scope, item) = (segments.next()?, segments.next()?, segments.next());
-            item.is_some().then(|| scope.to_owned())
-        },
+        FunctionKind::Method(method) => Some(format_type(method.receiver, hir, &func.generics)),
+        _ => implementor_from_name(hir.symbols.get(func.name)),
     }
+}
+
+#[inline]
+fn implementor_from_name(qualified: &str) -> Option<String> {
+    let mut segments = qualified.split("::");
+    let (_, scope, item) = (segments.next()?, segments.next()?, segments.next());
+    item.is_some().then(|| pretty_args(scope))
 }
 
 fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
@@ -524,7 +716,7 @@ fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
                 TypeKind::Ref { .. } => "&self".into(),
                 _ => "self".into(),
             },
-            name => format!("{name}: {}", format_type(p.typ, hir)),
+            name => format!("{name}: {}", format_type(p.typ, hir, &func.generics)),
         })
         .collect();
 
@@ -532,7 +724,7 @@ fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
     out.push_str(&params.join(", "));
     out.push(')');
 
-    let ret = format_type(func.return_type, hir);
+    let ret = format_type(func.return_type, hir, &func.generics);
     if ret != "()" {
         out.push_str(": ");
         out.push_str(&ret);
@@ -542,27 +734,34 @@ fn signature(func: &Function<'_>, hir: &Hir<'_>) -> String {
 }
 
 fn struct_def(structure: &Struct, hir: &Hir<'_>) -> String {
-    let name = short_name(hir.symbols.get(structure.name));
+    let name = nominal_name(structure.name, &structure.generics, hir);
     if structure.fields.is_empty() {
         return format!("struct {name}");
     }
 
-    let fields = structure
-        .fields
-        .iter()
-        .map(|f| format!("    {}: {},", hir.symbols.get(f.name), format_type(f.typ, hir)));
+    let fields = structure.fields.iter().map(|f| {
+        format!(
+            "    {}: {},",
+            hir.symbols.get(f.name),
+            format_type(f.typ, hir, &structure.generics)
+        )
+    });
 
     format!("struct {name} {{\n{}\n}}", truncated(fields, structure.fields.len()))
 }
 
 fn enum_def(enumeration: &Enum, hir: &Hir<'_>) -> String {
-    let name = short_name(hir.symbols.get(enumeration.name));
+    let name = nominal_name(enumeration.name, &enumeration.generics, hir);
     if enumeration.variants.is_empty() {
         return format!("enum {name}");
     }
 
     let variants = enumeration.variants.iter().map(|v| match v.payload {
-        Some(typ) => format!("    {}({}),", hir.symbols.get(v.name), format_type(typ, hir)),
+        Some(typ) => format!(
+            "    {}({}),",
+            hir.symbols.get(v.name),
+            format_type(typ, hir, &enumeration.generics)
+        ),
         None => format!("    {},", hir.symbols.get(v.name)),
     });
 
@@ -579,14 +778,20 @@ fn truncated(lines: impl Iterator<Item = String>, total: usize) -> String {
     lines.join("\n")
 }
 
-fn format_type(typ: Type, hir: &Hir<'_>) -> String {
+/// Render a type for display; `generics` names the enclosing item's open
+/// parameters so `GenericParam(0)` reads as its declared name (`T`), not `T0`
+fn format_type(typ: Type, hir: &Hir<'_>, generics: &[SymbolId]) -> String {
     match typ.kind() {
         TypeKind::Unit => "()".to_owned(),
         TypeKind::Str => "str".to_owned(),
-        TypeKind::Struct(id) => short_name(hir.symbols.get(hir.structs[id].name)),
-        TypeKind::Enum(id) => short_name(hir.symbols.get(hir.enums[id].name)),
+        TypeKind::GenericParam(i) => generics
+            .get(i as usize)
+            .map(|&name| hir.symbols.get(name).to_owned())
+            .unwrap_or_else(|| format!("T{i}")),
+        TypeKind::Struct(id) => nominal_name(hir.structs[id].name, &hir.structs[id].generics, hir),
+        TypeKind::Enum(id) => nominal_name(hir.enums[id].name, &hir.enums[id].generics, hir),
         TypeKind::Ref { mutable, to } => {
-            let typ = format_type(Type::new(to.kind()), hir);
+            let typ = format_type(Type::new(to.kind()), hir, generics);
             match mutable {
                 true => format!("&mut {typ}"),
                 _ => format!("&{typ}"),
@@ -594,6 +799,19 @@ fn format_type(typ: Type, hir: &Hir<'_>) -> String {
         },
         kind => kind.to_string(),
     }
+}
+
+fn nominal_name(name: SymbolId, generics: &[SymbolId], hir: &Hir<'_>) -> String {
+    let raw = hir.symbols.get(name);
+    if generics.is_empty() {
+        return short_name(raw);
+    }
+
+    let base = raw.rsplit("::").next().unwrap_or(raw);
+    let base = base.split('$').next().unwrap_or(base);
+    let names: Vec<_> = generics.iter().map(|&g| hir.symbols.get(g)).collect();
+
+    format!("{base}<{}>", names.join(", "))
 }
 
 #[cfg(test)]

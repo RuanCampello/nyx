@@ -7,7 +7,7 @@ mod signatures;
 
 use crate::{
     diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
-    hir::{Hir, SymbolTable, error::HirError, scope::Scope},
+    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope},
     lexer::token::Span,
     parser::error::ParserError,
 };
@@ -147,13 +147,24 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
         let functions =
             demand::lower_reachable(graph, &order, &interfaces, &mut self.scope, symbols, arena)?;
-        let functions = super::mono::monomorphise(functions, &mut self.scope, symbols, arena)?;
+        let mut functions = mono::monomorphise(functions, &mut self.scope, symbols, arena)?;
         let diagnostics = self.scope.diagnostics.take_errors();
+
+        // editors need features inside generic template bodies too, lower one
+        // identity instance of each and discard the diagnostics, which are
+        // noise (bounds cannot be solved without concrete types)
+        if self.scope.recover {
+            for function in mono::analyse_templates(&mut self.scope, symbols, arena) {
+                functions.push(function);
+            }
+            self.scope.diagnostics.take_errors();
+        }
 
         Ok(Hir {
             functions,
             structs: self.scope.structs.clone(),
             enums: self.scope.enums.clone(),
+            constants: self.scope.constants.values().cloned().collect(),
             symbols: self.symbols.clone(),
             diagnostics,
         })

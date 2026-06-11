@@ -170,6 +170,7 @@ where
         );
 
         let (body, _) = self.lower_block(&function.body, true)?;
+        let generics = declared_fn_names(&self.generic_env, self.symbols);
 
         Ok(Function {
             id,
@@ -184,6 +185,7 @@ where
             kind: signature.kind,
             typeck: self.typeck,
             body,
+            generics,
         })
     }
 
@@ -331,9 +333,11 @@ where
         }
 
         if let Some(c) = self.constant(name) {
-            let val = c.value;
+            let (val, symbol) = (c.value, c.name);
             let typeck = c.typeck.clone();
-            return Ok(self.splice_const(val, &typeck, span));
+            let lowered = self.splice_const(val, &typeck, span);
+            self.typeck.const_uses.insert(lowered.expr.id, symbol);
+            return Ok(lowered);
         }
 
         let symbol = self
@@ -608,7 +612,9 @@ where
                         hir_error!(*span, UndeclaredIdentifier { name: qualified })
                     })?;
 
-                Ok(self.splice_const(c.value, &c.typeck, *span))
+                let lowered = self.splice_const(c.value, &c.typeck, *span);
+                self.typeck.const_uses.insert(lowered.expr.id, c.name);
+                Ok(lowered)
             },
 
             Expr::Unary { operator, expr, span } => {
@@ -1906,6 +1912,22 @@ impl BinaryOperator {
             BinaryOperator::GtEq => ">=",
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
+    }
+}
+
+fn declared_fn_names(env: &GenericEnv, symbols: &mut SymbolTable) -> Vec<SymbolId> {
+    let mut named: Vec<(u8, &str)> = Vec::with_capacity(env.len());
+    for (name, typ) in env {
+        match typ.kind() {
+            TypeKind::GenericParam(i) => named.push((i, name)),
+            _ => return Vec::new(),
+        }
+    }
+
+    named.sort_unstable_by_key(|&(index, _)| index);
+    match named.iter().enumerate().all(|(at, &(index, _))| at == index as usize) {
+        true => named.into_iter().map(|(_, name)| symbols.insert(name)).collect(),
+        false => Vec::new(),
     }
 }
 

@@ -1494,6 +1494,12 @@ primitive_spellings! {
     SelfType => "Self",
 }
 
+/// Whether `name` spells a primitive type (`i32`, `str`, `Self`, …)
+#[inline]
+pub fn is_primitive(name: &str) -> bool {
+    Type::from_str(name).is_some()
+}
+
 impl<'i> Type<'i> {
     pub fn name(&self) -> Option<&'i str> {
         match self {

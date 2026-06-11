@@ -27,6 +27,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::STRING,
             SemanticTokenType::NUMBER,
             SemanticTokenType::OPERATOR,
+            SemanticTokenType::ENUM_MEMBER,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -82,6 +83,7 @@ const fn type_index(ty: TokenType) -> u32 {
         TokenType::String => 9,
         TokenType::Number | TokenType::Boolean => 10,
         TokenType::Operator => 11,
+        TokenType::EnumMember => 12,
     }
 }
 

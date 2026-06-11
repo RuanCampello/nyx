@@ -139,20 +139,144 @@ async fn hover_enum_shows_path_definition_and_layout() {
 
 #[tokio::test]
 async fn hover_method_shows_implementor_and_path() {
-    let src = "struct Point { x: i64, y: i64 }\n\
-               impl Point {\n    fn norm(&self): i64 { self.x }\n}\n\
-               fn main() { let p = Point { x: 1, y: 2 }; let n = p.norm(); }";
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        impl Point {
+            fn norm(&self): i64 { self.x }
+        }
+        fn main() {
+            let p = Point { x: 1, y: 2 };
+            let n = p.norm(); }
+    "#;
+
     let mut client = TestClient::start().await;
     let url = client.open("main.nyx", src).await;
     client.wait_diagnostics(&url).await;
 
     let text = client.hover_text(&url, position_of(src, "norm")).await;
     assert!(
-        text.contains(&fenced_text("project")),
+        text.contains(&fenced_text("project::Point")),
         "the path is qualified by the implementor: {text}"
     );
     assert!(text.contains("impl Point"), "expected the implementor line: {text}");
     assert!(text.contains("fn norm("), "expected the signature: {text}");
+}
+
+#[tokio::test]
+async fn hover_works_inside_generic_templates() {
+    let src = r#"
+        pub enum Opt<T> {
+            Filled(T),
+            Empty,
+        }
+        impl Opt<T> {
+            fn flag(self): bool {
+                let marker = 232;
+                true
+            }
+        }
+        fn main() { }
+    "#;
+
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    let diagnostics = client.wait_diagnostics(&url).await;
+    assert!(
+        diagnostics.is_empty(),
+        "template analysis must not leak diagnostics: {diagnostics:#?}"
+    );
+
+    let decl = client.hover_text(&url, position_of(src, "Opt")).await;
+    assert!(decl.contains("enum Opt<T>"), "the template declaration hovers: {decl}");
+    assert!(decl.contains("Filled(T)"), "variants keep their payloads: {decl}");
+    assert!(!decl.contains("size ="), "open generics have no meaningful layout: {decl}");
+
+    let method = client.hover_text(&url, position_of(src, "flag")).await;
+    assert!(method.contains("fn flag("), "methods inside templates hover: {method}");
+    assert!(method.contains("impl Opt<T>"), "with their implementor: {method}");
+
+    let binding = client.hover_text(&url, position_of(src, "marker")).await;
+    assert!(binding.contains("i32"), "bindings inside template bodies hover: {binding}");
+}
+
+#[tokio::test]
+async fn hover_constant_shows_value() {
+    let src = r#"
+        pub const LIMIT: i32 = -2;
+        const NAME: str = "nyx";
+        fn main() { }
+    "#;
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let text = client.hover_text(&url, position_of(src, "LIMIT")).await;
+    assert!(text.contains(&fenced_text("project")), "expected the module path: {text}");
+    assert!(
+        text.contains("pub const LIMIT: i32 = -2 (0xFFFFFFFE)"),
+        "negative constants show their bit pattern: {text}"
+    );
+
+    let name = client.hover_text(&url, position_of(src, "NAME")).await;
+    assert!(
+        name.contains("const NAME: str = \"nyx\""),
+        "string constants show the value: {name}"
+    );
+}
+
+#[tokio::test]
+async fn hover_constant_evaluates_wide_arithmetic() {
+    let src = r#"
+        const HUGE: u64 = (1 << 64) - 1;
+        const FLOOR: i64 = (-1 << 63);
+        fn main() { }
+    "#;
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let huge = client.hover_text(&url, position_of(src, "HUGE")).await;
+    assert!(
+        huge.contains("const HUGE: u64 = 18446744073709551615"),
+        "unsigned constants render in their own domain: {huge}"
+    );
+
+    let floor = client.hover_text(&url, position_of(src, "FLOOR")).await;
+    assert!(
+        floor.contains("const FLOOR: i64 = -9223372036854775808 (0x8000000000000000)"),
+        "signed minimums render with their bit pattern: {floor}"
+    );
+}
+
+#[tokio::test]
+async fn hover_constant_use_resolves_the_declaration() {
+    let src = "const LIMIT: i32 = 5;\nfn main() { let x = LIMIT; }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    // the use in main, not the declaration
+    let text = client.hover_text(&url, position_of_nth(src, "LIMIT", 1)).await;
+    assert!(
+        text.contains("const LIMIT: i32 = 5"),
+        "a spliced constant use hovers as its declaration: {text}"
+    );
+
+    let response = client
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: url.clone() },
+                position: position_of_nth(src, "LIMIT", 1),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap();
+    let Some(GotoDefinitionResponse::Scalar(location)) = response else {
+        panic!("expected the constant declaration, got {response:?}");
+    };
+    assert_eq!(location.range.start.line, 0, "must jump to the declaration line");
 }
 
 #[tokio::test]

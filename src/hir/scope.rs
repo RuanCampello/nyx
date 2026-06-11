@@ -332,6 +332,7 @@ impl<'hir> Scope<'hir> {
                 decl_span: enum_decl.span,
                 variants: Vec::new(),
                 repr,
+                generics: Vec::new(),
             });
 
             let mut seen = HashSet::new();
@@ -958,6 +959,7 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             variants: Vec::new(),
             repr,
+            generics: declared_names(&template.generics, args, symbols),
         });
 
         let env = build_substitution(&template.generics, args);
@@ -1012,6 +1014,7 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             fields: Vec::new(),
             repr: template.repr,
+            generics: declared_names(&template.generics, args, symbols),
         });
 
         let env = build_substitution(&template.generics, args);
@@ -1327,6 +1330,23 @@ fn is_generic_impl(imp: &statement::Impl<'_>) -> bool {
 
 fn build_substitution(generics: &[statement::GenericBound<'_>], args: &[Type]) -> GenericEnv {
     generics.iter().zip(args).map(|(g, &arg)| (g.name.to_string(), arg)).collect()
+}
+
+/// The declared parameter names of an *identity* instantiation (every argument
+/// still an open `GenericParam`), so displays can say `Result<S, F>` instead of
+/// positional `T0`/`T1` names. Empty for concrete instantiations
+fn declared_names(
+    generics: &[statement::GenericBound<'_>],
+    args: &[Type],
+    symbols: &mut SymbolTable,
+) -> Vec<SymbolId> {
+    let identity =
+        !args.is_empty() && args.iter().all(|arg| matches!(arg.kind(), TypeKind::GenericParam(_)));
+
+    match identity {
+        true => generics.iter().map(|g| symbols.insert(g.name)).collect(),
+        false => Vec::new(),
+    }
 }
 
 fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) -> GenericEnv {
