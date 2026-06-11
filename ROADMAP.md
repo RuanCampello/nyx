@@ -110,10 +110,15 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Language Server (LSP)
 
 - [ ] Hover type information
+  - [x] Module path & truncated declaration
+  - [x] Size & alignment for `struct`/`enum`
+  - [x] Method signatures with implementor
+  - [x] Constants with their evaluated value
+  - [x] Inside generic template bodies (identity instances)
   - [ ] Comment documentation
 - [ ] Go-to-definition
-  - [ ] Variables
-  - [ ] Functions
+  - [x] Variables
+  - [x] Functions
   - [ ] Interfaces
     - [ ] Methods
   - [ ] `struct` and `enum`
@@ -123,21 +128,23 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Auto-completion
 - [ ] Rename symbol
 - [ ] Code actions / quickfixes (the 💡 fix suggestions, e.g. "use `const` instead of top-level `let`")
-- [x] Resilient features on invalid code: a partial HIR (recovery mode) keeps inlay hints/hover present _and_ correctly positioned while editing a non-compiling buffer, plus `ContentModified` versioning so stale pulls never repaint at old offsets
+- [x] Resilient features on invalid code (partial HIR + `ContentModified` versioning)
 - [ ] Compiler Diagnostics
   - [x] Procedural-macro derived diagnostics (`#[derive(Diagnostic)]`)
   - [x] Raw error message extraction
   - [x] Structured diagnostics across the crate boundary (`RichDiagnostic`, plain + ANSI)
   - [x] Per-error diagnostic `code` (kebab-case error kind, shown as `nyx (kind)`)
   - [ ] Uniform error code numeration (stable `Exxxx` numbers + `code_description` docs URLs)
-  - [~] Multi-error accumulation (report every error in a pass, not just the first)
-    - [x] HIR body-level recovery in the LSP (`Analysis::run`): every recovered error is reported and a partial HIR keeps features live
-    - [ ] CLI `compile`/`compile_project` still fail-fast (render every error there too)
-  - [~] Frontend error recovery
-    - [x] HIR `TypeKind::Error` poison + `ErrorGuaranteed` proof token + `Diagnostics` sink
-    - [x] opt-in recovery (`Scope::recover`): `resolve_type` poisons, `assert_type` suppresses (poison is compatible with everything, no cascade), the statement loop drops & records, diagnostics threaded out via `Hir::diagnostics`
-    - [ ] parser sentinel nodes (`Expression::Error`/`Statement::Error`) that synchronise on `;`/`}`/item keywords
-    - [ ] per-function taint flag + skip MIR for poisoned fns (item-level/whole-function placeholders, gated on the `FunctionId`↔index model)
+  - [ ] Multi-error accumulation (report every error in a pass)
+    - [x] LSP analysis (body, signature, and item level)
+    - [x] Whole-project analysis (uncalled functions included)
+    - [ ] CLI `compile`/`compile_project`
+  - [ ] Frontend error recovery
+    - [x] `TypeKind::Error` poison + `ErrorGuaranteed` + diagnostics sink
+    - [x] Opt-in recovery across lowering and collection
+    - [ ] Parser sentinel nodes (`Expression::Error`/`Statement::Error`)
+    - [ ] Per-function taint + MIR skip for poisoned functions
+- [x] Integration test harness (in-process server, end-to-end JSON-RPC suite)
 
 ### Others
 
