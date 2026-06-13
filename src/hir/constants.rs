@@ -6,7 +6,7 @@
 
 use crate::{
     hir::{
-        Constant, SymbolId, SymbolTable,
+        self, Constant, SymbolId, SymbolTable,
         declarations::Declarations,
         error::{HirError, hir_error},
         lower,
@@ -89,6 +89,7 @@ where
                 value,
                 is_pub: decl.ast.is_pub,
                 decl_span: decl.ast.span,
+                docs: hir::join_docs(&decl.ast.docs),
             },
         );
     }

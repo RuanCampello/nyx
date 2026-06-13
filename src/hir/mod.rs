@@ -57,6 +57,7 @@ pub struct Struct {
     id: StructId,
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
+    pub(crate) docs: Option<Box<str>>,
     /// Fields in source declaration order
     /// Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
@@ -77,6 +78,7 @@ pub struct Enum {
     pub(crate) id: EnumId,
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
+    pub(crate) docs: Option<Box<str>>,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
     /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
@@ -149,6 +151,7 @@ pub struct Function<'hir> {
     pub id: FunctionId,
     pub name: SymbolId,
     pub decl_span: Span,
+    pub docs: Option<Box<str>>,
     pub kind: FunctionKind,
     pub params: Vec<Parameter>,
     pub locals: IndexVec<LocalId, Local>,
@@ -171,6 +174,7 @@ pub struct Constant<'hir> {
     pub typeck: TypeckResults,
     pub is_pub: bool,
     pub decl_span: Span,
+    pub docs: Option<Box<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,6 +388,22 @@ pub fn lower<'hir>(
         constants: scope.constants.into_values().collect(),
         diagnostics: scope.diagnostics.take_errors(),
     })
+}
+
+pub(crate) fn join_docs(lines: &[&str]) -> Option<Box<str>> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(line.strip_prefix(' ').unwrap_or(line));
+    }
+
+    Some(out.into_boxed_str())
 }
 
 /// Walk a place expression (`Local`/`Field`) to its base local, if any

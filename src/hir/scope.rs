@@ -1,7 +1,8 @@
 use crate::{
     hir::{
-        Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
-        RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
+        self, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
+        Intrinsic, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
+        TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -309,18 +310,22 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let repr = match enum_decl.repr.value().try_into() {
-                Ok(repr) => repr,
-                Err(_) => {
-                    self.soft(hir_error!(
-                        enum_decl.repr.span(),
-                        TypeMismatch {
-                            expected: TypeKind::I32.into(),
-                            found: Type::from_primitive_ast(&enum_decl.repr.value())
-                                .unwrap_or_default(),
-                        }
-                    ))?;
-                    continue;
+            let repr = match &enum_decl.repr {
+                None => EnumRepr::minimal_for(&enum_decl.variants),
+                Some(explicit) => match EnumRepr::try_from(explicit.value()) {
+                    Ok(repr) => repr,
+                    _ => {
+                        self.soft(hir_error!(
+                            explicit.span(),
+                            TypeMismatch {
+                                expected: TypeKind::I32.into(),
+                                found: Type::from_primitive_ast(&explicit.value())
+                                    .unwrap_or_default(),
+                            }
+                        ))?;
+
+                        continue;
+                    },
                 },
             };
             let id = EnumId::new(self.enums.len() as u32, repr);
@@ -330,6 +335,7 @@ impl<'hir> Scope<'hir> {
                 id,
                 name: symbol,
                 decl_span: enum_decl.span,
+                docs: hir::join_docs(&enum_decl.docs),
                 variants: Vec::new(),
                 repr,
                 generics: Vec::new(),
@@ -941,15 +947,18 @@ impl<'hir> Scope<'hir> {
     ) -> Result<Type, HirError<'hir>> {
         self.check_generic_args(template.name, &template.generics, args, span, symbols)?;
 
-        let repr = template.repr.value().try_into().map_err(|_| {
-            hir_error!(
-                template.repr.span(),
-                TypeMismatch {
-                    expected: TypeKind::I32.into(),
-                    found: Type::from_primitive_ast(&template.repr.value()).unwrap_or_default(),
-                }
-            )
-        })?;
+        let repr = match &template.repr {
+            None => EnumRepr::minimal_for(&template.variants),
+            Some(explicit) => EnumRepr::try_from(explicit.value()).map_err(|_| {
+                hir_error!(
+                    explicit.span(),
+                    TypeMismatch {
+                        expected: TypeKind::I32.into(),
+                        found: Type::from_primitive_ast(&explicit.value()).unwrap_or_default(),
+                    }
+                )
+            })?,
+        };
         let id = EnumId::new(self.enums.len() as u32, repr);
 
         self.enum_map.insert(mangled_sym, id);
@@ -957,6 +966,7 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
+            docs: None,
             variants: Vec::new(),
             repr,
             generics: declared_names(&template.generics, args, symbols),
@@ -1012,6 +1022,7 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
+            docs: None,
             fields: Vec::new(),
             repr: template.repr,
             generics: declared_names(&template.generics, args, symbols),

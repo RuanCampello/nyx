@@ -177,6 +177,38 @@ impl EnumRepr {
             _ => panic!("invalid EnumRepr tag"),
         }
     }
+
+    /// smallest representation that fits the variant discriminants
+    pub(crate) fn minimal_for(variants: &[statement::EnumVariant<'_>]) -> Self {
+        if variants.iter().any(|variant| variant.payload.is_some()) {
+            return Self::default();
+        }
+
+        let mut next = 0i64;
+        let (mut min, mut max) = (0i64, 0i64);
+        for variant in variants {
+            let value = variant.value.unwrap_or(next);
+            next = value.wrapping_add(1);
+            min = min.min(value);
+            max = max.max(value);
+        }
+
+        Self::fitting(min, max)
+    }
+
+    #[inline(always)]
+    const fn fitting(min: i64, max: i64) -> Self {
+        match min >= 0 {
+            true if max <= u8::MAX as i64 => Self::U8,
+            true if max <= u16::MAX as i64 => Self::U16,
+            true if max <= u32::MAX as i64 => Self::U32,
+            true => Self::U64,
+            false if min >= i8::MIN as i64 && max <= i8::MAX as i64 => Self::I8,
+            false if min >= i16::MIN as i64 && max <= i16::MAX as i64 => Self::I16,
+            false if min >= i32::MIN as i64 && max <= i32::MAX as i64 => Self::I32,
+            false => Self::I64,
+        }
+    }
 }
 
 impl Default for Type {

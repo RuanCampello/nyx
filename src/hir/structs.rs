@@ -1,7 +1,7 @@
 //! Struct lowering: AST -> HIR with topological field-type resolution
 
 use crate::hir::{
-    Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind,
+    self, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind,
     diagnostics::Diagnostics,
     error::{HirError, hir_error},
     scope::{Enums, Structs},
@@ -130,6 +130,7 @@ impl<'a, 'h> Lowering<'a, 'h> {
             id: StructId(id as u32),
             name,
             decl_span,
+            docs: hir::join_docs(&declaration.docs),
             fields,
             repr,
             generics: Vec::new(),
