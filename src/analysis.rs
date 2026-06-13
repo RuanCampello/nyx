@@ -160,6 +160,13 @@ impl Analysis {
     }
 }
 
+impl<'hir> Hir<'hir> {
+    #[inline]
+    fn doc_text(&self, decl_span: Span) -> Option<String> {
+        self.docs.get(&decl_span).map(|docs| docs.to_string())
+    }
+}
+
 impl<'a, 'h> Walker<'a, 'h> {
     fn block(&mut self, block: &Block<'h>) {
         for stmt in block.statements {
@@ -519,11 +526,6 @@ fn module_of(map: &SourceMap, modules: &HashMap<FileId, String>, span: Span) -> 
     }
 }
 
-#[inline]
-fn doc_text(docs: &Option<Box<str>>) -> Option<String> {
-    docs.as_deref().map(str::to_owned)
-}
-
 fn type_hover(
     typ: Type,
     hir: &Hir<'_>,
@@ -535,12 +537,12 @@ fn type_hover(
         TypeKind::Struct(id) => {
             let structure = &hir.structs[id];
             let path = module_of(map, modules, structure.decl_span);
-            (path, struct_def(structure, hir), doc_text(&structure.docs))
+            (path, struct_def(structure, hir), hir.doc_text(structure.decl_span))
         },
         TypeKind::Enum(id) => {
             let enumeration = &hir.enums[id];
             let path = module_of(map, modules, enumeration.decl_span);
-            (path, enum_def(enumeration, hir), doc_text(&enumeration.docs))
+            (path, enum_def(enumeration, hir), hir.doc_text(enumeration.decl_span))
         },
         _ => return None,
     };
@@ -580,7 +582,12 @@ fn const_hover(
         ty.push_str(&value);
     }
 
-    HoverInfo { path, ty, layout: None, docs: doc_text(&constant.docs) }
+    HoverInfo {
+        path,
+        ty,
+        layout: None,
+        docs: hir.doc_text(constant.decl_span),
+    }
 }
 
 // TODO: those things should be better integrated with the compiler
@@ -690,7 +697,7 @@ fn fn_hover(
         ty = format!("impl {implementor}\n{ty}");
     }
 
-    HoverInfo { path, ty, layout: None, docs: doc_text(&func.docs) }
+    HoverInfo { path, ty, layout: None, docs: hir.doc_text(func.decl_span) }
 }
 
 #[inline]

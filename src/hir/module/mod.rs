@@ -127,7 +127,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
     /// Drain whatever diagnostics were recovered before a fatal error aborted [load](ModuleLoader::load)
     #[inline]
-    pub(crate) fn take_diagnostics(&mut self) -> Vec<RichDiagnostic> {
+    pub(crate) fn take_diagnostics(mut self) -> Vec<RichDiagnostic> {
         self.scope.diagnostics.take_errors()
     }
 
@@ -135,7 +135,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
     ///
     /// Modules are merged in dependency-first order. The entry module is always last,
     /// ensuring that `main` gets an id that the `_start` can call
-    pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir<'hir>, ModuleError> {
+    pub fn load(mut self, entry: impl AsRef<Path>) -> Result<Hir<'hir>, ModuleError> {
         crate::diagnostic::reset();
 
         let arena = self.arena;
@@ -162,10 +162,11 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         Ok(Hir {
             functions,
-            structs: self.scope.structs.clone(),
-            enums: self.scope.enums.clone(),
-            constants: self.scope.constants.values().cloned().collect(),
-            symbols: self.symbols.clone(),
+            structs: self.scope.structs,
+            enums: self.scope.enums,
+            constants: self.scope.constants.into_values().collect(),
+            docs: self.scope.docs,
+            symbols: self.symbols,
             diagnostics,
         })
     }
@@ -223,7 +224,7 @@ impl From<ModuleError> for Diagnostic {
                     | ModuleError::UnknownExport { span, .. }
                     | ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::EmptyPath => Span::default(),
-                    ModuleError::Check(_) => unreachable!(),
+                    ModuleError::Check(_) => unsafe { std::hint::unreachable_unchecked() },
                 };
                 AsDiagnostic::into_diagnostic(other, span)
             },

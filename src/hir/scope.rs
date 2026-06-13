@@ -39,6 +39,8 @@ pub struct Scope<'hir> {
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
     pub constants: HashMap<SymbolId, Constant<'hir>>,
+    /// Rendered `///` documentation per item, keyed by its `decl_span`
+    pub docs: HashMap<Span, Box<str>>,
 
     pub generic_structs: HashMap<SymbolId, statement::Struct<'hir>>,
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
@@ -110,6 +112,7 @@ impl<'hir> Scope<'hir> {
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
             constants: HashMap::new(),
+            docs: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_enums: HashMap::new(),
             generic_fns: HashMap::new(),
@@ -150,6 +153,7 @@ impl<'hir> Scope<'hir> {
     where
         's: 'hir,
     {
+        self.collect_docs(declarations);
         self.extend_enums(declarations, symbols)?;
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
@@ -158,6 +162,33 @@ impl<'hir> Scope<'hir> {
         interfaces::validate(self, declarations, symbols)?;
 
         Ok(())
+    }
+
+    /// Harvest each item's `///` documentation into [`Scope::docs`], keyed by its
+    /// declaration span (which equals the HIR `decl_span`)
+    fn collect_docs(&mut self, declarations: &Declarations<'_, '_>) {
+        for function in declarations.functions() {
+            self.record_doc(function.span, &function.docs);
+        }
+        for structure in &declarations.structs {
+            self.record_doc(structure.span, &structure.docs);
+        }
+        for enumeration in &declarations.enums {
+            self.record_doc(enumeration.span, &enumeration.docs);
+        }
+        for constant in &declarations.constants {
+            self.record_doc(constant.span, &constant.docs);
+        }
+        for constant in declarations.impls.iter().flat_map(|imp| imp.constants.iter()) {
+            self.record_doc(constant.span, &constant.docs);
+        }
+    }
+
+    #[inline]
+    fn record_doc(&mut self, span: Span, lines: &[&str]) {
+        if let Some(joined) = hir::join_docs(lines) {
+            self.docs.insert(span, joined);
+        }
     }
 
     pub fn lower_functions<'d, 's>(
@@ -335,7 +366,6 @@ impl<'hir> Scope<'hir> {
                 id,
                 name: symbol,
                 decl_span: enum_decl.span,
-                docs: hir::join_docs(&enum_decl.docs),
                 variants: Vec::new(),
                 repr,
                 generics: Vec::new(),
@@ -966,7 +996,6 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
-            docs: None,
             variants: Vec::new(),
             repr,
             generics: declared_names(&template.generics, args, symbols),
@@ -1022,7 +1051,6 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
-            docs: None,
             fields: Vec::new(),
             repr: template.repr,
             generics: declared_names(&template.generics, args, symbols),

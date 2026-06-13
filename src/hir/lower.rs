@@ -1,6 +1,6 @@
 use crate::{
     hir::{
-        self, Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function,
+        Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function,
         FunctionId, Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
         Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         TypeckResults,
@@ -176,7 +176,6 @@ where
             id,
             name: symbol,
             decl_span: function.span,
-            docs: hir::join_docs(&function.docs),
             params,
             locals: self.locals,
             return_type: signature.return_type,

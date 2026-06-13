@@ -47,6 +47,8 @@ pub struct Hir<'hir> {
     pub enums: IndexVec<EnumId, Enum>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
+    /// Rendered `///` documentation per item, keyed by its `decl_span`
+    pub(crate) docs: HashMap<Span, Box<str>>,
     /// Recoverable lowering diagnostics
     /// Empty unless recovery mode was on
     pub diagnostics: Vec<diagnostic::RichDiagnostic>,
@@ -57,7 +59,6 @@ pub struct Struct {
     id: StructId,
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
-    pub(crate) docs: Option<Box<str>>,
     /// Fields in source declaration order
     /// Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
@@ -78,7 +79,6 @@ pub struct Enum {
     pub(crate) id: EnumId,
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
-    pub(crate) docs: Option<Box<str>>,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
     /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
@@ -151,7 +151,6 @@ pub struct Function<'hir> {
     pub id: FunctionId,
     pub name: SymbolId,
     pub decl_span: Span,
-    pub docs: Option<Box<str>>,
     pub kind: FunctionKind,
     pub params: Vec<Parameter>,
     pub locals: IndexVec<LocalId, Local>,
@@ -174,7 +173,6 @@ pub struct Constant<'hir> {
     pub typeck: TypeckResults,
     pub is_pub: bool,
     pub decl_span: Span,
-    pub docs: Option<Box<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,6 +384,7 @@ pub fn lower<'hir>(
         enums: scope.enums,
         functions,
         constants: scope.constants.into_values().collect(),
+        docs: scope.docs,
         diagnostics: scope.diagnostics.take_errors(),
     })
 }
