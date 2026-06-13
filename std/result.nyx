@@ -56,7 +56,7 @@ impl Result<S, F> {
     }
 
     pub inline const fn is_failure(&self): bool {
-        !self.is_success() 
+        !self.is_success()
     }
 
     pub fn success(self): Optional<S> {

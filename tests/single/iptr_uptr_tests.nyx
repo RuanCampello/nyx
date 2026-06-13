@@ -19,11 +19,11 @@ fn main(): i32 {
     // On 64-bit platforms (which we expect our tests to run on):
     if size_of(iptr) == 8 {
         if bits_iptr != 64 return 4;
-        
+
         // Avoid 64-bit immediate in cmpq by comparing parts that fit in 32-bit signed range
         if (max_iptr >> 32) as i32 != 2147483647 return 5;
         if max_iptr as i32 != -1 return 6;
-        
+
         if min_iptr != -9223372036854775807 - 1 return 7;
     }
 
