@@ -69,6 +69,25 @@ async fn hover_call_site_shows_signature() {
 }
 
 #[tokio::test]
+async fn hover_shows_doc_comment() {
+    let src = r#"///
+        Adds two numbers together.
+        fn add(a: i32, b: i32): i32 { a + b }
+        fn main() { let r = add(1, 2); }
+    "#;
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let text = client.hover_text(&url, position_of(src, "add")).await;
+    assert!(text.contains("fn add(a: i32, b: i32): i32"), "expected the signature: {text}");
+    assert!(text.contains("Adds two numbers together."), "expected the doc comment: {text}");
+
+    let call = client.hover_text(&url, position_of_nth(src, "add", 1)).await;
+    assert!(call.contains("Adds two numbers together."), "call hover shows docs: {call}");
+}
+
+#[tokio::test]
 async fn hover_parameter_shows_type() {
     let src = "fn scale(factor: i64): i64 { factor }\nfn main() { let r = scale(2); }";
     let mut client = TestClient::start().await;
