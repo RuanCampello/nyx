@@ -183,6 +183,20 @@ impl<'i> Parser<'i> {
         }
     }
 
+    /// Consume the run of `///` lines that documents the upcoming item.
+    pub(crate) fn parse_outer_docs(&mut self) -> Box<[&'i str]> {
+        let mut docs = Vec::new();
+
+        while let Some(Ok(token)) = self.peek()
+            && let TokenKind::DocComment(text) = token.kind
+        {
+            docs.push(text);
+            let _ = self.next_token();
+        }
+
+        docs.into_boxed_slice()
+    }
+
     fn consume_token(&mut self, kind: impl Into<TokenKind<'i>>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.is_kind(kind) => {
@@ -563,7 +577,7 @@ mod tests {
         assert_eq!(declaration.variants[0].value, Some(0));
         assert_eq!(declaration.variants[2].name, "Timeout");
         assert_eq!(declaration.variants[2].value, None);
-        assert!(matches!(declaration.repr.value(), Type::U16));
+        assert!(matches!(declaration.repr.as_ref().map(|r| r.value()), Some(Type::U16)));
     }
 
     #[test]
@@ -605,5 +619,59 @@ mod tests {
         assert!(matches!(rrl_l.as_ref(), Expression::Identifier("w", _)));
         assert!(matches!(rrl_r.as_ref(), Expression::Integer(2, _)));
         assert!(matches!(rr_r.as_ref(), Expression::Integer(3, _)));
+    }
+
+    #[test]
+    fn doc_comments_attach_to_following_item() {
+        let statements = Parser::new("/// first line\n/// second\nfn foo() {}").parse().unwrap();
+        let Statement::Fn(function) = &statements[0] else {
+            panic!("expected fn, got {:?}", statements[0]);
+        };
+        assert_eq!(&*function.docs, [" first line", " second"].as_slice());
+    }
+
+    #[test]
+    fn plain_and_quad_slash_comments_are_not_docs() {
+        let statements = Parser::new("// not a doc\n//// nor this\nfn foo() {}").parse().unwrap();
+        let Statement::Fn(function) = &statements[0] else {
+            panic!("expected fn");
+        };
+        assert!(function.docs.is_empty());
+    }
+
+    #[test]
+    fn docs_do_not_leak_between_items() {
+        let statements = Parser::new("/// documented\nfn a() {}\nfn b() {}").parse().unwrap();
+        let (Statement::Fn(a), Statement::Fn(b)) = (&statements[0], &statements[1]) else {
+            panic!("expected two fns");
+        };
+        assert_eq!(&*a.docs, [" documented"].as_slice());
+        assert!(b.docs.is_empty());
+    }
+
+    #[test]
+    fn docs_attach_to_struct_and_const() {
+        let statements =
+            Parser::new("/// a point\nstruct P { x: i32 }\n/// the answer\nconst N: i32 = 42;")
+                .parse()
+                .unwrap();
+        let Statement::Struct(declaration) = &statements[0] else {
+            panic!("expected struct");
+        };
+        assert_eq!(&*declaration.docs, [" a point"].as_slice());
+        let Statement::Const(constant) = &statements[1] else {
+            panic!("expected const");
+        };
+        assert_eq!(&*constant.docs, [" the answer"].as_slice());
+    }
+
+    #[test]
+    fn docs_attach_to_impl_method() {
+        let statements =
+            Parser::new("impl P {\n  /// makes one\n  fn make() {}\n}").parse().unwrap();
+        let Statement::Impl(block) = &statements[0] else {
+            panic!("expected impl");
+        };
+        assert_eq!(&*block.methods[0].docs, [" makes one"].as_slice());
     }
 }

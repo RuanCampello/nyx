@@ -34,6 +34,8 @@ pub enum TokenKind<'src> {
     Identifier(&'src str),
     Keyword(Keyword),
     Punct(Punct),
+    /// A `///` line; the text is everything after the slashes up to the newline.
+    DocComment(&'src str),
     Eof,
 }
 
@@ -212,6 +214,7 @@ impl fmt::Display for TokenKind<'_> {
             Self::Identifier(id) => write!(f, "{id}"),
             Self::Keyword(kw) => write!(f, "{kw}"),
             Self::Punct(p) => write!(f, "{p}"),
+            Self::DocComment(text) => write!(f, "///{text}"),
             Self::Eof => write!(f, "EOF"),
         }
     }
