@@ -56,6 +56,7 @@ pub struct HoverInfo {
     pub path: Option<String>,
     pub ty: String,
     pub layout: Option<(u32, u32)>,
+    pub docs: Option<String>,
 }
 
 struct Walker<'a, 'h> {
@@ -188,6 +189,7 @@ impl<'a, 'h> Walker<'a, 'h> {
             path: None,
             ty: format_type(typ, self.hir, self.generics),
             layout,
+            docs: None,
         }
     }
 
@@ -321,9 +323,9 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
     let mut goto_definitions = HashMap::new();
     let mut inlay_hints = Vec::new();
     let layouts = LayoutTable::build(&hir.structs, &hir.enums);
-    let functions: HashMap<FunctionId, &Function> =
+    let functions: HashMap<_, _> =
         hir.functions.iter().map(|function| (function.id, function)).collect();
-    let constants: HashMap<SymbolId, &Constant> =
+    let constants: HashMap<_, _> =
         hir.constants.iter().map(|constant| (constant.name, constant)).collect();
 
     for func in &hir.functions {
@@ -340,6 +342,7 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
                         path: None,
                         ty: format_type(param.typ, hir, &func.generics),
                         layout,
+                        docs: None,
                     },
                 ));
             }
@@ -389,11 +392,10 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
 
     let mut symbols = Vec::new();
     let sym = &hir.symbols;
-    let (fns, structs, enums) = (&hir.functions, &hir.structs, &hir.enums);
+    let (fns, structs, enums, consts) = (&hir.functions, &hir.structs, &hir.enums, &hir.constants);
     collect_symbols(fns, SymbolKind::Function, sym, &mut symbols, |f| f.name, |f| f.decl_span);
     collect_symbols(structs, SymbolKind::Struct, sym, &mut symbols, |s| s.name, |s| s.decl_span);
     collect_symbols(enums, SymbolKind::Enum, sym, &mut symbols, |e| e.name, |e| e.decl_span);
-    let consts = &hir.constants;
     collect_symbols(consts, SymbolKind::Constant, sym, &mut symbols, |c| c.name, |c| c.decl_span);
     symbols.sort_unstable_by_key(|s| s.span.start.offset());
 
@@ -433,6 +435,7 @@ fn short_name(qualified: &str) -> String {
     pretty_args(qualified.rsplit("::").next().unwrap_or(qualified))
 }
 
+#[inline]
 fn pretty_args(name: &str) -> String {
     match name.split_once('$') {
         Some((base, args)) => format!("{base}<{}>", args.replace('$', ", ")),
@@ -516,6 +519,11 @@ fn module_of(map: &SourceMap, modules: &HashMap<FileId, String>, span: Span) -> 
     }
 }
 
+#[inline]
+fn doc_text(docs: &Option<Box<str>>) -> Option<String> {
+    docs.as_deref().map(str::to_owned)
+}
+
 fn type_hover(
     typ: Type,
     hir: &Hir<'_>,
@@ -523,14 +531,16 @@ fn type_hover(
     map: &SourceMap,
     modules: &HashMap<FileId, String>,
 ) -> Option<HoverInfo> {
-    let (path, ty) = match typ.kind() {
+    let (path, ty, docs) = match typ.kind() {
         TypeKind::Struct(id) => {
             let structure = &hir.structs[id];
-            (module_of(map, modules, structure.decl_span), struct_def(structure, hir))
+            let path = module_of(map, modules, structure.decl_span);
+            (path, struct_def(structure, hir), doc_text(&structure.docs))
         },
         TypeKind::Enum(id) => {
             let enumeration = &hir.enums[id];
-            (module_of(map, modules, enumeration.decl_span), enum_def(enumeration, hir))
+            let path = module_of(map, modules, enumeration.decl_span);
+            (path, enum_def(enumeration, hir), doc_text(&enumeration.docs))
         },
         _ => return None,
     };
@@ -540,7 +550,7 @@ fn type_hover(
         false => layout_of(layouts, typ),
     };
 
-    Some(HoverInfo { path, ty, layout })
+    Some(HoverInfo { path, ty, layout, docs })
 }
 
 fn const_hover(
@@ -570,7 +580,7 @@ fn const_hover(
         ty.push_str(&value);
     }
 
-    HoverInfo { path, ty, layout: None }
+    HoverInfo { path, ty, layout: None, docs: doc_text(&constant.docs) }
 }
 
 // TODO: those things should be better integrated with the compiler
@@ -680,7 +690,7 @@ fn fn_hover(
         ty = format!("impl {implementor}\n{ty}");
     }
 
-    HoverInfo { path, ty, layout: None }
+    HoverInfo { path, ty, layout: None, docs: doc_text(&func.docs) }
 }
 
 #[inline]
@@ -778,8 +788,6 @@ fn truncated(lines: impl Iterator<Item = String>, total: usize) -> String {
     lines.join("\n")
 }
 
-/// Render a type for display; `generics` names the enclosing item's open
-/// parameters so `GenericParam(0)` reads as its declared name (`T`), not `T0`
 fn format_type(typ: Type, hir: &Hir<'_>, generics: &[SymbolId]) -> String {
     match typ.kind() {
         TypeKind::Unit => "()".to_owned(),
@@ -891,6 +899,67 @@ mod tests {
             a.document_symbols.iter().any(|s| s.name == "Holder"),
             "the outline still lists the struct"
         );
+    }
+
+    #[test]
+    fn doc_comments_surface_on_item_hover() {
+        let a = analyse(
+            "docs",
+            r#"
+            /// Adds two numbers.
+            fn add(a: i32, b: i32): i32 { a + b }
+
+            /// A 2D point.
+            struct Point { x: i32, y: i32 }
+
+            /// The answer.
+            const ANSWER: i32 = 42;
+
+            fn main() {
+                let p = Point { x: 1, y: 2 };
+                let _ = add(p.x, p.y) + ANSWER;
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let doc_of = |needle: &str| {
+            a.hover_types
+                .iter()
+                .find(|(_, hover)| hover.ty.contains(needle))
+                .and_then(|(_, hover)| hover.docs.as_deref())
+        };
+
+        assert_eq!(doc_of("fn add"), Some("Adds two numbers."));
+        assert_eq!(doc_of("struct Point"), Some("A 2D point."));
+        assert_eq!(doc_of("const ANSWER"), Some("The answer."));
+        assert_eq!(doc_of("fn main"), None, "an undocumented item has no docs");
+    }
+
+    #[test]
+    fn fieldless_enums_auto_size_while_payload_enums_keep_the_tag() {
+        let a = analyse(
+            "enum_repr",
+            r#"
+            enum Direction { North, West, East, South }
+            enum Tiny { No, Yes(bool) }
+            fn main() {
+                let _ = Direction::North;
+                let _ = Tiny::No;
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let layout_of = |needle: &str| {
+            a.hover_types
+                .iter()
+                .find_map(|(_, hover)| hover.ty.contains(needle).then_some(hover.layout))
+                .flatten()
+        };
+
+        assert_eq!(layout_of("enum Direction"), Some((1, 1)));
+        assert_eq!(layout_of("enum Tiny"), Some((8, 4)));
     }
 
     #[test]
