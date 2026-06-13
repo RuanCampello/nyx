@@ -109,7 +109,7 @@ pub fn compile_project_for(
     let arena = bumpalo::Bump::new();
 
     let loader = module::ModuleLoader::new(name.to_string(), root, &arena);
-    let hir = loader.load(entry)?;
+    let hir = loader.load(entry).map_err(|(_, err)| err)?;
     let mir = mir::lower(hir)?;
 
     let asm = match target {

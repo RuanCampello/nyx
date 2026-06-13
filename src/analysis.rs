@@ -127,7 +127,7 @@ impl Analysis {
         let std_root = std_root.canonicalize().unwrap_or(std_root);
 
         let arena = bumpalo::Bump::new();
-        let mut loader = module::ModuleLoader::with_file_system(
+        let loader = module::ModuleLoader::with_file_system(
             name.clone(),
             root.clone(),
             std_root.clone(),
@@ -148,9 +148,8 @@ impl Analysis {
                 analysis.diagnostics = hir.diagnostics;
                 analysis
             },
-            Err(e) => {
+            Err((mut diagnostics, e)) => {
                 let span = e.span().unwrap_or_default();
-                let mut diagnostics = loader.take_diagnostics();
                 diagnostics.push(e.rich(span));
                 SemanticAnalysis { diagnostics, ..Default::default() }
             },
