@@ -119,6 +119,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Go-to-definition
   - [x] Variables
   - [x] Functions
+  - [ ] Methods
   - [ ] Interfaces
     - [ ] Methods
   - [ ] `struct` and `enum`

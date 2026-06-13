@@ -2,6 +2,34 @@
 
 All notable changes to the Nyx compiler will be documented in this file
 
+## [0.4.0] - 2026-06-13
+
+Shipped the first release of `nyx-lsp`, a dedicated language server, on top of a diagnostics rearchitecture that swaps per-file offsets for a global `SourceMap`, renders rich multi-file reports, and makes the frontend recoverable so a single pass surfaces several errors instead of bailing on the first.
+
+### Language Server (`nyx-lsp` 0.1.0)
+
+- First release of the Nyx language server as its own crate, with debounced analysis, a spinner while the project and `std` load and diagnostics surfaced live to the editor ([`d763e04`])
+- **Hover** information for `struct`s, `enum`s and functions, including fields, variants and full signatures with highlighting ([`b58cee7`]), the size and alignment of local variables ([`e38f6c6`]), and evaluation of `const`s resolved through generics ([`f779f1e`])
+- **Semantic tokens** for syntactic highlighting that holds up even on a buffer that does not yet parse, with consistent highlighting of `enum` variants and parameters ([`08509b8`], [`f779f1e`])
+- **Inlay hints** for inferred types after `let` bindings, kept stable while editing, plus document symbols and basic go-to-definition ([`08509b8`])
+- An in-process integration harness that boots a real server for end-to-end tests ([`ec57665`])
+
+### Added
+
+- **Diagnostics & Error Recovery**:
+  - `RichDiagnostic` rendering of multi-file reports through the `SourceMap` ([`485ae09`]), plus a `rich()` plain renderer ([`5e96502`]) and raw messages for editor surfaces ([`fdd1a9b`])
+  - Poison and sink foundation for error handling ([`6814bbd`]), making the frontend recoverable so a single pass can report multiple errors instead of stopping at the first ([`03de488`])
+  - An `analysis` module at the crate root, extracting the editor query layer out of the HIR so the compiler and the language server share it ([`a05a044`])
+
+### Changed & Refactored
+
+- **Spans & `SourceMap`**:
+  - Introduced a `SourceMap` and a compact 8-byte global `Span` ([`e7b3988`]), threading global byte offsets through the lexer and HIR and registering every file in the map ([`565e6f2`])
+  - Reworked the `nyx_macros` crate with formatting helpers and an expanded `#[derive(Diagnostic)]` ([`5e96502`], [`8979c8e`])
+- **Symbol Tables & Cleanup**:
+  - Removed the dumped `symbols` vector across the HIR, MIR and LIR in favour of direct `SymbolTable` usage ([`64115c2`], [`6db2774`], [`763d4e8`]), and added a `Deref` impl for `IndexVec` ([`6cfb600`])
+  - Richer parser error information with an optional `HasSpan` ([`ff2880d`])
+
 ## [0.3.0] - 2026-06-02
 
 Added tagged-union `enum`s with pattern matching, generic types and functions with on-demand monomorphisation, the `Self` type and default interface methods, integer overflow checks, and a procedural-macro diagnostics system, alongside a large rearchitecture that moves layout into the MIR and types into side-tables.
@@ -110,3 +138,23 @@ Initial release of the Nyx compiler, introducing support for `struct`s, implemen
 [!6]: https://gitlab.com/ruancampello/nyx/-/merge_requests/6
 [!7]: https://gitlab.com/ruancampello/nyx/-/merge_requests/7
 [!8]: https://gitlab.com/ruancampello/nyx/-/merge_requests/8
+[`d763e04`]: https://gitlab.com/ruancampello/nyx/-/commit/d763e04
+[`b58cee7`]: https://gitlab.com/ruancampello/nyx/-/commit/b58cee7
+[`e38f6c6`]: https://gitlab.com/ruancampello/nyx/-/commit/e38f6c6
+[`f779f1e`]: https://gitlab.com/ruancampello/nyx/-/commit/f779f1e
+[`08509b8`]: https://gitlab.com/ruancampello/nyx/-/commit/08509b8
+[`ec57665`]: https://gitlab.com/ruancampello/nyx/-/commit/ec57665
+[`485ae09`]: https://gitlab.com/ruancampello/nyx/-/commit/485ae09
+[`5e96502`]: https://gitlab.com/ruancampello/nyx/-/commit/5e96502
+[`fdd1a9b`]: https://gitlab.com/ruancampello/nyx/-/commit/fdd1a9b
+[`6814bbd`]: https://gitlab.com/ruancampello/nyx/-/commit/6814bbd
+[`03de488`]: https://gitlab.com/ruancampello/nyx/-/commit/03de488
+[`a05a044`]: https://gitlab.com/ruancampello/nyx/-/commit/a05a044
+[`e7b3988`]: https://gitlab.com/ruancampello/nyx/-/commit/e7b3988
+[`565e6f2`]: https://gitlab.com/ruancampello/nyx/-/commit/565e6f2
+[`8979c8e`]: https://gitlab.com/ruancampello/nyx/-/commit/8979c8e
+[`64115c2`]: https://gitlab.com/ruancampello/nyx/-/commit/64115c2
+[`6db2774`]: https://gitlab.com/ruancampello/nyx/-/commit/6db2774
+[`763d4e8`]: https://gitlab.com/ruancampello/nyx/-/commit/763d4e8
+[`6cfb600`]: https://gitlab.com/ruancampello/nyx/-/commit/6cfb600
+[`ff2880d`]: https://gitlab.com/ruancampello/nyx/-/commit/ff2880d
