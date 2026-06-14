@@ -2,6 +2,38 @@
 
 All notable changes to the Nyx compiler will be documented in this file
 
+## [0.4.1] - 2026-06-14
+
+Added `///` documentation comments across the language, removing the old `/* ... */` block-comment syntax, and surfaced them through `nyx-lsp` hover. Alongside that, enums now pick the smallest tag representation that fits their variants, and a HIR/LIR rearchitecture drops the duplicate MIR layout engine and unifies `aarch64`/`x86_64` target lowering.
+
+### Language Server (`nyx-lsp` 0.2.0)
+
+- Doc comments rendered in hover for functions, `struct`s, `enum`s, interfaces and their members, with integration tests covering the new output ([`918a0b9`])
+
+### Added
+
+- **Doc Comments**:
+  - `///` doc comment syntax lexed as dedicated tokens, replacing `/* ... */` block comments ([`fcd1581`])
+  - Doc comments on declarations and `enum` variants stored in HIR side-tables ([`12130f4`], [`edc153a`])
+  - `analysis` module support for querying doc comments ([`aec412e`])
+- **Standard Library**: documentation for `str` methods, `exit`, and interfaces ([`113d93f`], [`e5b93d5`])
+
+### Changed & Refactored
+
+- **Layout**: nominal layouts (size, align, field offsets) are now cached directly on the HIR, removing the duplicate MIR `LayoutEngine` ([`f3621f4`])
+- **HIR**:
+  - Collapsed all item `Statement` variants into `Statement::Item`, so docs and other metadata are declared once ([`0374e1c`])
+  - `ModuleLoader::load` now takes `self` by value instead of `&self`, removing module cloning ([`02441ff`], [`edc153a`])
+  - Module declarations are partitioned once per compilation instead of on every use ([`3e8d47a`])
+  - The lowering `Scope` is now created after module graph construction ([`3875461`])
+  - Removed an old arena artifact ([`4ea597e`])
+- **LIR**: unified `aarch64` and `x86_64` target lowering into a single generic `Lower<'f, T>` ([`6f23c1f`])
+
+### Fixed
+
+- **LIR**: scalar spill slots are now aligned to their byte width ([`fddabd6`])
+- **Enums**: tag representation now uses the smallest integer type that fits the variant count ([`12130f4`])
+
 ## [0.4.0] - 2026-06-13
 
 Shipped the first release of `nyx-lsp`, a dedicated language server, on top of a diagnostics rearchitecture that swaps per-file offsets for a global `SourceMap`, renders rich multi-file reports, and makes the frontend recoverable so a single pass surfaces several errors instead of bailing on the first.
@@ -158,3 +190,19 @@ Initial release of the Nyx compiler, introducing support for `struct`s, implemen
 [`763d4e8`]: https://gitlab.com/ruancampello/nyx/-/commit/763d4e8
 [`6cfb600`]: https://gitlab.com/ruancampello/nyx/-/commit/6cfb600
 [`ff2880d`]: https://gitlab.com/ruancampello/nyx/-/commit/ff2880d
+[`918a0b9`]: https://gitlab.com/ruancampello/nyx/-/commit/918a0b9c670da62fac069c5b4d359440cc9d9ebd
+[`fcd1581`]: https://gitlab.com/ruancampello/nyx/-/commit/fcd158104c535610cc3f24d87abf0bda753becda
+[`12130f4`]: https://gitlab.com/ruancampello/nyx/-/commit/12130f4b244d26f16eea338712f092f995360e9e
+[`edc153a`]: https://gitlab.com/ruancampello/nyx/-/commit/edc153a4f613d9c3aa43cb39dd0dd9c6ed93308c
+[`aec412e`]: https://gitlab.com/ruancampello/nyx/-/commit/aec412e2558957fac99b2744200a4f87b8cbf970
+[`04828b1`]: https://gitlab.com/ruancampello/nyx/-/commit/04828b1fe9685d53aab848f338452cb1e974bcb2
+[`113d93f`]: https://gitlab.com/ruancampello/nyx/-/commit/113d93f23f0334f4d7b28057d720ae847c038f61
+[`e5b93d5`]: https://gitlab.com/ruancampello/nyx/-/commit/e5b93d5b8e7d7944ba4d112af12162c5501c55e2
+[`f3621f4`]: https://gitlab.com/ruancampello/nyx/-/commit/f3621f487d9b2ec9bfddefd940bf16f18a926395
+[`0374e1c`]: https://gitlab.com/ruancampello/nyx/-/commit/0374e1c7e1555545f908cae9445561a5ab3834f3
+[`02441ff`]: https://gitlab.com/ruancampello/nyx/-/commit/02441ff2f701d341c7e41a4f057d2b423f318f05
+[`3e8d47a`]: https://gitlab.com/ruancampello/nyx/-/commit/3e8d47a3a8824fc7578e979586d8b61aa889ddae
+[`3875461`]: https://gitlab.com/ruancampello/nyx/-/commit/3875461f9f4ce3c855640782037a4c82bcc19cff
+[`4ea597e`]: https://gitlab.com/ruancampello/nyx/-/commit/4ea597eef1a829d6f880fc703a195a98e061652d
+[`6f23c1f`]: https://gitlab.com/ruancampello/nyx/-/commit/6f23c1f31953d1934167bdc0c8b07b372cf3af47
+[`fddabd6`]: https://gitlab.com/ruancampello/nyx/-/commit/fddabd61948404a5a06415f2570c81d634b3242e
