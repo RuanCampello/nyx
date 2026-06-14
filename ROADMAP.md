@@ -115,11 +115,16 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Method signatures with implementor
   - [x] Constants with their evaluated value
   - [x] Inside generic template bodies (identity instances)
-  - [ ] Comment documentation
+  - [x] Comment documentation
+    - [x] Functions / Methods
+    - [x] `struct` and `enum`
+    - [x] Constants
+    - [ ] Interfaces
 - [ ] Go-to-definition
   - [x] Variables
   - [x] Functions
-  - [ ] Methods
+  - [x] Methods
+  - [x] Constants
   - [ ] Interfaces
     - [ ] Methods
   - [ ] `struct` and `enum`
@@ -163,6 +168,8 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Equality comparison (`cmp`)
     - [x] Default value initialisation (`default`)
     - [x] Cloning (`clone`)
+    - [ ] Hashing (`hash`)
+      - [ ] FNV hashing
   - [ ] Primitive helpers
     - [ ] Integers
       - [x] Integer constants & basic properties
@@ -173,14 +180,16 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Character classification & ASCII conversions
     - [x] String length querying
     - [ ] String slicing, manipulation & search
+    - [ ] Dynamic String type (`String`, allocator wrapping)
+    - [ ] String formatting (`Format` interface)
   - [ ] Memory queries
     - [x] Size & alignment (`std/mem.nyx`)
   - [ ] System utilities
     - [x] Process exit execution
     - [x] Better assertions (with values that `impl PartialEq`)
   - [ ] Collections (**requires** syntax definition and memory allocator)
-    - [ ] Array
-    - [ ] Hash table
+    - [ ] Array / Vector (`Vec<T>`)
+    - [ ] Hash table / Hash map (`HashMap<K, V>`)
     - [ ] Set
   - [ ] Networking
     - [ ] TCP
