@@ -1,3 +1,4 @@
+/// Terminates the current process with the specified exit code
 pub const fn exit(code: i32): ! {
     syscall(SYS_EXIT, code);
 }
