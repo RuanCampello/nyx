@@ -943,6 +943,32 @@ mod tests {
     }
 
     #[test]
+    fn impl_method_docs_surface_on_hover() {
+        let a = analyse(
+            "impl_docs",
+            r#"
+            struct Point { x: i32 }
+            impl Point {
+                /// the horizontal coordinate
+                fn get(&self): i32 { self.x }
+            }
+            fn main() {
+                let p = Point { x: 1 };
+                let _ = p.get();
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let doc = a
+            .hover_types
+            .iter()
+            .find(|(_, hover)| hover.ty.contains("fn get"))
+            .and_then(|(_, hover)| hover.docs.as_deref());
+        assert_eq!(doc, Some("the horizontal coordinate"));
+    }
+
+    #[test]
     fn fieldless_enums_auto_size_while_payload_enums_keep_the_tag() {
         let a = analyse(
             "enum_repr",

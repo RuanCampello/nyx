@@ -58,22 +58,18 @@ impl<'src> Cursor<'src> {
     /// Consumes the next character only if it equals `expected`.
     #[inline]
     pub fn consume_optional(&mut self, expected: char) -> bool {
-        match self.peek() == Some(expected) {
-            true => {
+        self.peek()
+            .filter(|&ch| ch == expected)
+            .inspect(|_| {
                 self.advance();
-                true
-            },
-            _ => false,
-        }
+            })
+            .is_some()
     }
 
     /// Advances while `predicate` returns `true` for the peeked character.
     pub fn consume_while(&mut self, mut predicate: impl FnMut(char) -> bool) {
-        while let Some(&ch) = self.chars.peek() {
-            match predicate(ch) {
-                true => self.advance(),
-                _ => break,
-            };
+        while self.chars.peek().is_some_and(|&ch| predicate(ch)) {
+            self.advance();
         }
     }
 

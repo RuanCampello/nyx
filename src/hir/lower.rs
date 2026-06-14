@@ -1,8 +1,8 @@
 use crate::{
     hir::{
-        Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function,
-        FunctionId, Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget,
-        Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
+        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
+        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
@@ -260,14 +260,15 @@ where
             },
 
             Stmt::Return(statement) => {
-                let value = match statement.value {
-                    Some(ref expr) => {
+                let value = statement
+                    .value
+                    .as_ref()
+                    .map(|expr| {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        Some(expr.expr)
-                    },
-                    _ => None,
-                };
+                        Ok(expr.expr)
+                    })
+                    .transpose()?;
 
                 Ok((Statement::Return(value), true))
             },
@@ -287,13 +288,7 @@ where
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
-                Ok(match tail_ret && !expr.typ.diverges() {
-                    true => {
-                        self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        (Statement::Return(Some(expr.expr)), true)
-                    },
-                    _ => (Statement::Expr(expr.expr), tail_ret || expr.typ.diverges()),
-                })
+                self.handle_tail_expr(expr, tail_ret)
             },
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
@@ -304,22 +299,10 @@ where
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
 
-                Ok(match tail_ret && !expr.typ.diverges() {
-                    true => {
-                        self.assert_type(self.return_type, expr.typ, expr.span)?;
-                        (Statement::Return(Some(expr.expr)), true)
-                    },
-                    _ => (Statement::Expr(expr.expr), tail_ret || expr.typ.diverges()),
-                })
+                self.handle_tail_expr(expr, tail_ret)
             },
 
-            Stmt::Interface(_) => unimplemented!("interface lowering is not yet implemented"),
-            Stmt::Fn(_) => unimplemented!("nested functions are not supported yet"),
-            Stmt::Struct(_) => unimplemented!("nested structs are not supported yet"),
-            Stmt::Enum(_) => unimplemented!("nested enums are not supported yet"),
-            Stmt::Use(_) => unimplemented!("use declarations are not supported yet"),
-            Stmt::Impl(_) => unimplemented!("nested impl blocks are not supported yet"),
-            Stmt::Const(_) => unimplemented!("local constants are not supported yet"),
+            Stmt::Item(_) => unimplemented!("items are not supported inside function bodies yet"),
         }
     }
 
@@ -347,6 +330,21 @@ where
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
+    }
+
+    #[inline(always)]
+    fn handle_tail_expr(
+        &mut self,
+        expr: Lowered<'hir>,
+        tail_ret: bool,
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
+        match tail_ret && !expr.typ.diverges() {
+            true => {
+                self.assert_type(self.return_type, expr.typ, expr.span)?;
+                Ok((Statement::Return(Some(expr.expr)), true))
+            },
+            _ => Ok((Statement::Expr(expr.expr), tail_ret || expr.typ.diverges())),
+        }
     }
 
     /// Copy a constant's expression subtree (nodes and their types) into this

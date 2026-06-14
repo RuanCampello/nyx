@@ -4,7 +4,7 @@ use crate::{
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Statement, UseItems},
+        statement::{Item, ItemKind, Statement, UseItems},
     },
 };
 use std::{
@@ -156,7 +156,9 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             .statements
             .iter()
             .filter_map(|stmt| match stmt {
-                Statement::Use(declaration) => Some(declaration.clone()),
+                Statement::Item(Item { kind: ItemKind::Use(declaration), .. }) => {
+                    Some(declaration.clone())
+                },
                 _ => None,
             })
             .collect();
@@ -195,12 +197,15 @@ fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
     let mut exports = HashSet::new();
 
     for statement in statements {
-        match statement {
-            Statement::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
-            Statement::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
-            Statement::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
-            Statement::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
-            Statement::Const(c) if c.is_pub => exports.insert(c.name.to_string()),
+        let Statement::Item(item) = statement else {
+            continue;
+        };
+        match &item.kind {
+            ItemKind::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
+            ItemKind::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
+            ItemKind::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
+            ItemKind::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
+            ItemKind::Const(c) if c.is_pub => exports.insert(c.name.to_string()),
             _ => false,
         };
     }

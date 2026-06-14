@@ -364,7 +364,10 @@ pub fn lower<'hir>(
     let interfaces: std::collections::HashMap<_, _> = statements
         .iter()
         .filter_map(|stmt| match stmt {
-            statement::Statement::Interface(i) => Some((i.name, i.clone())),
+            statement::Statement::Item(statement::Item {
+                kind: statement::ItemKind::Interface(i),
+                ..
+            }) => Some((i.name, i.clone())),
             _ => None,
         })
         .collect();

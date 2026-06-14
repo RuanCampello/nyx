@@ -164,30 +164,11 @@ impl<'hir> Scope<'hir> {
         Ok(())
     }
 
-    /// Harvest each item's `///` documentation into [`Scope::docs`], keyed by its
-    /// declaration span (which equals the HIR `decl_span`)
     fn collect_docs(&mut self, declarations: &Declarations<'_, '_>) {
-        for function in declarations.functions() {
-            self.record_doc(function.span, &function.docs);
-        }
-        for structure in &declarations.structs {
-            self.record_doc(structure.span, &structure.docs);
-        }
-        for enumeration in &declarations.enums {
-            self.record_doc(enumeration.span, &enumeration.docs);
-        }
-        for constant in &declarations.constants {
-            self.record_doc(constant.span, &constant.docs);
-        }
-        for constant in declarations.impls.iter().flat_map(|imp| imp.constants.iter()) {
-            self.record_doc(constant.span, &constant.docs);
-        }
-    }
-
-    #[inline]
-    fn record_doc(&mut self, span: Span, lines: &[&str]) {
-        if let Some(joined) = hir::join_docs(lines) {
-            self.docs.insert(span, joined);
+        for (span, lines) in &declarations.docs {
+            if let Some(joined) = hir::join_docs(lines) {
+                self.docs.insert(*span, joined);
+            }
         }
     }
 

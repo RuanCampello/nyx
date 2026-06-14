@@ -1,7 +1,7 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     hir::{Declarations, SymbolTable, scope::Scope},
-    parser::statement::{Interface, Statement},
+    parser::statement::{Interface, Item, ItemKind, Statement},
 };
 use std::collections::HashMap;
 
@@ -31,7 +31,7 @@ fn collect_interfaces<'hir>(graph: &ModuleGraph<'hir>) -> HashMap<String, Interf
 
     for node in &graph.nodes {
         for statement in &node.statements {
-            if let Statement::Interface(interface) = statement {
+            if let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = statement {
                 interfaces.insert(interface.name.to_string(), interface.clone());
             }
         }

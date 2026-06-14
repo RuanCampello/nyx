@@ -5,22 +5,34 @@ use crate::parser::expression::Expression;
 use crate::parser::{Parsable, Parser};
 use std::num::NonZero;
 
+/// A documented declaration
 #[derive(Debug, PartialEq, Clone)]
-pub enum Statement<'i> {
-    Let(Let<'i>),
-    Const(Const<'i>),
-    Return(Return<'i>),
-    If(If<'i>),
-    While(While<'i>),
+pub struct Item<'i, K = ItemKind<'i>> {
+    pub docs: Box<[&'i str]>,
+    pub kind: K,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ItemKind<'i> {
     Fn(Function<'i>),
     Struct(Struct<'i>),
     Enum(Enum<'i>),
+    Const(Const<'i>),
     Impl(Impl<'i>),
     Interface(Interface<'i>),
+    Use(UseDecl<'i>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Statement<'i> {
+    Let(Let<'i>),
+    Return(Return<'i>),
+    If(If<'i>),
+    While(While<'i>),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
-    Use(UseDecl<'i>),
     Match(Match<'i>),
+    Item(Item<'i>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -35,7 +47,6 @@ pub struct Let<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Const<'i> {
-    pub docs: Box<[&'i str]>,
     pub is_pub: bool,
     pub name: &'i str,
     pub typ: Spanned<Type<'i>>,
@@ -122,7 +133,6 @@ pub struct GenericBound<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function<'i> {
-    pub docs: Box<[&'i str]>,
     pub name: &'i str,
     pub generics: Vec<GenericBound<'i>>,
     pub impl_type: Option<&'i str>,
@@ -145,7 +155,6 @@ pub struct Receiver {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Struct<'i> {
-    pub docs: Box<[&'i str]>,
     pub name: &'i str,
     pub generics: Vec<GenericBound<'i>>,
     pub fields: Vec<StructField<'i>>,
@@ -178,7 +187,6 @@ pub struct StructField<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Enum<'i> {
-    pub docs: Box<[&'i str]>,
     pub name: &'i str,
     pub generics: Vec<GenericBound<'i>>,
     pub variants: Vec<EnumVariant<'i>>,
@@ -204,6 +212,9 @@ pub struct Impl<'i> {
     pub generics: Vec<GenericBound<'i>>,
     pub methods: Vec<Function<'i>>,
     pub constants: Vec<Const<'i>>,
+    /// `(member_span, ///-lines)` for documented methods/constants, harvested
+    /// into the HIR doc side-table like top-level [`Item`] docs
+    pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub span: Span,
 }
 
@@ -313,33 +324,31 @@ impl<'i> Parsable<'i> for Statement<'i> {
         };
 
         if parser.is_const_decl() {
-            let mut decl = parser.parse_node::<Const>()?;
-            decl.docs = docs;
-            return Ok(Statement::Const(decl));
+            return Ok(Statement::Item(Item { docs, kind: ItemKind::Const(parser.parse_node()?) }));
         }
 
-        match kind {
-            TokenKind::Keyword(Keyword::Let) => Ok(Statement::Let(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::If) => Ok(Statement::If(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Match) => Ok(Statement::Match(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::While) => Ok(Statement::While(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Return) => Ok(Statement::Return(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Use) => Ok(Statement::Use(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Struct) => {
-                let mut decl = parser.parse_node::<Struct>()?;
-                decl.docs = docs;
-                Ok(Statement::Struct(decl))
+        // non-item statements return directly
+        let kind = match kind {
+            TokenKind::Keyword(Keyword::Let) => return Ok(Statement::Let(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::If) => return Ok(Statement::If(parser.parse_node()?)),
+            TokenKind::Keyword(Keyword::Match) => {
+                return Ok(Statement::Match(parser.parse_node()?));
             },
-            TokenKind::Keyword(Keyword::Enum) => {
-                let mut decl = parser.parse_node::<Enum>()?;
-                decl.docs = docs;
-                Ok(Statement::Enum(decl))
+            TokenKind::Keyword(Keyword::While) => {
+                return Ok(Statement::While(parser.parse_node()?));
             },
-            TokenKind::Keyword(Keyword::Impl) => Ok(Statement::Impl(parser.parse_node()?)),
-            TokenKind::Punct(Punct::OpenBrace) => Ok(Statement::Block(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Interface) => {
-                Ok(Statement::Interface(parser.parse_node()?))
+            TokenKind::Keyword(Keyword::Return) => {
+                return Ok(Statement::Return(parser.parse_node()?));
             },
+            TokenKind::Punct(Punct::OpenBrace) => {
+                return Ok(Statement::Block(parser.parse_node()?));
+            },
+
+            TokenKind::Keyword(Keyword::Use) => ItemKind::Use(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::Impl) => ItemKind::Impl(parser.parse_node()?),
+            TokenKind::Keyword(Keyword::Interface) => ItemKind::Interface(parser.parse_node()?),
 
             TokenKind::Keyword(Keyword::Pub) => {
                 let next_token = match parser.peek_nth(1) {
@@ -353,25 +362,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
                     },
                 };
 
-                Ok(match next_token.kind {
-                    TokenKind::Keyword(Keyword::Struct) => {
-                        let mut decl = parser.parse_node::<Struct>()?;
-                        decl.docs = docs;
-                        Statement::Struct(decl)
-                    },
-                    TokenKind::Keyword(Keyword::Enum) => {
-                        let mut decl = parser.parse_node::<Enum>()?;
-                        decl.docs = docs;
-                        Statement::Enum(decl)
-                    },
+                match next_token.kind {
+                    TokenKind::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
+                    TokenKind::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
                     TokenKind::Keyword(Keyword::Interface) => {
-                        Statement::Interface(parser.parse_node()?)
+                        ItemKind::Interface(parser.parse_node()?)
                     },
-                    _ if next_token.is_fn_start() => {
-                        let mut decl = parser.parse_node::<Function>()?;
-                        decl.docs = docs;
-                        Statement::Fn(decl)
-                    },
+                    _ if next_token.is_fn_start() => ItemKind::Fn(parser.parse_node()?),
                     found_kind => {
                         return Err(ParserError::new(
                             ParseErrorKind::Expected {
@@ -381,15 +378,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
                             next_token.span,
                         ));
                     },
-                })
+                }
             },
 
-            TokenKind::Keyword(_) if is_fn_start => {
-                let mut decl = parser.parse_node::<Function>()?;
-                decl.docs = docs;
-                Ok(Statement::Fn(decl))
+            TokenKind::Keyword(_) if is_fn_start => ItemKind::Fn(parser.parse_node()?),
+            TokenKind::Eof => {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             },
-            TokenKind::Eof => Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
@@ -404,10 +399,11 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 };
 
                 let span = Span::new(expr.span().start, end_position);
-
-                Ok(Statement::Expr(expr, span))
+                return Ok(Statement::Expr(expr, span));
             },
-        }
+        };
+
+        Ok(Statement::Item(Item { docs, kind }))
     }
 }
 
@@ -466,15 +462,8 @@ impl<'i> Parsable<'i> for Let<'i> {
         let mutable = parser.consume_token(Keyword::Mut)?;
         let (name, name_span) = parser.expect_identifier()?;
 
-        let typ = match parser.consume_token(Punct::Colon)? {
-            true => Some(parser.parse_node::<Spanned<Type>>()?),
-            false => None,
-        };
-
-        let value = match parser.consume_token(Punct::Eq)? {
-            true => Some(parser.parse_node::<Expression>()?),
-            false => None,
-        };
+        let typ = parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
+        let value = parser.consume_token(Punct::Eq)?.then(|| parser.parse_node()).transpose()?;
 
         let semicolon = parser.expect_token(Punct::Semicolon)?;
         let span = let_token.span + semicolon.span;
@@ -503,7 +492,7 @@ impl<'i> Parsable<'i> for Const<'i> {
         let semi = parser.expect_token(Punct::Semicolon)?;
         let span = start_span + semi.span;
 
-        Ok(Const { docs: Box::default(), is_pub, name, typ, value, span })
+        Ok(Const { is_pub, name, typ, value, span })
     }
 }
 
@@ -786,16 +775,13 @@ impl<'i> Parsable<'i> for Function<'i> {
             }
         }
 
-        let return_type = match parser.consume_token(Punct::Colon)? {
-            true => Some(parser.parse_node()?),
-            false => None,
-        };
+        let return_type =
+            parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
         let body = Block::parse(parser)?;
         let span = fn_token.span + body.span;
 
         Ok(Function {
-            docs: Box::default(),
             name,
             generics,
             impl_type: None,
@@ -844,6 +830,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
         let mut methods = Vec::new();
         let mut constants = Vec::new();
+        let mut member_docs = Vec::new();
 
         loop {
             let docs = parser.parse_outer_docs();
@@ -860,6 +847,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                         generics,
                         methods,
                         constants,
+                        member_docs,
                         span,
                     });
                 },
@@ -869,14 +857,18 @@ impl<'i> Parsable<'i> for Impl<'i> {
                 },
 
                 Some(Ok(_)) if parser.is_const_decl() => {
-                    let mut constant = parser.parse_node::<Const>()?;
-                    constant.docs = docs;
+                    let constant = parser.parse_node::<Const>()?;
+                    if !docs.is_empty() {
+                        member_docs.push((constant.span, docs));
+                    }
                     constants.push(constant);
                 },
 
                 Some(Ok(token)) if token.is_fn_start() => {
                     let mut method = parser.parse_node::<Function>()?;
-                    method.docs = docs;
+                    if !docs.is_empty() {
+                        member_docs.push((method.span, docs));
+                    }
                     method.impl_type = Some(name);
                     methods.push(method);
                 },
@@ -910,7 +902,6 @@ impl<'i> Impl<'i> {
             .filter(|m| !self.methods.iter().any(|existing| existing.name == m.name))
             .filter_map(|m| {
                 m.body.as_ref().map(|body| Function {
-                    docs: Box::default(),
                     name: m.name,
                     generics: Vec::new(),
                     impl_type: Some(self.name),
@@ -948,9 +939,8 @@ impl<'i> Parsable<'i> for Struct<'i> {
                     let close = parser.expect_token(Punct::CloseBrace)?;
                     let repr = parser.parse_node()?;
                     let span = struct_token.span + parser.last_span().unwrap_or(close.span);
-                    let docs = Box::default();
 
-                    return Ok(Self { docs, name, generics, fields, repr, is_pub, span });
+                    return Ok(Self { name, generics, fields, repr, is_pub, span });
                 },
 
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
@@ -1027,31 +1017,30 @@ impl<'i> Parsable<'i> for Enum<'i> {
                 parser.expect_token(Punct::CloseParen)?;
             }
 
-            let (value, span) = match parser.consume_token(Punct::Eq)? {
-                true => {
-                    let negative = parser.consume_token(Punct::Minus)?;
-                    let token = parser.expect_next()?;
-                    match token.kind {
-                        TokenKind::Integer(value) => {
-                            let value = if negative {
-                                -value
-                            } else {
-                                value
-                            };
-                            (Some(value), variant_span + token.span)
-                        },
-                        _ => {
-                            return Err(ParserError::new(
-                                ParseErrorKind::Expected {
-                                    expected: TokenKind::Integer(0),
-                                    found: token.kind,
-                                },
-                                token.span,
-                            ));
-                        },
-                    }
-                },
-                false => (None, variant_span),
+            let (value, span) = if parser.consume_token(Punct::Eq)? {
+                let negative = parser.consume_token(Punct::Minus)?;
+                let token = parser.expect_next()?;
+                match token.kind {
+                    TokenKind::Integer(value) => {
+                        let value = if negative {
+                            -value
+                        } else {
+                            value
+                        };
+                        (Some(value), variant_span + token.span)
+                    },
+                    _ => {
+                        return Err(ParserError::new(
+                            ParseErrorKind::Expected {
+                                expected: TokenKind::Integer(0),
+                                found: token.kind,
+                            },
+                            token.span,
+                        ));
+                    },
+                }
+            } else {
+                (None, variant_span)
             };
 
             variants.push(EnumVariant { name: variant_name, payload, value, span });
@@ -1062,9 +1051,8 @@ impl<'i> Parsable<'i> for Enum<'i> {
         // name is covered for hover/goto, matching how structs are spanned
         let end = parser.last_span().unwrap_or(enum_token.span);
         let span = enum_token.span + end;
-        let docs = Box::default();
 
-        Ok(Self { docs, name, generics, variants, repr, is_pub, span })
+        Ok(Self { name, generics, variants, repr, is_pub, span })
     }
 }
 
@@ -1179,13 +1167,12 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
 
-        let (body, span) = match parser.consume_token(Punct::Semicolon)? {
-            true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
-            _ => {
-                let b = parser.parse_node::<Block>()?;
-                let b_span = b.span;
-                (Some(b), fn_token.span + b_span)
-            },
+        let (body, span) = if parser.consume_token(Punct::Semicolon)? {
+            (None, fn_token.span + parser.last_span().unwrap_or_default())
+        } else {
+            let b = parser.parse_node::<Block>()?;
+            let b_span = b.span;
+            (Some(b), fn_token.span + b_span)
         };
 
         Ok(Self { span, name, generics, receiver, params, return_type, body })
@@ -1480,23 +1467,32 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     }
 }
 
+impl<'i> ItemKind<'i> {
+    #[inline(always)]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::Fn(f) => f.span,
+            Self::Struct(s) => s.span,
+            Self::Enum(e) => e.span,
+            Self::Const(c) => c.span,
+            Self::Impl(i) => i.span,
+            Self::Interface(i) => i.span,
+            Self::Use(u) => u.span,
+        }
+    }
+}
+
 impl<'s> Statement<'s> {
     pub const fn span(&self) -> Span {
         match self {
             Self::Let(s) => s.span,
-            Self::Const(c) => c.span,
             Self::Return(s) => s.span,
             Self::If(s) => s.span,
             Self::While(s) => s.span,
-            Self::Fn(s) => s.span,
-            Self::Struct(s) => s.span,
-            Self::Enum(s) => s.span,
-            Self::Impl(s) => s.span,
-            Self::Interface(i) => i.span,
-            Self::Use(s) => s.span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
             Self::Match(m) => m.span,
+            Self::Item(item) => item.kind.span(),
         }
     }
 }
@@ -1555,7 +1551,7 @@ pub fn inject_default_methods<'a, 'b>(
     'a: 'b,
 {
     for stmt in statements {
-        if let Statement::Impl(imp) = stmt
+        if let Statement::Item(Item { kind: ItemKind::Impl(imp), .. }) = stmt
             && let Some(interface) = imp.interface.and_then(&lookup_interface)
         {
             imp.inject_default_methods(interface);

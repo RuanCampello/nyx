@@ -122,12 +122,13 @@ impl<'i> Parser<'i> {
     ) -> Result<Token<'i>, ParserError<'i>> {
         let expected = expected.into();
         let token = self.expect_next()?;
-        match token.is_kind(expected) {
-            true => Ok(token),
-            false => Err(ParserError::new(
+        if token.is_kind(expected) {
+            Ok(token)
+        } else {
+            Err(ParserError::new(
                 ParseErrorKind::Expected { expected, found: token.kind },
                 token.span,
-            )),
+            ))
         }
     }
 
@@ -236,7 +237,7 @@ mod tests {
         lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Let, Return, Type},
+            statement::{Item, ItemKind, Let, Return, Type},
         },
     };
 
@@ -292,7 +293,8 @@ mod tests {
         .parse()
         .unwrap();
 
-        let Statement::Impl(implementation) = &statements[1] else {
+        let Statement::Item(Item { kind: ItemKind::Impl(implementation), .. }) = &statements[1]
+        else {
             panic!("expected impl block");
         };
 
@@ -428,7 +430,7 @@ mod tests {
 
         assert_eq!(statements.len(), 1);
         let function = match &statements[0] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             other => panic!("expected function, found {other:?}"),
         };
 
@@ -447,7 +449,7 @@ mod tests {
 
         assert_eq!(statements.len(), 1);
         let function = match &statements[0] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             other => panic!("expected function, found {other:?}"),
         };
 
@@ -502,7 +504,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Struct(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Struct(declaration), .. }) => declaration,
             other => panic!("expected struct declaration, got {other:?}"),
         };
         assert_eq!(declaration.name, "Point");
@@ -513,7 +515,7 @@ mod tests {
         assert!(matches!(declaration.fields[1].typ.value(), Type::I32));
 
         let function = match &statements[1] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             _ => panic!(),
         };
         let let_statement = match &function.body.statements[0] {
@@ -541,7 +543,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Struct(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Struct(declaration), .. }) => declaration,
             other => panic!("expected struct declaration, got {other:?}"),
         };
         assert_eq!(declaration.repr.kind, statement::StructReprKind::Packed);
@@ -567,7 +569,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Enum(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Enum(declaration), .. }) => declaration,
             other => panic!("expected enum declaration, got {other:?}"),
         };
         assert!(declaration.is_pub);
@@ -624,29 +626,33 @@ mod tests {
     #[test]
     fn doc_comments_attach_to_following_item() {
         let statements = Parser::new("/// first line\n/// second\nfn foo() {}").parse().unwrap();
-        let Statement::Fn(function) = &statements[0] else {
+        let Statement::Item(Item { docs, kind: ItemKind::Fn(_) }) = &statements[0] else {
             panic!("expected fn, got {:?}", statements[0]);
         };
-        assert_eq!(&*function.docs, [" first line", " second"].as_slice());
+        assert_eq!(&**docs, [" first line", " second"].as_slice());
     }
 
     #[test]
     fn plain_and_quad_slash_comments_are_not_docs() {
         let statements = Parser::new("// not a doc\n//// nor this\nfn foo() {}").parse().unwrap();
-        let Statement::Fn(function) = &statements[0] else {
+        let Statement::Item(Item { docs, kind: ItemKind::Fn(_) }) = &statements[0] else {
             panic!("expected fn");
         };
-        assert!(function.docs.is_empty());
+        assert!(docs.is_empty());
     }
 
     #[test]
     fn docs_do_not_leak_between_items() {
         let statements = Parser::new("/// documented\nfn a() {}\nfn b() {}").parse().unwrap();
-        let (Statement::Fn(a), Statement::Fn(b)) = (&statements[0], &statements[1]) else {
+        let (
+            Statement::Item(Item { docs: a, kind: ItemKind::Fn(_) }),
+            Statement::Item(Item { docs: b, kind: ItemKind::Fn(_) }),
+        ) = (&statements[0], &statements[1])
+        else {
             panic!("expected two fns");
         };
-        assert_eq!(&*a.docs, [" documented"].as_slice());
-        assert!(b.docs.is_empty());
+        assert_eq!(&**a, [" documented"].as_slice());
+        assert!(b.is_empty());
     }
 
     #[test]
@@ -655,23 +661,24 @@ mod tests {
             Parser::new("/// a point\nstruct P { x: i32 }\n/// the answer\nconst N: i32 = 42;")
                 .parse()
                 .unwrap();
-        let Statement::Struct(declaration) = &statements[0] else {
+        let Statement::Item(Item { docs, kind: ItemKind::Struct(_) }) = &statements[0] else {
             panic!("expected struct");
         };
-        assert_eq!(&*declaration.docs, [" a point"].as_slice());
-        let Statement::Const(constant) = &statements[1] else {
+        assert_eq!(&**docs, [" a point"].as_slice());
+        let Statement::Item(Item { docs, kind: ItemKind::Const(_) }) = &statements[1] else {
             panic!("expected const");
         };
-        assert_eq!(&*constant.docs, [" the answer"].as_slice());
+        assert_eq!(&**docs, [" the answer"].as_slice());
     }
 
     #[test]
     fn docs_attach_to_impl_method() {
         let statements =
             Parser::new("impl P {\n  /// makes one\n  fn make() {}\n}").parse().unwrap();
-        let Statement::Impl(block) = &statements[0] else {
+        let Statement::Item(Item { kind: ItemKind::Impl(block), .. }) = &statements[0] else {
             panic!("expected impl");
         };
-        assert_eq!(&*block.methods[0].docs, [" makes one"].as_slice());
+        assert_eq!(block.member_docs.len(), 1);
+        assert_eq!(&*block.member_docs[0].1, [" makes one"].as_slice());
     }
 }

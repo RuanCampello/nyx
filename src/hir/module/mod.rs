@@ -134,7 +134,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         let arena = self.arena;
 
         let mut graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
-            .map_err(|err| (self.scope.diagnostics.take_errors(), err.into()))?;
+            .map_err(|err| (self.scope.diagnostics.take_errors(), err))?;
 
         let (scope, symbols) = (&mut self.scope, &mut self.symbols);
 
