@@ -133,17 +133,20 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         let arena = self.arena;
 
-        let mut graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
+        let graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
             .map_err(|err| (self.scope.diagnostics.take_errors(), err))?;
 
         let (scope, symbols) = (&mut self.scope, &mut self.symbols);
 
         let order = graph.all_nodes_order();
+        let declarations = graph
+            .collect_declarations()
+            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
 
-        let interfaces = signatures::build_signatures(&mut graph, &order, scope, symbols, arena)
+        signatures::build_signatures(&graph, &declarations, &order, scope, symbols, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let functions =
-            demand::lower_reachable(&mut graph, &order, &interfaces, scope, symbols, arena)
+            demand::lower_reachable(&graph, &declarations, &order, scope, symbols, arena)
                 .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let mut functions = mono::monomorphise(functions, scope, symbols, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;

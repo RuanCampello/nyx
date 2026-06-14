@@ -3,7 +3,7 @@ use crate::{
     hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
     parser::{
         expression::{BinaryOperator, Expression},
-        statement::{Function, Interface},
+        statement::Function,
         visitor,
     },
 };
@@ -21,9 +21,9 @@ struct ReachabilityVisitor<'a, 'hir> {
 }
 
 pub(super) fn lower_reachable<'hir, 'src>(
-    graph: &mut ModuleGraph<'src>,
+    graph: &ModuleGraph<'src>,
+    declarations: &[Declarations<'_, 'src>],
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'src>>,
     scope: &mut Scope<'hir>,
     symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
@@ -31,19 +31,14 @@ pub(super) fn lower_reachable<'hir, 'src>(
 where
     'src: 'hir,
 {
-    let demand = build_demand(graph, order, interfaces, scope, symbols)?;
+    let demand = build_demand(graph, declarations, order, scope, symbols)?;
     let mut functions = IndexVec::new();
 
     for &idx in order {
-        let node = &mut graph.nodes[idx];
-
-        let declarations =
-            Declarations::partition(&mut node.statements, |name| interfaces.get(name))?;
-
         let mut lowered = scope.lower_matching_functions(
-            &declarations,
+            &declarations[idx],
             symbols,
-            node.in_std,
+            graph.nodes[idx].in_std,
             |id| demand.contains(id),
             arena,
         )?;
@@ -55,13 +50,13 @@ where
 }
 
 fn build_demand<'hir, 'src>(
-    graph: &mut ModuleGraph<'src>,
+    graph: &ModuleGraph<'src>,
+    declarations: &[Declarations<'_, 'src>],
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'hir>,
     symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
-    let declarations = collect_functions(graph, order, interfaces, scope, symbols)?;
+    let function_map = collect_functions(graph, declarations, order, scope, symbols)?;
     let main = scope.resolve_function(symbols, |m| m.item("main"));
 
     let mut demand = DemandSet::default();
@@ -75,7 +70,7 @@ fn build_demand<'hir, 'src>(
     // an editor analyses every project function, reachable from `main` or not
     // std stays demand-driven so unused library code is never lowered
     if scope.recover {
-        for (&id, &(_, seed)) in declarations.iter() {
+        for (&id, &(_, seed)) in function_map.iter() {
             if seed && demand.insert(id) {
                 stack.push(id);
             }
@@ -85,7 +80,7 @@ fn build_demand<'hir, 'src>(
     while let Some(id) = stack.pop() {
         use visitor::Visitor;
 
-        let Some((function, _)) = declarations.get(&id) else {
+        let Some((function, _)) = function_map.get(&id) else {
             continue;
         };
 
@@ -105,10 +100,10 @@ fn build_demand<'hir, 'src>(
 
 /// Collect every declared function keyed by its signature id, paired with
 /// whether it belongs to the project (or entry module) rather than to std
-fn collect_functions<'a, 'hir, 'src>(
-    graph: &'a mut ModuleGraph<'src>,
+fn collect_functions<'hir, 'src>(
+    graph: &ModuleGraph<'src>,
+    declarations: &[Declarations<'_, 'src>],
     order: &[usize],
-    interfaces: &HashMap<String, Interface<'src>>,
     scope: &Scope<'hir>,
     symbols: &SymbolTable,
 ) -> Result<HashMap<FunctionId, (Function<'src>, bool)>, ModuleError> {
@@ -116,12 +111,9 @@ fn collect_functions<'a, 'hir, 'src>(
     let entry = order.last().copied();
 
     for &idx in order {
-        let node = &mut graph.nodes[idx];
-        let in_project = !node.in_std || entry == Some(idx);
-        let declarations =
-            Declarations::partition(&mut node.statements, |name| interfaces.get(name))?;
+        let in_project = !graph.nodes[idx].in_std || entry == Some(idx);
 
-        for function in declarations.functions() {
+        for function in declarations[idx].functions() {
             if let Some(id) = lookup_declaration_id(function, scope, symbols) {
                 functions.insert(id, (function.clone(), in_project));
             }
@@ -209,7 +201,7 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                 }
             },
             Expression::TypeIntrinsic { kind, qualifier, .. } => {
-                let name: &str = kind.into();
+                let name = kind.into();
                 if let Some(id) = self.scope.resolve_function_call(*qualifier, name, self.symbols) {
                     self.found.push(id);
                 }

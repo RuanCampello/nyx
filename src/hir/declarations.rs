@@ -27,7 +27,11 @@ impl<'d, 'src> Declarations<'d, 'src> {
         'src: 'b,
     {
         statement::inject_default_methods(statements, lookup_interface);
+        Self::collect(statements)
+    }
 
+    /// categorise already-injected top-level items by kind, gathering doc comments
+    pub fn collect(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),

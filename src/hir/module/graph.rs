@@ -1,10 +1,11 @@
 use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
     diagnostic,
+    hir::Declarations,
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Item, ItemKind, Statement, UseItems},
+        statement::{Interface, Item, ItemKind, Statement, UseItems, inject_default_methods},
     },
 };
 use std::{
@@ -63,6 +64,13 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     let entry = builder.discover(canonical, None)?;
     builder.discover_prelude()?;
 
+    // interface default methods are injected once here, up front, so every
+    // later pass reads the same already-completed AST without re-injecting
+    let interfaces = collect_interfaces(&builder.nodes);
+    for node in &mut builder.nodes {
+        inject_default_methods(&mut node.statements, |name| interfaces.get(name));
+    }
+
     Ok(ModuleGraph { nodes: builder.nodes, edges: builder.edges, entry })
 }
 
@@ -80,6 +88,17 @@ impl<'src> ModuleGraph<'src> {
         }
 
         order
+    }
+
+    /// partition every node's items once, indexed by node id
+    ///
+    /// the returned declarations borrow the graph, so all later passes
+    /// share a single categorisation instead of re-scanning the ast per pass
+    pub(super) fn collect_declarations(&self) -> Result<Vec<Declarations<'_, 'src>>, ModuleError> {
+        self.nodes
+            .iter()
+            .map(|node| Declarations::collect(&node.statements).map_err(Into::into))
+            .collect()
     }
 
     fn visit(&self, idx: usize, visited: &mut HashSet<usize>, order: &mut Vec<usize>) {
@@ -191,6 +210,20 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         self.in_flight.remove(&canonical);
         Ok(idx)
     }
+}
+
+fn collect_interfaces<'src>(nodes: &[ModuleNode<'src>]) -> HashMap<String, Interface<'src>> {
+    let mut interfaces = HashMap::new();
+
+    for node in nodes {
+        for statement in &node.statements {
+            if let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = statement {
+                interfaces.insert(interface.name.to_string(), interface.clone());
+            }
+        }
+    }
+
+    interfaces
 }
 
 fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
