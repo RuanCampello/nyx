@@ -21,11 +21,12 @@ use std::path::{Path, PathBuf};
 /// to ensure symbol IDs remain unique across the entire compilation.
 pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
     resolver: ModuleResolver,
-    scope: Scope<'hir>,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
     fs: F,
     arena: &'hir bumpalo::Bump,
+    /// whether lowering collects diagnostics and recovers instead of failing fast
+    recover: bool,
 }
 
 pub(crate) struct FS;
@@ -113,15 +114,15 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         Self {
             resolver: ModuleResolver::new(name, canonical_root, canonical_std),
             fs,
-            scope: Scope::new(arena),
             symbols: SymbolTable::new(),
             arena,
+            recover: false,
         }
     }
 
     #[inline]
     pub(crate) fn recovering(mut self) -> Self {
-        self.scope.recover = true;
+        self.recover = true;
         self
     }
 
@@ -133,44 +134,46 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         let arena = self.arena;
 
+        // parsing and graph construction do not touch the HIR, the lowering
+        // scope is only introduced once the graph is in hand
         let graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
-            .map_err(|err| (self.scope.diagnostics.take_errors(), err))?;
-
-        let (scope, symbols) = (&mut self.scope, &mut self.symbols);
+            .map_err(|err| (Vec::new(), err))?;
 
         let order = graph.all_nodes_order();
-        let declarations = graph
-            .collect_declarations()
-            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
+        let declarations = graph.collect_declarations().map_err(|err| (Vec::new(), err))?;
 
-        signatures::build_signatures(&graph, &declarations, &order, scope, symbols, arena)
+        let mut scope = Scope::new(arena);
+        scope.recover = self.recover;
+        let symbols = &mut self.symbols;
+
+        signatures::build_signatures(&graph, &declarations, &order, &mut scope, symbols, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let functions =
-            demand::lower_reachable(&graph, &declarations, &order, scope, symbols, arena)
+            demand::lower_reachable(&graph, &declarations, &order, &mut scope, symbols, arena)
                 .map_err(|err| (scope.diagnostics.take_errors(), err))?;
-        let mut functions = mono::monomorphise(functions, scope, symbols, arena)
+        let mut functions = mono::monomorphise(functions, &mut scope, symbols, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
 
-        let diagnostics = self.scope.diagnostics.take_errors();
+        let diagnostics = scope.diagnostics.take_errors();
 
         // editors need features inside generic template bodies too, lower one
         // identity instance of each and discard the diagnostics, which are
         // noise (bounds cannot be solved without concrete types)
-        if self.scope.recover {
-            for function in mono::analyse_templates(&mut self.scope, &mut self.symbols, arena) {
+        if scope.recover {
+            for function in mono::analyse_templates(&mut scope, symbols, arena) {
                 functions.push(function);
             }
-            self.scope.diagnostics.take_errors();
+            scope.diagnostics.take_errors();
         }
 
-        structs::compute_layouts(&mut self.scope.structs, &mut self.scope.enums);
+        structs::compute_layouts(&mut scope.structs, &mut scope.enums);
 
         Ok(Hir {
             functions,
-            structs: self.scope.structs,
-            enums: self.scope.enums,
-            constants: self.scope.constants.into_values().collect(),
-            docs: self.scope.docs,
+            structs: scope.structs,
+            enums: scope.enums,
+            constants: scope.constants.into_values().collect(),
+            docs: scope.docs,
             symbols: self.symbols,
             diagnostics,
         })
