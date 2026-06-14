@@ -15,26 +15,15 @@
 use crate::{
     hir::{self, SymbolTable, Type, TypeKind},
     lir::{
-        self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
+        self, BlockId, MachineType, Term, VReg, assembly_label,
         target::{
-            self, AggregateCopy, Lowerable, MemOps, RegClass, Target,
+            self, AggregateCopy, Lower, Lowerable, MemOps, RegClass, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
             aggregate_copy,
         },
     },
     mir::{self, Function, Operand},
 };
-
-struct Lower<'f> {
-    function: &'f Function,
-    lir: lir::Function<AArch64>,
-    /// maps MIR ValueId -> LIR VReg
-    value: Vec<VReg>,
-    symbols: &'f SymbolTable,
-    all_functions: &'f [Function],
-    layouts: Layouts<'f>,
-    sret_ptr: Option<VReg>,
-}
 
 impl Lowerable for AArch64 {
     fn lower(
@@ -44,31 +33,8 @@ impl Lowerable for AArch64 {
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
-
-        let name = assembly_label(symbols.get(function.name_symbol));
-
-        let mut lir = lir::Function::<AArch64>::new(name);
-
-        let value: Vec<VReg> = function
-            .locals
-            .iter()
-            .map(|(_, typ)| lir.new_vreg(typ.machine_type(layouts)))
-            .collect();
-
-        for _ in &function.blocks {
-            lir.new_block();
-        }
-
-        let mut lower = Lower {
-            function,
-            lir,
-            value,
-            symbols,
-            all_functions,
-            layouts,
-            sret_ptr: None,
-        };
+        let mut lower =
+            Lower::<AArch64>::new(function, symbols, all_functions, struct_layouts, enum_layouts);
 
         lower.lower_param_moves();
 
@@ -80,7 +46,7 @@ impl Lowerable for AArch64 {
     }
 }
 
-impl<'f> Lower<'f> {
+impl<'f> Lower<'f, AArch64> {
     fn lower_block(&mut self, id: &BlockId, block: &mir::Block) {
         for instruction in &block.instructions {
             self.lower_instruction(id, instruction);
@@ -152,8 +118,8 @@ impl<'f> Lower<'f> {
                 let lhs_type = lhs.typ();
                 let rhs_type = rhs.typ();
                 let is_float = lhs_type.is_float();
-                let lhs = self.lower_operand(lhs, id);
-                let rhs = self.lower_operand(rhs, id);
+                let lhs = self.lower_operand(lhs);
+                let rhs = self.lower_operand(rhs);
                 let checked = *checked;
 
                 match operation {
@@ -412,7 +378,7 @@ impl<'f> Lower<'f> {
                 let is_float = value.typ().is_float();
                 let mt = value.typ().machine_type(self.layouts);
                 let bytes = mt.bytes();
-                let src = self.lower_operand(value, id);
+                let src = self.lower_operand(value);
 
                 let instruction = AArch64::scalar_store(
                     matches!(typ.kind(), TypeKind::Ref { .. }),
@@ -457,7 +423,7 @@ impl<'f> Lower<'f> {
                 let dest_mt = typ.machine_type(self.layouts);
                 let dest_bytes = dest_mt.bytes();
 
-                let op = self.lower_operand(src, id);
+                let op = self.lower_operand(src);
 
                 #[rustfmt::skip]
                 let instr = match src_bytes.cmp(&dest_bytes) {
@@ -570,155 +536,6 @@ impl<'f> Lower<'f> {
         };
 
         self.lir.set_term(id, terminator);
-    }
-
-    /// copy physical `AAPCS64` registers (and stack slot) into `VRegs`
-    fn lower_param_moves(&mut self) {
-        let entry = BlockId(0);
-        let mut int_idx = 0;
-        let mut float_idx = 0;
-        let mut int_stack_idx = 0;
-        let mut float_stack_idx = 0;
-
-        if self.function.return_type.is_aggregate() {
-            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-            let reg = AArch64::param(int_idx, RegClass::Int)
-                .expect("sret pointer must fit in the first integer argument register");
-            self.lir.add_precolour(ptr, reg);
-            self.sret_ptr = Some(ptr);
-            int_idx += 1;
-        }
-
-        for (vid, typ) in &self.function.params {
-            if typ.is_aggregate() {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-
-                match AArch64::param(int_idx, RegClass::Int) {
-                    Some(reg) => self.lir.add_precolour(ptr, reg),
-                    None => {
-                        let offset = AArch64::param_stack_offset(int_stack_idx, RegClass::Int)
-                            .expect("param_stack_offset must be defined when param() returns None");
-                        self.lir.push_instr(
-                            &entry,
-                            A64Instr::LdrParam {
-                                dest: ptr,
-                                fp_offset: offset,
-                                bytes: 8,
-                                signed: false,
-                            },
-                        );
-                        int_stack_idx += 1;
-                    },
-                }
-
-                let size = typ.machine_type(self.layouts).stack_size() as u32;
-                let dest_vreg = self.value[*vid];
-                let copy = AggregateCopy::new(ptr, dest_vreg, size).with_src_ref();
-                aggregate_copy(&mut self.lir, &entry, copy);
-
-                int_idx += 1;
-                continue;
-            }
-
-            let mt = typ.machine_type(self.layouts);
-            let class = mt.class();
-
-            match class {
-                RegClass::Int => {
-                    match AArch64::param(int_idx, RegClass::Int) {
-                        Some(reg) => {
-                            let dest = self.value[*vid];
-                            let abi_vreg = self.lir.new_vreg(mt);
-                            self.lir.add_precolour(abi_vreg, reg);
-
-                            self.lir.push_instr(
-                                &entry,
-                                A64Instr::Mov { dest, src: abi_vreg, bytes: mt.bytes() },
-                            );
-                        },
-
-                        None => {
-                            let offset = AArch64::param_stack_offset(int_stack_idx, RegClass::Int)
-                                .expect(
-                                    "param_stack_offset must be defined when param() returns None",
-                                );
-
-                            let dest = self.value[*vid];
-                            let signed = mt.is_signed();
-                            self.lir.push_instr(
-                                &entry,
-                                A64Instr::LdrParam {
-                                    dest,
-                                    fp_offset: offset,
-                                    bytes: mt.bytes(),
-                                    signed,
-                                },
-                            );
-                            int_stack_idx += 1;
-                        },
-                    }
-
-                    int_idx += 1;
-                },
-
-                RegClass::Float => {
-                    match AArch64::param(float_idx, RegClass::Float) {
-                        Some(reg) => {
-                            let dest = self.value[*vid];
-                            let abi_vreg = self.lir.new_vreg(mt);
-                            self.lir.add_precolour(abi_vreg, reg);
-
-                            self.lir.push_instr(
-                                &entry,
-                                A64Instr::FMov { dest, src: abi_vreg, bytes: mt.bytes() },
-                            );
-                        },
-
-                        None => {
-                            let offset = AArch64::param_stack_offset(
-                                float_stack_idx,
-                                RegClass::Float,
-                            )
-                            .expect("param_stack_offset must be defined when param() returns None");
-
-                            let dest = self.value[*vid];
-                            self.lir.push_instr(
-                                &entry,
-                                A64Instr::LdrParam {
-                                    dest,
-                                    fp_offset: offset,
-                                    bytes: mt.bytes(),
-                                    signed: false,
-                                },
-                            );
-                            float_stack_idx += 1;
-                        },
-                    }
-
-                    float_idx += 1;
-                },
-            }
-        }
-    }
-
-    fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-        self.lir.push_instr(block, A64Instr::StackAddr { dest, origin });
-
-        dest
-    }
-
-    /// materialise a mir operand into a `Vreg`, otherwise return its directly
-    fn operand(&mut self, op: &Operand, block: &BlockId) -> VReg {
-        let value = &self.value;
-        let layouts = self.layouts;
-        lir::target::operand(&mut self.lir, op, block, layouts, |vid| value[vid])
-    }
-
-    #[inline(always)]
-    fn lower_operand(&mut self, op: &Operand, _block: &BlockId) -> A64Operand {
-        let value = &self.value;
-        lir::target::lower_operand(&mut self.lir, op, |vid| value[vid])
     }
 
     /// if the operand is already a `VReg`, return it

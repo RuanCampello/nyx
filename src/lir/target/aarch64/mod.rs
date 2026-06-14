@@ -382,6 +382,25 @@ impl TargetOps for AArch64 {
             _ => A64Instr::Adr { dest, label },
         }
     }
+
+    #[inline(always)]
+    fn load_param_reg(dest: VReg, src: VReg, mt: MachineType) -> A64Instr {
+        let bytes = mt.bytes();
+        match mt.class() {
+            RegClass::Float => A64Instr::FMov { dest, src, bytes },
+            RegClass::Int => A64Instr::Mov { dest, src, bytes },
+        }
+    }
+
+    #[inline(always)]
+    fn load_param_stack(dest: VReg, offset: i32, mt: MachineType) -> A64Instr {
+        A64Instr::LdrParam { dest, fp_offset: offset, bytes: mt.bytes(), signed: mt.is_signed() }
+    }
+
+    #[inline(always)]
+    fn load_stack_addr(dest: VReg, origin: VReg) -> A64Instr {
+        A64Instr::StackAddr { dest, origin }
+    }
 }
 
 impl Instruction<AArch64> for A64Instr {
