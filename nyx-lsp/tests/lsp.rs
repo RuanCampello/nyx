@@ -70,8 +70,8 @@ async fn hover_call_site_shows_signature() {
 
 #[tokio::test]
 async fn hover_shows_doc_comment() {
-    let src = r#"///
-        Adds two numbers together.
+    let src = r#"
+        /// Adds two numbers together.
         fn add(a: i32, b: i32): i32 { a + b }
         fn main() { let r = add(1, 2); }
     "#;
@@ -127,8 +127,12 @@ async fn hover_struct_literal_shows_the_definition() {
 
 #[tokio::test]
 async fn hover_truncates_long_field_lists() {
-    let src = "struct Wide { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32 }\n\
-               fn main() { let w = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }; }";
+    let src = r#"
+        struct Wide { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32 }
+        fn main() {
+            let w = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 };
+        }
+    "#;
     let mut client = TestClient::start().await;
     let url = client.open("main.nyx", src).await;
     client.wait_diagnostics(&url).await;
