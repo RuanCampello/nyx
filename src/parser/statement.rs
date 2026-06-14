@@ -224,6 +224,7 @@ pub struct Interface<'i> {
     pub generics: Vec<GenericBound<'i>>,
     pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
+    pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -1092,8 +1093,10 @@ impl<'i> Parsable<'i> for Interface<'i> {
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
+        let mut member_docs = Vec::new();
 
         loop {
+            let docs = parser.parse_outer_docs();
             match parser.peek() {
                 Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
                     let close = parser.expect_token(Punct::CloseBrace)?;
@@ -1103,11 +1106,18 @@ impl<'i> Parsable<'i> for Interface<'i> {
                         superinterfaces,
                         span: interface_token.span + close.span,
                         methods,
+                        member_docs,
                         is_pub,
                     });
                 },
                 Some(Err(err)) => return Err(err.into()),
-                _ => methods.push(InterfaceMethod::parse(parser)?),
+                _ => {
+                    let method = InterfaceMethod::parse(parser)?;
+                    if !docs.is_empty() {
+                        member_docs.push((method.span, docs));
+                    }
+                    methods.push(method);
+                },
             }
         }
     }

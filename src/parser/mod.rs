@@ -306,6 +306,34 @@ mod tests {
     }
 
     #[test]
+    fn interface_method_doc_comments_are_captured() {
+        let statements = Parser::new(
+            r#"
+            interface Clone {
+                /// Returns a duplicate of the value
+                fn clone(&self): Self;
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected interface");
+        };
+
+        assert_eq!(interface.methods.len(), 1);
+        assert_eq!(interface.methods[0].name, "clone");
+
+        assert_eq!(interface.member_docs.len(), 1);
+        let (span, lines) = &interface.member_docs[0];
+        assert_eq!(*span, interface.methods[0].span);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], " Returns a duplicate of the value");
+    }
+
+    #[test]
     fn rust_style_generic_impl_header_is_rejected() {
         let err = Parser::new(
             r#"

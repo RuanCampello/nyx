@@ -54,7 +54,12 @@ impl<'d, 'src> Declarations<'d, 'src> {
             declarations.docs.push((item.kind.span(), &item.docs));
             match &item.kind {
                 ItemKind::Fn(f) => declarations.functions.push(f),
-                ItemKind::Interface(i) => declarations.interfaces.push(i),
+                ItemKind::Interface(i) => {
+                    for (span, lines) in &i.member_docs {
+                        declarations.docs.push((*span, lines));
+                    }
+                    declarations.interfaces.push(i);
+                },
                 ItemKind::Use(u) => declarations.uses.push(u),
                 ItemKind::Struct(s) => declarations.structs.push(s),
                 ItemKind::Enum(e) => declarations.enums.push(e),
