@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         self, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
-        Intrinsic, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type,
-        TypeKind, constants,
+        Intrinsic, Layout, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable,
+        Type, TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -349,6 +349,8 @@ impl<'hir> Scope<'hir> {
                 decl_span: enum_decl.span,
                 variants: Vec::new(),
                 repr,
+                layout: Layout::default(),
+                payload_offset: 0,
                 generics: Vec::new(),
             });
 
@@ -979,6 +981,8 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             variants: Vec::new(),
             repr,
+            layout: Layout::default(),
+            payload_offset: 0,
             generics: declared_names(&template.generics, args, symbols),
         });
 
@@ -1034,6 +1038,7 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             fields: Vec::new(),
             repr: template.repr,
+            layout: Layout::default(),
             generics: declared_names(&template.generics, args, symbols),
         });
 
@@ -1043,7 +1048,7 @@ impl<'hir> Scope<'hir> {
             let typ = self
                 .resolve_type(field.typ.value_ref(), field.typ.span(), symbols, None, Some(&env))
                 .or_else(|error| self.poison(error))?;
-            fields.push(StructField { name: symbols.insert(field.name), typ });
+            fields.push(StructField { name: symbols.insert(field.name), typ, offset: 0 });
         }
         self.structs[id].fields = fields;
 

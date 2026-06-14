@@ -347,7 +347,9 @@ impl<'f> Lower<'f, X86_64> {
                 let mut int_idx = 0;
                 let return_type = callee_fn.return_type;
                 let aggregate_ret = match return_type.is_aggregate() {
-                    true => super::small_integer_return(return_type, self.layouts).unwrap_or_default(),
+                    true => {
+                        super::small_integer_return(return_type, self.layouts).unwrap_or_default()
+                    },
                     _ => Vec::new(),
                 };
 

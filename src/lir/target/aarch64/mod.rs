@@ -394,7 +394,12 @@ impl TargetOps for AArch64 {
 
     #[inline(always)]
     fn load_param_stack(dest: VReg, offset: i32, mt: MachineType) -> A64Instr {
-        A64Instr::LdrParam { dest, fp_offset: offset, bytes: mt.bytes(), signed: mt.is_signed() }
+        A64Instr::LdrParam {
+            dest,
+            fp_offset: offset,
+            bytes: mt.bytes(),
+            signed: mt.is_signed(),
+        }
     }
 
     #[inline(always)]

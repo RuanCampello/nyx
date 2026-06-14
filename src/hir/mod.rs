@@ -21,7 +21,7 @@ use lasso::{Key, Spur};
 use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
-pub(crate) use structs::Visit;
+pub(crate) use structs::{struct_field, type_layout};
 pub use symbols::SymbolTable;
 pub use types::*;
 
@@ -60,9 +60,10 @@ pub struct Struct {
     pub(crate) name: SymbolId,
     pub(crate) decl_span: Span,
     /// Fields in source declaration order
-    /// Concrete layout belongs to MIR
     pub(crate) fields: Vec<StructField>,
     pub(crate) repr: StructRepr,
+    /// Cached byte layout, filled once every nominal type is collected
+    pub(crate) layout: Layout,
     /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
     /// Populated only on open (identity) template instances, for display
     pub(crate) generics: Vec<SymbolId>,
@@ -72,6 +73,8 @@ pub struct Struct {
 pub struct StructField {
     pub(crate) name: SymbolId,
     pub(crate) typ: Type,
+    /// byte offset within the owning struct, filled by layout computation
+    pub(crate) offset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,8 +84,10 @@ pub struct Enum {
     pub(crate) decl_span: Span,
     pub(crate) variants: Vec<EnumVariant>,
     pub(crate) repr: EnumRepr,
-    /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
-    /// Populated only on open (identity) template instances, for display
+    /// cached byte layout, filled once every nominal type is collected
+    pub(crate) layout: Layout,
+    /// byte offset of a variant payload past the discriminant tag
+    pub(crate) payload_offset: u32,
     pub(crate) generics: Vec<SymbolId>,
 }
 
@@ -91,6 +96,15 @@ pub struct EnumVariant {
     pub(crate) name: SymbolId,
     pub(crate) value: i64,
     pub(crate) payload: Option<Type>,
+}
+
+/// Fully resolved aggregate size and alignment, cached on each nominal type by
+/// [structs::compute_layouts] once all types are collected
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    size: u32,
+    align: u32,
+    contains_float: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -381,6 +395,8 @@ pub fn lower<'hir>(
     let functions = scope.lower_functions(&declarations, &mut symbols, false, arena)?;
     let functions = mono::monomorphise(functions, &mut scope, &mut symbols, arena)?;
 
+    structs::compute_layouts(&mut scope.structs, &mut scope.enums);
+
     Ok(Hir {
         symbols,
         structs: scope.structs,
@@ -414,6 +430,16 @@ pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
         ExpressionKind::Local(local) => Some(*local),
         ExpressionKind::Field { base, .. } => place_base_local(base),
         _ => None,
+    }
+}
+
+impl Layout {
+    pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
+        Self { size, align, contains_float }
+    }
+
+    pub(crate) const fn contains_float(self) -> bool {
+        self.contains_float
     }
 }
 
@@ -456,6 +482,12 @@ impl Res {
             Res::Function(id) => Some(id),
             Res::Variant { .. } => None,
         }
+    }
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::new(0, 1, false)
     }
 }
 
@@ -550,6 +582,12 @@ impl From<char> for ExpressionKind<'_> {
 impl From<bool> for ExpressionKind<'_> {
     fn from(value: bool) -> Self {
         Self::Literal(Literal::Bool(value))
+    }
+}
+
+impl From<Layout> for (u32, u32) {
+    fn from(value: Layout) -> Self {
+        (value.size, value.align)
     }
 }
 

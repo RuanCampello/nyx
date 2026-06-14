@@ -7,7 +7,7 @@ mod signatures;
 
 use crate::{
     diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
-    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope},
+    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope, structs},
     lexer::token::Span,
     parser::error::ParserError,
 };
@@ -159,6 +159,8 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             }
             self.scope.diagnostics.take_errors();
         }
+
+        structs::compute_layouts(&mut self.scope.structs, &mut self.scope.enums);
 
         Ok(Hir {
             functions,
