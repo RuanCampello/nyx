@@ -1,3 +1,11 @@
 impl str {
+    /// Returns the length of `self`
+    ///
+    /// This length is measured in bytes, not `char`s or graphemes
     pub const fn len(&self): uptr {}
+
+    /// Returns `true` if `self` has a length of zero bytes
+    pub inline const fn is_empty(&self): bool {
+        self.len() == 0
+    }
 }

@@ -12,23 +12,13 @@
 
 use crate::hir::{self, SymbolTable, TypeKind};
 use crate::lir::{
-    self, BlockId, Layouts, MachineType, Term, VReg, assembly_label,
+    self, BlockId, MachineType, Term, VReg, assembly_label,
     target::{
-        self, AggregateCopy, Lowerable, MemOps, RegClass, Target, aggregate_copy,
+        self, AggregateCopy, Lower, Lowerable, MemOps, RegClass, Target, aggregate_copy,
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
 use crate::mir::{self, Function, Operand};
-
-struct Lower<'f> {
-    function: &'f Function,
-    lir: lir::Function<X86_64>,
-    value: Vec<VReg>,
-    symbols: &'f SymbolTable,
-    all_functions: &'f [Function],
-    layouts: Layouts<'f>,
-    sret_ptr: Option<VReg>,
-}
 
 impl Lowerable for X86_64 {
     fn lower(
@@ -38,31 +28,8 @@ impl Lowerable for X86_64 {
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
-
-        let name = assembly_label(symbols.get(function.name_symbol));
-
-        let mut lir = lir::Function::<X86_64>::new(name);
-
-        let value: Vec<VReg> = function
-            .locals
-            .iter()
-            .map(|(_, typ)| lir.new_vreg(typ.machine_type(layouts)))
-            .collect();
-
-        for _ in &function.blocks {
-            lir.new_block();
-        }
-
-        let mut lower = Lower {
-            function,
-            lir,
-            value,
-            symbols,
-            all_functions,
-            layouts,
-            sret_ptr: None,
-        };
+        let mut lower =
+            Lower::<X86_64>::new(function, symbols, all_functions, struct_layouts, enum_layouts);
 
         lower.lower_param_moves();
 
@@ -74,7 +41,7 @@ impl Lowerable for X86_64 {
     }
 }
 
-impl<'f> Lower<'f> {
+impl<'f> Lower<'f, X86_64> {
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
         use crate::mir::InstructionKind;
 
@@ -380,7 +347,9 @@ impl<'f> Lower<'f> {
                 let mut int_idx = 0;
                 let return_type = callee_fn.return_type;
                 let aggregate_ret = match return_type.is_aggregate() {
-                    true => self.small_integer_return(return_type).unwrap_or_default(),
+                    true => {
+                        super::small_integer_return(return_type, self.layouts).unwrap_or_default()
+                    },
                     _ => Vec::new(),
                 };
 
@@ -547,7 +516,7 @@ impl<'f> Lower<'f> {
 
                 let src_vreg = self.value[place.id];
 
-                match self.small_integer_return(typ) {
+                match super::small_integer_return(typ, self.layouts) {
                     Some(chunks) => {
                         for (offset, bytes, reg) in chunks {
                             let ret = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
@@ -595,176 +564,5 @@ impl<'f> Lower<'f> {
         }
 
         self.lower_terminator(id, block.terminator.clone());
-    }
-
-    /// Copy physical ABI (and stack slots) registers into VRegs
-    /// each parameter arrives in a physical ABI register or in the caller's stack frame
-    fn lower_param_moves(&mut self) {
-        let entry = BlockId(0);
-        let mut int_idx = 0;
-        let mut float_idx = 0;
-        let mut int_stack_idx = 0;
-        let mut float_stack_idx = 0;
-
-        let return_type = self.function.return_type;
-        if return_type.is_aggregate() {
-            if self.small_integer_return(return_type).is_some() {
-                // Small integer aggregates are returned directly in RAX/RDX.
-            } else {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-                let reg = X86_64::param(int_idx, RegClass::Int)
-                    .expect("sret pointer must fit in the first integer argument register");
-                self.lir.add_precolour(ptr, reg);
-                self.sret_ptr = Some(ptr);
-                int_idx += 1;
-            }
-        }
-
-        for (vid, typ) in &self.function.params {
-            if typ.is_aggregate() {
-                let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-
-                match X86_64::param(int_idx, RegClass::Int) {
-                    Some(reg) => self.lir.add_precolour(ptr, reg),
-                    None => {
-                        let offset = X86_64::param_stack_offset(int_stack_idx, RegClass::Int)
-                            .expect("param_stack_offset must be defined when param() returns None");
-                        self.lir.push_instr(
-                            &entry,
-                            X86Instr::MovFromStack { dest: ptr, rbp_offset: offset, bytes: 8 },
-                        );
-                        int_stack_idx += 1;
-                    },
-                }
-
-                let size = typ.machine_type(self.layouts).stack_size() as u32;
-                let dest = self.value[*vid];
-                let copy = AggregateCopy::new(ptr, dest, size).with_src_ref();
-                aggregate_copy(&mut self.lir, &entry, copy);
-                int_idx += 1;
-                continue;
-            }
-
-            let mt = typ.machine_type(self.layouts);
-            let class = mt.class();
-
-            match class {
-                RegClass::Int => {
-                    match X86_64::param(int_idx, RegClass::Int) {
-                        Some(reg) => {
-                            let dest = self.value[*vid];
-                            let abi_vreg = self.lir.new_vreg(mt);
-                            self.lir.add_precolour(abi_vreg, reg);
-
-                            self.lir.push_instr(
-                                &entry,
-                                X86Instr::Mov {
-                                    dest,
-                                    src: X86Operand::VReg(abi_vreg),
-                                    bytes: mt.bytes(),
-                                },
-                            );
-                        },
-
-                        None => {
-                            let offset = X86_64::param_stack_offset(int_stack_idx, RegClass::Int)
-                                .expect(
-                                    "param_stack_offset must be defined when param() returns None",
-                                );
-
-                            let dest = self.value[*vid];
-                            self.lir.push_instr(
-                                &entry,
-                                X86Instr::MovFromStack {
-                                    dest,
-                                    rbp_offset: offset,
-                                    bytes: mt.bytes(),
-                                },
-                            );
-                            int_stack_idx += 1;
-                        },
-                    }
-
-                    int_idx += 1;
-                },
-
-                RegClass::Float => {
-                    match X86_64::param(float_idx, RegClass::Float) {
-                        Some(reg) => {
-                            let dest = self.value[*vid];
-                            let abi_vreg = self.lir.new_vreg(mt);
-                            self.lir.add_precolour(abi_vreg, reg);
-
-                            self.lir.push_instr(
-                                &entry,
-                                X86Instr::MovFloat {
-                                    dest,
-                                    src: X86Operand::VReg(abi_vreg),
-                                    bytes: mt.bytes(),
-                                },
-                            );
-                        },
-
-                        None => {
-                            let offset = X86_64::param_stack_offset(
-                                float_stack_idx,
-                                RegClass::Float,
-                            )
-                            .expect("param_stack_offset must be defined when param() returns None");
-
-                            let dest = self.value[*vid];
-                            self.lir.push_instr(
-                                &entry,
-                                X86Instr::MovFromStack {
-                                    dest,
-                                    rbp_offset: offset,
-                                    bytes: mt.bytes(),
-                                },
-                            );
-                            float_stack_idx += 1;
-                        },
-                    }
-
-                    float_idx += 1;
-                },
-            }
-        }
-    }
-
-    fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
-        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-        self.lir.push_instr(block, X86Instr::StackAddr { dest, origin });
-        dest
-    }
-
-    fn small_integer_return(&self, typ: hir::Type) -> Option<Vec<(i32, u8, X86Reg)>> {
-        let size = typ.machine_type(self.layouts).stack_size() as u32;
-        let contains_float = match typ.kind() {
-            TypeKind::Struct(sid) => self.layouts.structs[sid.0 as usize].contains_float(),
-            _ => false,
-        };
-        if size == 0 || size > 16 || contains_float {
-            return None;
-        }
-
-        let regs = [X86Reg::Rax, X86Reg::Rdx];
-        Some(
-            lir::aggregate_chunks(size)
-                .zip(regs)
-                .map(|((offset, bytes), reg)| (offset, bytes, reg))
-                .collect(),
-        )
-    }
-
-    /// materialise a `MIR` operand into a new VReg if it's a constant
-    /// otherwise return it's VReg directly
-    fn operand(&mut self, op: &Operand, block: &BlockId) -> VReg {
-        let layouts = self.layouts;
-        target::operand(&mut self.lir, op, block, layouts, |vid| self.value[vid])
-    }
-
-    // transforms a MIR operand into a x86_64 LIR operand
-    fn lower_operand(&mut self, op: &Operand) -> X86Operand {
-        target::lower_operand(&mut self.lir, op, |vid| self.value[vid])
     }
 }

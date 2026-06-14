@@ -140,9 +140,12 @@ impl<'i> Expression<'i> {
             TokenKind::String(s) => Ok(Expression::String(s, token.span)),
             TokenKind::Char(c) => Ok(Expression::Char(c, token.span)),
             TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => match Self::next_is_struct(parser) {
-                true => Self::parse_struct(parser, ident, Vec::new(), token.span),
-                false => Ok(Expression::Identifier(ident, token.span)),
+            TokenKind::Identifier(ident) => {
+                if Self::next_is_struct(parser) {
+                    Self::parse_struct(parser, ident, Vec::new(), token.span)
+                } else {
+                    Ok(Expression::Identifier(ident, token.span))
+                }
             },
             TokenKind::Punct(Punct::Minus)
             | TokenKind::Punct(Punct::Bang)
@@ -264,12 +267,10 @@ impl<'i> Expression<'i> {
         let end_span;
 
         loop {
-            let peeked = match parser.peek() {
-                Some(Ok(t)) => t,
-                _ => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, fallback_span));
-                },
-            };
+            let peeked = parser
+                .peek()
+                .and_then(|r| r.as_ref().ok())
+                .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, fallback_span))?;
 
             if matches!(peeked.kind, TokenKind::Punct(Punct::CloseParen)) {
                 end_span = parser.expect_token(Punct::CloseParen)?.span;

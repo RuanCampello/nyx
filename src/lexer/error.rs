@@ -39,12 +39,6 @@ pub(crate) enum LexErrorKind<'src> {
     )]
     OverlongChar,
     #[diagnostic(
-        message = "unterminated block comment",
-        primary = "block comment opened here, but never closed",
-        help = "add a closing {`*/`}"
-    )]
-    UnterminatedComment,
-    #[diagnostic(
         message = "invalid escape sequence {`\\{0}`}",
         primary = "{`\\{0}`} is not a recognised escape",
         help = "valid escapes are: {`\\\\`}, {`\\\"`}, {`\\n`}, {`\\t`}, {`\\r`}, {`\\0`}, {`\\xXX`}, {`\\u{{XXXXXX}}`}"

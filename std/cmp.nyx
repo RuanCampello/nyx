@@ -1,5 +1,10 @@
 use std::optional::{Optional};
 
+/// Interface for comparsions using the equality operator
+///
+/// The equality relation must satifies to the following conditions:
+/// - **Symmetry**: if `A: PartialEq<B>` and `B: PartialEq<A>`, then `a == b` implies `b == a`
+/// - **Transitivity**: `A: PartialEq<B>` and `B: PartialEq<C>` and `A: PartialEq<C>`, then `a == b` and `b == c` implies `a == c`
 pub interface PartialEq<Rhs> {
     fn eq(&self, other: &Rhs): bool;
     fn ne(&self, other: &Rhs): bool {
@@ -7,8 +12,18 @@ pub interface PartialEq<Rhs> {
     }
 }
 
+/// Interface for comparsions corresponding to `equivalence relations`
+///
+/// The main difference from `PartialEq` is the additional requirement for reflexivity
+/// So, combining with the requirements of `PartialEq`, `Equatable` also implies:
+/// reflexivity: `a == a`
+///
+/// As this cannot be checked by the compiler, this interface does not contains any method
+/// 
+/// For example, `f32` and `f64` are `PartialEq` but not `Equatable` because `NaN != NaN`
 pub interface Equatable: PartialEq {}
 
+/// Interface for types that from a `partial order`
 pub interface PartialOrd<Rhs>: PartialEq<Rhs> {
     fn partial_compare(&self, other: &Rhs): Optional<Ordering>;
 
@@ -41,6 +56,11 @@ pub interface PartialOrd<Rhs>: PartialEq<Rhs> {
     }
 }
 
+/// Interface for types that from a `total order`
+///
+/// This means roughly:
+/// - exact one of `a < b`, `a == b` and `a > b` is true
+/// - `<` is transitive: `a < b` and `b < c` implies `a < c`, same for other operations
 pub interface Orderable: PartialOrd {
     fn compare(&self, other: &Self): Ordering;
 
@@ -61,6 +81,7 @@ pub interface Orderable: PartialOrd {
     }
 }
 
+/// An ordering is the result of a comparsion between two values
 pub enum Ordering {
     Less = -1,
     Equal = 0,

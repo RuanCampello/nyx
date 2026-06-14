@@ -1,6 +1,9 @@
 use crate::{
     hir::error::HirError,
-    parser::statement::{self, Const, Enum, Function, Impl, Interface, Statement, Struct, UseDecl},
+    lexer::token::Span,
+    parser::statement::{
+        self, Const, Enum, Function, Impl, Interface, ItemKind, Statement, Struct, UseDecl,
+    },
 };
 
 #[derive(Debug)]
@@ -12,6 +15,7 @@ pub(in crate::hir) struct Declarations<'d, 'src> {
     pub functions: Vec<&'d Function<'src>>,
     pub interfaces: Vec<&'d Interface<'src>>,
     pub impls: Vec<&'d Impl<'src>>,
+    pub docs: Vec<(Span, &'d [&'src str])>,
 }
 
 impl<'d, 'src> Declarations<'d, 'src> {
@@ -23,7 +27,11 @@ impl<'d, 'src> Declarations<'d, 'src> {
         'src: 'b,
     {
         statement::inject_default_methods(statements, lookup_interface);
+        Self::collect(statements)
+    }
 
+    /// categorise already-injected top-level items by kind, gathering doc comments
+    pub fn collect(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),
@@ -32,24 +40,36 @@ impl<'d, 'src> Declarations<'d, 'src> {
             functions: Vec::new(),
             interfaces: Vec::new(),
             impls: Vec::new(),
+            docs: Vec::new(),
         };
 
         for statement in statements.iter() {
-            match statement {
-                Statement::Fn(f) => declarations.functions.push(f),
-                Statement::Interface(i) => declarations.interfaces.push(i),
-                Statement::Use(u) => declarations.uses.push(u),
-                Statement::Struct(s) => declarations.structs.push(s),
-                Statement::Enum(e) => declarations.enums.push(e),
-                Statement::Impl(i) => declarations.impls.push(i),
-                Statement::Const(c) => declarations.constants.push(c),
+            let Statement::Item(item) = statement else {
+                return Err(HirError {
+                    kind: super::error::HirErrorKind::TopLevelNonFunction,
+                    span: statement.span(),
+                });
+            };
 
-                other => {
-                    return Err(HirError {
-                        kind: super::error::HirErrorKind::TopLevelNonFunction,
-                        span: other.span(),
-                    });
+            declarations.docs.push((item.kind.span(), &item.docs));
+            match &item.kind {
+                ItemKind::Fn(f) => declarations.functions.push(f),
+                ItemKind::Interface(i) => {
+                    for (span, lines) in &i.member_docs {
+                        declarations.docs.push((*span, lines));
+                    }
+                    declarations.interfaces.push(i);
                 },
+                ItemKind::Use(u) => declarations.uses.push(u),
+                ItemKind::Struct(s) => declarations.structs.push(s),
+                ItemKind::Enum(e) => declarations.enums.push(e),
+                ItemKind::Impl(i) => {
+                    for (span, lines) in &i.member_docs {
+                        declarations.docs.push((*span, lines));
+                    }
+                    declarations.impls.push(i);
+                },
+                ItemKind::Const(c) => declarations.constants.push(c),
             }
         }
 

@@ -21,7 +21,7 @@ mod number;
 mod string;
 
 use char::CharLiteral;
-use comment::{BlockComment, LineComment};
+use comment::{DocComment, LineComment};
 use cursor::Cursor;
 use error::LexError;
 use identifier::Identifier;
@@ -68,7 +68,7 @@ impl<'src> Lexer<'src> {
             return Ok(None);
         }
 
-        self.skip_whitespace_and_comments()?;
+        self.skip_whitespace_and_comments();
         let start = self.cursor.position();
 
         let Some(c) = self.cursor.peek() else {
@@ -112,11 +112,10 @@ impl<'src> Lexer<'src> {
                 }
             },
 
-            '/' => {
-                // The comment cases (// and /*) are already handled in
-                // skip_whitespace_and_comments, so if we get here it's
-                // a plain division operator :D
-                self.single_punct(Punct::Slash)
+            // `//` was consumed while skipping; only `///` or a lone `/` reach here
+            '/' => match self.is_doc_comment() {
+                true => DocComment.lex(&mut self.cursor, start)?,
+                false => self.single_punct(Punct::Slash),
             },
 
             '=' => {
@@ -181,28 +180,30 @@ impl<'src> Lexer<'src> {
         Ok(Some(token))
     }
 
-    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError<'src>> {
+    fn skip_whitespace_and_comments(&mut self) {
         loop {
             self.cursor.consume_while(|ch| ch.is_ascii_whitespace());
 
             match (self.cursor.peek(), self.cursor.peek_until(2)) {
+                // '///' is left for next_token to tokenise, '//' and '////'+ are skipped
+                (Some('/'), Some('/')) if self.is_doc_comment() => break,
                 (Some('/'), Some('/')) => {
-                    self.cursor.advance(); // consume first `/`
-                    self.cursor.advance(); // consume second `/`
+                    self.cursor.advance();
+                    self.cursor.advance();
 
                     LineComment.skip(&mut self.cursor);
-                },
-                (Some('/'), Some('*')) => {
-                    let offset = self.cursor.position().offset();
-                    self.cursor.advance(); // consume `/`
-                    self.cursor.advance(); // consume `*`
-
-                    BlockComment { open_offset: offset }.skip(&mut self.cursor)?;
                 },
                 _ => break,
             }
         }
-        Ok(())
+    }
+
+    /// Exactly three slashes, a `////`+ divider is an ordinary comment.
+    #[inline]
+    fn is_doc_comment(&self) -> bool {
+        self.cursor.peek_until(2) == Some('/')
+            && self.cursor.peek_until(3) == Some('/')
+            && self.cursor.peek_until(4) != Some('/')
     }
 
     /// Consumes a single character and returns a punctuation token.
@@ -392,15 +393,56 @@ mod tests {
     }
 
     #[test]
-    fn block_comment_skipped() {
-        let ks = kinds("42 /* block comment */ 7");
-        assert_eq!(ks, vec![TokenKind::Integer(42), TokenKind::Integer(7)]);
+    fn trailing_line_comment_skipped() {
+        let ks = kinds("let x = 1; // trailing");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Keyword(Keyword::Let),
+                TokenKind::Identifier("x"),
+                TokenKind::Punct(Punct::Eq),
+                TokenKind::Integer(1),
+                TokenKind::Punct(Punct::Semicolon),
+            ]
+        );
     }
 
     #[test]
-    fn nested_block_comment() {
-        let ks = kinds("1 /* outer /* inner */ still comment */ 2");
-        assert_eq!(ks, vec![TokenKind::Integer(1), TokenKind::Integer(2)]);
+    fn doc_comment_is_tokenised() {
+        let ks = kinds("/// docs\nfn");
+        assert_eq!(ks, vec![TokenKind::DocComment(" docs"), TokenKind::Keyword(Keyword::Fn)]);
+    }
+
+    #[test]
+    fn consecutive_doc_comments() {
+        let ks = kinds("/// one\n/// two\nfn");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::DocComment(" one"),
+                TokenKind::DocComment(" two"),
+                TokenKind::Keyword(Keyword::Fn),
+            ]
+        );
+    }
+
+    #[test]
+    fn quad_slash_is_an_ordinary_comment() {
+        let ks = kinds("//// not docs\n7");
+        assert_eq!(ks, vec![TokenKind::Integer(7)]);
+    }
+
+    #[test]
+    fn slash_is_still_division() {
+        let ks = kinds("a / b");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Identifier("a"),
+                TokenKind::Punct(Punct::Slash),
+                TokenKind::Identifier("b"),
+            ]
+        );
     }
 
     #[test]
@@ -481,12 +523,6 @@ mod tests {
         assert_eq!(err.kind, error::LexErrorKind::UnterminatedString);
     }
 
-    #[test]
-    fn unterminated_block_comment_error() {
-        let result: Result<Vec<_>, _> = Lexer::new("42 /* never closed").collect();
-        let err = result.unwrap_err();
-        assert_eq!(err.kind, error::LexErrorKind::UnterminatedComment);
-    }
     #[test]
     fn bang_without_eq() {
         let ks = kinds("!x");

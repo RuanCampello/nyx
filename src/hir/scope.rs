@@ -1,7 +1,8 @@
 use crate::{
     hir::{
-        Constant, Enum, EnumId, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic, Method,
-        RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
+        self, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
+        Intrinsic, Layout, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable,
+        Type, TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -38,6 +39,8 @@ pub struct Scope<'hir> {
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
     pub constants: HashMap<SymbolId, Constant<'hir>>,
+    /// Rendered `///` documentation per item, keyed by its `decl_span`
+    pub docs: HashMap<Span, Box<str>>,
 
     pub generic_structs: HashMap<SymbolId, statement::Struct<'hir>>,
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
@@ -109,6 +112,7 @@ impl<'hir> Scope<'hir> {
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
             constants: HashMap::new(),
+            docs: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_enums: HashMap::new(),
             generic_fns: HashMap::new(),
@@ -149,6 +153,7 @@ impl<'hir> Scope<'hir> {
     where
         's: 'hir,
     {
+        self.collect_docs(declarations);
         self.extend_enums(declarations, symbols)?;
         self.extend_structs(declarations, symbols)?;
         self.extend_interfaces(declarations, symbols)?;
@@ -157,6 +162,14 @@ impl<'hir> Scope<'hir> {
         interfaces::validate(self, declarations, symbols)?;
 
         Ok(())
+    }
+
+    fn collect_docs(&mut self, declarations: &Declarations<'_, '_>) {
+        for (span, lines) in &declarations.docs {
+            if let Some(joined) = hir::join_docs(lines) {
+                self.docs.insert(*span, joined);
+            }
+        }
     }
 
     pub fn lower_functions<'d, 's>(
@@ -309,18 +322,22 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let repr = match enum_decl.repr.value().try_into() {
-                Ok(repr) => repr,
-                Err(_) => {
-                    self.soft(hir_error!(
-                        enum_decl.repr.span(),
-                        TypeMismatch {
-                            expected: TypeKind::I32.into(),
-                            found: Type::from_primitive_ast(&enum_decl.repr.value())
-                                .unwrap_or_default(),
-                        }
-                    ))?;
-                    continue;
+            let repr = match &enum_decl.repr {
+                None => EnumRepr::minimal_for(&enum_decl.variants),
+                Some(explicit) => match EnumRepr::try_from(explicit.value()) {
+                    Ok(repr) => repr,
+                    _ => {
+                        self.soft(hir_error!(
+                            explicit.span(),
+                            TypeMismatch {
+                                expected: TypeKind::I32.into(),
+                                found: Type::from_primitive_ast(&explicit.value())
+                                    .unwrap_or_default(),
+                            }
+                        ))?;
+
+                        continue;
+                    },
                 },
             };
             let id = EnumId::new(self.enums.len() as u32, repr);
@@ -332,6 +349,8 @@ impl<'hir> Scope<'hir> {
                 decl_span: enum_decl.span,
                 variants: Vec::new(),
                 repr,
+                layout: Layout::default(),
+                payload_offset: 0,
                 generics: Vec::new(),
             });
 
@@ -941,15 +960,18 @@ impl<'hir> Scope<'hir> {
     ) -> Result<Type, HirError<'hir>> {
         self.check_generic_args(template.name, &template.generics, args, span, symbols)?;
 
-        let repr = template.repr.value().try_into().map_err(|_| {
-            hir_error!(
-                template.repr.span(),
-                TypeMismatch {
-                    expected: TypeKind::I32.into(),
-                    found: Type::from_primitive_ast(&template.repr.value()).unwrap_or_default(),
-                }
-            )
-        })?;
+        let repr = match &template.repr {
+            None => EnumRepr::minimal_for(&template.variants),
+            Some(explicit) => EnumRepr::try_from(explicit.value()).map_err(|_| {
+                hir_error!(
+                    explicit.span(),
+                    TypeMismatch {
+                        expected: TypeKind::I32.into(),
+                        found: Type::from_primitive_ast(&explicit.value()).unwrap_or_default(),
+                    }
+                )
+            })?,
+        };
         let id = EnumId::new(self.enums.len() as u32, repr);
 
         self.enum_map.insert(mangled_sym, id);
@@ -959,6 +981,8 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             variants: Vec::new(),
             repr,
+            layout: Layout::default(),
+            payload_offset: 0,
             generics: declared_names(&template.generics, args, symbols),
         });
 
@@ -1014,6 +1038,7 @@ impl<'hir> Scope<'hir> {
             decl_span: Span::default(),
             fields: Vec::new(),
             repr: template.repr,
+            layout: Layout::default(),
             generics: declared_names(&template.generics, args, symbols),
         });
 
@@ -1023,7 +1048,7 @@ impl<'hir> Scope<'hir> {
             let typ = self
                 .resolve_type(field.typ.value_ref(), field.typ.span(), symbols, None, Some(&env))
                 .or_else(|error| self.poison(error))?;
-            fields.push(StructField { name: symbols.insert(field.name), typ });
+            fields.push(StructField { name: symbols.insert(field.name), typ, offset: 0 });
         }
         self.structs[id].fields = fields;
 

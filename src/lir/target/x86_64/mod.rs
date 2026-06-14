@@ -1,7 +1,7 @@
 use crate::{
-    hir::SyscallCode,
+    hir::{SyscallCode, Type, TypeKind},
     lir::{
-        CheckedOperation, MachineType, VReg,
+        CheckedOperation, Layouts, MachineType, VReg, aggregate_chunks,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
     },
     parser::expression::BinaryOperator,
@@ -316,6 +316,31 @@ impl TargetOps for X86_64 {
             _ => X86Instr::Lea { dest, src: X86Operand::RipRel(rip_rel) },
         }
     }
+
+    #[inline(always)]
+    fn load_param_reg(dest: VReg, src: VReg, mt: MachineType) -> X86Instr {
+        let src = X86Operand::VReg(src);
+        let bytes = mt.bytes();
+        match mt.class() {
+            RegClass::Float => X86Instr::MovFloat { dest, src, bytes },
+            RegClass::Int => X86Instr::Mov { dest, src, bytes },
+        }
+    }
+
+    #[inline(always)]
+    fn load_param_stack(dest: VReg, offset: i32, mt: MachineType) -> X86Instr {
+        X86Instr::MovFromStack { dest, rbp_offset: offset, bytes: mt.bytes() }
+    }
+
+    #[inline(always)]
+    fn load_stack_addr(dest: VReg, origin: VReg) -> X86Instr {
+        X86Instr::StackAddr { dest, origin }
+    }
+
+    #[inline(always)]
+    fn uses_sret(typ: Type, layouts: Layouts) -> bool {
+        typ.is_aggregate() && small_integer_return(typ, layouts).is_none()
+    }
 }
 
 impl Instruction<X86_64> for X86Instr {
@@ -612,4 +637,26 @@ impl Condition {
             _ => unreachable!("invalid combination of binary operator and float flag"),
         }
     }
+}
+
+/// Small aggregates (<= 16 bytes, no floats) are returned directly in RAX/RDX
+/// under the SysV ABI. Returns the per-register `(offset, bytes, reg)` chunks
+/// when `typ` qualifies, or `None` when it must be returned via an sret pointer.
+fn small_integer_return(typ: Type, layouts: Layouts) -> Option<Vec<(i32, u8, X86Reg)>> {
+    let size = typ.machine_type(layouts).stack_size() as u32;
+    let contains_float = match typ.kind() {
+        TypeKind::Struct(sid) => layouts.structs[sid.0 as usize].contains_float(),
+        _ => false,
+    };
+    if size == 0 || size > 16 || contains_float {
+        return None;
+    }
+
+    let regs = [X86Reg::Rax, X86Reg::Rdx];
+    Some(
+        aggregate_chunks(size)
+            .zip(regs)
+            .map(|((offset, bytes), reg)| (offset, bytes, reg))
+            .collect(),
+    )
 }

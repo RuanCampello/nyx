@@ -122,12 +122,13 @@ impl<'i> Parser<'i> {
     ) -> Result<Token<'i>, ParserError<'i>> {
         let expected = expected.into();
         let token = self.expect_next()?;
-        match token.is_kind(expected) {
-            true => Ok(token),
-            false => Err(ParserError::new(
+        if token.is_kind(expected) {
+            Ok(token)
+        } else {
+            Err(ParserError::new(
                 ParseErrorKind::Expected { expected, found: token.kind },
                 token.span,
-            )),
+            ))
         }
     }
 
@@ -183,6 +184,20 @@ impl<'i> Parser<'i> {
         }
     }
 
+    /// Consume the run of `///` lines that documents the upcoming item.
+    pub(crate) fn parse_outer_docs(&mut self) -> Box<[&'i str]> {
+        let mut docs = Vec::new();
+
+        while let Some(Ok(token)) = self.peek()
+            && let TokenKind::DocComment(text) = token.kind
+        {
+            docs.push(text);
+            let _ = self.next_token();
+        }
+
+        docs.into_boxed_slice()
+    }
+
     fn consume_token(&mut self, kind: impl Into<TokenKind<'i>>) -> Result<bool, ParserError<'i>> {
         match self.peek() {
             Some(Ok(token)) if token.is_kind(kind) => {
@@ -222,7 +237,7 @@ mod tests {
         lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Let, Return, Type},
+            statement::{Item, ItemKind, Let, Return, Type},
         },
     };
 
@@ -278,7 +293,8 @@ mod tests {
         .parse()
         .unwrap();
 
-        let Statement::Impl(implementation) = &statements[1] else {
+        let Statement::Item(Item { kind: ItemKind::Impl(implementation), .. }) = &statements[1]
+        else {
             panic!("expected impl block");
         };
 
@@ -287,6 +303,34 @@ mod tests {
         assert!(
             matches!(implementation.receiver.value_ref(), Type::Generic("Pair", args) if args.len() == 2)
         );
+    }
+
+    #[test]
+    fn interface_method_doc_comments_are_captured() {
+        let statements = Parser::new(
+            r#"
+            interface Clone {
+                /// Returns a duplicate of the value
+                fn clone(&self): Self;
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected interface");
+        };
+
+        assert_eq!(interface.methods.len(), 1);
+        assert_eq!(interface.methods[0].name, "clone");
+
+        assert_eq!(interface.member_docs.len(), 1);
+        let (span, lines) = &interface.member_docs[0];
+        assert_eq!(*span, interface.methods[0].span);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], " Returns a duplicate of the value");
     }
 
     #[test]
@@ -414,7 +458,7 @@ mod tests {
 
         assert_eq!(statements.len(), 1);
         let function = match &statements[0] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             other => panic!("expected function, found {other:?}"),
         };
 
@@ -433,7 +477,7 @@ mod tests {
 
         assert_eq!(statements.len(), 1);
         let function = match &statements[0] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             other => panic!("expected function, found {other:?}"),
         };
 
@@ -488,7 +532,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Struct(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Struct(declaration), .. }) => declaration,
             other => panic!("expected struct declaration, got {other:?}"),
         };
         assert_eq!(declaration.name, "Point");
@@ -499,7 +543,7 @@ mod tests {
         assert!(matches!(declaration.fields[1].typ.value(), Type::I32));
 
         let function = match &statements[1] {
-            Statement::Fn(function) => function,
+            Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => function,
             _ => panic!(),
         };
         let let_statement = match &function.body.statements[0] {
@@ -527,7 +571,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Struct(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Struct(declaration), .. }) => declaration,
             other => panic!("expected struct declaration, got {other:?}"),
         };
         assert_eq!(declaration.repr.kind, statement::StructReprKind::Packed);
@@ -553,7 +597,7 @@ mod tests {
         .unwrap();
 
         let declaration = match &statements[0] {
-            Statement::Enum(declaration) => declaration,
+            Statement::Item(Item { kind: ItemKind::Enum(declaration), .. }) => declaration,
             other => panic!("expected enum declaration, got {other:?}"),
         };
         assert!(declaration.is_pub);
@@ -563,7 +607,7 @@ mod tests {
         assert_eq!(declaration.variants[0].value, Some(0));
         assert_eq!(declaration.variants[2].name, "Timeout");
         assert_eq!(declaration.variants[2].value, None);
-        assert!(matches!(declaration.repr.value(), Type::U16));
+        assert!(matches!(declaration.repr.as_ref().map(|r| r.value()), Some(Type::U16)));
     }
 
     #[test]
@@ -605,5 +649,64 @@ mod tests {
         assert!(matches!(rrl_l.as_ref(), Expression::Identifier("w", _)));
         assert!(matches!(rrl_r.as_ref(), Expression::Integer(2, _)));
         assert!(matches!(rr_r.as_ref(), Expression::Integer(3, _)));
+    }
+
+    #[test]
+    fn doc_comments_attach_to_following_item() {
+        let statements = Parser::new("/// first line\n/// second\nfn foo() {}").parse().unwrap();
+        let Statement::Item(Item { docs, kind: ItemKind::Fn(_) }) = &statements[0] else {
+            panic!("expected fn, got {:?}", statements[0]);
+        };
+        assert_eq!(&**docs, [" first line", " second"].as_slice());
+    }
+
+    #[test]
+    fn plain_and_quad_slash_comments_are_not_docs() {
+        let statements = Parser::new("// not a doc\n//// nor this\nfn foo() {}").parse().unwrap();
+        let Statement::Item(Item { docs, kind: ItemKind::Fn(_) }) = &statements[0] else {
+            panic!("expected fn");
+        };
+        assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn docs_do_not_leak_between_items() {
+        let statements = Parser::new("/// documented\nfn a() {}\nfn b() {}").parse().unwrap();
+        let (
+            Statement::Item(Item { docs: a, kind: ItemKind::Fn(_) }),
+            Statement::Item(Item { docs: b, kind: ItemKind::Fn(_) }),
+        ) = (&statements[0], &statements[1])
+        else {
+            panic!("expected two fns");
+        };
+        assert_eq!(&**a, [" documented"].as_slice());
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn docs_attach_to_struct_and_const() {
+        let statements =
+            Parser::new("/// a point\nstruct P { x: i32 }\n/// the answer\nconst N: i32 = 42;")
+                .parse()
+                .unwrap();
+        let Statement::Item(Item { docs, kind: ItemKind::Struct(_) }) = &statements[0] else {
+            panic!("expected struct");
+        };
+        assert_eq!(&**docs, [" a point"].as_slice());
+        let Statement::Item(Item { docs, kind: ItemKind::Const(_) }) = &statements[1] else {
+            panic!("expected const");
+        };
+        assert_eq!(&**docs, [" the answer"].as_slice());
+    }
+
+    #[test]
+    fn docs_attach_to_impl_method() {
+        let statements =
+            Parser::new("impl P {\n  /// makes one\n  fn make() {}\n}").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Impl(block), .. }) = &statements[0] else {
+            panic!("expected impl");
+        };
+        assert_eq!(block.member_docs.len(), 1);
+        assert_eq!(&*block.member_docs[0].1, [" makes one"].as_slice());
     }
 }

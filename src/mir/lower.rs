@@ -7,7 +7,7 @@ use crate::{
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
-        Terminator, ValueId, error::MirError, layout::LayoutTable,
+        Terminator, ValueId, error::MirError,
     },
     optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
@@ -28,7 +28,7 @@ struct FunctionLower<'a, 'hir> {
     locals: Vec<(ValueId, Type)>,
     symbols: &'a SymbolTable,
     strings: &'a mut Vec<String>,
-    layouts: &'a LayoutTable,
+    structs: &'a IndexVec<hir::StructId, hir::Struct>,
     enums: &'a IndexVec<hir::EnumId, hir::Enum>,
     typeck: &'a hir::TypeckResults,
     local_symbols: IndexVec<LocalId, SymbolId>,
@@ -57,7 +57,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
 
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
-    let layouts = LayoutTable::build(&hir.structs, &hir.enums);
+    let structs = &hir.structs;
     let enums = &hir.enums;
     let symbols = hir.symbols;
 
@@ -72,7 +72,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         functions.push(FunctionLower::run(
             function,
             &symbols,
-            &layouts,
+            structs,
             enums,
             &mut strings,
             &functions_map,
@@ -84,8 +84,8 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
-        struct_layouts: layouts.struct_summaries(),
-        enum_layouts: layouts.enum_summaries(),
+        struct_layouts: hir.structs.iter().map(|s| s.layout).collect(),
+        enum_layouts: hir.enums.iter().map(|e| e.layout).collect(),
     })
 }
 
@@ -100,7 +100,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn run(
         function: &hir::Function<'hir>,
         symbols: &'a SymbolTable,
-        layouts: &'a LayoutTable,
+        structs: &'a IndexVec<hir::StructId, hir::Struct>,
         enums: &'a IndexVec<hir::EnumId, hir::Enum>,
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
@@ -134,7 +134,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             next,
             symbols,
             strings,
-            layouts,
+            structs,
             enums,
             typeck: &function.typeck,
             local_symbols,
@@ -512,7 +512,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::TypeIntrinsic { kind, typ: target } => {
-                let (size, align) = self.layouts.type_layout(*target);
+                let (size, align) = hir::type_layout(*target, self.structs, self.enums);
                 let value = match kind {
                     TypeIntrinsicKind::SizeOf => size as i64,
                     TypeIntrinsicKind::AlignOf => align as i64,
@@ -537,7 +537,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let dest = self.fresh_temporary(Type::structure(id));
 
                 for (sym, value) in *fields {
-                    let layout = self.layouts.field(Type::structure(id), *sym);
+                    let layout = hir::struct_field(Type::structure(id), *sym, self.structs);
                     let value_operand = self.lower_expr(value)?;
 
                     self.emit(
@@ -730,7 +730,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
             ExpressionKind::Field { base, field } => {
                 let (origin, base_offset, base_type) = self.place_info(base);
-                let layout = self.layouts.field(base_type, *field);
+                let layout = hir::struct_field(base_type, *field, self.structs);
                 (origin, base_offset + layout.offset, layout.typ)
             },
             _ => panic!("place_info called on non-place expression: {:?}", expr),
@@ -886,7 +886,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     // only inside `sub_block` (tag confirmed) do we read the payload
                     // and recursively match the sub-pattern
                     self.switch_to(sub_block);
-                    let offset = self.layouts.enum_layout(*enum_id).payload_offset;
+                    let offset = self.enums[*enum_id].payload_offset;
                     let typ = variant
                         .payload
                         .expect("Variant must have payload type since it has subpattern");
@@ -1070,7 +1070,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         );
 
         if let Some(payload) = payload {
-            let offset = self.layouts.enum_layout(id).payload_offset;
+            let offset = self.enums[id].payload_offset;
             let value = self.lower_expr(payload)?;
             self.emit(dest, InstructionKind::FieldStore { value, offset });
         }

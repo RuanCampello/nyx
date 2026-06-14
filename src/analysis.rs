@@ -4,7 +4,6 @@ use crate::hir::{
     Local, LocalId, Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
     TypeckResults, index_vec::IndexVec,
 };
-use crate::mir::layout::LayoutTable;
 use crate::{
     diagnostic::AsDiagnostic,
     lexer::{HasSpan, token::Span},
@@ -56,6 +55,7 @@ pub struct HoverInfo {
     pub path: Option<String>,
     pub ty: String,
     pub layout: Option<(u32, u32)>,
+    pub docs: Option<String>,
 }
 
 struct Walker<'a, 'h> {
@@ -69,7 +69,6 @@ struct Walker<'a, 'h> {
     constants: &'a HashMap<SymbolId, &'a Constant<'h>>,
     /// the enclosing function's declared generic parameter names
     generics: &'a [SymbolId],
-    layouts: &'a LayoutTable,
     map: &'a SourceMap,
     modules: &'a HashMap<FileId, String>,
     hover: &'a mut Vec<(Span, HoverInfo)>,
@@ -126,7 +125,7 @@ impl Analysis {
         let std_root = std_root.canonicalize().unwrap_or(std_root);
 
         let arena = bumpalo::Bump::new();
-        let mut loader = module::ModuleLoader::with_file_system(
+        let loader = module::ModuleLoader::with_file_system(
             name.clone(),
             root.clone(),
             std_root.clone(),
@@ -147,15 +146,21 @@ impl Analysis {
                 analysis.diagnostics = hir.diagnostics;
                 analysis
             },
-            Err(e) => {
+            Err((mut diagnostics, e)) => {
                 let span = e.span().unwrap_or_default();
-                let mut diagnostics = loader.take_diagnostics();
                 diagnostics.push(e.rich(span));
                 SemanticAnalysis { diagnostics, ..Default::default() }
             },
         };
         analysis.source_map = source_map;
         analysis
+    }
+}
+
+impl<'hir> Hir<'hir> {
+    #[inline]
+    fn doc_text(&self, decl_span: Span) -> Option<String> {
+        self.docs.get(&decl_span).map(|docs| docs.to_string())
     }
 }
 
@@ -181,13 +186,14 @@ impl<'a, 'h> Walker<'a, 'h> {
     fn hover_info(&self, typ: Type) -> HoverInfo {
         let layout = match is_open(typ, self.hir) {
             true => None,
-            false => layout_of(self.layouts, typ),
+            false => layout_of(self.hir, typ),
         };
 
         HoverInfo {
             path: None,
             ty: format_type(typ, self.hir, self.generics),
             layout,
+            docs: None,
         }
     }
 
@@ -219,10 +225,8 @@ impl<'a, 'h> Walker<'a, 'h> {
         if let Some(symbol) = self.typeck.const_use(expr.id)
             && let Some(constant) = self.constants.get(&symbol)
         {
-            self.hover.push((
-                expr.span,
-                const_hover(constant, self.hir, self.layouts, self.map, self.modules),
-            ));
+            self.hover
+                .push((expr.span, const_hover(constant, self.hir, self.map, self.modules)));
             if constant.decl_span != Span::default() {
                 self.defs.insert(expr.span, constant.decl_span);
             }
@@ -250,7 +254,7 @@ impl<'a, 'h> Walker<'a, 'h> {
                 | ExpressionKind::Literal(_),
             ) => {
                 let typ = self.typeck.type_of(expr.id);
-                type_hover(typ, self.hir, self.layouts, self.map, self.modules)
+                type_hover(typ, self.hir, self.map, self.modules)
                     .unwrap_or_else(|| self.hover_info(typ))
             },
             _ => self.hover_info(self.typeck.type_of(expr.id)),
@@ -320,10 +324,9 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
     let mut hover_types = Vec::new();
     let mut goto_definitions = HashMap::new();
     let mut inlay_hints = Vec::new();
-    let layouts = LayoutTable::build(&hir.structs, &hir.enums);
-    let functions: HashMap<FunctionId, &Function> =
+    let functions: HashMap<_, _> =
         hir.functions.iter().map(|function| (function.id, function)).collect();
-    let constants: HashMap<SymbolId, &Constant> =
+    let constants: HashMap<_, _> =
         hir.constants.iter().map(|constant| (constant.name, constant)).collect();
 
     for func in &hir.functions {
@@ -333,13 +336,14 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
         for param in &func.params {
             let local = &func.locals[param.id];
             if local.decl_span != Span::default() {
-                let layout = layout_of(&layouts, param.typ);
+                let layout = layout_of(hir, param.typ);
                 hover_types.push((
                     local.decl_span,
                     HoverInfo {
                         path: None,
                         ty: format_type(param.typ, hir, &func.generics),
                         layout,
+                        docs: None,
                     },
                 ));
             }
@@ -352,7 +356,6 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
             functions: &functions,
             constants: &constants,
             generics: &func.generics,
-            layouts: &layouts,
             map,
             modules,
             hover: &mut hover_types,
@@ -364,24 +367,21 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
 
     for (idx, structure) in hir.structs.iter().enumerate() {
         if structure.decl_span != Span::default()
-            && let Some(info) =
-                type_hover(Type::structure(StructId(idx as u32)), hir, &layouts, map, modules)
+            && let Some(info) = type_hover(Type::structure(StructId(idx as u32)), hir, map, modules)
         {
             hover_types.push((structure.decl_span, info));
         }
     }
     for enumeration in &hir.enums {
         if enumeration.decl_span != Span::default()
-            && let Some(info) =
-                type_hover(Type::enumerable(enumeration.id), hir, &layouts, map, modules)
+            && let Some(info) = type_hover(Type::enumerable(enumeration.id), hir, map, modules)
         {
             hover_types.push((enumeration.decl_span, info));
         }
     }
     for constant in &hir.constants {
         if constant.decl_span != Span::default() {
-            hover_types
-                .push((constant.decl_span, const_hover(constant, hir, &layouts, map, modules)));
+            hover_types.push((constant.decl_span, const_hover(constant, hir, map, modules)));
         }
     }
 
@@ -389,11 +389,10 @@ fn walk_hir(hir: &Hir<'_>, map: &SourceMap, modules: &HashMap<FileId, String>) -
 
     let mut symbols = Vec::new();
     let sym = &hir.symbols;
-    let (fns, structs, enums) = (&hir.functions, &hir.structs, &hir.enums);
+    let (fns, structs, enums, consts) = (&hir.functions, &hir.structs, &hir.enums, &hir.constants);
     collect_symbols(fns, SymbolKind::Function, sym, &mut symbols, |f| f.name, |f| f.decl_span);
     collect_symbols(structs, SymbolKind::Struct, sym, &mut symbols, |s| s.name, |s| s.decl_span);
     collect_symbols(enums, SymbolKind::Enum, sym, &mut symbols, |e| e.name, |e| e.decl_span);
-    let consts = &hir.constants;
     collect_symbols(consts, SymbolKind::Constant, sym, &mut symbols, |c| c.name, |c| c.decl_span);
     symbols.sort_unstable_by_key(|s| s.span.start.offset());
 
@@ -433,6 +432,7 @@ fn short_name(qualified: &str) -> String {
     pretty_args(qualified.rsplit("::").next().unwrap_or(qualified))
 }
 
+#[inline]
 fn pretty_args(name: &str) -> String {
     match name.split_once('$') {
         Some((base, args)) => format!("{base}<{}>", args.replace('$', ", ")),
@@ -457,14 +457,14 @@ fn is_open(typ: Type, hir: &Hir<'_>) -> bool {
 }
 
 #[inline(always)]
-fn layout_of(layouts: &LayoutTable, typ: Type) -> Option<(u32, u32)> {
+fn layout_of(hir: &Hir<'_>, typ: Type) -> Option<(u32, u32)> {
     match typ.kind() {
         TypeKind::Unit
         | TypeKind::Never
         | TypeKind::SelfType
         | TypeKind::GenericParam(_)
         | TypeKind::Error => None,
-        _ => Some(layouts.type_layout(typ)),
+        _ => Some(hir::type_layout(typ, &hir.structs, &hir.enums)),
     }
 }
 
@@ -519,34 +519,34 @@ fn module_of(map: &SourceMap, modules: &HashMap<FileId, String>, span: Span) -> 
 fn type_hover(
     typ: Type,
     hir: &Hir<'_>,
-    layouts: &LayoutTable,
     map: &SourceMap,
     modules: &HashMap<FileId, String>,
 ) -> Option<HoverInfo> {
-    let (path, ty) = match typ.kind() {
+    let (path, ty, docs) = match typ.kind() {
         TypeKind::Struct(id) => {
             let structure = &hir.structs[id];
-            (module_of(map, modules, structure.decl_span), struct_def(structure, hir))
+            let path = module_of(map, modules, structure.decl_span);
+            (path, struct_def(structure, hir), hir.doc_text(structure.decl_span))
         },
         TypeKind::Enum(id) => {
             let enumeration = &hir.enums[id];
-            (module_of(map, modules, enumeration.decl_span), enum_def(enumeration, hir))
+            let path = module_of(map, modules, enumeration.decl_span);
+            (path, enum_def(enumeration, hir), hir.doc_text(enumeration.decl_span))
         },
         _ => return None,
     };
 
     let layout = match is_open(typ, hir) {
         true => None,
-        false => layout_of(layouts, typ),
+        false => layout_of(hir, typ),
     };
 
-    Some(HoverInfo { path, ty, layout })
+    Some(HoverInfo { path, ty, layout, docs })
 }
 
 fn const_hover(
     constant: &Constant<'_>,
     hir: &Hir<'_>,
-    layouts: &LayoutTable,
     map: &SourceMap,
     modules: &HashMap<FileId, String>,
 ) -> HoverInfo {
@@ -565,18 +565,23 @@ fn const_hover(
     ty.push_str(&short_name(qualified));
     ty.push_str(": ");
     ty.push_str(&format_type(constant.typ, hir, &[]));
-    if let Some(value) = const_value(constant, hir, layouts) {
+    if let Some(value) = const_value(constant, hir) {
         ty.push_str(" = ");
         ty.push_str(&value);
     }
 
-    HoverInfo { path, ty, layout: None }
+    HoverInfo {
+        path,
+        ty,
+        layout: None,
+        docs: hir.doc_text(constant.decl_span),
+    }
 }
 
 // TODO: those things should be better integrated with the compiler
 // in the future instead of ad-hoc resolution here
 
-fn const_value(constant: &Constant<'_>, hir: &Hir<'_>, layouts: &LayoutTable) -> Option<String> {
+fn const_value(constant: &Constant<'_>, hir: &Hir<'_>) -> Option<String> {
     use crate::parser::expression::UnaryOperator;
 
     match &constant.value.kind {
@@ -595,34 +600,34 @@ fn const_value(constant: &Constant<'_>, hir: &Hir<'_>, layouts: &LayoutTable) ->
             Some((-value).to_string())
         },
         _ => {
-            let value = eval_const_int(constant.value, layouts)?;
+            let value = eval_const_int(constant.value, hir)?;
             Some(render_int(value, constant.typ))
         },
     }
 }
 
-fn eval_const_int(expr: &hir::Expression<'_>, layouts: &LayoutTable) -> Option<i128> {
+fn eval_const_int(expr: &hir::Expression<'_>, hir: &Hir<'_>) -> Option<i128> {
     use crate::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
 
     match &expr.kind {
         ExpressionKind::Literal(Literal::Int(value)) => Some(*value as i128),
         ExpressionKind::Unary { operator: UnaryOperator::Neg, expr } => {
-            eval_const_int(expr, layouts).map(i128::wrapping_neg)
+            eval_const_int(expr, hir).map(i128::wrapping_neg)
         },
         ExpressionKind::Unary { operator: UnaryOperator::Not, expr } => {
-            eval_const_int(expr, layouts).map(|value| !value)
+            eval_const_int(expr, hir).map(|value| !value)
         },
-        ExpressionKind::Cast { from, .. } => eval_const_int(from, layouts),
+        ExpressionKind::Cast { from, .. } => eval_const_int(from, hir),
         ExpressionKind::TypeIntrinsic { kind, typ } => {
-            let (size, align) = layout_of(layouts, *typ)?;
+            let (size, align) = layout_of(hir, *typ)?;
             Some(match kind {
                 TypeIntrinsicKind::SizeOf => size as i128,
                 TypeIntrinsicKind::AlignOf => align as i128,
             })
         },
         ExpressionKind::Binary { operator, left, right } => {
-            let left = eval_const_int(left, layouts)?;
-            let right = eval_const_int(right, layouts)?;
+            let left = eval_const_int(left, hir)?;
+            let right = eval_const_int(right, hir)?;
             match operator {
                 BinaryOperator::Add => left.checked_add(right),
                 BinaryOperator::Sub => left.checked_sub(right),
@@ -680,7 +685,7 @@ fn fn_hover(
         ty = format!("impl {implementor}\n{ty}");
     }
 
-    HoverInfo { path, ty, layout: None }
+    HoverInfo { path, ty, layout: None, docs: hir.doc_text(func.decl_span) }
 }
 
 #[inline]
@@ -778,8 +783,6 @@ fn truncated(lines: impl Iterator<Item = String>, total: usize) -> String {
     lines.join("\n")
 }
 
-/// Render a type for display; `generics` names the enclosing item's open
-/// parameters so `GenericParam(0)` reads as its declared name (`T`), not `T0`
 fn format_type(typ: Type, hir: &Hir<'_>, generics: &[SymbolId]) -> String {
     match typ.kind() {
         TypeKind::Unit => "()".to_owned(),
@@ -891,6 +894,93 @@ mod tests {
             a.document_symbols.iter().any(|s| s.name == "Holder"),
             "the outline still lists the struct"
         );
+    }
+
+    #[test]
+    fn doc_comments_surface_on_item_hover() {
+        let a = analyse(
+            "docs",
+            r#"
+            /// Adds two numbers.
+            fn add(a: i32, b: i32): i32 { a + b }
+
+            /// A 2D point.
+            struct Point { x: i32, y: i32 }
+
+            /// The answer.
+            const ANSWER: i32 = 42;
+
+            fn main() {
+                let p = Point { x: 1, y: 2 };
+                let _ = add(p.x, p.y) + ANSWER;
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let doc_of = |needle: &str| {
+            a.hover_types
+                .iter()
+                .find(|(_, hover)| hover.ty.contains(needle))
+                .and_then(|(_, hover)| hover.docs.as_deref())
+        };
+
+        assert_eq!(doc_of("fn add"), Some("Adds two numbers."));
+        assert_eq!(doc_of("struct Point"), Some("A 2D point."));
+        assert_eq!(doc_of("const ANSWER"), Some("The answer."));
+        assert_eq!(doc_of("fn main"), None, "an undocumented item has no docs");
+    }
+
+    #[test]
+    fn impl_method_docs_surface_on_hover() {
+        let a = analyse(
+            "impl_docs",
+            r#"
+            struct Point { x: i32 }
+            impl Point {
+                /// the horizontal coordinate
+                fn get(&self): i32 { self.x }
+            }
+            fn main() {
+                let p = Point { x: 1 };
+                let _ = p.get();
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let doc = a
+            .hover_types
+            .iter()
+            .find(|(_, hover)| hover.ty.contains("fn get"))
+            .and_then(|(_, hover)| hover.docs.as_deref());
+        assert_eq!(doc, Some("the horizontal coordinate"));
+    }
+
+    #[test]
+    fn fieldless_enums_auto_size_while_payload_enums_keep_the_tag() {
+        let a = analyse(
+            "enum_repr",
+            r#"
+            enum Direction { North, West, East, South }
+            enum Tiny { No, Yes(bool) }
+            fn main() {
+                let _ = Direction::North;
+                let _ = Tiny::No;
+            }
+            "#,
+        );
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let layout_of = |needle: &str| {
+            a.hover_types
+                .iter()
+                .find_map(|(_, hover)| hover.ty.contains(needle).then_some(hover.layout))
+                .flatten()
+        };
+
+        assert_eq!(layout_of("enum Direction"), Some((1, 1)));
+        assert_eq!(layout_of("enum Tiny"), Some((8, 4)));
     }
 
     #[test]

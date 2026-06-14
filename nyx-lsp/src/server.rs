@@ -152,6 +152,14 @@ impl LanguageServer for Lsp {
             .unwrap_or_default();
         self.state.progress.store(progress, Ordering::Relaxed);
 
+        let tokens_capabilities =
+            SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                legend: tokens::legend(),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: Some(false),
+                work_done_progress_options: Default::default(),
+            });
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 position_encoding: Some(match encoding {
@@ -165,16 +173,7 @@ impl LanguageServer for Lsp {
                 definition_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: tokens::legend(),
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            range: Some(false),
-                            work_done_progress_options: Default::default(),
-                        },
-                    ),
-                ),
+                semantic_tokens_provider: Some(tokens_capabilities),
                 ..Default::default()
             },
             server_info: Some(ServerInfo { name: "nyx-lsp".into(), version: Some(VERSION.into()) }),
@@ -241,9 +240,15 @@ impl LanguageServer for Lsp {
                 value.push_str(&format!("{}\n\n", fenced_text(path)));
             }
             value.push_str(&fenced_text(&info.ty));
+
             if let Some((size, align)) = info.layout {
                 let info = format!("\n\n---\nsize = {size} (0x{size:x}), align = 0x{align:x}");
                 value.push_str(info.as_ref());
+            }
+
+            if let Some(docs) = &info.docs {
+                value.push_str("\n\n---\n\n");
+                value.push_str(docs);
             }
 
             let contents =

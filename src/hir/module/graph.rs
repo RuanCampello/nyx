@@ -1,10 +1,11 @@
 use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
     diagnostic,
+    hir::Declarations,
     lexer::token::Span,
     parser::{
         Parser,
-        statement::{Statement, UseItems},
+        statement::{Interface, Item, ItemKind, Statement, UseItems, inject_default_methods},
     },
 };
 use std::{
@@ -63,6 +64,13 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     let entry = builder.discover(canonical, None)?;
     builder.discover_prelude()?;
 
+    // interface default methods are injected once here, up front, so every
+    // later pass reads the same already-completed AST without re-injecting
+    let interfaces = collect_interfaces(&builder.nodes);
+    for node in &mut builder.nodes {
+        inject_default_methods(&mut node.statements, |name| interfaces.get(name));
+    }
+
     Ok(ModuleGraph { nodes: builder.nodes, edges: builder.edges, entry })
 }
 
@@ -80,6 +88,17 @@ impl<'src> ModuleGraph<'src> {
         }
 
         order
+    }
+
+    /// partition every node's items once, indexed by node id
+    ///
+    /// the returned declarations borrow the graph, so all later passes
+    /// share a single categorisation instead of re-scanning the ast per pass
+    pub(super) fn collect_declarations(&self) -> Result<Vec<Declarations<'_, 'src>>, ModuleError> {
+        self.nodes
+            .iter()
+            .map(|node| Declarations::collect(&node.statements).map_err(Into::into))
+            .collect()
     }
 
     fn visit(&self, idx: usize, visited: &mut HashSet<usize>, order: &mut Vec<usize>) {
@@ -156,7 +175,9 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             .statements
             .iter()
             .filter_map(|stmt| match stmt {
-                Statement::Use(declaration) => Some(declaration.clone()),
+                Statement::Item(Item { kind: ItemKind::Use(declaration), .. }) => {
+                    Some(declaration.clone())
+                },
                 _ => None,
             })
             .collect();
@@ -191,16 +212,33 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
     }
 }
 
+fn collect_interfaces<'src>(nodes: &[ModuleNode<'src>]) -> HashMap<String, Interface<'src>> {
+    let mut interfaces = HashMap::new();
+
+    for node in nodes {
+        for statement in &node.statements {
+            if let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = statement {
+                interfaces.insert(interface.name.to_string(), interface.clone());
+            }
+        }
+    }
+
+    interfaces
+}
+
 fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
     let mut exports = HashSet::new();
 
     for statement in statements {
-        match statement {
-            Statement::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
-            Statement::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
-            Statement::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
-            Statement::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
-            Statement::Const(c) if c.is_pub => exports.insert(c.name.to_string()),
+        let Statement::Item(item) = statement else {
+            continue;
+        };
+        match &item.kind {
+            ItemKind::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
+            ItemKind::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),
+            ItemKind::Interface(i) if i.is_pub => exports.insert(i.name.to_string()),
+            ItemKind::Fn(f) if f.is_pub => exports.insert(f.name.to_string()),
+            ItemKind::Const(c) if c.is_pub => exports.insert(c.name.to_string()),
             _ => false,
         };
     }

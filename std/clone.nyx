@@ -1,4 +1,6 @@
+/// A common behaviour that allows explicit creation of a duplicate value
 pub interface Clone {
+    /// Returns a duplicate of the value
     fn clone(&self): Self;
 }
 

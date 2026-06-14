@@ -1,7 +1,7 @@
 use crate::{
     hir::{SymbolTable, SyscallCode, Type, TypeKind},
-    lir::{self, BlockId, Layouts, MachineType, VReg, regalloc},
-    mir::{self, Const, Operand, ValueId},
+    lir::{self, BlockId, Layouts, MachineType, VReg, assembly_label, regalloc},
+    mir::{self, Const, Function, Operand, ValueId},
 };
 
 mod aarch64;
@@ -159,6 +159,34 @@ where
 
     /// Emit an instruction to load a label or constant's address into a virtual register
     fn load_label(dest: VReg, label: String, is_float: bool, bytes: u8) -> Self::Instruction;
+
+    /// Move a parameter that arrived in its precoloured ABI register `src` into `dest`
+    fn load_param_reg(dest: VReg, src: VReg, mt: MachineType) -> Self::Instruction;
+
+    /// Load a stack-passed parameter from the caller's frame slot at `offset` into `dest`
+    fn load_param_stack(dest: VReg, offset: i32, mt: MachineType) -> Self::Instruction;
+
+    /// Materialise the frame-relative address of stack slot `origin` into `dest`
+    fn load_stack_addr(dest: VReg, origin: VReg) -> Self::Instruction;
+
+    /// Whether a value of type `typ` is returned through an implicit sret pointer
+    /// argument rather than in registers
+    #[inline(always)]
+    fn uses_sret(typ: Type, _layouts: Layouts) -> bool {
+        typ.is_aggregate()
+    }
+}
+
+/// MIR -> LIR lowering context, generic over the target architecture
+pub(crate) struct Lower<'f, T: Target> {
+    pub(crate) function: &'f Function,
+    pub(crate) lir: lir::Function<T>,
+    /// maps a MIR [ValueId] to its LIR [VReg]
+    pub(crate) value: Vec<VReg>,
+    pub(crate) symbols: &'f SymbolTable,
+    pub(crate) all_functions: &'f [Function],
+    pub(crate) layouts: Layouts<'f>,
+    pub(crate) sret_ptr: Option<VReg>,
 }
 
 /// A target-independent representation of a register-to-register/stack-to-register move,
@@ -266,6 +294,136 @@ impl<Reg: Copy + Eq> ParallelMove<Reg> {
     #[inline(always)]
     pub fn dest_is_read_by(&self, other: &Self) -> bool {
         other.src_reg == Some(self.dest_reg) || other.src == self.dest
+    }
+}
+
+impl<'f, T: Target> Lower<'f, T> {
+    pub(crate) fn new(
+        function: &'f Function,
+        symbols: &'f SymbolTable,
+        all_functions: &'f [Function],
+        struct_layouts: &'f [mir::Layout],
+        enum_layouts: &'f [mir::Layout],
+    ) -> Self {
+        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
+        let name = assembly_label(symbols.get(function.name_symbol));
+        let mut lir = lir::Function::<T>::new(name);
+
+        let value = function
+            .locals
+            .iter()
+            .map(|(_, typ)| lir.new_vreg(typ.machine_type(layouts)))
+            .collect();
+
+        for _ in &function.blocks {
+            lir.new_block();
+        }
+
+        Self {
+            function,
+            lir,
+            value,
+            symbols,
+            all_functions,
+            layouts,
+            sret_ptr: None,
+        }
+    }
+}
+
+impl<'f, T: TargetOps> Lower<'f, T>
+where
+    T::Operand: TargetOperand,
+{
+    /// materialise a MIR operand into a VReg, emitting a constant move if needed
+    #[inline(always)]
+    pub(crate) fn operand(&mut self, op: &Operand, block: &BlockId) -> VReg {
+        let value = &self.value;
+        let layouts = self.layouts;
+        operand(&mut self.lir, op, block, layouts, |vid| value[vid])
+    }
+
+    /// translate a MIR operand into a target-specific operand
+    #[inline(always)]
+    pub(crate) fn lower_operand(&mut self, op: &Operand) -> T::Operand {
+        let value = &self.value;
+        lower_operand(&mut self.lir, op, |vid| value[vid])
+    }
+
+    /// materialise the frame-relative address of a stack slot into a fresh VReg
+    pub(crate) fn stack_addr(&mut self, block: &BlockId, origin: VReg) -> VReg {
+        let dest = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+        self.lir.push_instr(block, T::load_stack_addr(dest, origin));
+        dest
+    }
+
+    /// copy incoming parameters from their ABI registers (or the caller's stack
+    /// slots) into the vregs the function body reads
+    pub(crate) fn lower_param_moves(&mut self) {
+        let entry = BlockId(0);
+        let mut int_idx = 0;
+        let mut float_idx = 0;
+        let mut int_stack_idx = 0;
+        let mut float_stack_idx = 0;
+
+        if T::uses_sret(self.function.return_type, self.layouts) {
+            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+            let reg = T::param(int_idx, RegClass::Int)
+                .expect("sret pointer must fit in the first integer argument register");
+            self.lir.add_precolour(ptr, reg);
+            self.sret_ptr = Some(ptr);
+            int_idx += 1;
+        }
+
+        for (vid, typ) in &self.function.params {
+            let (vid, typ) = (*vid, *typ);
+
+            if typ.is_aggregate() {
+                let ptr_mt = MachineType::Int { bytes: 8, signed: false };
+                let ptr = self.lir.new_vreg(ptr_mt);
+
+                match T::param(int_idx, RegClass::Int) {
+                    Some(reg) => self.lir.add_precolour(ptr, reg),
+                    None => {
+                        let offset = T::param_stack_offset(int_stack_idx, RegClass::Int)
+                            .expect("param_stack_offset must be defined when param() returns None");
+                        self.lir.push_instr(&entry, T::load_param_stack(ptr, offset, ptr_mt));
+                        int_stack_idx += 1;
+                    },
+                }
+
+                let size = typ.machine_type(self.layouts).stack_size() as u32;
+                let copy = AggregateCopy::new(ptr, self.value[vid], size).with_src_ref();
+                aggregate_copy(&mut self.lir, &entry, copy);
+                int_idx += 1;
+                continue;
+            }
+
+            let mt = typ.machine_type(self.layouts);
+            let class = mt.class();
+            let dest = self.value[vid];
+
+            let (reg_idx, stack_idx) = match class {
+                RegClass::Int => (&mut int_idx, &mut int_stack_idx),
+                RegClass::Float => (&mut float_idx, &mut float_stack_idx),
+            };
+
+            match T::param(*reg_idx, class) {
+                Some(reg) => {
+                    let abi_vreg = self.lir.new_vreg(mt);
+                    self.lir.add_precolour(abi_vreg, reg);
+                    self.lir.push_instr(&entry, T::load_param_reg(dest, abi_vreg, mt));
+                },
+                None => {
+                    let offset = T::param_stack_offset(*stack_idx, class)
+                        .expect("param_stack_offset must be defined when param() returns None");
+                    self.lir.push_instr(&entry, T::load_param_stack(dest, offset, mt));
+                    *stack_idx += 1;
+                },
+            }
+
+            *reg_idx += 1;
+        }
     }
 }
 

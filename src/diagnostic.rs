@@ -518,12 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn lex_unterminated_block_comment() {
-        let kind = lex_check!("let x = 1; /* never closed");
-        assert_eq!(kind, LexErrorKind::UnterminatedComment);
-    }
-
-    #[test]
     fn lex_invalid_escape() {
         let kind = lex_check!(r#"let x = "hello\qworld";"#);
         assert_eq!(kind, LexErrorKind::InvalidEscape('q'));

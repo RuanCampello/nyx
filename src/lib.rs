@@ -108,8 +108,8 @@ pub fn compile_project_for(
     let root = entry.parent().unwrap_or(Path::new(".")).canonicalize()?;
     let arena = bumpalo::Bump::new();
 
-    let mut loader = module::ModuleLoader::new(name.to_string(), root, &arena);
-    let hir = loader.load(entry)?;
+    let loader = module::ModuleLoader::new(name.to_string(), root, &arena);
+    let hir = loader.load(entry).map_err(|(_, err)| err)?;
     let mir = mir::lower(hir)?;
 
     let asm = match target {

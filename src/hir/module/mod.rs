@@ -7,7 +7,7 @@ mod signatures;
 
 use crate::{
     diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
-    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope},
+    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope, structs},
     lexer::token::Span,
     parser::error::ParserError,
 };
@@ -21,11 +21,12 @@ use std::path::{Path, PathBuf};
 /// to ensure symbol IDs remain unique across the entire compilation.
 pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
     resolver: ModuleResolver,
-    scope: Scope<'hir>,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
     fs: F,
     arena: &'hir bumpalo::Bump,
+    /// whether lowering collects diagnostics and recovers instead of failing fast
+    recover: bool,
 }
 
 pub(crate) struct FS;
@@ -113,59 +114,67 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         Self {
             resolver: ModuleResolver::new(name, canonical_root, canonical_std),
             fs,
-            scope: Scope::new(arena),
             symbols: SymbolTable::new(),
             arena,
+            recover: false,
         }
     }
 
     #[inline]
     pub(crate) fn recovering(mut self) -> Self {
-        self.scope.recover = true;
+        self.recover = true;
         self
     }
 
-    /// Drain whatever diagnostics were recovered before a fatal error aborted [load](ModuleLoader::load)
-    #[inline]
-    pub(crate) fn take_diagnostics(&mut self) -> Vec<RichDiagnostic> {
-        self.scope.diagnostics.take_errors()
-    }
-
-    /// Load all modules reacheable from the `entry` point and produce a merged `HIR`
-    ///
-    /// Modules are merged in dependency-first order. The entry module is always last,
-    /// ensuring that `main` gets an id that the `_start` can call
-    pub fn load(&mut self, entry: impl AsRef<Path>) -> Result<Hir<'hir>, ModuleError> {
+    pub fn load(
+        mut self,
+        entry: impl AsRef<Path>,
+    ) -> Result<Hir<'hir>, (Vec<RichDiagnostic>, ModuleError)> {
         crate::diagnostic::reset();
 
         let arena = self.arena;
+
+        // parsing and graph construction do not touch the HIR, the lowering
+        // scope is only introduced once the graph is in hand
+        let graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
+            .map_err(|err| (Vec::new(), err))?;
+
+        let order = graph.all_nodes_order();
+        let declarations = graph.collect_declarations().map_err(|err| (Vec::new(), err))?;
+
+        let mut scope = Scope::new(arena);
+        scope.recover = self.recover;
         let symbols = &mut self.symbols;
 
-        let graph = &mut graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)?;
-        let order = graph.all_nodes_order();
-        let interfaces =
-            signatures::build_signatures(graph, &order, &mut self.scope, symbols, arena)?;
+        signatures::build_signatures(&graph, &declarations, &order, &mut scope, symbols, arena)
+            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let functions =
-            demand::lower_reachable(graph, &order, &interfaces, &mut self.scope, symbols, arena)?;
-        let mut functions = mono::monomorphise(functions, &mut self.scope, symbols, arena)?;
-        let diagnostics = self.scope.diagnostics.take_errors();
+            demand::lower_reachable(&graph, &declarations, &order, &mut scope, symbols, arena)
+                .map_err(|err| (scope.diagnostics.take_errors(), err))?;
+        let mut functions = mono::monomorphise(functions, &mut scope, symbols, arena)
+            .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
+
+        let diagnostics = scope.diagnostics.take_errors();
 
         // editors need features inside generic template bodies too, lower one
         // identity instance of each and discard the diagnostics, which are
         // noise (bounds cannot be solved without concrete types)
-        if self.scope.recover {
-            for function in mono::analyse_templates(&mut self.scope, symbols, arena) {
+        if scope.recover {
+            for function in mono::analyse_templates(&mut scope, symbols, arena) {
                 functions.push(function);
             }
-            self.scope.diagnostics.take_errors();
+            scope.diagnostics.take_errors();
         }
+
+        structs::compute_layouts(&mut scope.structs, &mut scope.enums);
 
         Ok(Hir {
             functions,
-            structs: self.scope.structs.clone(),
-            enums: self.scope.enums.clone(),
-            constants: self.scope.constants.values().cloned().collect(),
-            symbols: self.symbols.clone(),
+            structs: scope.structs,
+            enums: scope.enums,
+            constants: scope.constants.into_values().collect(),
+            docs: scope.docs,
+            symbols: self.symbols,
             diagnostics,
         })
     }
@@ -223,7 +232,7 @@ impl From<ModuleError> for Diagnostic {
                     | ModuleError::UnknownExport { span, .. }
                     | ModuleError::TopLevelNonFunction { span, .. } => *span,
                     ModuleError::EmptyPath => Span::default(),
-                    ModuleError::Check(_) => unreachable!(),
+                    ModuleError::Check(_) => unsafe { std::hint::unreachable_unchecked() },
                 };
                 AsDiagnostic::into_diagnostic(other, span)
             },
@@ -395,7 +404,7 @@ mod tests {
     fn file_not_found() {
         let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default();
-        let err = vloader(fs, &arena).load(Path::new("/project/missing.nyx")).unwrap_err();
+        let (_, err) = vloader(fs, &arena).load(Path::new("/project/missing.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::FileNotFound { .. }));
     }
@@ -426,7 +435,7 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
+        let (_, err) = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::CircularImport { .. }));
     }
@@ -445,7 +454,7 @@ mod tests {
             );
 
         // 'secret' is not exported so shouldn't be included in the symbols
-        let err = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
+        let (_, err) = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap_err();
 
         assert!(matches!(err, ModuleError::UnknownExport { .. }));
     }
@@ -514,7 +523,7 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
+        let (_, err) = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Check(_)));
     }
 
@@ -558,7 +567,7 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
+        let (_, err) = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Check(_)));
     }
 
@@ -645,7 +654,7 @@ mod tests {
             "#,
         );
 
-        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
+        let (_, err) = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Check(_)));
     }
 
@@ -720,7 +729,7 @@ mod tests {
             "#,
             );
 
-        let err = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
+        let (_, err) = vloader(fs, &arena).load("/project/main.nyx").unwrap_err();
         assert!(matches!(err, ModuleError::Check(_)));
     }
 

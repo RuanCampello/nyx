@@ -23,10 +23,10 @@ use crate::{
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
+pub use crate::hir::Layout;
 pub use lower::lower;
 
 pub mod error;
-pub(crate) mod layout;
 mod lower;
 
 /// Complete MIR program.
@@ -77,14 +77,6 @@ pub struct Block {
     id: BlockId,
     pub(crate) instructions: Vec<Instruction>,
     pub(crate) terminator: Terminator,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-/// Fully resolved aggregate size and alignment
-pub struct Layout {
-    size: u32,
-    align: u32,
-    contains_float: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -181,22 +173,6 @@ pub struct ValueId(pub u32);
 /// Stable index into a function's `blocks` vec.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
-
-impl Layout {
-    pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
-        Self { size, align, contains_float }
-    }
-
-    pub(crate) const fn contains_float(self) -> bool {
-        self.contains_float
-    }
-}
-
-impl From<Layout> for (u32, u32) {
-    fn from(value: Layout) -> Self {
-        (value.size, value.align)
-    }
-}
 
 impl Operand {
     pub const fn typ(&self) -> Type {
