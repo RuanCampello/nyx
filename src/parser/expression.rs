@@ -229,16 +229,7 @@ impl<'i> Expression<'i> {
         let first = parser.parse_node()?;
 
         if parser.consume_token(Punct::Semicolon)? {
-            let token = parser.expect_next()?;
-            let count = match token.kind {
-                TokenKind::Integer(n) if n >= 0 => n as u64,
-                _ => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::ExpectedExpression { found: token.kind },
-                        token.span,
-                    ));
-                },
-            };
+            let count = parser.expect_unsigned_literal()?;
             let close = parser.expect_token(Punct::CloseBracket)?.span;
             return Ok(Expression::ArrayRepeat {
                 value: Box::new(first),

@@ -146,6 +146,18 @@ impl<'i> Parser<'i> {
     }
 
     #[inline(always)]
+    pub fn expect_unsigned_literal(&mut self) -> Result<u64, ParserError<'i>> {
+        let token = self.expect_next()?;
+        match token.kind {
+            TokenKind::Integer(n) if n >= 0 => Ok(n as u64),
+            _ => Err(ParserError::new(
+                ParseErrorKind::ExpectedExpression { found: token.kind },
+                token.span,
+            )),
+        }
+    }
+
+    #[inline(always)]
     pub fn consume_optional(&mut self, kind: TokenKind<'i>) -> bool {
         if let Some(Ok(token)) = self.peek()
             && token.is_kind(kind)

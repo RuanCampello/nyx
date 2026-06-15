@@ -1273,18 +1273,7 @@ fn parse_bracketed_type<'i>(
     let element = parser.parse_node::<Spanned<Type<'i>>>()?.value();
 
     let length = match parser.consume_token(Punct::Semicolon)? {
-        true => {
-            let token = parser.expect_next()?;
-            match token.kind {
-                TokenKind::Integer(n) if n >= 0 => Some(n as u64),
-                _ => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::ExpectedExpression { found: token.kind },
-                        token.span,
-                    ));
-                },
-            }
-        },
+        true => Some(parser.expect_unsigned_literal()?),
         false => None,
     };
 
