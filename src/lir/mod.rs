@@ -117,6 +117,7 @@ where
             &mir.functions,
             &mir.struct_layouts,
             &mir.enum_layouts,
+            &mir.array_layouts,
         );
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
@@ -149,34 +150,56 @@ where
     out
 }
 
-pub trait CheckedOperation {
-    const ADD: u8 = 1 << 0;
-    const SUB: u8 = 1 << 1;
-    const MUL: u8 = 1 << 2;
+/// A runtime fault that aborts the program through a shared panic handler
+///
+/// Each variant owns the runtime symbol it jumps to. Code generation calls
+/// [Panic::require] at a fault site to both record that the handler is needed
+/// and obtain its symbol, [Panic::required] then drives handler emission
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panic {
+    AddOverflow,
+    SubOverflow,
+    MulOverflow,
+    IndexOutOfBounds,
+}
 
-    fn flag(&self) -> Option<u8>;
+impl Panic {
+    const ALL: [Self; 4] =
+        [Self::AddOverflow, Self::SubOverflow, Self::MulOverflow, Self::IndexOutOfBounds];
 
     #[inline]
-    #[rustfmt::skip]
-    fn symbol_for_flag<'s>(flag: u8) -> Option<&'s str> {
-        if flag == Self::ADD { Some("__nyx_panic_add_overflow") }
-        else if flag == Self::SUB { Some("__nyx_panic_sub_overflow") }
-        else if flag == Self::MUL { Some("__nyx_panic_mul_overflow") }
-        else { None }
+    const fn bit(self) -> u8 {
+        1 << (self as u8)
     }
 
     #[inline]
-    fn mark<'s>(&self) -> Option<&'s str> {
-        let flag = self.flag()?;
-        PANIC_HANDLERS.with(|h| h.set(h.get() | flag));
-
-        Self::symbol_for_flag(flag)
+    pub const fn symbol<'s>(self) -> &'s str {
+        match self {
+            Self::AddOverflow => "__nyx_panic_add_overflow",
+            Self::SubOverflow => "__nyx_panic_sub_overflow",
+            Self::MulOverflow => "__nyx_panic_mul_overflow",
+            Self::IndexOutOfBounds => "__nyx_panic_index_out_of_bounds",
+        }
     }
 
+    /// record that this handler must be emitted and return the symbol to jump to
     #[inline]
-    fn take() -> u8 {
-        PANIC_HANDLERS.with(|h| h.take())
+    pub fn require<'s>(self) -> &'s str {
+        PANIC_HANDLERS.with(|handlers| handlers.set(handlers.get() | self.bit()));
+        self.symbol()
     }
+
+    /// drain the handlers required by the functions emitted so far
+    #[inline]
+    pub fn required() -> impl Iterator<Item = Self> {
+        let bits = PANIC_HANDLERS.with(|handlers| handlers.take());
+        Self::ALL.into_iter().filter(move |panic| bits & panic.bit() != 0)
+    }
+}
+
+/// An instruction that may trap on overflow, mapping to the [Panic] it raises
+pub trait Checked {
+    fn overflow_panic(&self) -> Option<Panic>;
 }
 
 impl<T: Target> Function<T> {
@@ -301,6 +324,7 @@ impl MachineType {
 pub struct Layouts<'a> {
     pub structs: &'a [Layout],
     pub enums: &'a [Layout],
+    pub arrays: &'a [Layout],
 }
 
 impl Type {
@@ -329,12 +353,16 @@ impl Type {
             TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } => {
                 MachineType::Int { bytes: 8, signed: false }
             },
-            TypeKind::Str => MachineType::Struct { size: 16, align: 8 },
+            TypeKind::Str | TypeKind::Slice { .. } => MachineType::Struct { size: 16, align: 8 },
             TypeKind::String => MachineType::Struct { size: 24, align: 8 },
             TypeKind::F32 => MachineType::Float { bytes: 4 },
             TypeKind::F64 => MachineType::Float { bytes: 8 },
             TypeKind::Struct(id) => {
                 let (size, align) = layouts.structs[id.0 as usize].into();
+                MachineType::Struct { size, align }
+            },
+            TypeKind::Array(id) => {
+                let (size, align) = layouts.arrays[id.0 as usize].into();
                 MachineType::Struct { size, align }
             },
             TypeKind::Enum(id) => {
