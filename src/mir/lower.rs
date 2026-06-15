@@ -2,7 +2,7 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, SymbolId,
+        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, Statement, SymbolId,
         SymbolTable, Type, TypeKind, index_vec::IndexVec,
     },
     mir::{
@@ -30,6 +30,7 @@ struct FunctionLower<'a, 'hir> {
     strings: &'a mut Vec<String>,
     structs: &'a IndexVec<hir::StructId, hir::Struct>,
     enums: &'a IndexVec<hir::EnumId, hir::Enum>,
+    arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
     typeck: &'a hir::TypeckResults,
     local_symbols: IndexVec<LocalId, SymbolId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
@@ -59,6 +60,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
     let mut strings = Vec::new();
     let structs = &hir.structs;
     let enums = &hir.enums;
+    let arrays = &hir.arrays;
     let symbols = hir.symbols;
 
     let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
@@ -74,11 +76,22 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
             &symbols,
             structs,
             enums,
+            arrays,
             &mut strings,
             &functions_map,
             &runtime_uses_map,
         )?);
     }
+
+    let array_layouts = hir
+        .arrays
+        .iter()
+        .map(|array| {
+            let (size, align) = hir::type_layout(array.element, structs, enums, arrays);
+            let contains_float = element_contains_float(array.element, structs, enums, arrays);
+            Layout::new(size * array.len, align, contains_float)
+        })
+        .collect();
 
     Ok(Mir {
         functions,
@@ -86,7 +99,23 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         strings,
         struct_layouts: hir.structs.iter().map(|s| s.layout).collect(),
         enum_layouts: hir.enums.iter().map(|e| e.layout).collect(),
+        array_layouts,
     })
+}
+
+fn element_contains_float(
+    typ: Type,
+    structs: &IndexVec<hir::StructId, hir::Struct>,
+    enums: &IndexVec<hir::EnumId, hir::Enum>,
+    arrays: &IndexVec<hir::ArrayId, hir::ArrayType>,
+) -> bool {
+    match typ.kind() {
+        TypeKind::F32 | TypeKind::F64 => true,
+        TypeKind::Struct(id) => structs[id].layout.contains_float(),
+        TypeKind::Enum(id) => enums[id].layout.contains_float(),
+        TypeKind::Array(id) => element_contains_float(arrays[id].element, structs, enums, arrays),
+        _ => false,
+    }
 }
 
 const fn temp_value_type(typ: Type) -> Type {
@@ -102,6 +131,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         symbols: &'a SymbolTable,
         structs: &'a IndexVec<hir::StructId, hir::Struct>,
         enums: &'a IndexVec<hir::EnumId, hir::Enum>,
+        arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
         runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
@@ -136,6 +166,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             strings,
             structs,
             enums,
+            arrays,
             typeck: &function.typeck,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
@@ -512,7 +543,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::TypeIntrinsic { kind, typ: target } => {
-                let (size, align) = hir::type_layout(*target, self.structs, self.enums);
+                let (size, align) =
+                    hir::type_layout(*target, self.structs, self.enums, self.arrays);
                 let value = match kind {
                     TypeIntrinsicKind::SizeOf => size as i64,
                     TypeIntrinsicKind::AlignOf => align as i64,
@@ -553,6 +585,48 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let (origin, offset, typ) = self.place_info(expr);
                 let dest = self.fresh_temporary(typ);
                 self.emit(dest, Kind::FieldLoad { src: Operand::Place(origin), offset, typ });
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::Array { elements } => {
+                let (_, elem_size, _) = self.array_info(typ);
+                let dest = self.fresh_temporary(typ);
+
+                for (index, element) in elements.iter().enumerate() {
+                    let value = self.lower_expr(element)?;
+                    let offset = index as u32 * elem_size;
+                    self.emit(dest, Kind::FieldStore { value, offset });
+                }
+
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::ArrayRepeat { value, count } => {
+                let (_, elem_size, _) = self.array_info(typ);
+                let dest = self.fresh_temporary(typ);
+                let value = self.lower_expr(value)?;
+
+                for index in 0..*count {
+                    self.emit(dest, Kind::FieldStore { value, offset: index * elem_size });
+                }
+
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::Index { base, index } => {
+                let (element, stride, len) = self.array_info(self.typeck.type_of(base.id));
+                let base = self.lower_expr(base)?;
+                let index = self.lower_expr(index)?;
+                let dest = self.fresh_temporary(element);
+
+                self.emit(dest, Kind::ElementLoad {
+                    base,
+                    index,
+                    bound: Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into())),
+                    stride,
+                    typ: element,
+                });
+
                 Ok(Operand::Place(dest))
             },
 
@@ -734,6 +808,19 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 (origin, base_offset + layout.offset, layout.typ)
             },
             _ => panic!("place_info called on non-place expression: {:?}", expr),
+        }
+    }
+
+    /// `(element, element_size, length)` of a fixed-size array type
+    fn array_info(&self, array_type: Type) -> (Type, u32, u32) {
+        match array_type.kind() {
+            TypeKind::Array(id) => {
+                let array = self.arrays[id];
+                let (size, _) =
+                    hir::type_layout(array.element, self.structs, self.enums, self.arrays);
+                (array.element, size, array.len)
+            },
+            _ => unreachable!("array_info on a non-array type"),
         }
     }
 
@@ -1266,6 +1353,16 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
             }
         },
         ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
+        ExpressionKind::Array { elements } => {
+            for element in *elements {
+                visit_expr_runtime_uses(element, uses);
+            }
+        },
+        ExpressionKind::ArrayRepeat { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Index { base, index } => {
+            visit_place_runtime_uses(base, uses);
+            visit_expr_runtime_uses(index, uses);
+        },
         ExpressionKind::TypeIntrinsic { .. }
         | ExpressionKind::Literal(_)
         | ExpressionKind::Path(_) => {},
