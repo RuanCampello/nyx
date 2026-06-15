@@ -87,9 +87,9 @@ fn validate_impls<'hir, 'd, 'h>(
             implementation.interface_type.as_ref().map(|s| s.value()),
         ) {
             (false, Some(statement::Type::Generic(_, args))) => {
-                let ctx =
-                    type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map)
-                        .with_self(receiver_type);
+                let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
+                let ctx = type_resolver::ResolveCtx::root(symbols, structs, enums, arrays)
+                    .with_self(receiver_type);
                 match args
                     .iter()
                     .map(|arg| type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span()))

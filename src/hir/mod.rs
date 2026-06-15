@@ -45,6 +45,8 @@ pub struct Hir<'hir> {
     pub symbols: SymbolTable,
     pub structs: IndexVec<StructId, Struct>,
     pub enums: IndexVec<EnumId, Enum>,
+    /// Interned fixed-size array types, keyed by [`ArrayId`]
+    pub arrays: IndexVec<ArrayId, ArrayType>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
@@ -96,6 +98,13 @@ pub struct EnumVariant {
     pub(crate) name: SymbolId,
     pub(crate) value: i64,
     pub(crate) payload: Option<Type>,
+}
+
+/// A fixed-size array type `[element; len]`, interned in the [Hir] array table
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ArrayType {
+    pub element: Type,
+    pub len: u32,
 }
 
 /// Fully resolved aggregate size and alignment, cached on each nominal type by
@@ -278,6 +287,20 @@ pub enum ExpressionKind<'hir> {
         id: StructId,
         fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
     },
+    /// An array literal (e.g. `[1, 2, 3]`)
+    Array {
+        elements: &'hir [&'hir Expression<'hir>],
+    },
+    /// An array repeat literal (e.g. `[0; 3]`)
+    ArrayRepeat {
+        value: &'hir Expression<'hir>,
+        count: u32,
+    },
+    /// An index access (e.g. `a[i]`) into an array or slice
+    Index {
+        base: &'hir Expression<'hir>,
+        index: &'hir Expression<'hir>,
+    },
     /// A path referencing an item, e.g. the name of a called function
     ///
     /// Carries only the structural name, the resolved [`FunctionId`] lives in
@@ -395,12 +418,14 @@ pub fn lower<'hir>(
     let functions = scope.lower_functions(&declarations, &mut symbols, false, arena)?;
     let functions = mono::monomorphise(functions, &mut scope, &mut symbols, arena)?;
 
-    structs::compute_layouts(&mut scope.structs, &mut scope.enums);
+    let arrays = scope.arrays.snapshot();
+    structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
 
     Ok(Hir {
         symbols,
         structs: scope.structs,
         enums: scope.enums,
+        arrays,
         functions,
         constants: scope.constants.into_values().collect(),
         docs: scope.docs,
@@ -429,6 +454,7 @@ pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
     match &expr.kind {
         ExpressionKind::Local(local) => Some(*local),
         ExpressionKind::Field { base, .. } => place_base_local(base),
+        ExpressionKind::Index { base, .. } => place_base_local(base),
         _ => None,
     }
 }
@@ -510,6 +536,12 @@ impl Idx for LocalId {
 }
 
 impl Idx for StructId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Idx for ArrayId {
     fn to_usize(self) -> usize {
         self.0 as usize
     }

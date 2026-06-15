@@ -166,12 +166,14 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             scope.diagnostics.take_errors();
         }
 
-        structs::compute_layouts(&mut scope.structs, &mut scope.enums);
+        let arrays = scope.arrays.snapshot();
+        structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
 
         Ok(Hir {
             functions,
             structs: scope.structs,
             enums: scope.enums,
+            arrays,
             constants: scope.constants.into_values().collect(),
             docs: scope.docs,
             symbols: self.symbols,
