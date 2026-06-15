@@ -185,6 +185,28 @@ pub enum HirErrorKind<'h> {
     InvalidCast { src: Type, target: Type },
 
     #[diagnostic(
+        message = "cannot index a value of type {typ!}",
+        primary = "{typ!} cannot be indexed",
+        help = "indexing is only supported on arrays {`[T; N]`} and slices {`&[T]`}"
+    )]
+    NotIndexable { typ: Type },
+
+    #[diagnostic(
+        message = "index out of bounds: the length is {len} but the index is {index}",
+        primary = "index {index} is out of bounds for an array of length {len}"
+    )]
+    IndexOutOfBounds { index: u64, len: u32 },
+
+    // TODO: suggest help based on the real user input code
+
+    #[diagnostic(
+        message = "cannot infer the element type of an empty array",
+        primary = "the element type is unknown here",
+        help = "add a type annotation, e.g. {`let a: [i32; 0] = [];`}"
+    )]
+    EmptyArrayType,
+
+    #[diagnostic(
         message = "duplicate interface {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} interfaces"
