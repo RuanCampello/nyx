@@ -1,8 +1,8 @@
 use crate::{
     hir::{
-        self, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
-        Intrinsic, Layout, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable,
-        Type, TypeKind, constants,
+        self, ArrayId, ArrayType, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function,
+        FunctionId, FunctionKind, Intrinsic, Layout, Method, RefTarget, Struct, StructField,
+        StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -16,6 +16,7 @@ use crate::{
     parser::statement,
 };
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     ops::Index,
     str::FromStr,
@@ -35,6 +36,9 @@ pub struct Scope<'hir> {
     pub struct_map: Structs,
     pub enums: IndexVec<EnumId, Enum>,
     pub enum_map: Enums,
+    /// fixed-size array types, shared by type resolution
+    /// and expression lowering so equal `[T; N]` always map to the same [ArrayId]
+    pub arrays: ArrayTable,
     pub enum_variants: EnumVariants,
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
@@ -55,6 +59,17 @@ pub struct Scope<'hir> {
     /// [diagnostics]: Scope::diagnostics
     pub(in crate::hir) recover: bool,
     pub(in crate::hir) diagnostics: Diagnostics,
+}
+
+/// A deduplicating interner for fixed-size array types
+///
+/// Uses interior mutability so it can be shared immutably with the type resolver,
+/// which only ever holds `&ResolveCtx`. Equal `(element, len)` pairs always yield
+/// the same [ArrayId], keeping [Type] equality sound
+#[derive(Debug, Default)]
+pub struct ArrayTable {
+    types: RefCell<IndexVec<ArrayId, ArrayType>>,
+    lookup: RefCell<HashMap<(Type, u32), ArrayId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +123,7 @@ impl<'hir> Scope<'hir> {
             struct_map: HashMap::new(),
             enums: IndexVec::new(),
             enum_map: HashMap::new(),
+            arrays: ArrayTable::default(),
             enum_variants: HashMap::new(),
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
@@ -278,6 +294,7 @@ impl<'hir> Scope<'hir> {
             &local_declarations,
             &local_map,
             &self.enum_map,
+            &self.arrays,
             symbols,
             &mut lowered,
             self.recover.then_some(&mut self.diagnostics),
@@ -1290,6 +1307,31 @@ impl<'hir> Scope<'hir> {
         }
 
         self.resolve_function(symbols, |m| m.item(name))
+    }
+}
+
+impl ArrayTable {
+    /// intern `[element; len]`, reusing the existing id when the type is already known
+    pub fn intern(&self, element: Type, len: u32) -> ArrayId {
+        if let Some(&id) = self.lookup.borrow().get(&(element, len)) {
+            return id;
+        }
+
+        let mut types = self.types.borrow_mut();
+        let id = ArrayId(types.len() as u32);
+        types.push(ArrayType { element, len });
+        self.lookup.borrow_mut().insert((element, len), id);
+        id
+    }
+
+    #[inline]
+    pub fn get(&self, id: ArrayId) -> ArrayType {
+        self.types.borrow()[id]
+    }
+
+    #[inline]
+    pub fn snapshot(&self) -> IndexVec<ArrayId, ArrayType> {
+        self.types.borrow().clone()
     }
 }
 

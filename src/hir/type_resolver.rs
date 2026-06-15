@@ -4,7 +4,7 @@ use crate::{
     hir::{
         RefTarget, SymbolTable, Type, TypeKind,
         error::{HirError, hir_error},
-        scope::{self, Enums, GenericEnv, Structs},
+        scope::{self, ArrayTable, Enums, GenericEnv, Structs},
     },
     lexer::token::Span,
     parser::statement,
@@ -14,6 +14,7 @@ pub(in crate::hir) struct ResolveCtx<'a> {
     pub symbols: &'a SymbolTable,
     pub struct_map: &'a Structs,
     pub enum_map: &'a Enums,
+    pub arrays: &'a ArrayTable,
     pub self_type: Option<Type>,
     pub env: Option<&'a GenericEnv>,
 }
@@ -48,6 +49,27 @@ pub(in crate::hir) fn resolve_annotation<'h>(
 
             Ok(Type::refer(to, false))
         },
+        statement::Type::Array(element, len) => {
+            let element = resolve_annotation(ctx, element, span)?;
+            let id = ctx.arrays.intern(element, *len as u32);
+            Ok(Type::array(id))
+        },
+
+        statement::Type::Slice(element) => {
+            let element = resolve_annotation(ctx, element, span)?;
+
+            let err = hir_error!(
+                span,
+                TypeMismatch {
+                    expected: Type::structure(Default::default()),
+                    found: element
+                }
+            );
+            let element = RefTarget::try_from(element).map_err(|_| err)?;
+
+            Ok(Type::slice(element, false))
+        },
+
         statement::Type::SelfType => Ok(ctx.self_type.unwrap_or(TypeKind::SelfType.into())),
         statement::Type::RefSelf => ctx.self_type.map_or(
             Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
@@ -78,8 +100,14 @@ pub(in crate::hir) fn resolve_annotation<'h>(
 }
 
 impl<'a> ResolveCtx<'a> {
-    pub fn root(symbols: &'a SymbolTable, struct_map: &'a Structs, enum_map: &'a Enums) -> Self {
-        Self { symbols, struct_map, enum_map, self_type: None, env: None }
+    #[rustfmt::skip]
+    pub fn root(
+        symbols: &'a SymbolTable,
+        struct_map: &'a Structs,
+        enum_map: &'a Enums,
+        arrays: &'a ArrayTable,
+    ) -> Self {
+        Self { symbols, struct_map, enum_map, arrays, self_type: None, env: None }
     }
 
     pub fn with_self(mut self, t: Type) -> Self {
