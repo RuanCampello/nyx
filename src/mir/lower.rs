@@ -657,7 +657,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let (then_block, else_block, short_value) = match operator {
             BinaryOperator::And => (right_id, short_id, false),
             BinaryOperator::Or => (short_id, right_id, true),
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => unreachable!("lower_short_circuit called with non-short-circuiting operator"),
         };
 
         self.terminate(Terminator::Branch { condition: left_operand, then_block, else_block });
@@ -814,21 +814,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         return Ok(());
                     },
                 };
-                let cond = self.fresh_temporary(TypeKind::Bool.into());
-                self.emit(
-                    cond,
-                    Kind::Binary {
-                        operation: BinaryOperator::Eq,
-                        lhs: Operand::Place(place),
-                        rhs: Operand::Const(rhs),
-                        checked: false,
-                    },
-                );
-                self.terminate(Terminator::Branch {
-                    condition: Operand::Place(cond),
-                    then_block: success_block,
-                    else_block: fail_block,
-                });
+                self.emit_eq_branch(Operand::Place(place), rhs, success_block, fail_block);
                 Ok(())
             },
             PatternKind::Or(alternatives) => {
@@ -858,65 +844,61 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     tag_place,
                     Kind::FieldLoad { src: Operand::Place(place), offset: 0, typ: tag_ty },
                 );
+                let tag_const = Const::Int(tag_val, tag_ty);
+                let tag_place = Operand::Place(tag_place);
 
-                let match_cond_block = self.current_block_id();
-
-                if let Some(sub_pat) = sub {
-                    let sub_block = self.new_block();
-
+                match sub {
                     // first branch on the tag: a match continues into `sub_block`,
                     // a mismatch falls through to `fail_block`
-                    let _ = match_cond_block;
-                    let cond = self.fresh_temporary(TypeKind::Bool.into());
-                    self.emit(
-                        cond,
-                        Kind::Binary {
-                            operation: BinaryOperator::Eq,
-                            lhs: Operand::Place(tag_place),
-                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
-                            checked: false,
-                        },
-                    );
-                    self.terminate(Terminator::Branch {
-                        condition: Operand::Place(cond),
-                        then_block: sub_block,
-                        else_block: fail_block,
-                    });
+                    Some(sub_pat) => {
+                        let sub_block = self.new_block();
+                        self.emit_eq_branch(tag_place, tag_const, sub_block, fail_block);
+                        self.switch_to(sub_block);
 
-                    // only inside `sub_block` (tag confirmed) do we read the payload
-                    // and recursively match the sub-pattern
-                    self.switch_to(sub_block);
-                    let offset = self.enums[*enum_id].payload_offset;
-                    let typ = variant
-                        .payload
-                        .expect("Variant must have payload type since it has subpattern");
-                    let payload_place = self.fresh_temporary(typ);
-                    self.emit(
-                        payload_place,
-                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
-                    );
-                    self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
-                } else {
-                    // Just check tag
-                    let cond = self.fresh_temporary(TypeKind::Bool.into());
-                    self.emit(
-                        cond,
-                        Kind::Binary {
-                            operation: BinaryOperator::Eq,
-                            lhs: Operand::Place(tag_place),
-                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
-                            checked: false,
-                        },
-                    );
-                    self.terminate(Terminator::Branch {
-                        condition: Operand::Place(cond),
-                        then_block: success_block,
-                        else_block: fail_block,
-                    });
+                        let offset = self.enums[*enum_id].payload_offset;
+                        let typ = variant
+                            .payload
+                            .expect("variant must have payload type since it has subpattern");
+                        let payload_place = self.fresh_temporary(typ);
+                        let instr = Kind::FieldLoad { src: Operand::Place(place), offset, typ };
+                        self.emit(payload_place, instr);
+                        self.lower_pattern_match(
+                            payload_place,
+                            sub_pat,
+                            success_block,
+                            fail_block,
+                        )?;
+                    },
+                    // just check the tag
+                    None => self.emit_eq_branch(tag_place, tag_const, success_block, fail_block),
                 }
                 Ok(())
             },
         }
+    }
+
+    /// emit `cond = lhs == rhs`, then branch to `then_block` if `cond` is true,
+    /// otherwise to `else_block`
+    fn emit_eq_branch(
+        &mut self,
+        lhs: Operand,
+        rhs: Const,
+        then_block: BlockId,
+        else_block: BlockId,
+    ) {
+        let cond = self.fresh_temporary(TypeKind::Bool.into());
+        let instr = InstructionKind::Binary {
+            operation: BinaryOperator::Eq,
+            lhs,
+            rhs: Operand::Const(rhs),
+            checked: false,
+        };
+        self.emit(cond, instr);
+        self.terminate(Terminator::Branch {
+            condition: Operand::Place(cond),
+            then_block,
+            else_block,
+        });
     }
 
     #[inline(always)]
