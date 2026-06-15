@@ -307,6 +307,10 @@ pub enum Type<'i> {
     Named(&'i str),
     SelfType, RefSelf,
     Ref(Box<Type<'i>>),
+    /// fixed-size array `[T; N]`
+    Array(Box<Type<'i>>, u64),
+    /// borrowed slice `&[T]`, a fat pointer of (ptr, len)
+    Slice(Box<Type<'i>>),
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     #[allow(dead_code)]
     Unit,
@@ -1203,6 +1207,17 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         if parser.consume_token(Punct::Ampersand)? {
             let start = parser.last_span().unwrap_or_default();
+
+            if parser.consume_token(Punct::OpenBracket)? {
+                let (element, length) = parse_bracketed_type(parser)?;
+                let end = parser.expect_token(Punct::CloseBracket)?.span;
+                let kind = match length {
+                    Some(len) => Type::Ref(Box::new(Type::Array(Box::new(element), len))),
+                    None => Type::Slice(Box::new(element)),
+                };
+                return Ok(Self::new(kind, start + end));
+            }
+
             let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
             let span = start + inner.span();
             let kind = match inner.value() {
@@ -1211,6 +1226,22 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
                 other => Type::Ref(Box::new(other)),
             };
             return Ok(Self::new(kind, span));
+        }
+
+        if parser.consume_token(Punct::OpenBracket)? {
+            let start = parser.last_span().unwrap_or_default();
+            let (element, length) = parse_bracketed_type(parser)?;
+            let end = parser.expect_token(Punct::CloseBracket)?.span;
+            let len = length.ok_or_else(|| {
+                ParserError::new(
+                    ParseErrorKind::Expected {
+                        expected: Punct::Semicolon.into(),
+                        found: Punct::CloseBracket.into(),
+                    },
+                    end,
+                )
+            })?;
+            return Ok(Self::new(Type::Array(Box::new(element), len), start + end));
         }
 
         if parser.consume_token(Punct::Bang)? {
@@ -1234,6 +1265,30 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
 
         Ok(Self::new(value, type_span))
     }
+}
+
+fn parse_bracketed_type<'i>(
+    parser: &mut Parser<'i>,
+) -> Result<(Type<'i>, Option<u64>), ParserError<'i>> {
+    let element = parser.parse_node::<Spanned<Type<'i>>>()?.value();
+
+    let length = match parser.consume_token(Punct::Semicolon)? {
+        true => {
+            let token = parser.expect_next()?;
+            match token.kind {
+                TokenKind::Integer(n) if n >= 0 => Some(n as u64),
+                _ => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::ExpectedExpression { found: token.kind },
+                        token.span,
+                    ));
+                },
+            }
+        },
+        false => None,
+    };
+
+    Ok((element, length))
 }
 
 fn parse_receiver_and_params<'i>(

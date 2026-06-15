@@ -53,6 +53,12 @@ pub enum Expression<'i> {
         span: Span,
     },
     Cast { expr: Box<Expression<'i>>, target_type: Spanned<Type<'i>>, span: Span },
+    /// array literal `[a, b, c]`
+    Array { elements: Vec<Expression<'i>>, span: Span },
+    /// array repeat literal `[value; count]`
+    ArrayRepeat { value: Box<Expression<'i>>, count: u64, span: Span },
+    /// indexing `base[index]`
+    Index { base: Box<Expression<'i>>, index: Box<Expression<'i>>, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,7 +118,10 @@ impl<'i> Expression<'i> {
             | Self::QualifiedCall { span, .. }
             | Self::QualifiedName { span, .. }
             | Self::TypeIntrinsic { span, .. }
-            | Self::Cast { span, .. } => *span,
+            | Self::Cast { span, .. }
+            | Self::Array { span, .. }
+            | Self::ArrayRepeat { span, .. }
+            | Self::Index { span, .. } => *span,
         }
     }
 
@@ -177,6 +186,8 @@ impl<'i> Expression<'i> {
                 Ok(expr)
             },
 
+            TokenKind::Punct(Punct::OpenBracket) => Self::parse_array_literal(parser, token.span),
+
             _ => Err(ParserError::new(
                 ParseErrorKind::ExpectedExpression { found: token.kind },
                 token.span,
@@ -207,6 +218,49 @@ impl<'i> Expression<'i> {
         Ok(Expression::Struct { name, fields, type_args, span })
     }
 
+    fn parse_array_literal(parser: &mut Parser<'i>, open: Span) -> Result<Self, ParserError<'i>> {
+        if let Some(Ok(token)) = parser.peek()
+            && token.is_kind(Punct::CloseBracket)
+        {
+            let close = parser.expect_token(Punct::CloseBracket)?.span;
+            return Ok(Expression::Array { elements: Vec::new(), span: open + close });
+        }
+
+        let first = parser.parse_node()?;
+
+        if parser.consume_token(Punct::Semicolon)? {
+            let token = parser.expect_next()?;
+            let count = match token.kind {
+                TokenKind::Integer(n) if n >= 0 => n as u64,
+                _ => {
+                    return Err(ParserError::new(
+                        ParseErrorKind::ExpectedExpression { found: token.kind },
+                        token.span,
+                    ));
+                },
+            };
+            let close = parser.expect_token(Punct::CloseBracket)?.span;
+            return Ok(Expression::ArrayRepeat {
+                value: Box::new(first),
+                count,
+                span: open + close,
+            });
+        }
+
+        let mut elements = vec![first];
+        while parser.consume_token(Punct::Comma)? {
+            if let Some(Ok(token)) = parser.peek()
+                && token.is_kind(Punct::CloseBracket)
+            {
+                break;
+            }
+            elements.push(parser.parse_node()?);
+        }
+
+        let close = parser.expect_token(Punct::CloseBracket)?.span;
+        Ok(Expression::Array { elements, span: open + close })
+    }
+
     #[inline(always)]
     const fn infix_precedence(kind: &TokenKind) -> u8 {
         match kind {
@@ -225,6 +279,7 @@ impl<'i> Expression<'i> {
             TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 10,
             TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 11,
             TokenKind::Punct(Punct::OpenParen) => 12, // function call
+            TokenKind::Punct(Punct::OpenBracket) => 12, // indexing
             TokenKind::Keyword(Keyword::As) => 12,    // casting
             TokenKind::Punct(Punct::ColonColon) => 13,
             TokenKind::Punct(Punct::Dot) => 14, // field access
@@ -400,6 +455,14 @@ impl<'i> Expression<'i> {
 
                     _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
                 }
+            },
+
+            TokenKind::Punct(Punct::OpenBracket) => {
+                let index = parser.parse_node::<Expression<'i>>()?;
+                let close = parser.expect_token(Punct::CloseBracket)?.span;
+                let span = left.span() + close;
+
+                Ok(Expression::Index { base: Box::new(left), index: Box::new(index), span })
             },
 
             TokenKind::Keyword(Keyword::As) => {
