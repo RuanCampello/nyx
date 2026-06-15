@@ -304,6 +304,16 @@ impl<'a, 'h> Walker<'a, 'h> {
                 }
             },
             ExpressionKind::Cast { from, .. } => self.expr(from),
+            ExpressionKind::Array { elements } => {
+                for element in *elements {
+                    self.expr(element);
+                }
+            },
+            ExpressionKind::ArrayRepeat { value, .. } => self.expr(value),
+            ExpressionKind::Index { base, index } => {
+                self.expr(base);
+                self.expr(index);
+            },
             ExpressionKind::Match { scrutinee, arms } => {
                 self.expr(scrutinee);
                 for arm in *arms {
@@ -464,7 +474,7 @@ fn layout_of(hir: &Hir<'_>, typ: Type) -> Option<(u32, u32)> {
         | TypeKind::SelfType
         | TypeKind::GenericParam(_)
         | TypeKind::Error => None,
-        _ => Some(hir::type_layout(typ, &hir.structs, &hir.enums)),
+        _ => Some(hir::type_layout(typ, &hir.structs, &hir.enums, &hir.arrays)),
     }
 }
 
