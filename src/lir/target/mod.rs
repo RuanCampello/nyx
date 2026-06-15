@@ -60,6 +60,7 @@ pub trait Lowerable: Target {
         all_functions: &[mir::Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
+        array_layouts: &[mir::Layout],
     ) -> lir::Function<Self>;
 }
 
@@ -302,10 +303,11 @@ impl<'f, T: Target> Lower<'f, T> {
         function: &'f Function,
         symbols: &'f SymbolTable,
         all_functions: &'f [Function],
-        struct_layouts: &'f [mir::Layout],
-        enum_layouts: &'f [mir::Layout],
+        structs: &'f [mir::Layout],
+        enums: &'f [mir::Layout],
+        arrays: &'f [mir::Layout],
     ) -> Self {
-        let layouts = Layouts { structs: struct_layouts, enums: enum_layouts };
+        let layouts = Layouts { structs, enums, arrays };
         let name = assembly_label(symbols.get(function.name_symbol));
         let mut lir = lir::Function::<T>::new(name);
 
