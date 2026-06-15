@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, Statement, SymbolId,
-        SymbolTable, Type, TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, RefTarget, Statement,
+        SymbolId, SymbolTable, Type, TypeKind, index_vec::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -371,7 +371,32 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             Operand::Place(place) => place,
                             Operand::Const(_) => unreachable!("cannot take address of constant"),
                         };
-                        self.emit(dest, Kind::AddressOf { src, offset: 0 })
+
+                        match typ.is_slice() {
+                            // `&array` builds a (ptr, len) fat pointer
+                            true => {
+                                let (_, _, len) = self.array_info(self.typeck.type_of(inner.id));
+                                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                                let ptr = self.fresh_temporary(pointer);
+                                self.emit(ptr, Kind::AddressOf { src, offset: 0 });
+
+                                self.emit(
+                                    dest,
+                                    Kind::FieldStore { value: Operand::Place(ptr), offset: 0 },
+                                );
+                                self.emit(
+                                    dest,
+                                    Kind::FieldStore {
+                                        value: Operand::Const(Const::Int(
+                                            len as i64,
+                                            TypeKind::Uptr.into(),
+                                        )),
+                                        offset: 8,
+                                    },
+                                );
+                            },
+                            false => self.emit(dest, Kind::AddressOf { src, offset: 0 }),
+                        }
                     },
                     _ => self.emit(dest, Kind::Unary { operation: operator, rhs }),
                 };
@@ -428,6 +453,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Assign { target, value } => {
                 let target = *target;
                 let value_expr = *value;
+
+                if let ExpressionKind::Index { base, index } = &target.kind {
+                    let base_type = self.typeck.type_of(base.id);
+                    let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                    let index = self.lower_expr(index)?;
+                    let value = self.lower_expr(value_expr)?;
+                    let base = match base {
+                        Operand::Place(place) => place,
+                        Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+                    };
+
+                    self.emit(base, Kind::ElementStore { index, bound, value, stride });
+
+                    return Ok(value);
+                }
+
                 if let ExpressionKind::Local(local) = &target.kind {
                     self.constant_locals[*local] = self.capture_constant_expr(value_expr);
                 }
@@ -614,18 +655,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::Index { base, index } => {
-                let (element, stride, len) = self.array_info(self.typeck.type_of(base.id));
-                let base = self.lower_expr(base)?;
+                let base_type = self.typeck.type_of(base.id);
+                let (base, bound, element, stride) = self.index_operands(base, base_type)?;
                 let index = self.lower_expr(index)?;
                 let dest = self.fresh_temporary(element);
 
-                self.emit(dest, Kind::ElementLoad {
-                    base,
-                    index,
-                    bound: Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into())),
-                    stride,
-                    typ: element,
-                });
+                self.emit(dest, Kind::ElementLoad { base, index, bound, stride, typ: element });
 
                 Ok(Operand::Place(dest))
             },
@@ -821,6 +856,61 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 (array.element, size, array.len)
             },
             _ => unreachable!("array_info on a non-array type"),
+        }
+    }
+
+    /// `(element, element_size)` of an indexable type (array or slice)
+    fn element_info(&self, typ: Type) -> (Type, u32) {
+        let element = match typ.kind() {
+            TypeKind::Array(id) => self.arrays[id].element,
+            TypeKind::Slice { element, .. } => element.into(),
+            _ => unreachable!("element_info on a non-indexable type"),
+        };
+        let (stride, _) = hir::type_layout(element, self.structs, self.enums, self.arrays);
+        (element, stride)
+    }
+
+    /// lower an index base into `(base, bound, element, stride)` so the same
+    /// [InstructionKind::ElementLoad]/[InstructionKind::ElementStore] serve arrays
+    /// and slices: arrays index their own stack storage against a constant length,
+    /// slices index through the fat pointer's `ptr` against its runtime `len`
+    fn index_operands(
+        &mut self,
+        base: &Expression<'hir>,
+        base_type: Type,
+    ) -> Result<(Operand, Operand, Type, u32), MirError> {
+        let (element, stride) = self.element_info(base_type);
+
+        match base_type.kind() {
+            TypeKind::Slice { .. } => {
+                let slice = match self.lower_expr(base)? {
+                    Operand::Place(place) => place,
+                    Operand::Const(_) => unreachable!("indexing a constant slice"),
+                };
+                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                let ptr = self.fresh_temporary(pointer);
+                let instr = InstructionKind::FieldLoad {
+                    src: Operand::Place(slice),
+                    offset: 0,
+                    typ: pointer,
+                };
+                self.emit(ptr, instr);
+
+                let len = self.fresh_temporary(TypeKind::Uptr.into());
+                let instr = InstructionKind::FieldLoad {
+                    src: Operand::Place(slice),
+                    offset: 8,
+                    typ: TypeKind::Uptr.into(),
+                };
+                self.emit(len, instr);
+                Ok((Operand::Place(ptr), Operand::Place(len), element, stride))
+            },
+            _ => {
+                let (_, _, len) = self.array_info(base_type);
+                let base = self.lower_expr(base)?;
+                let bound = Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into()));
+                Ok((base, bound, element, stride))
+            },
         }
     }
 

@@ -110,6 +110,12 @@ pub enum InstructionKind {
     /// store `value` into the destination aggregate at byte `offset`
     FieldStore { value: Operand, offset: u32 },
 
+    /// store `value` into `dest[index]` of a row-major aggregate of `stride`-byte elements
+    ///
+    /// the destination aggregate is the instruction's `dest` place, `bound` drives the
+    /// same backend-only bounds check as [InstructionKind::ElementLoad]
+    ElementStore { index: Operand, bound: Operand, value: Operand, stride: u32 },
+
     AddressOf { src: Place, offset: u32 },
 
     Call {
