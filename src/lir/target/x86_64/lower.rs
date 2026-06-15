@@ -27,9 +27,16 @@ impl Lowerable for X86_64 {
         all_functions: &[Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
+        array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let mut lower =
-            Lower::<X86_64>::new(function, symbols, all_functions, struct_layouts, enum_layouts);
+        let mut lower = Lower::<X86_64>::new(
+            function,
+            symbols,
+            all_functions,
+            struct_layouts,
+            enum_layouts,
+            array_layouts,
+        );
 
         lower.lower_param_moves();
 
@@ -306,6 +313,84 @@ impl<'f> Lower<'f, X86_64> {
                     is_float,
                 );
                 self.lir.push_instr(id, instruction);
+            },
+
+            InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
+                let typ = *typ;
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                // materialise the index into a 64-bit register, shared by the
+                // bounds check and the address computation
+                let index_reg = self.lir.new_vreg(int8);
+                let index_src = self.lower_operand(index);
+                let instr = X86Instr::Mov { dest: index_reg, src: index_src, bytes: 8 };
+                self.lir.push_instr(id, instr);
+
+                let bound = self.lower_operand(bound);
+                let instr = X86Instr::BoundsCheck { index: index_reg, bound };
+                self.lir.push_instr(id, instr);
+
+                // element address = base address + index * stride
+                let Operand::Place(base) = base else {
+                    unreachable!("indexing a constant aggregate");
+                };
+                let origin = self.value[base.id];
+                let addr = self.lir.new_vreg(int8);
+                match base.typ.kind() {
+                    TypeKind::Ref { .. } => self.lir.push_instr(
+                        id,
+                        X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 },
+                    ),
+                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin }),
+                }
+
+                let offset = self.lir.new_vreg(int8);
+                let instr =
+                    X86Instr::Mov { dest: offset, src: X86Operand::VReg(index_reg), bytes: 8 };
+                self.lir.push_instr(id, instr);
+
+                let src = X86Operand::Imm(*stride as i64);
+                let instr = X86Instr::Imul { dest: offset, src, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                // the accumulator is freshly copied before the add,
+                // so its register stays distinct from the base address
+                let element = self.lir.new_vreg(int8);
+                let instr = X86Instr::Mov { dest: element, src: X86Operand::VReg(addr), bytes: 8 };
+                self.lir.push_instr(id, instr);
+
+                let src = X86Operand::VReg(offset);
+                let instr = X86Instr::Add { dest: element, src, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                match typ.is_aggregate() {
+                    true => {
+                        let size = typ.machine_type(self.layouts).stack_size() as u32;
+                        let copy = AggregateCopy {
+                            src: element,
+                            dest,
+                            src_ref: true,
+                            dest_ref: false,
+                            src_base: 0,
+                            dest_base: 0,
+                            size,
+                        };
+                        aggregate_copy(&mut self.lir, id, copy);
+                    },
+                    false => {
+                        let mt = typ.machine_type(self.layouts);
+                        let instruction = X86_64::scalar_load(
+                            true,
+                            dest,
+                            element,
+                            0,
+                            mt.bytes(),
+                            typ.is_float(),
+                            mt.is_signed(),
+                        );
+                        self.lir.push_instr(id, instruction);
+                    },
+                }
             },
 
             #[rustfmt::skip]
