@@ -379,6 +379,22 @@ where
                 Kind::Assign { target: target.expr, value: value.expr }
             },
             Kind::Path(symbol) => Kind::Path(*symbol),
+            Kind::Array { elements } => {
+                let elements = elements
+                    .iter()
+                    .map(|element| self.splice_const(element, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                Kind::Array { elements: self.arena.alloc_slice_copy(&elements) }
+            },
+            Kind::ArrayRepeat { value, count } => {
+                let value = self.splice_const(value, const_typeck, span);
+                Kind::ArrayRepeat { value: value.expr, count: *count }
+            },
+            Kind::Index { base, index } => {
+                let base = self.splice_const(base, const_typeck, span);
+                let index = self.splice_const(index, const_typeck, span);
+                Kind::Index { base: base.expr, index: index.expr }
+            },
             Kind::MethodCall { name, receiver, args } => {
                 let receiver = self.splice_const(receiver, const_typeck, span);
                 let args = args
@@ -890,6 +906,74 @@ where
                 ))
             },
 
+            Expr::Array { elements, span } => {
+                let element_hint = hint.and_then(|h| self.element_type(h));
+                let mut lowered = Vec::with_capacity(elements.len());
+                let mut element_type = None;
+
+                for element in elements {
+                    let value = self.lower_expr(element, element_type.or(element_hint))?;
+
+                    let expected = element_type.get_or_insert(value.typ);
+                    self.assert_type(*expected, value.typ, value.span)?;
+
+                    lowered.push(value.expr);
+                }
+
+                let element_type = element_type
+                    .or(element_hint)
+                    .ok_or_else(|| hir_error!(*span, EmptyArrayType))?;
+                let id = self.scope.arrays.intern(element_type, elements.len() as u32);
+                let elements = self.arena.alloc_slice_copy(&lowered);
+
+                Ok(self.alloc(ExpressionKind::Array { elements }, Type::array(id), *span))
+            },
+
+            Expr::ArrayRepeat { value, count, span } => {
+                let element_hint = hint.and_then(|h| self.element_type(h));
+                let value = self.lower_expr(value, element_hint)?;
+                let count = *count as u32;
+                let id = self.scope.arrays.intern(value.typ, count);
+
+                Ok(self.alloc(
+                    ExpressionKind::ArrayRepeat { value: value.expr, count },
+                    Type::array(id),
+                    *span,
+                ))
+            },
+
+            Expr::Index { base, index, span } => {
+                let base_lowered = self.lower_expr(base, None)?;
+                let element = self
+                    .element_type(base_lowered.typ)
+                    .ok_or_else(|| hir_error!(*span, NotIndexable { typ: base_lowered.typ }))?;
+
+                let index_lowered = self.lower_expr(index, Some(TypeKind::Uptr.into()))?;
+                if !index_lowered.typ.is_integer() {
+                    return Err(hir_error!(
+                        index_lowered.span,
+                        TypeMismatch { expected: TypeKind::Uptr.into(), found: index_lowered.typ }
+                    ));
+                }
+
+                // a statically-known array index is bounds-checked at compile time,
+                // dynamic indices and all slices fall back to the runtime check in MIR
+                if let TypeKind::Array(id) = base_lowered.typ.kind()
+                    && let ExpressionKind::Literal(Literal::Int(k)) = index_lowered.expr.kind
+                {
+                    let len = self.scope.arrays.get(id).len;
+                    if k < 0 || k as u64 >= len as u64 {
+                        return Err(hir_error!(*span, IndexOutOfBounds { index: k as u64, len }));
+                    }
+                }
+
+                Ok(self.alloc(
+                    ExpressionKind::Index { base: base_lowered.expr, index: index_lowered.expr },
+                    element,
+                    *span,
+                ))
+            },
+
             Expr::Call { callee, args, span, type_args } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let receiver_lowered = self.lower_expr(receiver, None)?;
@@ -1041,6 +1125,7 @@ where
                     self.symbols,
                     &self.scope.struct_map,
                     &self.scope.enum_map,
+                    &self.scope.arrays,
                 );
                 let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
 
@@ -1346,6 +1431,7 @@ where
             self.symbols,
             &self.scope.struct_map,
             &self.scope.enum_map,
+            &self.scope.arrays,
         );
         if let Some(typ) = self.self_type {
             ctx = ctx.with_self(typ);
@@ -1674,6 +1760,26 @@ where
                 Ok(typ)
             },
 
+            statement::Type::Array(element, len) => {
+                let element = self.resolve_type(element, span)?;
+                let id = self.scope.arrays.intern(element, *len as u32);
+                Ok(Type::array(id))
+            },
+
+            statement::Type::Slice(element) => {
+                let element = self.resolve_type(element, span)?;
+                let element = RefTarget::try_from(element).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: element
+                        }
+                    )
+                })?;
+                Ok(Type::slice(element, false))
+            },
+
             other => Type::from_primitive_ast(other)
                 .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
         }
@@ -1783,6 +1889,16 @@ where
     }
 
     /// Resolve a single field step on `current`, returning `(field_symbol, field_type)`
+    /// The element type of an indexable type: an array, a slice, or a reference to either.
+    fn element_type(&self, typ: Type) -> Option<Type> {
+        match typ.kind() {
+            TypeKind::Array(id) => Some(self.scope.arrays.get(id).element),
+            TypeKind::Slice { element, .. } => Some(element.into()),
+            TypeKind::Ref { to, .. } => self.element_type(to.into()),
+            _ => None,
+        }
+    }
+
     fn lookup_field(
         &mut self,
         current: Type,
