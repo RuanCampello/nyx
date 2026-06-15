@@ -337,10 +337,11 @@ impl<'f> Lower<'f, X86_64> {
                 let origin = self.value[base.id];
                 let addr = self.lir.new_vreg(int8);
                 match base.typ.kind() {
-                    TypeKind::Ref { .. } => self.lir.push_instr(
-                        id,
-                        X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 },
-                    ),
+                    TypeKind::Ref { .. } => {
+                        let instr =
+                            X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 };
+                        self.lir.push_instr(id, instr)
+                    },
                     _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin }),
                 }
 
