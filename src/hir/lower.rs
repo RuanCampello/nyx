@@ -632,7 +632,7 @@ where
             },
 
             Expr::Unary { operator, expr, span } => {
-                let hint = match operator {
+                let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| {
@@ -645,7 +645,7 @@ where
                     }),
                     UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
                 };
-                let expr = self.lower_expr(expr, hint)?;
+                let expr = self.lower_expr(expr, inner_hint)?;
 
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
@@ -687,17 +687,20 @@ where
                         },
                     },
 
-                    UnaryOperator::Ref => {
-                        let to = RefTarget::try_from(expr.typ).map_err(|_| {
-                            hir_error!(
+                    UnaryOperator::Ref => match self.coerce_array_to_slice(expr.typ, hint) {
+                        // `&array` unsizes to a `&[T]` slice when the context expects one
+                        Some(slice) => slice,
+                        None => {
+                            let err = hir_error!(
                                 expr.span,
                                 TypeMismatch {
                                     expected: Type::structure(Default::default()),
                                     found: expr.typ
                                 }
-                            )
-                        })?;
-                        Type::refer(to, false)
+                            );
+                            let to = RefTarget::try_from(expr.typ).map_err(|_| err)?;
+                            Type::refer(to, false)
+                        },
                     },
                 };
 
@@ -803,7 +806,9 @@ where
                 if !self[local].mutable {
                     let err_span = match &target_lowered.expr.kind {
                         ExpressionKind::Local(_) => span,
-                        ExpressionKind::Field { .. } => &target.span(),
+                        ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
+                            &target.span()
+                        },
                         _ => span,
                     };
 
@@ -1888,7 +1893,23 @@ where
         Ok(None)
     }
 
-    /// Resolve a single field step on `current`, returning `(field_symbol, field_type)`
+    // TODO: this in the future will be replaced by some kind of
+    // Deref equivalent we find more convienient
+    // that would be much more important when we introduce more ds and iterables
+    fn coerce_array_to_slice(&self, operand: Type, hint: Option<Type>) -> Option<Type> {
+        let slice = hint?;
+        let TypeKind::Slice { element, .. } = slice.kind() else {
+            return None;
+        };
+
+        match operand.kind() {
+            TypeKind::Array(id) if self.scope.arrays.get(id).element == element.into() => {
+                Some(slice)
+            },
+            _ => None,
+        }
+    }
+
     /// The element type of an indexable type: an array, a slice, or a reference to either.
     fn element_type(&self, typ: Type) -> Option<Type> {
         match typ.kind() {

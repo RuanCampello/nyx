@@ -455,6 +455,11 @@ impl Type {
         tag == STRUCT || tag == STR || tag == STRING || tag == ARRAY || tag == SLICE
     }
 
+    #[inline(always)]
+    pub const fn is_slice(self) -> bool {
+        tag(self.0) == SLICE
+    }
+
 
     #[inline(always)]
     pub const fn diverges(&self) -> bool {

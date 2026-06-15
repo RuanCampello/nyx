@@ -930,6 +930,22 @@ impl<'hir> Scope<'hir> {
                 self.instantiate_generic(name, &resolved, span, symbols)
             },
 
+            statement::Type::Array(element, len) => {
+                let element = self.resolve_type(element, span, symbols, self_type, env)?;
+                Ok(Type::array(self.arrays.intern(element, *len as u32)))
+            },
+
+            statement::Type::Slice(element) => {
+                let element = self.resolve_type(element, span, symbols, self_type, env)?;
+                let element = RefTarget::try_from(element).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch { expected: Type::structure(Default::default()), found: element }
+                    )
+                })?;
+                Ok(Type::slice(element, false))
+            },
+
             // `Generic` is handled above; this arm only sees primitives, which `from_primitive_ast`
             // always resolves, so the error branch is effectively unreachable
             other => Type::from_primitive_ast(other)
