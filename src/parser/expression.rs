@@ -191,46 +191,20 @@ impl<'i> Expression<'i> {
         span: Span,
     ) -> Result<Self, ParserError<'i>> {
         parser.expect_token(Punct::OpenBrace)?;
-        let mut fields = Vec::new();
 
-        let make_struct = |parser: &mut Parser<'i>, fields| {
-            let close = parser.expect_token(Punct::CloseBrace)?;
-            let span = span + close.span;
+        let (fields, close_span) =
+            statement::parse_comma_separated(parser, Punct::CloseBrace, |parser| {
+                let (name, field_span) = parser.expect_identifier()?;
+                parser.expect_token(Punct::Colon)?;
+                let value = parser.parse_node::<Expression>()?;
+                let span = field_span + value.span();
 
-            Ok(Expression::Struct { name, fields, type_args, span })
-        };
+                Ok(StructField { name, value, span })
+            })?;
 
-        loop {
-            match parser.peek() {
-                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    return make_struct(parser, fields);
-                },
-                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                },
-                Some(Err(err)) => return Err(err.into()),
-                _ => {},
-            }
+        let span = span + close_span;
 
-            if !fields.is_empty() {
-                // trailing commas maybe?
-                parser.expect_token(Punct::Comma)?;
-
-                match parser.peek() {
-                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                        return make_struct(parser, fields);
-                    },
-                    _ => {},
-                }
-            }
-
-            let (name, field_span) = parser.expect_identifier()?;
-            parser.expect_token(Punct::Colon)?;
-            let value = parser.parse_node::<Expression>()?;
-            let span = field_span + value.span();
-
-            fields.push(StructField { name, value, span });
-        }
+        Ok(Expression::Struct { name, fields, type_args, span })
     }
 
     #[inline(always)]
@@ -371,7 +345,7 @@ impl<'i> Expression<'i> {
                 if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::OpenParen)) {
                     if let Ok(kind) = TypeIntrinsicKind::from_str(name) {
                         parser.expect_token(Punct::OpenParen)?;
-                        let typ = Spanned::<Type>::parse(parser)?;
+                        let typ = parser.parse_node::<Spanned<Type>>()?;
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
 
                         return Ok(Expression::TypeIntrinsic {
@@ -399,7 +373,7 @@ impl<'i> Expression<'i> {
                 if let Expression::Identifier(name, _) = &left
                     && let Ok(kind) = TypeIntrinsicKind::from_str(name)
                 {
-                    let typ = Spanned::<Type>::parse(parser)?;
+                    let typ = parser.parse_node::<Spanned<Type>>()?;
                     let end_span = parser.expect_token(Punct::CloseParen)?.span;
                     let span = left.span() + end_span;
 
@@ -429,7 +403,7 @@ impl<'i> Expression<'i> {
             },
 
             TokenKind::Keyword(Keyword::As) => {
-                let target_type = Spanned::<Type>::parse(parser)?;
+                let target_type = parser.parse_node::<Spanned<Type>>()?;
                 let span = left.span() + target_type.span();
 
                 Ok(Expression::Cast { expr: Box::new(left), target_type, span })
