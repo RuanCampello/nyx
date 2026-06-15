@@ -13,7 +13,7 @@
 use crate::{
     emit, label,
     lir::{
-        CheckedOperation, Function, MachineType, Term, VReg,
+        Checked, Function, MachineType, Panic, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
@@ -61,24 +61,14 @@ impl Emittable<AArch64> for Function<AArch64> {
     }
 
     fn emit_panic_handlers(out: &mut String) {
-        let flags = A64Instr::take();
-
-        let mut emit = |flag: u8| {
-            if flags & flag == 0 {
-                return;
-            }
-
-            let symbol = A64Instr::symbol_for_flag(flag).expect("flag must map to a valid symbol");
+        for panic in Panic::required() {
+            let symbol = panic.symbol();
             label!(out, ".globl {symbol}");
             label!(out, "{symbol}:");
             emit!(out, "mov     x8, #93");
             emit!(out, "mov     x0, #{PANIC_EXIT_CODE}");
             emit!(out, "svc     #0");
-        };
-
-        emit(A64Instr::ADD);
-        emit(A64Instr::SUB);
-        emit(A64Instr::MUL);
+        }
     }
 }
 
@@ -362,7 +352,8 @@ impl Function<AArch64> {
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
-                if let Some(symbol) = instruction.mark() {
+                if let Some(panic) = instruction.overflow_panic() {
+                    let symbol = panic.require();
                     match (instruction, self.is_signed(dest_vreg)) {
                         (_, true) => emit!(out, "b.vs    {symbol}"),
                         (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
@@ -434,6 +425,17 @@ impl Function<AArch64> {
             A64Instr::Cset { dest, cond } => {
                 let dest = alloc.location(dest, &4);
                 emit!(out, "cset    {dest}, {}", cond.as_str());
+            },
+
+            A64Instr::BoundsCheck { index, bound } => {
+                let index = alloc.location(index, &8);
+                let index = load_src_if_mem_with_scratch(out, &index, 8, false, A64Reg::X16, A64Reg::D16);
+                let bound = self.operand(alloc, bound, &8);
+                let bound = load_src_if_mem_with_scratch(out, &bound, 8, false, A64Reg::X17, A64Reg::D17);
+                let symbol = Panic::IndexOutOfBounds.require();
+
+                emit!(out, "cmp     {index}, {bound}");
+                emit!(out, "b.hs    {symbol}");
             },
 
             #[rustfmt::skip]
