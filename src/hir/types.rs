@@ -54,6 +54,11 @@ pub enum TypeKind {
     Str, String,
     Struct(StructId),
     Enum(EnumId),
+    Array(ArrayId),
+    Slice {
+        mutable: bool,
+        element: RefTarget,
+    },
     SelfType,
     Ref {
         mutable: bool,
@@ -81,6 +86,9 @@ pub enum EnumRepr {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ArrayId(pub u32);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumId(u32, EnumRepr);
@@ -111,6 +119,9 @@ const GENERIC_PARAM: u8 = 21;
 const NEVER: u8 = 22;
 
 const ERROR: u8 = 23;
+
+const ARRAY: u8 = 24;
+const SLICE: u8 = 25;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -251,6 +262,17 @@ impl Type {
             TypeKind::Enum(id) => {
                 Self((ENUM as u64) | ((id.0 as u64) << 8) | ((id.1.to_u8() as u64) << 40))
             },
+            TypeKind::Array(id) => Self((ARRAY as u64) | ((id.0 as u64) << 8)),
+            TypeKind::Slice { mutable, element } => {
+                let mut bits = SLICE as u64;
+                if mutable {
+                    bits |= 1 << MUT_BIT_SHIFT;
+                }
+                let target_bits = element.0;
+                let payload_bits = (target_bits & !TAG_MASK) << REF_PAYLOAD_SHIFT;
+                let tag_bits = (target_bits & REF_TAG_MASK) << REF_TAG_SHIFT;
+                Self(bits | tag_bits | payload_bits)
+            },
 
             TypeKind::Ref { mutable, to } => {
                 let mut bits = REF as u64;
@@ -290,6 +312,16 @@ impl Type {
     #[inline]
     pub const fn enumerable(id: EnumId) -> Self {
         Self::new(TypeKind::Enum(id))
+    }
+
+    #[inline]
+    pub const fn array(id: ArrayId) -> Self {
+        Self::new(TypeKind::Array(id))
+    }
+
+    #[inline]
+    pub const fn slice(element: RefTarget, mutable: bool) -> Self {
+        Self::new(TypeKind::Slice { mutable, element })
     }
 
     #[inline]
@@ -338,6 +370,15 @@ impl Type {
                 let id = ((self.0 >> 8) & 0xFFFFFFFF) as u32;
                 let repr_u8 = ((self.0 >> 40) & 0xFF) as u8;
                 TypeKind::Enum(EnumId(id, EnumRepr::from_u8(repr_u8)))
+            },
+            ARRAY => TypeKind::Array(ArrayId((self.0 >> 8) as u32)),
+            SLICE => {
+                let mutable = ((self.0 >> MUT_BIT_SHIFT) & 1) != 0;
+                let element = RefTarget(
+                    ((self.0 >> REF_PAYLOAD_SHIFT) & !TAG_MASK)
+                        | ((self.0 >> REF_TAG_SHIFT) & REF_TAG_MASK),
+                );
+                TypeKind::Slice { mutable, element }
             },
             REF => {
                 let mutable = ((self.0 >> MUT_BIT_SHIFT) & 1) != 0;
@@ -411,8 +452,9 @@ impl Type {
     #[inline(always)]
     pub const fn is_aggregate(self) -> bool {
         let tag = tag(self.0);
-        tag == STRUCT || tag == STR || tag == STRING
+        tag == STRUCT || tag == STR || tag == STRING || tag == ARRAY || tag == SLICE
     }
+
 
     #[inline(always)]
     pub const fn diverges(&self) -> bool {
@@ -449,7 +491,11 @@ impl Type {
                 TypeKind::Ref { mutable: false, to: RefTarget::new(TypeKind::SelfType) }
             },
             AstType::Never => TypeKind::Never,
-            AstType::Named(_) | AstType::Ref(_) | AstType::Generic(_, _) => return None,
+            AstType::Named(_)
+            | AstType::Ref(_)
+            | AstType::Array(_, _)
+            | AstType::Slice(_)
+            | AstType::Generic(_, _) => return None,
             AstType::Unit => TypeKind::Unit,
         };
         Some(Type::new(kind))
@@ -550,6 +596,15 @@ impl std::fmt::Display for TypeKind {
             Self::GenericParam(i) => write!(f, "T{i}"),
             Self::Struct(id) => write!(f, "struct#{}", id.0),
             Self::Enum(id) => write!(f, "enum#{}", id.0),
+            Self::Array(id) => write!(f, "array#{}", id.0),
+            Self::Slice { mutable, element } => {
+                f.write_str(match mutable {
+                    true => "&mut [",
+                    _ => "&[",
+                })?;
+                element.kind().fmt(f)?;
+                f.write_str("]")
+            },
             Self::Ref { mutable, to } => {
                 f.write_str(match mutable {
                     true => "&mut ",
