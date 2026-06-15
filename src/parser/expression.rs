@@ -436,13 +436,13 @@ impl<'i> Expression<'i> {
                 let span = left.span() + right.span();
 
                 match left {
-                    Expression::Identifier { .. } | Expression::Field { .. } => {
-                        Ok(Expression::Assignment {
-                            target: Box::new(left),
-                            value: Box::new(right),
-                            span,
-                        })
-                    },
+                    Expression::Identifier { .. }
+                    | Expression::Field { .. }
+                    | Expression::Index { .. } => Ok(Expression::Assignment {
+                        target: Box::new(left),
+                        value: Box::new(right),
+                        span,
+                    }),
 
                     _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
                 }
