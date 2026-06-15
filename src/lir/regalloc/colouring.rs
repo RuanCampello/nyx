@@ -120,30 +120,23 @@ impl Interference {
 
         let mut degree: BTreeMap<VReg, usize> =
             unpinned.iter().map(|&v| (v, self.degree(&v))).collect();
-        let mut removed = BTreeSet::new();
         let mut stack = Vec::new();
 
         loop {
-            let simplifiable: Vec<_> = degree
-                .iter()
-                .filter(|&(v, d)| !removed.contains(v) && *d < k)
-                .map(|(&v, _)| v)
-                .collect();
+            let simplifiable: Vec<_> =
+                degree.iter().filter(|&(_, d)| *d < k).map(|(&v, _)| v).collect();
 
             if !simplifiable.is_empty() {
                 for v in simplifiable {
-                    self.push_node(v, &mut stack, &mut removed, &mut degree);
+                    self.push_node(v, &mut stack, &mut degree);
                 }
 
                 continue;
             }
 
-            let remaining: Vec<_> =
-                degree.keys().filter(|v| !removed.contains(v)).copied().collect();
-
-            match remaining.iter().max_by_key(|&&v| degree[&v]) {
+            match degree.iter().max_by_key(|&(_, d)| *d) {
                 None => break,
-                Some(&spill) => self.push_node(spill, &mut stack, &mut removed, &mut degree),
+                Some((&spill, _)) => self.push_node(spill, &mut stack, &mut degree),
             }
         }
 

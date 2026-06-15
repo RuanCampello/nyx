@@ -29,10 +29,6 @@ impl Interference {
             live.extend(block.term.uses_of().iter().copied());
 
             for instruction in block.instructions.iter().rev() {
-                if !instruction.clobbers().is_empty() {
-                    graph.call_crossed.extend(live.iter().copied());
-                }
-
                 for &def in instruction.defs() {
                     for &live_vreg in &live {
                         graph.add_edge(def, live_vreg);
@@ -41,6 +37,12 @@ impl Interference {
 
                 for def in instruction.defs() {
                     live.remove(def);
+                }
+
+                // a value crosses this instruction only if it's live both before and
+                // after it; values just defined by it (removed above) don't count
+                if !instruction.clobbers().is_empty() {
+                    graph.call_crossed.extend(live.iter().copied());
                 }
 
                 uses.clear();
@@ -73,20 +75,12 @@ impl Interference {
         self.neighbours(vreg).len()
     }
 
-    pub fn push_node(
-        &self,
-        id: VReg,
-        stack: &mut Vec<VReg>,
-        removed: &mut BTreeSet<VReg>,
-        degree: &mut BTreeMap<VReg, usize>,
-    ) {
-        removed.insert(id);
+    pub fn push_node(&self, id: VReg, stack: &mut Vec<VReg>, degree: &mut BTreeMap<VReg, usize>) {
         stack.push(id);
+        degree.remove(&id);
 
         for &neighbour in self.neighbours(&id) {
-            if !removed.contains(&neighbour)
-                && let Some(d) = degree.get_mut(&neighbour)
-            {
+            if let Some(d) = degree.get_mut(&neighbour) {
                 *d = d.saturating_sub(1);
             }
         }
