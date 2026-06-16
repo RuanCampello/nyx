@@ -721,4 +721,60 @@ mod tests {
         assert_eq!(block.member_docs.len(), 1);
         assert_eq!(&*block.member_docs[0].1, [" makes one"].as_slice());
     }
+
+    #[test]
+    fn array_slice_and_ref_types_parse() {
+        let stmts = Parser::new("fn f(a: [i32; 3], s: &[i32], m: &mut [i32], r: &mut i32){}")
+            .parse()
+            .unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &stmts[0] else {
+            panic!("expected fn");
+        };
+
+        let types: Vec<Type> = function.params.iter().map(|p| p.typ.value()).collect();
+        assert!(matches!(&types[0], Type::Array(element, 3) if **element == Type::I32));
+        assert!(matches!(&types[1], Type::Slice(element, false) if **element == Type::I32));
+        assert!(matches!(&types[2], Type::Slice(element, true) if **element == Type::I32));
+        assert!(matches!(&types[3], Type::Ref(element, true) if **element == Type::I32));
+    }
+
+    #[test]
+    fn array_literals_and_indexing_parse() {
+        let stmts =
+            Parser::new("fn f(){let a = [1, 2, 3]; let b = [0; 4]; a[1];}").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &stmts[0] else {
+            panic!("expected fn");
+        };
+        let body = &function.body.statements;
+
+        let Statement::Let(Let { value: Some(Expression::Array { elements, .. }), .. }) = &body[0]
+        else {
+            panic!("expected array literal");
+        };
+        assert_eq!(elements.len(), 3);
+
+        let Statement::Let(Let { value: Some(Expression::ArrayRepeat { count, .. }), .. }) =
+            &body[1]
+        else {
+            panic!("expected array repeat");
+        };
+        assert_eq!(*count, 4);
+
+        assert!(matches!(&body[2], Statement::Expr(Expression::Index { .. }, _)));
+    }
+
+    #[test]
+    fn impl_slice_receiver_parses() {
+        let stmts = Parser::new("impl [T] { fn is_empty(&self): bool { self.len() == 0 } }")
+            .parse()
+            .unwrap();
+        let Statement::Item(Item { kind: ItemKind::Impl(block), .. }) = &stmts[0] else {
+            panic!("expected impl");
+        };
+
+        assert_eq!(block.name, "[]");
+        assert!(
+            matches!(block.receiver.value_ref(), Type::Slice(element, false) if matches!(element.as_ref(), Type::Named("T")))
+        );
+    }
 }

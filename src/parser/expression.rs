@@ -80,6 +80,7 @@ pub enum UnaryOperator {
     Not,
     Deref,
     Ref,
+    RefMut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,7 +165,10 @@ impl<'i> Expression<'i> {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
                     TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
-                    TokenKind::Punct(Punct::Ampersand) => UnaryOperator::Ref,
+                    TokenKind::Punct(Punct::Ampersand) => match parser.consume_token(Keyword::Mut)? {
+                        true => UnaryOperator::RefMut,
+                        false => UnaryOperator::Ref,
+                    },
 
                     _ => {
                         return Err(ParserError::new(

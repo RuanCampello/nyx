@@ -306,11 +306,12 @@ pub enum Type<'i> {
     String,
     Named(&'i str),
     SelfType, RefSelf,
-    Ref(Box<Type<'i>>),
+    /// a reference `&T` or `&mut T`
+    Ref(Box<Type<'i>>, bool),
     /// fixed-size array `[T; N]`
     Array(Box<Type<'i>>, u64),
-    /// borrowed slice `&[T]`, a fat pointer of (ptr, len)
-    Slice(Box<Type<'i>>),
+    /// borrowed slice `&[T]` or `&mut [T]`, a fat pointer of (ptr, len)
+    Slice(Box<Type<'i>>, bool),
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     #[allow(dead_code)]
     Unit,
@@ -723,12 +724,16 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
         let receiver = parser.parse_node::<Spanned<Type>>()?;
         let generics = Vec::new();
-        let name = receiver.value().name().ok_or_else(|| {
-            ParserError::new(
-                ParseErrorKind::ExpectedTypeIdentifier { found: format!("{:?}", receiver.value()) },
-                receiver.span(),
-            )
-        })?;
+        // slices have no nominal name, so `impl [T]` blocks share a reserved one
+        let name = match receiver.value_ref() {
+            Type::Slice(..) => "[]",
+            other => other.name().ok_or_else(|| {
+                ParserError::new(
+                    ParseErrorKind::ExpectedTypeIdentifier { found: format!("{other:?}") },
+                    receiver.span(),
+                )
+            })?,
+        };
 
         let mut interface_type = None;
         let mut interface = None;
@@ -1207,13 +1212,14 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         if parser.consume_token(Punct::Ampersand)? {
             let start = parser.last_span().unwrap_or_default();
+            let mutable = parser.consume_token(Keyword::Mut)?;
 
             if parser.consume_token(Punct::OpenBracket)? {
                 let (element, length) = parse_bracketed_type(parser)?;
                 let end = parser.expect_token(Punct::CloseBracket)?.span;
                 let kind = match length {
-                    Some(len) => Type::Ref(Box::new(Type::Array(Box::new(element), len))),
-                    None => Type::Slice(Box::new(element)),
+                    Some(len) => Type::Ref(Box::new(Type::Array(Box::new(element), len)), mutable),
+                    None => Type::Slice(Box::new(element), mutable),
                 };
                 return Ok(Self::new(kind, start + end));
             }
@@ -1223,7 +1229,7 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
             let kind = match inner.value() {
                 Type::Str => Type::Str,
                 Type::SelfType => Type::RefSelf,
-                other => Type::Ref(Box::new(other)),
+                other => Type::Ref(Box::new(other), mutable),
             };
             return Ok(Self::new(kind, span));
         }
@@ -1232,16 +1238,11 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
             let start = parser.last_span().unwrap_or_default();
             let (element, length) = parse_bracketed_type(parser)?;
             let end = parser.expect_token(Punct::CloseBracket)?.span;
-            let len = length.ok_or_else(|| {
-                ParserError::new(
-                    ParseErrorKind::Expected {
-                        expected: Punct::Semicolon.into(),
-                        found: Punct::CloseBracket.into(),
-                    },
-                    end,
-                )
-            })?;
-            return Ok(Self::new(Type::Array(Box::new(element), len), start + end));
+            let kind = match length {
+                Some(len) => Type::Array(Box::new(element), len),
+                None => Type::Slice(Box::new(element), false),
+            };
+            return Ok(Self::new(kind, start + end));
         }
 
         if parser.consume_token(Punct::Bang)? {
@@ -1515,7 +1516,7 @@ impl<'i> Type<'i> {
     pub fn name(&self) -> Option<&'i str> {
         match self {
             Type::Named(name) | Type::Generic(name, _) => Some(name),
-            Type::Ref(inner) => inner.name(),
+            Type::Ref(inner, _) => inner.name(),
             Type::RefSelf => Some("Self"),
             Type::Unit => Some("unit"),
             Type::Never => Some("!"),
