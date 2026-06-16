@@ -192,6 +192,46 @@ const CASES: &[Case] = &[
         file: "tests/single/generics_monomorphization.nyx",
         exit_code: Some(0),
     },
+    Case {
+        name: "array_features",
+        file: "tests/single/array_features.nyx",
+        exit_code: Some(36),
+    },
+    Case {
+        name: "array_layout",
+        file: "tests/single/array_layout.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "array_oob_panic",
+        file: "tests/single/array_oob_panic.nyx",
+        exit_code: Some(101),
+    },
+    Case {
+        name: "array_sorting",
+        file: "tests/single/array_sorting.nyx",
+        exit_code: Some(12),
+    },
+    Case {
+        name: "slice_basics",
+        file: "tests/single/slice_basics.nyx",
+        exit_code: Some(22),
+    },
+    Case {
+        name: "slice_std_methods",
+        file: "tests/single/slice_std_methods.nyx",
+        exit_code: Some(19),
+    },
+    Case {
+        name: "slice_mut",
+        file: "tests/single/slice_mut.nyx",
+        exit_code: Some(12),
+    },
+    Case {
+        name: "slice_oob_panic",
+        file: "tests/single/slice_oob_panic.nyx",
+        exit_code: Some(101),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

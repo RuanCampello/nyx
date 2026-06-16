@@ -1,0 +1,19 @@
+// std `impl [T]` helpers: swap / fill (mutating, through `&mut [T]`) and
+// head / last (element references). result: 4 + 1 + 7 + 7 = 19
+
+use std::slice;
+
+fn main(): i32 {
+    let mut a: [i32; 4] = [1, 2, 3, 4];
+    let m: &mut [i32] = &mut a;
+    m.swap(0, 3);
+
+    let first: i32 = *m.head();
+    let lastv: i32 = *m.last();
+
+    let mut b: [i32; 3] = [0; 3];
+    let mb: &mut [i32] = &mut b;
+    mb.fill(7);
+
+    first + lastv + b[0] + b[2]
+}
