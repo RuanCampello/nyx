@@ -207,6 +207,13 @@ pub enum HirErrorKind<'h> {
     EmptyArrayType,
 
     #[diagnostic(
+        message = "cannot assign to a value behind a shared {`&`} reference",
+        primary = "the referent is read-only through a shared reference",
+        help = "take a mutable reference {`&mut`} to write through it"
+    )]
+    AssignBehindSharedRef,
+
+    #[diagnostic(
         message = "duplicate interface {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} interfaces"

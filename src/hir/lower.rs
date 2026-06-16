@@ -643,7 +643,7 @@ where
                         };
                         Type::refer(to, false)
                     }),
-                    UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
+                    UnaryOperator::Ref | UnaryOperator::RefMut => hint.map(|h| h.strip_reference()),
                 };
                 let expr = self.lower_expr(expr, inner_hint)?;
 
@@ -687,24 +687,29 @@ where
                         },
                     },
 
-                    UnaryOperator::Ref => match self.coerce_array_to_slice(expr.typ, hint) {
-                        // `&array` unsizes to a `&[T]` slice when the context expects one
-                        Some(slice) => slice,
-                        None => {
-                            let err = hir_error!(
-                                expr.span,
-                                TypeMismatch {
-                                    expected: Type::structure(Default::default()),
-                                    found: expr.typ
-                                }
-                            );
-                            let to = RefTarget::try_from(expr.typ).map_err(|_| err)?;
-                            Type::refer(to, false)
-                        },
+                    UnaryOperator::Ref | UnaryOperator::RefMut => {
+                        match self.coerce_array_to_slice(expr.typ, hint) {
+                            // `&array` unsizes to a `&[T]`/`&mut [T]` slice in slice context
+                            Some(slice) => slice,
+                            None => {
+                                let err = hir_error!(
+                                    expr.span,
+                                    TypeMismatch {
+                                        expected: Type::structure(Default::default()),
+                                        found: expr.typ
+                                    }
+                                );
+                                let to = RefTarget::try_from(expr.typ).map_err(|_| err)?;
+                                Type::refer(to, *operator == UnaryOperator::RefMut)
+                            },
+                        }
                     },
                 };
 
-                if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
+                if !matches!(
+                    operator,
+                    UnaryOperator::Deref | UnaryOperator::Ref | UnaryOperator::RefMut
+                ) {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
@@ -800,20 +805,37 @@ where
 
             Expr::Assignment { target, value, span } => {
                 let target_lowered = self.lower_expr(target, None)?;
-                let local = place_base_local(target_lowered.expr)
-                    .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
 
-                if !self[local].mutable {
-                    let err_span = match &target_lowered.expr.kind {
-                        ExpressionKind::Local(_) => span,
-                        ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
-                            &target.span()
-                        },
-                        _ => span,
-                    };
+                let through_slice = match &target_lowered.expr.kind {
+                    ExpressionKind::Index { base, .. } => {
+                        match self.typeck.type_of(base.id).kind() {
+                            TypeKind::Slice { mutable, .. } => Some(mutable),
+                            _ => None,
+                        }
+                    },
+                    _ => None,
+                };
 
-                    let name = self.arena.alloc_str(self.symbols.get(self[local].name));
-                    return Err(hir_error!(*err_span, ImmutableBind { name }));
+                match through_slice {
+                    Some(true) => {},
+                    Some(false) => return Err(hir_error!(target.span(), AssignBehindSharedRef)),
+                    None => {
+                        let local = place_base_local(target_lowered.expr)
+                            .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
+
+                        if !self[local].mutable {
+                            let err_span = match &target_lowered.expr.kind {
+                                ExpressionKind::Local(_) => span,
+                                ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
+                                    &target.span()
+                                },
+                                _ => span,
+                            };
+
+                            let name = self.arena.alloc_str(self.symbols.get(self[local].name));
+                            return Err(hir_error!(*err_span, ImmutableBind { name }));
+                        }
+                    },
                 }
 
                 let value = self.lower_expr(value, Some(target_lowered.typ))?;
@@ -986,7 +1008,43 @@ where
                     let receiver_type = receiver_lowered.typ;
 
                     let receiver_base_type = receiver_type.strip_reference();
+
+                    // FIXME: this shouldn't be hardocded as str::len isn't but be it for now
+                    if *method_name == "len" && args.is_empty() {
+                        match receiver_base_type.kind() {
+                            TypeKind::Array(id) => {
+                                let len = self.scope.arrays.get(id).len;
+                                return Ok(self.alloc(
+                                    ExpressionKind::Literal(Literal::Int(len as i64)),
+                                    TypeKind::Uptr.into(),
+                                    *span,
+                                ));
+                            },
+                            TypeKind::Slice { .. } => {
+                                let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
+                                return Ok(self.alloc(
+                                    ExpressionKind::IntrinsicCall {
+                                        intrinsic: Intrinsic::Len,
+                                        args,
+                                    },
+                                    TypeKind::Uptr.into(),
+                                    *span,
+                                ));
+                            },
+                            _ => {},
+                        }
+                    }
+
                     let method_symbol = self.symbols.insert(method_name);
+
+                    let lookup_type = match receiver_base_type.kind() {
+                        TypeKind::Slice { element, .. } => {
+                            self.scope.specialize_slice_impls(receiver_base_type, self.symbols)?;
+                            Type::slice(element, false)
+                        },
+                        _ => receiver_base_type,
+                    };
+
                     let struct_name = match receiver_base_type.kind() {
                         TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
                         TypeKind::Enum(id) => self
@@ -998,7 +1056,7 @@ where
                         _ => receiver_base_type.to_string(),
                     };
                     let function =
-                        *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
+                        *self.scope.methods.get(&(lookup_type, method_symbol)).ok_or_else(
                             || {
                                 let struct_name = self.arena.alloc_str(&struct_name);
                                 hir_error!(*span, UnknownMethod { struct_name, name: method_name })
@@ -1735,7 +1793,7 @@ where
                 Ok(Type::refer(to, false))
             },
 
-            statement::Type::Ref(inner) => {
+            statement::Type::Ref(inner, mutable) => {
                 let inner_type = self.resolve_type(inner, span)?;
                 let to = RefTarget::try_from(inner_type).map_err(|_| {
                     hir_error!(
@@ -1746,7 +1804,7 @@ where
                         }
                     )
                 })?;
-                Ok(Type::refer(to, false))
+                Ok(Type::refer(to, *mutable))
             },
 
             statement::Type::Generic(name, args) => {
@@ -1771,7 +1829,7 @@ where
                 Ok(Type::array(id))
             },
 
-            statement::Type::Slice(element) => {
+            statement::Type::Slice(element, mutable) => {
                 let element = self.resolve_type(element, span)?;
                 let element = RefTarget::try_from(element).map_err(|_| {
                     hir_error!(
@@ -1782,7 +1840,7 @@ where
                         }
                     )
                 })?;
-                Ok(Type::slice(element, false))
+                Ok(Type::slice(element, *mutable))
             },
 
             other => Type::from_primitive_ast(other)

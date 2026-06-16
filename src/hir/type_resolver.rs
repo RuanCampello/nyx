@@ -38,7 +38,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                 .ok_or_else(|| hir_error!(span, UnknownType { name }))
         },
 
-        statement::Type::Ref(typ) => {
+        statement::Type::Ref(typ, mutable) => {
             let typ = resolve_annotation(ctx, typ, span)?;
             let to = RefTarget::try_from(typ).map_err(|_| {
                 hir_error!(
@@ -47,7 +47,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
                 )
             })?;
 
-            Ok(Type::refer(to, false))
+            Ok(Type::refer(to, *mutable))
         },
         statement::Type::Array(element, len) => {
             let element = resolve_annotation(ctx, element, span)?;
@@ -55,7 +55,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             Ok(Type::array(id))
         },
 
-        statement::Type::Slice(element) => {
+        statement::Type::Slice(element, mutable) => {
             let element = resolve_annotation(ctx, element, span)?;
 
             let err = hir_error!(
@@ -67,7 +67,7 @@ pub(in crate::hir) fn resolve_annotation<'h>(
             );
             let element = RefTarget::try_from(element).map_err(|_| err)?;
 
-            Ok(Type::slice(element, false))
+            Ok(Type::slice(element, *mutable))
         },
 
         statement::Type::SelfType => Ok(ctx.self_type.unwrap_or(TypeKind::SelfType.into())),

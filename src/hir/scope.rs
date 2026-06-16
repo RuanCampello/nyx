@@ -53,6 +53,8 @@ pub struct Scope<'hir> {
     pub generic_fn_envs: HashMap<FunctionId, GenericEnv>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
 
+    pub(in crate::hir) specialized_slices: HashSet<Type>,
+
     /// When set, recoverable lowering errors are accumulated in [diagnostics]
     /// and the offending nodes are poisoned instead of aborting the whole pass
     ///
@@ -111,6 +113,11 @@ pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
 /// Empty for ordinary (non-instance) lowering
 pub(in crate::hir) type GenericEnv = HashMap<String, Type>;
 
+/// Reserved nominal name for `impl [T]` blocks, which target the structural
+/// slice type
+/// Kept in sync with the parser, which tags slice impls with it
+pub(crate) const SLICE_IMPL_NAME: &str = "[]";
+
 impl<'hir> Scope<'hir> {
     pub fn new(arena: &'hir bumpalo::Bump) -> Self {
         Self {
@@ -134,6 +141,7 @@ impl<'hir> Scope<'hir> {
             generic_fns: HashMap::new(),
             generic_fn_envs: HashMap::new(),
             generic_impls: Vec::new(),
+            specialized_slices: HashSet::new(),
             recover: false,
             diagnostics: Diagnostics::default(),
         }
@@ -885,7 +893,7 @@ impl<'hir> Scope<'hir> {
                     .ok_or_else(|| hir_error!(span, UnknownType { name }))
             },
 
-            statement::Type::Ref(inner) => {
+            statement::Type::Ref(inner, mutable) => {
                 let inner = self.resolve_type(inner, span, symbols, self_type, env)?;
                 let to = RefTarget::try_from(inner).map_err(|_| {
                     hir_error!(
@@ -896,7 +904,7 @@ impl<'hir> Scope<'hir> {
                         }
                     )
                 })?;
-                Ok(Type::refer(to, false))
+                Ok(Type::refer(to, *mutable))
             },
 
             statement::Type::SelfType => Ok(self_type.unwrap_or(TypeKind::SelfType.into())),
@@ -935,15 +943,18 @@ impl<'hir> Scope<'hir> {
                 Ok(Type::array(self.arrays.intern(element, *len as u32)))
             },
 
-            statement::Type::Slice(element) => {
+            statement::Type::Slice(element, mutable) => {
                 let element = self.resolve_type(element, span, symbols, self_type, env)?;
                 let element = RefTarget::try_from(element).map_err(|_| {
                     hir_error!(
                         span,
-                        TypeMismatch { expected: Type::structure(Default::default()), found: element }
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: element
+                        }
                     )
                 })?;
-                Ok(Type::slice(element, false))
+                Ok(Type::slice(element, *mutable))
             },
 
             // `Generic` is handled above; this arm only sees primitives, which `from_primitive_ast`
@@ -1164,7 +1175,7 @@ impl<'hir> Scope<'hir> {
 
                 let mut params = Vec::new();
                 if let Some(receiver) = method.receiver {
-                    params.push(Type::receiver_ref(receiver_type, receiver.mutable));
+                    params.push(receiver_param_type(receiver_type, receiver.mutable));
                 }
                 params.extend(self.resolve_params(
                     &method.params,
@@ -1209,6 +1220,26 @@ impl<'hir> Scope<'hir> {
         Ok(())
     }
 
+    pub(in crate::hir) fn specialize_slice_impls(
+        &mut self,
+        slice_type: Type,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'hir>> {
+        let TypeKind::Slice { element, .. } = slice_type.kind() else {
+            return Ok(());
+        };
+
+        let canonical = Type::slice(element, false);
+        if !self.specialized_slices.insert(canonical) {
+            return Ok(());
+        }
+
+        let element = Type::from(element);
+        let mangled = self.mangle_generic("slice", &[element], symbols);
+        let mangled_sym = symbols.insert(&mangled);
+        self.specialize_impls(SLICE_IMPL_NAME, mangled_sym, canonical, &[element], symbols)
+    }
+
     pub(in crate::hir) fn mangle_generic(
         &self,
         base: &str,
@@ -1245,12 +1276,13 @@ impl<'hir> Scope<'hir> {
             return true;
         }
 
-        function
-            .impl_type
-            .and_then(|impl_type| symbols.get_id(impl_type))
-            .is_some_and(|sym| {
-                self.generic_enums.contains_key(&sym) || self.generic_structs.contains_key(&sym)
-            })
+        function.impl_type.is_some_and(|impl_type| {
+            // `impl [T]` methods are generic over the element and specialised on demand
+            impl_type == SLICE_IMPL_NAME
+                || symbols.get_id(impl_type).is_some_and(|sym| {
+                    self.generic_enums.contains_key(&sym) || self.generic_structs.contains_key(&sym)
+                })
+        })
     }
 
     /// push a new function signature and returns its assigned [`FunctionId`]
@@ -1408,7 +1440,12 @@ pub(in crate::hir) fn nominal_type(
 
 #[inline]
 fn is_generic_impl(imp: &statement::Impl<'_>) -> bool {
-    !imp.generics.is_empty() || matches!(imp.receiver.value_ref(), statement::Type::Generic(..))
+    !imp.generics.is_empty()
+        || matches!(imp.receiver.value_ref(), statement::Type::Generic(..))
+        || matches!(
+            imp.receiver.value_ref(),
+            statement::Type::Slice(element, _) if matches!(element.as_ref(), statement::Type::Named(_))
+        )
 }
 
 fn build_substitution(generics: &[statement::GenericBound<'_>], args: &[Type]) -> GenericEnv {
@@ -1432,9 +1469,23 @@ fn declared_names(
     }
 }
 
+pub(in crate::hir) fn receiver_param_type(receiver: Type, mutable: bool) -> Type {
+    match receiver.kind() {
+        TypeKind::Slice { element, .. } => Type::slice(element, mutable),
+        _ => Type::receiver_ref(receiver, mutable),
+    }
+}
+
 fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) -> GenericEnv {
     if !implementation.generics.is_empty() {
         return build_substitution(&implementation.generics, args);
+    }
+
+    if let statement::Type::Slice(element, _) = implementation.receiver.value_ref()
+        && let statement::Type::Named(name) = element.as_ref()
+        && let Some(&concrete) = args.first()
+    {
+        return HashMap::from([(name.to_string(), concrete)]);
     }
 
     let statement::Type::Generic(_, receiver_args) = implementation.receiver.value_ref() else {

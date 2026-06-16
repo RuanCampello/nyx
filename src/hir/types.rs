@@ -497,9 +497,9 @@ impl Type {
             },
             AstType::Never => TypeKind::Never,
             AstType::Named(_)
-            | AstType::Ref(_)
+            | AstType::Ref(_, _)
             | AstType::Array(_, _)
-            | AstType::Slice(_)
+            | AstType::Slice(_, _)
             | AstType::Generic(_, _) => return None,
             AstType::Unit => TypeKind::Unit,
         };

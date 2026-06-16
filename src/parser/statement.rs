@@ -720,13 +720,15 @@ impl<'i> Parsable<'i> for Function<'i> {
 
 impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        use crate::hir::SLICE_IMPL_NAME;
+
         let impl_token = parser.expect_token(Keyword::Impl)?;
 
         let receiver = parser.parse_node::<Spanned<Type>>()?;
         let generics = Vec::new();
         // slices have no nominal name, so `impl [T]` blocks share a reserved one
         let name = match receiver.value_ref() {
-            Type::Slice(..) => "[]",
+            Type::Slice(..) => SLICE_IMPL_NAME,
             other => other.name().ok_or_else(|| {
                 ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier { found: format!("{other:?}") },

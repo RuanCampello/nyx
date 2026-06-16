@@ -21,6 +21,7 @@ use lasso::{Key, Spur};
 use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
+pub(crate) use scope::SLICE_IMPL_NAME;
 pub(crate) use structs::{struct_field, type_layout};
 pub use symbols::SymbolTable;
 pub use types::*;
@@ -1793,5 +1794,53 @@ mod tests {
                 .any(|f| name(f).contains("Box$i64") && name(f).contains("get")),
             "expected a specialised get method on Box$i64"
         );
+    }
+
+    fn span_text(src: &str, span: Span) -> &str {
+        &src[span.start.0 as usize..span.end.0 as usize]
+    }
+
+    #[test]
+    fn array_constant_index_out_of_bounds() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main(){let a:[i32;3]=[1,2,3];a[5];}";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::IndexOutOfBounds { index: 5, len: 3 });
+        assert_eq!(span_text(src, err.span), "a[5]");
+    }
+
+    #[test]
+    fn indexing_a_non_indexable_type_is_rejected() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main(){let x:i32=1;x[0];}";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::NotIndexable { .. }));
+        assert_eq!(span_text(src, err.span), "x[0]");
+    }
+
+    #[test]
+    fn a_non_integer_index_is_rejected() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main(){let a:[i32;2]=[1,2];let b:bool=true;a[b];}";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn writing_an_immutable_array_element_is_rejected() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main(){let a:[i32;2]=[1,2];a[0]=9;}";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "a" });
+        assert_eq!(span_text(src, err.span), "a[0]");
+    }
+
+    #[test]
+    fn writing_through_a_shared_slice_is_rejected() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn set(s:&[i32]){s[0]=9;}";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::AssignBehindSharedRef);
+        assert_eq!(span_text(src, err.span), "s[0]");
     }
 }
