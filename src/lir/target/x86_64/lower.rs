@@ -121,7 +121,7 @@ impl<'f> Lower<'f, X86_64> {
                         _ => self.lir.push_instr(id, X86Instr::Not { dest, bytes }),
                     },
                     U::Deref => unreachable!(),
-                    U::Ref => unreachable!(
+                    U::Ref | U::RefMut => unreachable!(
                         "UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"
                     ),
                 }
@@ -465,6 +465,54 @@ impl<'f> Lower<'f, X86_64> {
                         self.lir.push_instr(id, instruction);
                     },
                 }
+            },
+
+            InstructionKind::ElementAddr { base, index, bound, stride } => {
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                let index_reg = self.lir.new_vreg(int8);
+                let index_src = self.lower_operand(index);
+                self.lir
+                    .push_instr(id, X86Instr::Mov { dest: index_reg, src: index_src, bytes: 8 });
+
+                let bound = self.lower_operand(bound);
+                self.lir.push_instr(id, X86Instr::BoundsCheck { index: index_reg, bound });
+
+                let base = match base {
+                    Operand::Place(place) => place,
+                    Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+                };
+                let origin = self.value[base.id];
+                let addr = self.lir.new_vreg(int8);
+                match base.typ.kind() {
+                    TypeKind::Ref { .. } => {
+                        let instr =
+                            X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 };
+                        self.lir.push_instr(id, instr);
+                    },
+                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin }),
+                }
+
+                let offset = self.lir.new_vreg(int8);
+                let instr =
+                    X86Instr::Mov { dest: offset, src: X86Operand::VReg(index_reg), bytes: 8 };
+                self.lir.push_instr(id, instr);
+
+                let src = X86Operand::Imm(*stride as i64);
+                let instr = X86Instr::Imul { dest: offset, src, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                // `dest` is the element pointer, 2-address form copies the base first
+                let instr = X86Instr::Mov { dest, src: X86Operand::VReg(addr), bytes: 8 };
+                self.lir.push_instr(id, instr);
+
+                let instr = X86Instr::Add {
+                    dest,
+                    src: X86Operand::VReg(offset),
+                    bytes: 8,
+                    checked: false,
+                };
+                self.lir.push_instr(id, instr);
             },
 
             #[rustfmt::skip]

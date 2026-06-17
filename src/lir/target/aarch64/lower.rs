@@ -112,7 +112,7 @@ impl<'f> Lower<'f, AArch64> {
                         _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
                     },
                     U::Deref => unreachable!(),
-                    U::Ref => unreachable!(
+                    U::Ref | U::RefMut => unreachable!(
                         "UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"
                     ),
                 }
@@ -537,6 +537,45 @@ impl<'f> Lower<'f, AArch64> {
                         self.lir.push_instr(id, instr);
                     },
                 }
+            },
+
+            InstructionKind::ElementAddr { base, index, bound, stride } => {
+                let uptr = TypeKind::Uptr.into();
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                let index = self.lower_operand(index);
+                let index = self.ensure_vreg(index, uptr, id);
+                let bound = self.lower_operand(bound);
+                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
+
+                let base = match base {
+                    Operand::Place(place) => place,
+                    Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+                };
+                let origin = self.value[base.id];
+                let addr = self.lir.new_vreg(int8);
+                match base.typ.kind() {
+                    TypeKind::Ref { .. } => {
+                        let instr = A64Instr::Mov { dest: addr, src: origin, bytes: 8 };
+                        self.lir.push_instr(id, instr)
+                    },
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin }),
+                }
+
+                let stride = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
+                let offset = self.lir.new_vreg(int8);
+                let instr = A64Instr::Mul {
+                    dest: offset,
+                    lhs: index,
+                    rhs: stride,
+                    bytes: 8,
+                    checked: false,
+                };
+                self.lir.push_instr(id, instr);
+
+                let rhs = A64Operand::VReg(offset);
+                let instr = A64Instr::Add { dest, lhs: addr, rhs, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
             },
 
             InstructionKind::AddressOf { src, offset } => {
