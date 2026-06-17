@@ -116,6 +116,10 @@ pub enum InstructionKind {
     /// same backend-only bounds check as [InstructionKind::ElementLoad]
     ElementStore { index: Operand, bound: Operand, value: Operand, stride: u32 },
 
+    /// the address of `base[index]` (i.e. `&base[index]`): like [InstructionKind::ElementLoad]
+    /// but yields the element pointer instead of loading it, with the same bounds check
+    ElementAddr { base: Operand, index: Operand, bound: Operand, stride: u32 },
+
     AddressOf { src: Place, offset: u32 },
 
     Call {

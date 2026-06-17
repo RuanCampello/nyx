@@ -359,6 +359,20 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Unary { operator, expr: inner } => {
                 let operator = *operator;
                 let inner = *inner;
+
+                // `&base[i]` / `&mut base[i]` takes the element's address rather than
+                // loading its value, so it never goes through the value-producing path
+                if matches!(operator, UnaryOperator::Ref | UnaryOperator::RefMut)
+                    && let ExpressionKind::Index { base, index } = &inner.kind
+                {
+                    let base_type = self.typeck.type_of(base.id);
+                    let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                    let index = self.lower_expr(index)?;
+                    let dest = self.fresh_temporary(typ);
+                    self.emit(dest, Kind::ElementAddr { base, index, bound, stride });
+                    return Ok(Operand::Place(dest));
+                }
+
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(temp_value_type(typ));
 
@@ -366,7 +380,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     UnaryOperator::Deref => {
                         self.emit(dest, Kind::FieldLoad { src: rhs, offset: 0, typ })
                     },
-                    UnaryOperator::Ref => {
+                    UnaryOperator::Ref | UnaryOperator::RefMut => {
                         let src = match rhs {
                             Operand::Place(place) => place,
                             Operand::Const(_) => unreachable!("cannot take address of constant"),
@@ -793,7 +807,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let (origin, offset, typ) = self.place_info(left);
                 debug_assert!(typ.kind() != TypeKind::Unit);
 
-                let instr = match (offset, typ.is_ref()) {
+                // a slice receiver is the fat pointer itself, passed by value; other
+                // aggregates (`&self` on a struct) are passed as a pointer to the storage
+                let instr = match (offset, typ.is_ref() || typ.is_slice()) {
                     (0, true) => InstructionKind::Assign(Operand::Place(origin)),
                     (_, true) => {
                         InstructionKind::FieldLoad { src: Operand::Place(origin), offset, typ }
@@ -807,7 +823,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let val_type = self.typeck.type_of(left.id);
                 let lowered = self.lower_expr(left)?;
 
-                match val_type.is_ref() {
+                match val_type.is_ref() || val_type.is_slice() {
                     true => self.emit(place, InstructionKind::Assign(lowered)),
                     _ => {
                         let val_place = self.fresh_temporary(val_type);
