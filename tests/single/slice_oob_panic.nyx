@@ -4,7 +4,7 @@ fn main(): i32 {
     let a: [i32; 3] = [1, 2, 3];
     let s: &[i32] = &a;
 
-    let mut i: uptr = 0;
+    let mut i = 0;
     while i < 3 {
         i = i + 1;
     }
