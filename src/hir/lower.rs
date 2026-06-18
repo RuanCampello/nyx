@@ -1009,38 +1009,27 @@ where
 
                     let receiver_base_type = receiver_type.strip_reference();
 
-                    // FIXME: this shouldn't be hardocded as str::len isn't but be it for now
-                    if *method_name == "len" && args.is_empty() {
-                        match receiver_base_type.kind() {
-                            TypeKind::Array(id) => {
-                                let len = self.scope.arrays.get(id).len;
-                                return Ok(self.alloc(
-                                    ExpressionKind::Literal(Literal::Int(len as i64)),
-                                    TypeKind::Uptr.into(),
-                                    *span,
-                                ));
-                            },
-                            TypeKind::Slice { .. } => {
-                                let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
-                                return Ok(self.alloc(
-                                    ExpressionKind::IntrinsicCall {
-                                        intrinsic: Intrinsic::Len,
-                                        args,
-                                    },
-                                    TypeKind::Uptr.into(),
-                                    *span,
-                                ));
-                            },
-                            _ => {},
-                        }
-                    }
-
                     let method_symbol = self.symbols.insert(method_name);
 
                     let lookup_type = match receiver_base_type.kind() {
                         TypeKind::Slice { element, .. } => {
                             self.scope.specialize_slice_impls(receiver_base_type, self.symbols)?;
                             Type::slice(element, false)
+                        },
+                        TypeKind::Array(id) => {
+                            let array = self.scope.arrays.get(id);
+                            let element = RefTarget::try_from(array.element).map_err(|_| {
+                                hir_error!(
+                                    receiver_lowered.span,
+                                    TypeMismatch {
+                                        expected: Type::structure(Default::default()),
+                                        found: array.element
+                                    }
+                                )
+                            })?;
+                            let slice = Type::slice(element, false);
+                            self.scope.specialize_slice_impls(slice, self.symbols)?;
+                            slice
                         },
                         _ => receiver_base_type,
                     };
@@ -1065,7 +1054,8 @@ where
 
                     if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
                         let return_type = self.scope.signatures[function].return_type;
-                        let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
+                        let receiver = self.coerce_method_receiver(receiver_lowered, lookup_type);
+                        let args = self.arena.alloc_slice_copy(&[receiver]);
                         return Ok(self.alloc(
                             ExpressionKind::IntrinsicCall { intrinsic, args },
                             return_type,
@@ -1966,6 +1956,29 @@ where
             },
             _ => None,
         }
+    }
+
+    fn coerce_method_receiver(
+        &mut self,
+        receiver: Lowered<'hir>,
+        lookup_type: Type,
+    ) -> &'hir Expression<'hir> {
+        let TypeKind::Array(id) = receiver.typ.kind() else {
+            return receiver.expr;
+        };
+        let TypeKind::Slice { element, .. } = lookup_type.kind() else {
+            return receiver.expr;
+        };
+        if self.scope.arrays.get(id).element != element.into() {
+            return receiver.expr;
+        }
+
+        self.alloc(
+            ExpressionKind::Unary { operator: UnaryOperator::Ref, expr: receiver.expr },
+            lookup_type,
+            receiver.span,
+        )
+        .expr
     }
 
     /// The element type of an indexable type: an array, a slice, or a reference to either.

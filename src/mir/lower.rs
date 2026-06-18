@@ -802,6 +802,40 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_overloaded(&mut self, left: &'hir Expression, typ: Type) -> Result<Place, MirError> {
         let place = self.fresh_temporary(typ);
 
+        if let Some(array_id) = self.array_coerced_to_slice(left, typ) {
+            let TypeKind::Slice { mutable, .. } = typ.kind() else {
+                unreachable!("array_coerced_to_slice only returns Some for slice targets")
+            };
+            let (_, _, len) = self.array_info(Type::array(array_id));
+            let src = match self.is_place_expr(left) {
+                true => {
+                    let (origin, offset, _) = self.place_info(left);
+                    let ptr =
+                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    self.emit(ptr, InstructionKind::AddressOf { src: origin, offset });
+                    ptr
+                },
+                false => {
+                    let lowered = self.lower_expr(left)?;
+                    let value = self.fresh_temporary(self.typeck.type_of(left.id));
+                    self.emit(value, InstructionKind::Assign(lowered));
+
+                    let ptr =
+                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    self.emit(ptr, InstructionKind::AddressOf { src: value, offset: 0 });
+                    ptr
+                },
+            };
+
+            self.emit(place, InstructionKind::FieldStore { value: Operand::Place(src), offset: 0 });
+
+            let value = Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into()));
+            let instr = InstructionKind::FieldStore { value, offset: 8 };
+            self.emit(place, instr);
+
+            return Ok(place);
+        }
+
         match self.is_place_expr(left) {
             true => {
                 let (origin, offset, typ) = self.place_info(left);
@@ -835,6 +869,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
 
         Ok(place)
+    }
+
+    #[inline]
+    fn array_coerced_to_slice(&self, expr: &'hir Expression, target: Type) -> Option<hir::ArrayId> {
+        let TypeKind::Slice { element, .. } = target.kind() else {
+            return None;
+        };
+        let TypeKind::Array(id) = self.typeck.type_of(expr.id).kind() else {
+            return None;
+        };
+        (self.arrays[id].element == element.into()).then_some(id)
     }
 
     #[inline(always)]

@@ -1190,13 +1190,15 @@ impl<'hir> Scope<'hir> {
                     Some(&method_env),
                 )?;
 
-                let kind = match method.receiver {
-                    Some(r) => FunctionKind::Method(Method {
+                let intrinsic = intrinsic_method(false, implementation.name, method.name);
+                let kind = match (intrinsic, method.receiver) {
+                    (Some(i), _) => FunctionKind::Intrinsic(i),
+                    (None, Some(r)) => FunctionKind::Method(Method {
                         receiver: receiver_type,
                         name: method_symbol,
                         mutable: r.mutable,
                     }),
-                    None => FunctionKind::Free,
+                    (None, None) => FunctionKind::Free,
                 };
 
                 let sig_id = self.push_signature(FunctionSignature {
@@ -1213,10 +1215,13 @@ impl<'hir> Scope<'hir> {
                     self.functions.insert(mangled, sig_id);
                 }
 
-                self.generic_fns.insert(sig_id, method.clone());
-                self.generic_fn_envs.insert(sig_id, impl_env.clone());
+                if intrinsic.is_none() {
+                    self.generic_fns.insert(sig_id, method.clone());
+                    self.generic_fn_envs.insert(sig_id, impl_env.clone());
+                }
             }
         }
+
         Ok(())
     }
 
@@ -1505,7 +1510,10 @@ fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) 
 }
 
 fn intrinsic_method(in_std: bool, receiver: &str, method: &str) -> Option<Intrinsic> {
-    (in_std && receiver == "str" && method == "len").then_some(Intrinsic::Len)
+    match (in_std, receiver, method) {
+        (true, "str", "len") | (_, SLICE_IMPL_NAME, "len") => Some(Intrinsic::Len),
+        _ => None,
+    }
 }
 pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]) -> GenericEnv {
     generics
