@@ -6,6 +6,7 @@ use crate::{
         TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
+        infer::InferTable,
         place_base_local,
         scope::{GenericEnv, Scope},
         symbols::{Mangler, qualified},
@@ -38,6 +39,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
+    infer: InferTable,
     generic_env: GenericEnv,
 }
 
@@ -80,6 +82,7 @@ where
             next_expr_id: 0,
             locals: IndexVec::new(),
             typeck: TypeckResults::default(),
+            infer: InferTable::default(),
             scopes: vec![HashMap::new()],
             self_type,
             arena,
@@ -119,6 +122,7 @@ where
             next_expr_id: 0,
             locals: IndexVec::new(),
             typeck: TypeckResults::default(),
+            infer: InferTable::default(),
             scopes: vec![HashMap::new()],
             self_type: None,
             arena,
@@ -170,6 +174,7 @@ where
         );
 
         let (body, _) = self.lower_block(&function.body, true)?;
+        self.resolve_inference();
         let generics = declared_fn_names(&self.generic_env, self.symbols);
 
         Ok(Function {
@@ -498,6 +503,23 @@ where
         Pattern { kind, span: pat.span }
     }
 
+    /// resolves every remaining integer inference variable in the body, pinning
+    /// unconstrained ones to `i32`, so no [TypeKind::Infer] reaches MIR
+    fn resolve_inference(&mut self) {
+        for typ in self.typeck.node_types.iter_mut() {
+            *typ = self.infer.resolve_or_default(*typ);
+        }
+        for local in self.locals.iter_mut() {
+            local.typ = self.infer.resolve_or_default(local.typ);
+        }
+
+        for args in self.typeck.node_args.values_mut() {
+            for typ in args.iter_mut() {
+                *typ = self.infer.resolve_or_default(*typ);
+            }
+        }
+    }
+
     fn local_id(&self, name: &str) -> Option<LocalId> {
         let symbol = self.symbols.get_id(name)?;
 
@@ -548,10 +570,14 @@ where
         use expression::Expression as Expr;
 
         match expr {
-            // literal coercion: use the hint to widen to the expected numeric type.
+            // a concrete numeric hint pins the literal; an inference hint joins
+            // its class; otherwise a fresh integer variable defers the choice to
+            // the literal's first constrained use
             Expr::Integer(value, span) => {
-                let typ =
-                    hint.and_then(|t| t.is_number().then_some(t)).unwrap_or(TypeKind::I32.into());
+                let typ = match hint {
+                    Some(t) if t.is_number() || t.is_infer() => t,
+                    _ => self.infer.fresh(),
+                };
 
                 Ok(self.alloc((*value).into(), typ, *span))
             },
@@ -582,10 +608,13 @@ where
             Expr::Cast { expr: inner, target_type, span } => {
                 let target = self.resolve_type(&target_type.value(), target_type.span())?;
                 let lowered_expr = self.lower_expr(inner, None)?;
-                let src = lowered_expr.typ;
+                // an unresolved integer variable is always cast-compatible: it
+                // resolves to an integral type, which is primitive-castable
+                let src = self.infer.resolve_shallow(lowered_expr.typ);
 
-                let src_castable =
-                    src.is_primitive_castable() || matches!(src.kind(), TypeKind::Enum(_));
+                let src_castable = src.is_primitive_castable()
+                    || src.is_infer()
+                    || matches!(src.kind(), TypeKind::Enum(_));
                 if !src_castable || !target.is_primitive_castable() {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
@@ -740,7 +769,7 @@ where
                     | BinaryOperator::Ne
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
-                    | BinaryOperator::BitXor => Some(left.typ),
+                    | BinaryOperator::BitXor => Some(self.infer.resolve_shallow(left.typ)),
                     BinaryOperator::And | BinaryOperator::Or => Some(TypeKind::Bool.into()),
                     BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
@@ -950,6 +979,8 @@ where
                 let element_type = element_type
                     .or(element_hint)
                     .ok_or_else(|| hir_error!(*span, EmptyArrayType))?;
+                // array types are interned globally and must stay concrete
+                let element_type = self.infer.resolve_or_default(element_type);
                 let id = self.scope.arrays.intern(element_type, elements.len() as u32);
                 let elements = self.arena.alloc_slice_copy(&lowered);
 
@@ -960,7 +991,9 @@ where
                 let element_hint = hint.and_then(|h| self.element_type(h));
                 let value = self.lower_expr(value, element_hint)?;
                 let count = *count as u32;
-                let id = self.scope.arrays.intern(value.typ, count);
+                // array types are interned globally and must stay concrete
+                let element_type = self.infer.resolve_or_default(value.typ);
+                let id = self.scope.arrays.intern(element_type, count);
 
                 Ok(self.alloc(
                     ExpressionKind::ArrayRepeat { value: value.expr, count },
@@ -976,10 +1009,18 @@ where
                     .ok_or_else(|| hir_error!(*span, NotIndexable { typ: base_lowered.typ }))?;
 
                 let index_lowered = self.lower_expr(index, Some(TypeKind::Uptr.into()))?;
-                if !index_lowered.typ.is_integer() {
+                // an un-annotated counter used as an index defaults to `uptr`; a
+                // counter already pinned to another integer keeps it (indices are
+                // accepted at any integer width)
+                let index_type = self.infer.resolve_shallow(index_lowered.typ);
+                if index_type.is_infer() {
+                    self.infer.unify(TypeKind::Uptr.into(), index_type).ok();
+                }
+                let index_type = self.infer.resolve_shallow(index_type);
+                if !index_type.is_integer() {
                     return Err(hir_error!(
                         index_lowered.span,
-                        TypeMismatch { expected: TypeKind::Uptr.into(), found: index_lowered.typ }
+                        TypeMismatch { expected: TypeKind::Uptr.into(), found: index_type }
                     ));
                 }
 
@@ -1687,7 +1728,8 @@ where
             | BinaryOperator::Mul
             | BinaryOperator::Div => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() {
+                let left = self.infer.resolve_shallow(left);
+                match left.is_number() || left.is_infer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1703,7 +1745,8 @@ where
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() || left == TypeKind::Char.into() {
+                let left = self.infer.resolve_shallow(left);
+                match left.is_number() || left.is_infer() || left == TypeKind::Char.into() {
                     true => Ok(TypeKind::Bool.into()),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1718,19 +1761,21 @@ where
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
-
-                match left == TypeKind::Bool.into() || left.is_integer() {
+                let left = self.infer.resolve_shallow(left);
+                match left == TypeKind::Bool.into() || left.is_integer() || left.is_infer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
             },
 
             BinaryOperator::Shl | BinaryOperator::Shr => {
-                if !left.is_integer() {
+                let left = self.infer.resolve_shallow(left);
+                let right = self.infer.resolve_shallow(right);
+                if !left.is_integer() && !left.is_infer() {
                     return Err(type_mismatch(left));
                 }
 
-                if !right.is_integer() {
+                if !right.is_integer() && !right.is_infer() {
                     return Err(type_mismatch(right));
                 }
 
@@ -1849,6 +1894,17 @@ where
         // a poison type is compatible with everything, so it never cascades
         if expected.is_error() || found.is_error() || expected == found {
             return Ok(());
+        }
+
+        if expected.is_infer() || found.is_infer() {
+            return match self.infer.unify(expected, found) {
+                Ok(()) => Ok(()),
+                Err(()) => {
+                    let expected = self.infer.resolve_or_default(expected);
+                    let found = self.infer.resolve_or_default(found);
+                    self.soft(hir_error!(span, TypeMismatch { expected, found }))
+                },
+            };
         }
 
         self.soft(hir_error!(span, TypeMismatch { expected, found }))
@@ -2177,6 +2233,7 @@ where
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
+    builder.resolve_inference();
 
     Ok((lowered.expr, builder.typeck))
 }

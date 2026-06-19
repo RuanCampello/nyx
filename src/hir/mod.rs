@@ -31,6 +31,7 @@ mod declarations;
 pub(crate) mod diagnostics;
 pub mod error;
 pub mod index_vec;
+mod infer;
 mod interfaces;
 mod lower;
 pub(crate) mod module;
@@ -502,7 +503,6 @@ impl TypeckResults {
 }
 
 impl Res {
-    /// The resolved function, if this is not a variant constructor.
     #[inline(always)]
     pub(crate) fn function(self) -> Option<FunctionId> {
         match self {
@@ -1156,6 +1156,82 @@ mod tests {
             err.kind,
             HirErrorKind::TypeMismatch {
                 expected: TypeKind::Iptr.into(),
+                found: TypeKind::Uptr.into()
+            }
+        );
+    }
+
+    #[test]
+    fn bare_int_literal_defaults_to_i32() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn main() {
+                let x = 0;
+                let f = 1.0;
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+
+        assert_eq!(func.locals[0].typ, TypeKind::I32.into(), "unconstrained integer falls back");
+        assert_eq!(func.locals[1].typ, TypeKind::F64.into(), "float literal unchanged");
+    }
+
+    #[test]
+    fn int_binding_back_propagates_from_later_annotation() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn main() {
+                let x = 0;
+                let y: i64 = x;
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+
+        assert_eq!(func.locals[0].typ, TypeKind::I64.into(), "use against i64 pins the literal");
+        assert_eq!(func.locals[1].typ, TypeKind::I64.into());
+    }
+
+    #[test]
+    fn int_binding_conflicting_uses_report_mismatch() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn main() {
+                let x = 0;
+                let y: u8 = x;
+                let z: u32 = x;
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: TypeKind::U32.into(),
+                found: TypeKind::U8.into()
+            }
+        );
+    }
+
+    #[test]
+    fn mixed_width_arithmetic_still_errors() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn main() {
+                let a: i32 = 1;
+                let b: uptr = 2;
+                let c = a + b;
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::TypeMismatch {
+                expected: TypeKind::I32.into(),
                 found: TypeKind::Uptr.into()
             }
         );

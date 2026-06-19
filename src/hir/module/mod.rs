@@ -268,7 +268,7 @@ pub(crate) fn resolve_std_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{ExpressionKind, Statement, TypeKind};
+    use crate::hir::{ExpressionKind, Function, Hir, Statement, Type, TypeKind};
     use std::collections::HashMap;
     use std::io;
 
@@ -330,6 +330,14 @@ mod tests {
     const PROJECT: &str = "/project";
     const STD: &str = "/std";
 
+    fn local_typ<'a>(main: &'a Function<'_>, hir: &Hir<'_>, name: &str) -> Type {
+        main.locals
+            .iter()
+            .find(|l| hir.symbols.get(l.name) == name)
+            .unwrap_or_else(|| panic!("missing local {name}"))
+            .typ
+    }
+
     #[test]
     fn resolve_simple_path() {
         let arena = bumpalo::Bump::new();
@@ -376,6 +384,55 @@ mod tests {
         let err = loader.resolve_path(&[APP], Span::default()).unwrap_err();
 
         assert!(matches!(err, ModuleError::EmptyPath));
+    }
+
+    #[test]
+    fn len_result_and_literal_defaults_infer() {
+        let arena = bumpalo::Bump::new();
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            fn main() {
+                let arr = [0; 3];
+                let l = arr.len();
+                let x = 232;
+                let y: bool = true;
+            }
+            "#,
+        );
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
+        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
+
+        assert_eq!(local_typ(main, &hir, "l"), TypeKind::Uptr.into(), "len() result");
+        assert_eq!(local_typ(main, &hir, "x"), TypeKind::I32.into(), "bare literal defaults i32");
+        assert_eq!(local_typ(main, &hir, "y"), TypeKind::Bool.into());
+    }
+
+    #[test]
+    fn counters_infer_uptr_from_len_and_indexing() {
+        let arena = bumpalo::Bump::new();
+        let fs = VirtualFS::default().add(
+            "/project/main.nyx",
+            r#"
+            fn sort(s: &mut [i32]) {
+                let mut i = 0;
+                let mut j = 0;
+                while j + i < s.len() {
+                    s[j] = 0;
+                    j = j + 1;
+                }
+            }
+            fn main() {
+                let mut data: [i32; 4] = [0; 4];
+                sort(&mut data);
+            }
+            "#,
+        );
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
+        let sort = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::sort").unwrap();
+
+        assert_eq!(local_typ(sort, &hir, "i"), TypeKind::Uptr.into());
+        assert_eq!(local_typ(sort, &hir, "j"), TypeKind::Uptr.into());
     }
 
     #[test]

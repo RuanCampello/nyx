@@ -66,6 +66,12 @@ pub enum TypeKind {
     },
     GenericParam(u8),
     Never,
+    /// An unresolved integer inference variable, produced by an un-annotated
+    /// integer literal and unified with a concrete integral type by usage
+    ///
+    /// Never escapes HIR lowering: every variable is resolved (defaulting to
+    /// `i32`) before a body is handed to MIR
+    Infer(u32),
     /// A poison type produced during error recovery
     ///
     /// Compatible with everything so it never cascades
@@ -122,6 +128,8 @@ const ERROR: u8 = 23;
 
 const ARRAY: u8 = 24;
 const SLICE: u8 = 25;
+
+const INFER: u8 = 26;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -286,6 +294,7 @@ impl Type {
             },
             TypeKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
             TypeKind::Never => Self(NEVER as u64),
+            TypeKind::Infer(vid) => Self((INFER as u64) | ((vid as u64) << 8)),
             TypeKind::Error => Self(ERROR as u64),
         }
     }
@@ -327,6 +336,24 @@ impl Type {
     #[inline]
     pub const fn generic_param(idx: u8) -> Self {
         Self::new(TypeKind::GenericParam(idx))
+    }
+
+    #[inline]
+    pub(crate) const fn infer(vid: u32) -> Self {
+        Self((INFER as u64) | ((vid as u64) << 8))
+    }
+
+    #[inline(always)]
+    pub(crate) const fn is_infer(self) -> bool {
+        tag(self.0) == INFER
+    }
+
+    #[inline(always)]
+    pub(crate) const fn infer_var(self) -> Option<u32> {
+        match tag(self.0) == INFER {
+            true => Some((self.0 >> 8) as u32),
+            false => None,
+        }
     }
 
     #[inline]
@@ -390,6 +417,7 @@ impl Type {
             },
             GENERIC_PARAM => TypeKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
             NEVER => TypeKind::Never,
+            INFER => TypeKind::Infer((self.0 >> 8) as u32),
             ERROR => TypeKind::Error,
             _ => panic!("invalid Type tag"),
         }
@@ -617,6 +645,7 @@ impl std::fmt::Display for TypeKind {
                 })?;
                 to.kind().fmt(f)
             },
+            Self::Infer(_) => f.write_str("{integer}"),
             Self::Error => f.write_str("{unknown}"),
             _ => unreachable!("every scalar kind is named by `scalar_name`"),
         }
