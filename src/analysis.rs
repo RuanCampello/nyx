@@ -810,6 +810,17 @@ fn format_type(typ: Type, hir: &Hir<'_>, generics: &[SymbolId]) -> String {
                 _ => format!("&{typ}"),
             }
         },
+        TypeKind::Array(id) => {
+            let array = hir.arrays[id];
+            format!("[{}; {}]", format_type(array.element, hir, generics), array.len)
+        },
+        TypeKind::Slice { mutable, element } => {
+            let element = format_type(element.into(), hir, generics);
+            match mutable {
+                true => format!("&mut [{element}]"),
+                _ => format!("&[{element}]"),
+            }
+        },
         kind => kind.to_string(),
     }
 }
@@ -839,6 +850,24 @@ mod tests {
         std::fs::remove_file(&entry).ok();
 
         analysis
+    }
+
+    #[test]
+    fn array_hint_renders_element_and_length() {
+        let a = analyse("array_render", "fn main() { let arr = [0; 3]; let l = arr.len(); }");
+        let hints: Vec<_> = a.inlay_hints.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(hints.contains(&"[i32; 3]"), "array renders as `[i32; 3]`: {hints:?}");
+        assert!(hints.contains(&"uptr"), "len() result is uptr: {hints:?}");
+    }
+
+    #[test]
+    fn array_element_infers_from_later_assignment() {
+        let a = analyse(
+            "array_infer",
+            "fn main() { let mut arr = [0; 3]; let p: uptr = 1; arr[0] = p; }",
+        );
+        let hints: Vec<_> = a.inlay_hints.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(hints.contains(&"[uptr; 3]"), "element infers to uptr: {hints:?}");
     }
 
     #[test]
