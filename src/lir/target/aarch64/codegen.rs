@@ -429,9 +429,11 @@ impl Function<AArch64> {
 
             A64Instr::BoundsCheck { index, bound } => {
                 let index = alloc.location(index, &8);
-                let index = load_src_if_mem_with_scratch(out, &index, 8, false, A64Reg::X16, A64Reg::D16);
+                let index =
+                    load_src_if_mem_with_scratch(out, &index, 8, false, A64Reg::X16, A64Reg::D16);
                 let bound = self.operand(alloc, bound, &8);
-                let bound = load_src_if_mem_with_scratch(out, &bound, 8, false, A64Reg::X17, A64Reg::D17);
+                let bound =
+                    load_src_if_mem_with_scratch(out, &bound, 8, false, A64Reg::X17, A64Reg::D17);
                 let symbol = Panic::IndexOutOfBounds.require();
 
                 emit!(out, "cmp     {index}, {bound}");
