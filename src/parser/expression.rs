@@ -165,9 +165,11 @@ impl<'i> Expression<'i> {
                     TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
                     TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
                     TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
-                    TokenKind::Punct(Punct::Ampersand) => match parser.consume_token(Keyword::Mut)? {
-                        true => UnaryOperator::RefMut,
-                        false => UnaryOperator::Ref,
+                    TokenKind::Punct(Punct::Ampersand) => {
+                        match parser.consume_token(Keyword::Mut)? {
+                            true => UnaryOperator::RefMut,
+                            false => UnaryOperator::Ref,
+                        }
                     },
 
                     _ => {
