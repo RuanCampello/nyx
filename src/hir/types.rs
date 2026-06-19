@@ -488,7 +488,6 @@ impl Type {
         tag(self.0) == SLICE
     }
 
-
     #[inline(always)]
     pub const fn diverges(&self) -> bool {
         matches!(self.kind(), TypeKind::Never)

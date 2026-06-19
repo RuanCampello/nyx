@@ -1365,21 +1365,37 @@ impl<'hir> Scope<'hir> {
 
 impl ArrayTable {
     /// intern `[element; len]`, reusing the existing id when the type is already known
+    ///
+    /// an inferred element is never cached: its variable is meaningful only within
+    /// the body that minted it, so a fresh id keeps bodies from aliasing each other
     pub fn intern(&self, element: Type, len: u32) -> ArrayId {
-        if let Some(&id) = self.lookup.borrow().get(&(element, len)) {
+        let cacheable = !element.is_infer();
+        if cacheable && let Some(&id) = self.lookup.borrow().get(&(element, len)) {
             return id;
         }
 
         let mut types = self.types.borrow_mut();
         let id = ArrayId(types.len() as u32);
         types.push(ArrayType { element, len });
-        self.lookup.borrow_mut().insert((element, len), id);
+        if cacheable {
+            self.lookup.borrow_mut().insert((element, len), id);
+        }
+
         id
     }
 
     #[inline]
     pub fn get(&self, id: ArrayId) -> ArrayType {
         self.types.borrow()[id]
+    }
+
+    /// pins the element of an inferred array once its variable is resolved
+    ///
+    /// safe only for uncached (inferred) arrays, which belong to a single body
+    /// concrete arrays are shared and must never be mutated under another's feet
+    #[inline]
+    pub fn resolve(&self, id: ArrayId, element: Type) {
+        self.types.borrow_mut()[id].element = element;
     }
 
     #[inline]

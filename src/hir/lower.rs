@@ -8,7 +8,7 @@ use crate::{
         index_vec::IndexVec,
         infer::InferTable,
         place_base_local,
-        scope::{GenericEnv, Scope},
+        scope::{ArrayTable, GenericEnv, Scope},
         symbols::{Mangler, qualified},
         type_resolver::{self, resolve_annotation},
     },
@@ -506,17 +506,51 @@ where
     /// resolves every remaining integer inference variable in the body, pinning
     /// unconstrained ones to `i32`, so no [TypeKind::Infer] reaches MIR
     fn resolve_inference(&mut self) {
+        let infer = &mut self.infer;
+        let arrays = &self.scope.arrays;
+
         for typ in self.typeck.node_types.iter_mut() {
-            *typ = self.infer.resolve_or_default(*typ);
+            *typ = Self::resolve_deep(infer, arrays, *typ);
         }
         for local in self.locals.iter_mut() {
-            local.typ = self.infer.resolve_or_default(local.typ);
+            local.typ = Self::resolve_deep(infer, arrays, local.typ);
         }
-
         for args in self.typeck.node_args.values_mut() {
             for typ in args.iter_mut() {
-                *typ = self.infer.resolve_or_default(*typ);
+                *typ = Self::resolve_deep(infer, arrays, *typ);
             }
+        }
+    }
+
+    /// resolves inference variables nested inside compound types, pinning the
+    /// elements of arrays left inferred so the [Hir] array table only ever exposes
+    /// concrete element types to later stages
+    fn resolve_deep(infer: &mut InferTable, arrays: &ArrayTable, typ: Type) -> Type {
+        match typ.kind() {
+            TypeKind::Array(id) => {
+                let array = arrays.get(id);
+                let element = Self::resolve_deep(infer, arrays, array.element);
+                // mutate in place rather than re-intern: an inferred array is unique
+                // to this body, so no other type id observes the change, and the
+                // global table never retains an unresolved element for MIR to lay out
+                if element != array.element {
+                    arrays.resolve(id, element);
+                }
+                typ
+            },
+            TypeKind::Slice { mutable, element } => {
+                match RefTarget::try_from(Self::resolve_deep(infer, arrays, element.into())) {
+                    Ok(target) => Type::slice(target, mutable),
+                    Err(()) => typ,
+                }
+            },
+            TypeKind::Ref { mutable, to } => {
+                match RefTarget::try_from(Self::resolve_deep(infer, arrays, to.into())) {
+                    Ok(target) => Type::refer(target, mutable),
+                    Err(()) => typ,
+                }
+            },
+            _ => infer.resolve_or_default(typ),
         }
     }
 
@@ -979,8 +1013,10 @@ where
                 let element_type = element_type
                     .or(element_hint)
                     .ok_or_else(|| hir_error!(*span, EmptyArrayType))?;
-                // array types are interned globally and must stay concrete
-                let element_type = self.infer.resolve_or_default(element_type);
+                // an un-annotated element stays an inference variable so later uses
+                // (e.g. assigning a `uptr` into a slot) can pin it; `resolve_inference`
+                // settles the concrete element before the body leaves HIR
+                let element_type = self.infer.resolve_shallow(element_type);
                 let id = self.scope.arrays.intern(element_type, elements.len() as u32);
                 let elements = self.arena.alloc_slice_copy(&lowered);
 
@@ -991,8 +1027,9 @@ where
                 let element_hint = hint.and_then(|h| self.element_type(h));
                 let value = self.lower_expr(value, element_hint)?;
                 let count = *count as u32;
-                // array types are interned globally and must stay concrete
-                let element_type = self.infer.resolve_or_default(value.typ);
+                // the element stays an inference variable until `resolve_inference`
+                // settles its concrete type in place (see `Expr::Array`)
+                let element_type = self.infer.resolve_shallow(value.typ);
                 let id = self.scope.arrays.intern(element_type, count);
 
                 Ok(self.alloc(
@@ -1058,13 +1095,14 @@ where
                             Type::slice(element, false)
                         },
                         TypeKind::Array(id) => {
-                            let array = self.scope.arrays.get(id);
-                            let element = RefTarget::try_from(array.element).map_err(|_| {
+                            let resolved =
+                                self.infer.resolve_or_default(self.scope.arrays.get(id).element);
+                            let element = RefTarget::try_from(resolved).map_err(|_| {
                                 hir_error!(
                                     receiver_lowered.span,
                                     TypeMismatch {
                                         expected: Type::structure(Default::default()),
-                                        found: array.element
+                                        found: resolved
                                     }
                                 )
                             })?;
@@ -1907,6 +1945,17 @@ where
             };
         }
 
+        // two arrays of the same length agree when their elements do; this lets a
+        // let-init's twice-lowered literal unify the inference variables behind its
+        // distinct interned ids (see `Stmt::Let` lowering and `Expr::Array`)
+        if let (TypeKind::Array(expected), TypeKind::Array(found)) = (expected.kind(), found.kind())
+        {
+            let (lhs, rhs) = (self.scope.arrays.get(expected), self.scope.arrays.get(found));
+            if lhs.len == rhs.len {
+                return self.assert_type(lhs.element, rhs.element, span);
+            }
+        }
+
         self.soft(hir_error!(span, TypeMismatch { expected, found }))
     }
 
@@ -2000,18 +2049,19 @@ where
     // TODO: this in the future will be replaced by some kind of
     // Deref equivalent we find more convienient
     // that would be much more important when we introduce more ds and iterables
-    fn coerce_array_to_slice(&self, operand: Type, hint: Option<Type>) -> Option<Type> {
+    fn coerce_array_to_slice(&mut self, operand: Type, hint: Option<Type>) -> Option<Type> {
         let slice = hint?;
         let TypeKind::Slice { element, .. } = slice.kind() else {
             return None;
         };
+        let TypeKind::Array(id) = operand.kind() else {
+            return None;
+        };
 
-        match operand.kind() {
-            TypeKind::Array(id) if self.scope.arrays.get(id).element == element.into() => {
-                Some(slice)
-            },
-            _ => None,
-        }
+        let array_element = self.scope.arrays.get(id).element;
+        // unifying pins an inferred element to the slice's element, so `&[0; 3]`
+        // in `&[uptr]` context yields a `[uptr; 3]` array
+        self.infer.unify(array_element, element.into()).ok().map(|()| slice)
     }
 
     fn coerce_method_receiver(
@@ -2025,7 +2075,8 @@ where
         let TypeKind::Slice { element, .. } = lookup_type.kind() else {
             return receiver.expr;
         };
-        if self.scope.arrays.get(id).element != element.into() {
+        let array_element = self.scope.arrays.get(id).element;
+        if self.infer.unify(array_element, element.into()).is_err() {
             return receiver.expr;
         }
 
