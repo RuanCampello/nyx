@@ -307,7 +307,31 @@ where
                 self.handle_tail_expr(expr, tail_ret)
             },
 
-            Stmt::Item(_) => unimplemented!("items are not supported inside function bodies yet"),
+            Stmt::Item(statement::Item { kind: statement::ItemKind::Const(constant), .. }) => {
+                let typ = self
+                    .resolve_type(&constant.typ.value(), constant.typ.span())
+                    .or_else(|e| self.poison(e))?;
+
+                let symbol = self.symbols.insert(constant.name);
+                let id = self.declare_local(symbol, typ, false, constant.span)?;
+
+                let stmt = match self.lower_expr(&constant.value, Some(typ)) {
+                    Ok(expr) => {
+                        self.assert_type(typ, expr.typ, expr.span)?;
+                        Statement::LetInit { id, init: expr.expr }
+                    },
+                    Err(error) => {
+                        self.soft(error)?;
+                        Statement::LetUninit { id }
+                    },
+                };
+
+                Ok((stmt, false))
+            },
+
+            Stmt::Item(statement::Item { kind, .. }) => {
+                Err(hir_error!(kind.span(), NestedItem { kind: kind.keyword() }))
+            },
         }
     }
 

@@ -1695,6 +1695,40 @@ mod tests {
     }
 
     #[test]
+    fn const_in_function_body_binds_as_local() {
+        let src = r#"
+            fn main(): i32 {
+                const ANSWER: i32 = 42;
+                ANSWER
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+
+        assert!(matches!(func.body.statements[0], Statement::LetInit { .. }));
+
+        let ret_expr = match &func.body.statements[1] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
+        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
+    }
+
+    #[test]
+    fn nested_non_const_item_is_rejected() {
+        let src = r#"
+            fn main() {
+                struct Inner {}
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::NestedItem { kind: "struct" });
+    }
+
+    #[test]
     fn literal_pattern_integer() {
         let arena = bumpalo::Bump::new();
         let src = r#"

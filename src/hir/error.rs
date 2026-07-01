@@ -289,6 +289,13 @@ pub enum HirErrorKind<'h> {
         help = "add {`impl {type_name} with {interface_name} {{ … }}`}"
     )]
     OperatorRequiresInterface { op: &'h str, type_name: &'h str, interface_name: CmpInterface },
+
+    #[diagnostic(
+        message = "{kind!} declarations are not allowed inside a function body",
+        primary = "move this {kind!} out to the module level",
+        help = "only {`const`} declarations may appear inside a function body"
+    )]
+    NestedItem { kind: &'h str },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]

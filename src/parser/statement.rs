@@ -1463,6 +1463,19 @@ impl<'i> ItemKind<'i> {
             Self::Use(u) => u.span,
         }
     }
+
+    #[inline(always)]
+    pub const fn keyword<'s>(&self) -> &'s str {
+        match self {
+            Self::Fn(_) => "fn",
+            Self::Struct(_) => "struct",
+            Self::Enum(_) => "enum",
+            Self::Const(_) => "const",
+            Self::Impl(_) => "impl",
+            Self::Interface(_) => "interface",
+            Self::Use(_) => "use",
+        }
+    }
 }
 
 impl<'s> Statement<'s> {
