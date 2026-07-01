@@ -296,6 +296,13 @@ pub enum HirErrorKind<'h> {
         help = "only {`const`} declarations may appear inside a function body"
     )]
     NestedItem { kind: &'h str },
+
+    #[diagnostic(
+        message = "attempt to use a non-constant value in a constant",
+        primary = "cannot refer to the local {name!} from a constant",
+        help = "a constant is evaluated independently of the function; use a literal or another {`const`}"
+    )]
+    NonConstValue { name: &'h str },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]

@@ -15,7 +15,7 @@ use crate::{
     lexer::{Spanned, token::Span},
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else, PatternLit},
+        statement::{self, Else, ItemKind, PatternLit},
     },
 };
 use std::{
@@ -41,6 +41,12 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     typeck: TypeckResults,
     infer: InferTable,
     generic_env: GenericEnv,
+    /// compile-time constants declared in this function body, spliced at use
+    /// sites like top-level constants, but scoped to and dropped with the body
+    body_constants: HashMap<SymbolId, Constant<'hir>>,
+    /// when lowering a constant initialiser, the names of the enclosing
+    /// function's locals, referencing one is an error, not a resolution
+    outer_const_locals: HashSet<SymbolId>,
 }
 
 /// A freshly lowered expression
@@ -87,6 +93,8 @@ where
             self_type,
             arena,
             generic_env: HashMap::new(),
+            body_constants: HashMap::new(),
+            outer_const_locals: HashSet::new(),
         }
     }
 
@@ -127,6 +135,8 @@ where
             self_type: None,
             arena,
             generic_env: HashMap::new(),
+            body_constants: HashMap::new(),
+            outer_const_locals: HashSet::new(),
         }
     }
 
@@ -205,6 +215,18 @@ where
         let mut statements_vec = Vec::with_capacity(block.statements.len());
         let mut returns = false;
         for (idx, statement) in block.statements.iter().enumerate() {
+            if let statement::Statement::Item(statement::Item {
+                kind: ItemKind::Const(constant),
+                ..
+            }) = statement
+            {
+                if let Err(error) = self.declare_body_const(constant) {
+                    self.soft(error)?;
+                }
+
+                continue;
+            }
+
             match self.lower_statement(statement, is_tail && idx == last_idx) {
                 Ok((statement, did_return)) => {
                     statements_vec.push(statement);
@@ -307,32 +329,52 @@ where
                 self.handle_tail_expr(expr, tail_ret)
             },
 
-            Stmt::Item(statement::Item { kind: statement::ItemKind::Const(constant), .. }) => {
-                let typ = self
-                    .resolve_type(&constant.typ.value(), constant.typ.span())
-                    .or_else(|e| self.poison(e))?;
-
-                let symbol = self.symbols.insert(constant.name);
-                let id = self.declare_local(symbol, typ, false, constant.span)?;
-
-                let stmt = match self.lower_expr(&constant.value, Some(typ)) {
-                    Ok(expr) => {
-                        self.assert_type(typ, expr.typ, expr.span)?;
-                        Statement::LetInit { id, init: expr.expr }
-                    },
-                    Err(error) => {
-                        self.soft(error)?;
-                        Statement::LetUninit { id }
-                    },
-                };
-
-                Ok((stmt, false))
-            },
-
             Stmt::Item(statement::Item { kind, .. }) => {
                 Err(hir_error!(kind.span(), NestedItem { kind: kind.keyword() }))
             },
         }
+    }
+
+    /// lower a body-level `const` into a compile-time constant scoped to this
+    /// body
+    ///
+    /// the initialiser is evaluated in a dedicated const sub-builder that
+    /// sees earlier body constants but not the enclosing locals, so a captured
+    /// local is reported rather than resolved
+    fn declare_body_const(
+        &mut self,
+        constant: &statement::Const<'src>,
+    ) -> Result<(), HirError<'hir>> {
+        let typ = self
+            .resolve_type(&constant.typ.value(), constant.typ.span())
+            .or_else(|e| self.poison(e))?;
+
+        let name = self.symbols.insert(constant.name);
+        if self.body_constants.contains_key(&name) {
+            return Err(hir_error!(constant.span, DuplicateConstant { name: constant.name }));
+        }
+
+        let outer_locals = self.scopes.iter().flat_map(|scope| scope.keys().copied()).collect();
+        let siblings = self.body_constants.clone();
+
+        let (value, typeck) = {
+            let mut builder =
+                FunctionBuilder::new_for_const(self.scope, self.symbols, self.in_std, self.arena);
+            builder.outer_const_locals = outer_locals;
+            builder.body_constants = siblings;
+
+            let lowered = builder.lower_expr(&constant.value, Some(typ))?;
+            builder.assert_type(typ, lowered.typ, lowered.span)?;
+            builder.resolve_inference();
+
+            (lowered.expr, builder.typeck)
+        };
+
+        let decl_span = constant.span;
+        let constant = Constant { name, typ, value, typeck, is_pub: false, decl_span };
+        self.body_constants.insert(name, constant);
+
+        Ok(())
     }
 
     fn lower_identifier(
@@ -356,6 +398,13 @@ where
             .symbols
             .get_id(name)
             .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name }))?;
+
+        // reached only while lowering a constant initialiser
+        // the name resolves to a local of the enclosing function, which a constant cannot capture
+        if self.outer_const_locals.contains(&symbol) {
+            return Err(hir_error!(span, NonConstValue { name }));
+        }
+
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
@@ -590,6 +639,13 @@ where
     }
 
     fn constant(&self, name: &str) -> Option<&Constant<'hir>> {
+        // a body-level constant lexically shadows any module or impl constant
+        if let Some(symbol) = self.symbols.get_id(name)
+            && let Some(constant) = self.body_constants.get(&symbol)
+        {
+            return Some(constant);
+        }
+
         if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
             let scoped = self.mangler().scoped_item(impl_type, name);
             if let Some(constant) = self.constant_by_symbol_name(&scoped) {
