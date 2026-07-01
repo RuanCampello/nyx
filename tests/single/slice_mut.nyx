@@ -1,0 +1,15 @@
+// fill writes [0, 2, 4, 6]; sum = 12
+
+fn fill(s: &mut [i32]) {
+    let mut i = 0;
+    while i < s.len() {
+        s[i] = (i as i32) * 2;
+        i = i + 1;
+    }
+}
+
+fn main(): i32 {
+    let mut a: [i32; 4] = [0; 4];
+    fill(&mut a);
+    a[0] + a[1] + a[2] + a[3]
+}

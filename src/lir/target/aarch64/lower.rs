@@ -32,9 +32,16 @@ impl Lowerable for AArch64 {
         all_functions: &[Function],
         struct_layouts: &[mir::Layout],
         enum_layouts: &[mir::Layout],
+        array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let mut lower =
-            Lower::<AArch64>::new(function, symbols, all_functions, struct_layouts, enum_layouts);
+        let mut lower = Lower::<AArch64>::new(
+            function,
+            symbols,
+            all_functions,
+            struct_layouts,
+            enum_layouts,
+            array_layouts,
+        );
 
         lower.lower_param_moves();
 
@@ -105,7 +112,7 @@ impl<'f> Lower<'f, AArch64> {
                         _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
                     },
                     U::Deref => unreachable!(),
-                    U::Ref => unreachable!(
+                    U::Ref | U::RefMut => unreachable!(
                         "UnaryOperator::Ref is lowered to InstructionKind::AddressOf in MIR and never reaches LIR Unary lowering"
                     ),
                 }
@@ -391,6 +398,186 @@ impl<'f> Lower<'f, AArch64> {
                 self.lir.push_instr(id, instruction);
             },
 
+            InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
+                let typ = *typ;
+                let uptr = TypeKind::Uptr.into();
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                let index = self.lower_operand(index);
+                let index = self.ensure_vreg(index, uptr, id);
+                let bound = self.lower_operand(bound);
+                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
+
+                let Operand::Place(base) = base else {
+                    unreachable!("indexing a constant aggregate")
+                };
+                let origin = self.value[base.id];
+                let addr = self.lir.new_vreg(int8);
+                match base.typ.kind() {
+                    TypeKind::Ref { .. } => {
+                        let instr = A64Instr::Mov { dest: addr, src: origin, bytes: 8 };
+                        self.lir.push_instr(id, instr)
+                    },
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin }),
+                }
+
+                // element address = base address + index * stride
+                let stride = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
+                let offset = self.lir.new_vreg(int8);
+                let instr = A64Instr::Mul {
+                    dest: offset,
+                    lhs: index,
+                    rhs: stride,
+                    bytes: 8,
+                    checked: false,
+                };
+                self.lir.push_instr(id, instr);
+                let element = self.lir.new_vreg(int8);
+
+                let rhs = A64Operand::VReg(offset);
+                let instr =
+                    A64Instr::Add { dest: element, lhs: addr, rhs, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                match typ.is_aggregate() {
+                    true => {
+                        let size = typ.machine_type(self.layouts).stack_size() as u32;
+                        aggregate_copy(
+                            &mut self.lir,
+                            id,
+                            AggregateCopy {
+                                src: element,
+                                dest,
+                                src_ref: true,
+                                dest_ref: false,
+                                src_base: 0,
+                                dest_base: 0,
+                                size,
+                            },
+                        );
+                    },
+                    false => {
+                        let mt = typ.machine_type(self.layouts);
+                        let instruction = AArch64::scalar_load(
+                            true,
+                            dest,
+                            element,
+                            0,
+                            mt.bytes(),
+                            typ.is_float(),
+                            mt.is_signed(),
+                        );
+                        self.lir.push_instr(id, instruction);
+                    },
+                }
+            },
+
+            InstructionKind::ElementStore { index, bound, value, stride } => {
+                let uptr: Type = TypeKind::Uptr.into();
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                let index = self.lower_operand(index);
+                let index = self.ensure_vreg(index, uptr, id);
+                let bound = self.lower_operand(bound);
+                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
+
+                let addr = self.lir.new_vreg(int8);
+                match typ.kind() {
+                    TypeKind::Ref { .. } => {
+                        let instr = A64Instr::Mov { dest: addr, src: dest, bytes: 8 };
+                        self.lir.push_instr(id, instr);
+                    },
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin: dest }),
+                }
+
+                // element address = base address + index * stride
+                let rhs = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
+                let offset = self.lir.new_vreg(int8);
+                let instr =
+                    A64Instr::Mul { dest: offset, lhs: index, rhs, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                let element = self.lir.new_vreg(int8);
+                let rhs = A64Operand::VReg(offset);
+                let instr =
+                    A64Instr::Add { dest: element, lhs: addr, rhs, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+
+                let value_typ = value.typ();
+                match value_typ.is_aggregate() {
+                    true => {
+                        let Operand::Place(src) = value else {
+                            unreachable!("aggregate element store source must be a place");
+                        };
+                        let src = self.value[src.id];
+                        let size = value_typ.machine_type(self.layouts).stack_size() as u32;
+                        let copy = AggregateCopy {
+                            src,
+                            dest: element,
+                            src_ref: false,
+                            dest_ref: true,
+                            src_base: 0,
+                            dest_base: 0,
+                            size,
+                        };
+                        aggregate_copy(&mut self.lir, id, copy);
+                    },
+
+                    false => {
+                        let mt = value_typ.machine_type(self.layouts);
+                        let src = self.lower_operand(value);
+                        let instr = AArch64::scalar_store(
+                            true,
+                            element,
+                            src,
+                            0,
+                            mt.bytes(),
+                            value_typ.is_float(),
+                        );
+                        self.lir.push_instr(id, instr);
+                    },
+                }
+            },
+
+            InstructionKind::ElementAddr { base, index, bound, stride } => {
+                let uptr = TypeKind::Uptr.into();
+                let int8 = MachineType::Int { bytes: 8, signed: false };
+
+                let index = self.lower_operand(index);
+                let index = self.ensure_vreg(index, uptr, id);
+                let bound = self.lower_operand(bound);
+                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
+
+                let base = match base {
+                    Operand::Place(place) => place,
+                    Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+                };
+                let origin = self.value[base.id];
+                let addr = self.lir.new_vreg(int8);
+                match base.typ.kind() {
+                    TypeKind::Ref { .. } => {
+                        let instr = A64Instr::Mov { dest: addr, src: origin, bytes: 8 };
+                        self.lir.push_instr(id, instr)
+                    },
+                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin }),
+                }
+
+                let stride = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
+                let offset = self.lir.new_vreg(int8);
+                let instr = A64Instr::Mul {
+                    dest: offset,
+                    lhs: index,
+                    rhs: stride,
+                    bytes: 8,
+                    checked: false,
+                };
+                self.lir.push_instr(id, instr);
+
+                let rhs = A64Operand::VReg(offset);
+                let instr = A64Instr::Add { dest, lhs: addr, rhs, bytes: 8, checked: false };
+                self.lir.push_instr(id, instr);
+            },
+
             InstructionKind::AddressOf { src, offset } => {
                 let origin = self.value[src.id];
                 match src.typ.kind() {
@@ -614,10 +801,9 @@ impl<'f> Lower<'f, AArch64> {
     ) -> A64Operand {
         match op {
             A64Operand::Imm(n) => {
-                let max = if bytes == 8 {
-                    63
-                } else {
-                    31
+                let max = match bytes == 8 {
+                    true => 63,
+                    _ => 31,
                 };
                 match n >= 0 && n <= max {
                     true => A64Operand::Imm(n),

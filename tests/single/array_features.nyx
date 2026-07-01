@@ -1,0 +1,17 @@
+// arrays: repeat literal `[0; N]`, `.len()` (a compile-time constant), and
+// bounds-checked indexed writes on a `mut` array.
+//
+// fills a with [1, 2, 3, 4, 5], then returns a[0] + a[4] + b[2] = 1 + 5 + 30 = 36
+
+fn main(): i32 {
+    let mut a: [i32; 5] = [0; 5];
+
+    let mut i = 0;
+    while i < a.len() {
+        a[i] = (i as i32) + 1;
+        i = i + 1;
+    }
+
+    let b: [i32; 3] = [10, 20, 30];
+    a[0] + a[4] + b[2]
+}

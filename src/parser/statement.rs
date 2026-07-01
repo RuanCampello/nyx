@@ -306,7 +306,12 @@ pub enum Type<'i> {
     String,
     Named(&'i str),
     SelfType, RefSelf,
-    Ref(Box<Type<'i>>),
+    /// a reference `&T` or `&mut T`
+    Ref(Box<Type<'i>>, bool),
+    /// fixed-size array `[T; N]`
+    Array(Box<Type<'i>>, u64),
+    /// borrowed slice `&[T]` or `&mut [T]`, a fat pointer of (ptr, len)
+    Slice(Box<Type<'i>>, bool),
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     #[allow(dead_code)]
     Unit,
@@ -405,55 +410,6 @@ impl<'i> Parsable<'i> for Statement<'i> {
         };
 
         Ok(Statement::Item(Item { docs, kind }))
-    }
-}
-
-impl<'i> Spanned<Type<'i>> {
-    pub fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        if parser.consume_token(Punct::Ampersand)? {
-            let start = parser.last_span().unwrap_or_default();
-            let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
-            let span = start + inner.span();
-            let kind = match inner.value() {
-                Type::Str => Type::Str,
-                Type::SelfType => Type::RefSelf,
-                other => Type::Ref(Box::new(other)),
-            };
-            return Ok(Self::new(kind, span));
-        }
-
-        if parser.consume_token(Punct::Bang)? {
-            let span = parser.last_span().unwrap_or_default();
-            return Ok(Self::new(Type::Never, span));
-        }
-
-        let (name, span) = parser.expect_identifier()?;
-
-        let mut generic_args = Vec::new();
-        let mut type_span = span;
-        if parser.consume_token(Punct::Lt)? {
-            loop {
-                let arg = parser.parse_node::<Spanned<Type<'i>>>()?;
-                generic_args.push(arg);
-                if parser.consume_generic_close()? {
-                    break;
-                }
-                parser.expect_token(Punct::Comma)?;
-                if parser.consume_generic_close()? {
-                    break;
-                }
-            }
-
-            type_span = span + parser.last_span().unwrap_or(span);
-        }
-
-        let value = if !generic_args.is_empty() {
-            Type::Generic(name, generic_args)
-        } else {
-            Type::from_str(name).unwrap_or(Type::Named(name))
-        };
-
-        Ok(Self::new(value, type_span))
     }
 }
 
@@ -629,19 +585,20 @@ impl<'i> Parsable<'i> for Match<'i> {
                 _ => {},
             }
 
-            let first: Spanned<Pattern> = parser.parse_node()?;
-            let pattern = if parser.consume_token(Punct::Pipe)? {
-                let mut alts = vec![first];
+            let first: Spanned<_> = parser.parse_node()?;
+            let pattern = match parser.consume_token(Punct::Pipe)? {
+                true => {
+                    let mut alts = vec![first];
 
-                while {
-                    alts.push(parser.parse_node()?);
-                    parser.consume_token(Punct::Pipe)?
-                } {}
+                    while {
+                        alts.push(parser.parse_node()?);
+                        parser.consume_token(Punct::Pipe)?
+                    } {}
 
-                let span = alts.first().unwrap().span() + alts.last().unwrap().span();
-                Spanned::new(Pattern::Or(alts), span)
-            } else {
-                first
+                    let span = alts.first().unwrap().span() + alts.last().unwrap().span();
+                    Spanned::new(Pattern::Or(alts), span)
+                },
+                _ => first,
             };
 
             let guard = parser
@@ -737,44 +694,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         let mut generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
-
-        let mut params = Vec::new();
-        let mut receiver = None;
-
-        loop {
-            let token = parser
-                .peek()
-                .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, fn_token.span))?;
-
-            match token {
-                Ok(token) if token.is_kind(Punct::CloseParen) => {
-                    parser.expect_token(Punct::CloseParen)?;
-                    break;
-                },
-
-                Ok(_) => {
-                    if !params.is_empty() || receiver.is_some() {
-                        parser.expect_token(Punct::Comma)?;
-                    }
-
-                    if params.is_empty() && receiver.is_none() {
-                        if parser.consume_token(Punct::Ampersand)? {
-                            let amp_span = parser.last_span().unwrap_or_default();
-                            receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
-                            continue;
-                        }
-                        if peek_is_self(parser) {
-                            receiver = Some(Receiver::parse_by_value(parser)?);
-                            continue;
-                        }
-                    }
-
-                    params.push(parser.parse_node()?);
-                },
-
-                Err(err) => return Err(err.into()),
-            }
-        }
+        let (receiver, params) = parse_receiver_and_params(parser, fn_token.span)?;
 
         let return_type =
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
@@ -800,21 +720,27 @@ impl<'i> Parsable<'i> for Function<'i> {
 
 impl<'i> Parsable<'i> for Impl<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        use crate::hir::SLICE_IMPL_NAME;
+
         let impl_token = parser.expect_token(Keyword::Impl)?;
 
-        let receiver = Spanned::<Type>::parse(parser)?;
+        let receiver = parser.parse_node::<Spanned<Type>>()?;
         let generics = Vec::new();
-        let name = receiver.value().name().ok_or_else(|| {
-            ParserError::new(
-                ParseErrorKind::ExpectedTypeIdentifier { found: format!("{:?}", receiver.value()) },
-                receiver.span(),
-            )
-        })?;
+        // slices have no nominal name, so `impl [T]` blocks share a reserved one
+        let name = match receiver.value_ref() {
+            Type::Slice(..) => SLICE_IMPL_NAME,
+            other => other.name().ok_or_else(|| {
+                ParserError::new(
+                    ParseErrorKind::ExpectedTypeIdentifier { found: format!("{other:?}") },
+                    receiver.span(),
+                )
+            })?,
+        };
 
         let mut interface_type = None;
         let mut interface = None;
         if parser.consume_token(Keyword::With)? {
-            let parsed_interface = Spanned::<Type>::parse(parser)?;
+            let parsed_interface = parser.parse_node::<Spanned<Type>>()?;
             let interface_name = parsed_interface.value().name().ok_or_else(|| {
                 ParserError::new(
                     ParseErrorKind::ExpectedTypeIdentifier {
@@ -859,17 +785,13 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
                 Some(Ok(_)) if parser.is_const_decl() => {
                     let constant = parser.parse_node::<Const>()?;
-                    if !docs.is_empty() {
-                        member_docs.push((constant.span, docs));
-                    }
+                    push_member_docs(&mut member_docs, constant.span, docs);
                     constants.push(constant);
                 },
 
                 Some(Ok(token)) if token.is_fn_start() => {
                     let mut method = parser.parse_node::<Function>()?;
-                    if !docs.is_empty() {
-                        member_docs.push((method.span, docs));
-                    }
+                    push_member_docs(&mut member_docs, method.span, docs);
                     method.impl_type = Some(name);
                     methods.push(method);
                 },
@@ -932,44 +854,19 @@ impl<'i> Parsable<'i> for Struct<'i> {
 
         parser.expect_token(Punct::OpenBrace)?;
 
-        let mut fields = Vec::new();
-
-        loop {
-            match parser.peek() {
-                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    let close = parser.expect_token(Punct::CloseBrace)?;
-                    let repr = parser.parse_node()?;
-                    let span = struct_token.span + parser.last_span().unwrap_or(close.span);
-
-                    return Ok(Self { name, generics, fields, repr, is_pub, span });
-                },
-
-                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                },
-
-                Some(Err(err)) => return Err(err.into()),
-                _ => {},
-            }
-
-            if !fields.is_empty() {
-                parser.expect_token(Punct::Comma)?;
-
-                match parser.peek() {
-                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                        continue;
-                    },
-                    _ => {},
-                }
-            }
-
+        let (fields, close_span) = parse_comma_separated(parser, Punct::CloseBrace, |parser| {
             let (field_name, field_span) = parser.expect_identifier()?;
             parser.expect_token(Punct::Colon)?;
             let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
             let span = field_span + typ.span();
 
-            fields.push(StructField { name: field_name, typ, span });
-        }
+            Ok(StructField { name: field_name, typ, span })
+        })?;
+
+        let repr = parser.parse_node()?;
+        let span = struct_token.span + parser.last_span().unwrap_or(close_span);
+
+        Ok(Self { name, generics, fields, repr, is_pub, span })
     }
 }
 
@@ -981,35 +878,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
         let generics = parse_generics::<GenericBound>(parser)?;
         parser.expect_token(Punct::OpenBrace)?;
 
-        let mut variants = Vec::new();
-
-        loop {
-            match parser.peek() {
-                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    parser.expect_token(Punct::CloseBrace)?;
-                    break;
-                },
-
-                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-                },
-
-                Some(Err(err)) => return Err(err.into()),
-                _ => {},
-            }
-
-            if !variants.is_empty() {
-                parser.expect_token(Punct::Comma)?;
-
-                match parser.peek() {
-                    Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                        parser.expect_token(Punct::CloseBrace)?;
-                        break;
-                    },
-                    _ => {},
-                }
-            }
-
+        let (variants, _) = parse_comma_separated(parser, Punct::CloseBrace, |parser| {
             let (variant_name, variant_span) = parser.expect_identifier()?;
 
             let mut payload = None;
@@ -1044,8 +913,8 @@ impl<'i> Parsable<'i> for Enum<'i> {
                 (None, variant_span)
             };
 
-            variants.push(EnumVariant { name: variant_name, payload, value, span });
-        }
+            Ok(EnumVariant { name: variant_name, payload, value, span })
+        })?;
 
         let repr = parser.consume_token(Keyword::As)?.then(|| parser.parse_node()).transpose()?;
         // span the whole declaration (keyword .. closing brace / repr), so the
@@ -1070,7 +939,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
             loop {
                 // parse as a full type so generic args (`PartialEq<Rhs>`) are consumed,
                 // then keep only the bare interface name
-                let bound = Spanned::<Type>::parse(parser)?;
+                let bound = parser.parse_node::<Spanned<Type>>()?;
                 let name = match bound.value() {
                     Type::Named(name) | Type::Generic(name, _) => name,
                     _ => {
@@ -1113,9 +982,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
                 Some(Err(err)) => return Err(err.into()),
                 _ => {
                     let method = InterfaceMethod::parse(parser)?;
-                    if !docs.is_empty() {
-                        member_docs.push((method.span, docs));
-                    }
+                    push_member_docs(&mut member_docs, method.span, docs);
                     methods.push(method);
                 },
             }
@@ -1134,44 +1001,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let mut generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
-
-        let mut params = Vec::new();
-        let mut receiver = None;
-
-        loop {
-            match parser.peek() {
-                Some(Ok(token)) if token.is_kind(Punct::CloseParen) => {
-                    parser.expect_token(Punct::CloseParen)?;
-                    break;
-                },
-
-                Some(Ok(_)) => {
-                    if !params.is_empty() || receiver.is_some() {
-                        parser.expect_token(Punct::Comma)?;
-                    }
-
-                    if params.is_empty() && receiver.is_none() {
-                        if parser.consume_token(Punct::Ampersand)? {
-                            let amp_span = parser.last_span().unwrap_or_default();
-                            receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
-                            continue;
-                        }
-                        if peek_is_self(parser) {
-                            receiver = Some(Receiver::parse_by_value(parser)?);
-                            continue;
-                        }
-                    }
-
-                    params.push(parser.parse_node()?);
-                },
-
-                Some(Err(err)) => return Err(err.into()),
-
-                None => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, fn_token.span));
-                },
-            }
-        }
+        let (receiver, params) = parse_receiver_and_params(parser, fn_token.span)?;
 
         let return_type =
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
@@ -1244,36 +1074,11 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
         let items = match parser.peek() {
             Some(Ok(token)) if token.is_kind(Punct::OpenBrace) => {
                 parser.expect_token(Punct::OpenBrace)?;
-                let mut names = Vec::new();
-                let mut first = true;
 
-                loop {
-                    match parser.peek() {
-                        Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                            parser.expect_token(Punct::CloseBrace)?;
-                            break;
-                        },
-
-                        _ => {},
-                    }
-
-                    if !first {
-                        parser.expect_token(Punct::Comma)?;
-                    }
-                    first = false;
-
-                    // trailing comma: '{a, b,}'
-                    match parser.peek() {
-                        Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                            parser.expect_token(Punct::CloseBrace)?;
-                            break;
-                        },
-                        _ => {},
-                    }
-
+                let (names, _) = parse_comma_separated(parser, Punct::CloseBrace, |parser| {
                     let (name, span) = parser.expect_identifier()?;
-                    names.push(UseItem { name, span })
-                }
+                    Ok(UseItem { name, span })
+                })?;
 
                 UseItems::Named(names)
             },
@@ -1393,7 +1198,7 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
         let mut bound_span = param_span;
         if parser.consume_token(Punct::Colon)? {
             loop {
-                let bound = Spanned::<Type>::parse(parser)?;
+                let bound = parser.parse_node::<Spanned<Type>>()?;
                 bound_span = bound_span + bound.span();
                 bounds.push(bound);
                 if !parser.consume_token(Punct::Plus)? {
@@ -1403,6 +1208,124 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
         }
         Ok(GenericBound { name: param_name, bounds, span: bound_span })
     }
+}
+
+impl<'i> Parsable<'i> for Spanned<Type<'i>> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        if parser.consume_token(Punct::Ampersand)? {
+            let start = parser.last_span().unwrap_or_default();
+            let mutable = parser.consume_token(Keyword::Mut)?;
+
+            if parser.consume_token(Punct::OpenBracket)? {
+                let (element, length) = parse_bracketed_type(parser)?;
+                let end = parser.expect_token(Punct::CloseBracket)?.span;
+                let kind = match length {
+                    Some(len) => Type::Ref(Box::new(Type::Array(Box::new(element), len)), mutable),
+                    None => Type::Slice(Box::new(element), mutable),
+                };
+                return Ok(Self::new(kind, start + end));
+            }
+
+            let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
+            let span = start + inner.span();
+            let kind = match inner.value() {
+                Type::Str => Type::Str,
+                Type::SelfType => Type::RefSelf,
+                other => Type::Ref(Box::new(other), mutable),
+            };
+            return Ok(Self::new(kind, span));
+        }
+
+        if parser.consume_token(Punct::OpenBracket)? {
+            let start = parser.last_span().unwrap_or_default();
+            let (element, length) = parse_bracketed_type(parser)?;
+            let end = parser.expect_token(Punct::CloseBracket)?.span;
+            let kind = match length {
+                Some(len) => Type::Array(Box::new(element), len),
+                None => Type::Slice(Box::new(element), false),
+            };
+            return Ok(Self::new(kind, start + end));
+        }
+
+        if parser.consume_token(Punct::Bang)? {
+            let span = parser.last_span().unwrap_or_default();
+            return Ok(Self::new(Type::Never, span));
+        }
+
+        let (name, span) = parser.expect_identifier()?;
+
+        let mut generic_args = Vec::new();
+        let mut type_span = span;
+        if parser.consume_token(Punct::Lt)? {
+            generic_args = parse_angle_bracketed(parser)?;
+            type_span = span + parser.last_span().unwrap_or(span);
+        }
+
+        let value = match !generic_args.is_empty() {
+            true => Type::Generic(name, generic_args),
+            _ => Type::from_str(name).unwrap_or(Type::Named(name)),
+        };
+
+        Ok(Self::new(value, type_span))
+    }
+}
+
+fn parse_bracketed_type<'i>(
+    parser: &mut Parser<'i>,
+) -> Result<(Type<'i>, Option<u64>), ParserError<'i>> {
+    let element = parser.parse_node::<Spanned<Type<'i>>>()?.value();
+
+    let length = match parser.consume_token(Punct::Semicolon)? {
+        true => Some(parser.expect_unsigned_literal()?),
+        false => None,
+    };
+
+    Ok((element, length))
+}
+
+fn parse_receiver_and_params<'i>(
+    parser: &mut Parser<'i>,
+    fn_span: Span,
+) -> Result<(Option<Receiver>, Vec<Parameter<'i>>), ParserError<'i>> {
+    let mut params = Vec::new();
+    let mut receiver = None;
+
+    loop {
+        let token = parser
+            .peek()
+            .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, fn_span))?;
+
+        match token {
+            Ok(token) if token.is_kind(Punct::CloseParen) => {
+                parser.expect_token(Punct::CloseParen)?;
+                break;
+            },
+
+            Ok(_) => {
+                if !params.is_empty() || receiver.is_some() {
+                    parser.expect_token(Punct::Comma)?;
+                }
+
+                if params.is_empty() && receiver.is_none() {
+                    if parser.consume_token(Punct::Ampersand)? {
+                        let amp_span = parser.last_span().unwrap_or_default();
+                        receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
+                        continue;
+                    }
+                    if peek_is_self(parser) {
+                        receiver = Some(Receiver::parse_by_value(parser)?);
+                        continue;
+                    }
+                }
+
+                params.push(parser.parse_node()?);
+            },
+
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok((receiver, params))
 }
 
 fn peek_is_self<'i>(parser: &mut Parser<'i>) -> bool {
@@ -1452,28 +1375,78 @@ fn parse_where_clause<'i>(
     Ok(())
 }
 
-pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
+fn push_member_docs<'i>(
+    member_docs: &mut Vec<(Span, Box<[&'i str]>)>,
+    span: Span,
+    docs: Box<[&'i str]>,
+) {
+    if !docs.is_empty() {
+        member_docs.push((span, docs));
+    }
+}
+
+pub(crate) fn parse_comma_separated<'i, T>(
+    parser: &mut Parser<'i>,
+    close: Punct,
+    mut item: impl FnMut(&mut Parser<'i>) -> Result<T, ParserError<'i>>,
+) -> Result<(Vec<T>, Span), ParserError<'i>> {
+    let mut items = Vec::new();
+
+    loop {
+        match parser.peek() {
+            Some(Ok(token)) if token.is_kind(close) => {
+                let token = parser.expect_token(close)?;
+                return Ok((items, token.span));
+            },
+            Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+            },
+            Some(Err(err)) => return Err(err.into()),
+            _ => {},
+        }
+
+        if !items.is_empty() {
+            parser.expect_token(Punct::Comma)?;
+
+            match parser.peek() {
+                Some(Ok(token)) if token.is_kind(close) => {
+                    let token = parser.expect_token(close)?;
+                    return Ok((items, token.span));
+                },
+                _ => {},
+            }
+        }
+
+        items.push(item(parser)?);
+    }
+}
+
+pub(crate) fn parse_angle_bracketed<'i, T: Parsable<'i>>(
     parser: &mut Parser<'i>,
 ) -> Result<Vec<T>, ParserError<'i>> {
     let mut items = Vec::new();
-    if parser.consume_token(Punct::Lt)? {
-        loop {
-            items.push(parser.parse_node::<T>()?);
-            if parser.consume_generic_close()? {
-                break;
-            }
-            parser.expect_token(Punct::Comma)?;
-            if parser.consume_generic_close()? {
-                break;
-            }
+
+    loop {
+        items.push(parser.parse_node::<T>()?);
+        if parser.consume_generic_close()? {
+            break;
+        }
+
+        parser.expect_token(Punct::Comma)?;
+        if parser.consume_generic_close()? {
+            break;
         }
     }
+
     Ok(items)
 }
 
-impl<'i> Parsable<'i> for Spanned<Type<'i>> {
-    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        Spanned::<Type>::parse(parser)
+pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
+    parser: &mut Parser<'i>,
+) -> Result<Vec<T>, ParserError<'i>> {
+    match parser.consume_token(Punct::Lt)? {
+        true => parse_angle_bracketed(parser),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -1488,6 +1461,19 @@ impl<'i> ItemKind<'i> {
             Self::Impl(i) => i.span,
             Self::Interface(i) => i.span,
             Self::Use(u) => u.span,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn keyword<'s>(&self) -> &'s str {
+        match self {
+            Self::Fn(_) => "fn",
+            Self::Struct(_) => "struct",
+            Self::Enum(_) => "enum",
+            Self::Const(_) => "const",
+            Self::Impl(_) => "impl",
+            Self::Interface(_) => "interface",
+            Self::Use(_) => "use",
         }
     }
 }
@@ -1545,7 +1531,7 @@ impl<'i> Type<'i> {
     pub fn name(&self) -> Option<&'i str> {
         match self {
             Type::Named(name) | Type::Generic(name, _) => Some(name),
-            Type::Ref(inner) => inner.name(),
+            Type::Ref(inner, _) => inner.name(),
             Type::RefSelf => Some("Self"),
             Type::Unit => Some("unit"),
             Type::Never => Some("!"),

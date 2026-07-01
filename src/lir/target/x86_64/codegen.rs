@@ -8,7 +8,7 @@
 use crate::{
     emit, label,
     lir::{
-        self, CheckedOperation, Function, MachineType, Term, VReg,
+        self, Checked, Function, MachineType, Panic, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
@@ -59,24 +59,14 @@ impl Emittable<X86_64> for Function<X86_64> {
     }
 
     fn emit_panic_handlers(out: &mut String) {
-        let flags = X86Instr::take();
-
-        let mut emit = |flag: u8| {
-            if flags & flag == 0 {
-                return;
-            }
-
-            let symbol = X86Instr::symbol_for_flag(flag).expect("flag must map to a valid symbol");
+        for panic in Panic::required() {
+            let symbol = panic.symbol();
             label!(out, ".globl {symbol}");
             label!(out, "{symbol}:");
             emit!(out, "movq    $60, %rax");
             emit!(out, "movq    ${PANIC_EXIT_CODE}, %rdi");
             emit!(out, "syscall");
-        };
-
-        emit(X86Instr::ADD);
-        emit(X86Instr::SUB);
-        emit(X86Instr::MUL);
+        }
     }
 }
 
@@ -294,10 +284,9 @@ impl Function<X86_64> {
 
                     false => match need_scratch {
                         true => {
-                            let scratch = if *bytes == 8 {
-                                "%r11"
-                            } else {
-                                "%r11d"
+                            let scratch = match *bytes == 8 {
+                                true => "%r11",
+                                _ => "%r11d",
                             };
                             emit!(out, "mov{suffix}    {src}, {scratch}");
                             emit!(out, "mov{suffix}    {scratch}, {offset}(%rbp)");
@@ -402,7 +391,8 @@ impl Function<X86_64> {
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
-                if let Some(symbol) = instruction.mark() {
+                if let Some(panic) = instruction.overflow_panic() {
+                    let symbol = panic.require();
                     match (instruction, self.is_signed(dest_vreg)) {
                         (Inst::Imul { .. }, _) | (_, true) => emit!(out, "jo      {symbol}"),
                         (_, false) => emit!(out, "jc      {symbol}"),
@@ -479,10 +469,9 @@ impl Function<X86_64> {
             },
 
             Inst::XorFloat { dest, src, bytes } => {
-                let operand = if *bytes == 4 {
-                    "xorps"
-                } else {
-                    "xorpd"
+                let operand = match *bytes == 4 {
+                    true => "xorps",
+                    _ => "xorpd",
                 };
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
@@ -515,6 +504,15 @@ impl Function<X86_64> {
                     true => emit!(out, "cmp{suffix}    {rhs}, {lhs}"),
                     _ => emit!(out, "test{suffix}    {rhs}, {lhs}"),
                 }
+            },
+
+            Inst::BoundsCheck { index, bound } => {
+                let index = alloc.location(index, &8);
+                let bound = self.operand(alloc, bound, &8);
+                let symbol = Panic::IndexOutOfBounds.require();
+
+                emit!(out, "cmpq    {bound}, {index}");
+                emit!(out, "jae     {symbol}");
             },
 
             Inst::Call { target, moves, ret, stack_args, .. } => {

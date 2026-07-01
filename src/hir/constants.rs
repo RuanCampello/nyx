@@ -65,7 +65,8 @@ where
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
-        let ctx = type_resolver::ResolveCtx::root(symbols, &scope.struct_map, &scope.enum_map);
+        let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
+        let ctx = type_resolver::ResolveCtx::root(symbols, structs, enums, arrays);
         let expected_type =
             type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())
                 .or_else(|error| scope.poison(error))?;

@@ -1,5 +1,7 @@
 **/target
 
+!/src/**/target
+
 /.*
 
 # ignore everything inside tests/ recursively

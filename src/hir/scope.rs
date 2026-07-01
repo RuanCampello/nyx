@@ -1,8 +1,8 @@
 use crate::{
     hir::{
-        self, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind,
-        Intrinsic, Layout, Method, RefTarget, Struct, StructField, StructId, SymbolId, SymbolTable,
-        Type, TypeKind, constants,
+        self, ArrayId, ArrayType, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function,
+        FunctionId, FunctionKind, Intrinsic, Layout, Method, RefTarget, Struct, StructField,
+        StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -16,6 +16,7 @@ use crate::{
     parser::statement,
 };
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     ops::Index,
     str::FromStr,
@@ -35,6 +36,9 @@ pub struct Scope<'hir> {
     pub struct_map: Structs,
     pub enums: IndexVec<EnumId, Enum>,
     pub enum_map: Enums,
+    /// fixed-size array types, shared by type resolution
+    /// and expression lowering so equal `[T; N]` always map to the same [ArrayId]
+    pub arrays: ArrayTable,
     pub enum_variants: EnumVariants,
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
@@ -49,12 +53,25 @@ pub struct Scope<'hir> {
     pub generic_fn_envs: HashMap<FunctionId, GenericEnv>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
 
+    pub(in crate::hir) specialized_slices: HashSet<Type>,
+
     /// When set, recoverable lowering errors are accumulated in [diagnostics]
     /// and the offending nodes are poisoned instead of aborting the whole pass
     ///
     /// [diagnostics]: Scope::diagnostics
     pub(in crate::hir) recover: bool,
     pub(in crate::hir) diagnostics: Diagnostics,
+}
+
+/// A deduplicating interner for fixed-size array types
+///
+/// Uses interior mutability so it can be shared immutably with the type resolver,
+/// which only ever holds `&ResolveCtx`. Equal `(element, len)` pairs always yield
+/// the same [ArrayId], keeping [Type] equality sound
+#[derive(Debug, Default)]
+pub struct ArrayTable {
+    types: RefCell<IndexVec<ArrayId, ArrayType>>,
+    lookup: RefCell<HashMap<(Type, u32), ArrayId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +113,11 @@ pub(in crate::hir) type InterfaceImpls = HashSet<(Type, SymbolId)>;
 /// Empty for ordinary (non-instance) lowering
 pub(in crate::hir) type GenericEnv = HashMap<String, Type>;
 
+/// Reserved nominal name for `impl [T]` blocks, which target the structural
+/// slice type
+/// Kept in sync with the parser, which tags slice impls with it
+pub(crate) const SLICE_IMPL_NAME: &str = "[]";
+
 impl<'hir> Scope<'hir> {
     pub fn new(arena: &'hir bumpalo::Bump) -> Self {
         Self {
@@ -108,6 +130,7 @@ impl<'hir> Scope<'hir> {
             struct_map: HashMap::new(),
             enums: IndexVec::new(),
             enum_map: HashMap::new(),
+            arrays: ArrayTable::default(),
             enum_variants: HashMap::new(),
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
@@ -118,6 +141,7 @@ impl<'hir> Scope<'hir> {
             generic_fns: HashMap::new(),
             generic_fn_envs: HashMap::new(),
             generic_impls: Vec::new(),
+            specialized_slices: HashSet::new(),
             recover: false,
             diagnostics: Diagnostics::default(),
         }
@@ -278,6 +302,7 @@ impl<'hir> Scope<'hir> {
             &local_declarations,
             &local_map,
             &self.enum_map,
+            &self.arrays,
             symbols,
             &mut lowered,
             self.recover.then_some(&mut self.diagnostics),
@@ -868,7 +893,7 @@ impl<'hir> Scope<'hir> {
                     .ok_or_else(|| hir_error!(span, UnknownType { name }))
             },
 
-            statement::Type::Ref(inner) => {
+            statement::Type::Ref(inner, mutable) => {
                 let inner = self.resolve_type(inner, span, symbols, self_type, env)?;
                 let to = RefTarget::try_from(inner).map_err(|_| {
                     hir_error!(
@@ -879,7 +904,7 @@ impl<'hir> Scope<'hir> {
                         }
                     )
                 })?;
-                Ok(Type::refer(to, false))
+                Ok(Type::refer(to, *mutable))
             },
 
             statement::Type::SelfType => Ok(self_type.unwrap_or(TypeKind::SelfType.into())),
@@ -911,6 +936,25 @@ impl<'hir> Scope<'hir> {
                     )?);
                 }
                 self.instantiate_generic(name, &resolved, span, symbols)
+            },
+
+            statement::Type::Array(element, len) => {
+                let element = self.resolve_type(element, span, symbols, self_type, env)?;
+                Ok(Type::array(self.arrays.intern(element, *len as u32)))
+            },
+
+            statement::Type::Slice(element, mutable) => {
+                let element = self.resolve_type(element, span, symbols, self_type, env)?;
+                let element = RefTarget::try_from(element).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: element
+                        }
+                    )
+                })?;
+                Ok(Type::slice(element, *mutable))
             },
 
             // `Generic` is handled above; this arm only sees primitives, which `from_primitive_ast`
@@ -1131,7 +1175,7 @@ impl<'hir> Scope<'hir> {
 
                 let mut params = Vec::new();
                 if let Some(receiver) = method.receiver {
-                    params.push(Type::receiver_ref(receiver_type, receiver.mutable));
+                    params.push(receiver_param_type(receiver_type, receiver.mutable));
                 }
                 params.extend(self.resolve_params(
                     &method.params,
@@ -1146,13 +1190,15 @@ impl<'hir> Scope<'hir> {
                     Some(&method_env),
                 )?;
 
-                let kind = match method.receiver {
-                    Some(r) => FunctionKind::Method(Method {
+                let intrinsic = intrinsic_method(false, implementation.name, method.name);
+                let kind = match (intrinsic, method.receiver) {
+                    (Some(i), _) => FunctionKind::Intrinsic(i),
+                    (None, Some(r)) => FunctionKind::Method(Method {
                         receiver: receiver_type,
                         name: method_symbol,
                         mutable: r.mutable,
                     }),
-                    None => FunctionKind::Free,
+                    (None, None) => FunctionKind::Free,
                 };
 
                 let sig_id = self.push_signature(FunctionSignature {
@@ -1169,11 +1215,34 @@ impl<'hir> Scope<'hir> {
                     self.functions.insert(mangled, sig_id);
                 }
 
-                self.generic_fns.insert(sig_id, method.clone());
-                self.generic_fn_envs.insert(sig_id, impl_env.clone());
+                if intrinsic.is_none() {
+                    self.generic_fns.insert(sig_id, method.clone());
+                    self.generic_fn_envs.insert(sig_id, impl_env.clone());
+                }
             }
         }
+
         Ok(())
+    }
+
+    pub(in crate::hir) fn specialize_slice_impls(
+        &mut self,
+        slice_type: Type,
+        symbols: &mut SymbolTable,
+    ) -> Result<(), HirError<'hir>> {
+        let TypeKind::Slice { element, .. } = slice_type.kind() else {
+            return Ok(());
+        };
+
+        let canonical = Type::slice(element, false);
+        if !self.specialized_slices.insert(canonical) {
+            return Ok(());
+        }
+
+        let element = Type::from(element);
+        let mangled = self.mangle_generic("slice", &[element], symbols);
+        let mangled_sym = symbols.insert(&mangled);
+        self.specialize_impls(SLICE_IMPL_NAME, mangled_sym, canonical, &[element], symbols)
     }
 
     pub(in crate::hir) fn mangle_generic(
@@ -1212,12 +1281,13 @@ impl<'hir> Scope<'hir> {
             return true;
         }
 
-        function
-            .impl_type
-            .and_then(|impl_type| symbols.get_id(impl_type))
-            .is_some_and(|sym| {
-                self.generic_enums.contains_key(&sym) || self.generic_structs.contains_key(&sym)
-            })
+        function.impl_type.is_some_and(|impl_type| {
+            // `impl [T]` methods are generic over the element and specialised on demand
+            impl_type == SLICE_IMPL_NAME
+                || symbols.get_id(impl_type).is_some_and(|sym| {
+                    self.generic_enums.contains_key(&sym) || self.generic_structs.contains_key(&sym)
+                })
+        })
     }
 
     /// push a new function signature and returns its assigned [`FunctionId`]
@@ -1293,6 +1363,47 @@ impl<'hir> Scope<'hir> {
     }
 }
 
+impl ArrayTable {
+    /// intern `[element; len]`, reusing the existing id when the type is already known
+    ///
+    /// an inferred element is never cached: its variable is meaningful only within
+    /// the body that minted it, so a fresh id keeps bodies from aliasing each other
+    pub fn intern(&self, element: Type, len: u32) -> ArrayId {
+        let cacheable = !element.is_infer();
+        if cacheable && let Some(&id) = self.lookup.borrow().get(&(element, len)) {
+            return id;
+        }
+
+        let mut types = self.types.borrow_mut();
+        let id = ArrayId(types.len() as u32);
+        types.push(ArrayType { element, len });
+        if cacheable {
+            self.lookup.borrow_mut().insert((element, len), id);
+        }
+
+        id
+    }
+
+    #[inline]
+    pub fn get(&self, id: ArrayId) -> ArrayType {
+        self.types.borrow()[id]
+    }
+
+    /// pins the element of an inferred array once its variable is resolved
+    ///
+    /// safe only for uncached (inferred) arrays, which belong to a single body
+    /// concrete arrays are shared and must never be mutated under another's feet
+    #[inline]
+    pub fn resolve(&self, id: ArrayId, element: Type) {
+        self.types.borrow_mut()[id].element = element;
+    }
+
+    #[inline]
+    pub fn snapshot(&self) -> IndexVec<ArrayId, ArrayType> {
+        self.types.borrow().clone()
+    }
+}
+
 impl FunctionSignature {
     #[inline]
     pub(in crate::hir) fn has_receiver(&self) -> bool {
@@ -1350,7 +1461,12 @@ pub(in crate::hir) fn nominal_type(
 
 #[inline]
 fn is_generic_impl(imp: &statement::Impl<'_>) -> bool {
-    !imp.generics.is_empty() || matches!(imp.receiver.value_ref(), statement::Type::Generic(..))
+    !imp.generics.is_empty()
+        || matches!(imp.receiver.value_ref(), statement::Type::Generic(..))
+        || matches!(
+            imp.receiver.value_ref(),
+            statement::Type::Slice(element, _) if matches!(element.as_ref(), statement::Type::Named(_))
+        )
 }
 
 fn build_substitution(generics: &[statement::GenericBound<'_>], args: &[Type]) -> GenericEnv {
@@ -1374,9 +1490,23 @@ fn declared_names(
     }
 }
 
+pub(in crate::hir) fn receiver_param_type(receiver: Type, mutable: bool) -> Type {
+    match receiver.kind() {
+        TypeKind::Slice { element, .. } => Type::slice(element, mutable),
+        _ => Type::receiver_ref(receiver, mutable),
+    }
+}
+
 fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) -> GenericEnv {
     if !implementation.generics.is_empty() {
         return build_substitution(&implementation.generics, args);
+    }
+
+    if let statement::Type::Slice(element, _) = implementation.receiver.value_ref()
+        && let statement::Type::Named(name) = element.as_ref()
+        && let Some(&concrete) = args.first()
+    {
+        return HashMap::from([(name.to_string(), concrete)]);
     }
 
     let statement::Type::Generic(_, receiver_args) = implementation.receiver.value_ref() else {
@@ -1396,7 +1526,10 @@ fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) 
 }
 
 fn intrinsic_method(in_std: bool, receiver: &str, method: &str) -> Option<Intrinsic> {
-    (in_std && receiver == "str" && method == "len").then_some(Intrinsic::Len)
+    match (in_std, receiver, method) {
+        (true, "str", "len") | (_, SLICE_IMPL_NAME, "len") => Some(Intrinsic::Len),
+        _ => None,
+    }
 }
 pub(in crate::hir) fn generic_param_env(generics: &[statement::GenericBound<'_>]) -> GenericEnv {
     generics

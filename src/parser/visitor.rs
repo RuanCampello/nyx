@@ -133,6 +133,18 @@ pub fn walk_expression<'i, V: Visitor<'i>>(visitor: &mut V, expr: &Expression<'i
                 visitor.visit_expression(arg);
             }
         },
+        Expression::Array { elements, .. } => {
+            for element in elements {
+                visitor.visit_expression(element);
+            }
+        },
+        Expression::ArrayRepeat { value, .. } => {
+            visitor.visit_expression(value);
+        },
+        Expression::Index { base, index, .. } => {
+            visitor.visit_expression(base);
+            visitor.visit_expression(index);
+        },
         Expression::TypeIntrinsic { .. }
         | Expression::Integer(_, _)
         | Expression::Float(_, _)

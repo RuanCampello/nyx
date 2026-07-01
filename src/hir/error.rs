@@ -185,6 +185,35 @@ pub enum HirErrorKind<'h> {
     InvalidCast { src: Type, target: Type },
 
     #[diagnostic(
+        message = "cannot index a value of type {typ!}",
+        primary = "{typ!} cannot be indexed",
+        help = "indexing is only supported on arrays {`[T; N]`} and slices {`&[T]`}"
+    )]
+    NotIndexable { typ: Type },
+
+    #[diagnostic(
+        message = "index out of bounds: the length is {len} but the index is {index}",
+        primary = "index {index} is out of bounds for an array of length {len}"
+    )]
+    IndexOutOfBounds { index: u64, len: u32 },
+
+    // TODO: suggest help based on the real user input code
+
+    #[diagnostic(
+        message = "cannot infer the element type of an empty array",
+        primary = "the element type is unknown here",
+        help = "add a type annotation, e.g. {`let a: [i32; 0] = [];`}"
+    )]
+    EmptyArrayType,
+
+    #[diagnostic(
+        message = "cannot assign to a value behind a shared {`&`} reference",
+        primary = "the referent is read-only through a shared reference",
+        help = "take a mutable reference {`&mut`} to write through it"
+    )]
+    AssignBehindSharedRef,
+
+    #[diagnostic(
         message = "duplicate interface {name!}",
         primary = "{name!} is defined here again",
         help = "rename one of the {name!} interfaces"
@@ -260,6 +289,20 @@ pub enum HirErrorKind<'h> {
         help = "add {`impl {type_name} with {interface_name} {{ … }}`}"
     )]
     OperatorRequiresInterface { op: &'h str, type_name: &'h str, interface_name: CmpInterface },
+
+    #[diagnostic(
+        message = "{kind!} declarations are not allowed inside a function body",
+        primary = "move this {kind!} out to the module level",
+        help = "only {`const`} declarations may appear inside a function body"
+    )]
+    NestedItem { kind: &'h str },
+
+    #[diagnostic(
+        message = "attempt to use a non-constant value in a constant",
+        primary = "cannot refer to the local {name!} from a constant",
+        help = "a constant is evaluated independently of the function; use a literal or another {`const`}"
+    )]
+    NonConstValue { name: &'h str },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]

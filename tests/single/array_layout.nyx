@@ -1,0 +1,15 @@
+// layout:
+// - arrays are contiguous (size = element_size * len, element alignment);
+// - slices are 16-byte fat pointers like `str`
+
+use std::mem::{size_of};
+use std::panic;
+
+fn main(): i32 {
+    panic::assert(size_of([i32; 3]) == 12);
+    panic::assert(size_of([i64; 2]) == 16);
+    panic::assert(size_of([u8; 5]) == 5);
+    panic::assert(size_of([i32; 0]) == 0);
+    panic::assert(size_of(&[i32]) == 16);
+    0
+}

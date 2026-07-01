@@ -6,15 +6,16 @@ use crate::{
         TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
+        infer::InferTable,
         place_base_local,
-        scope::{GenericEnv, Scope},
+        scope::{ArrayTable, GenericEnv, Scope},
         symbols::{Mangler, qualified},
         type_resolver::{self, resolve_annotation},
     },
     lexer::{Spanned, token::Span},
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
-        statement::{self, Else, PatternLit},
+        statement::{self, Else, ItemKind, PatternLit},
     },
 };
 use std::{
@@ -38,7 +39,14 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
+    infer: InferTable,
     generic_env: GenericEnv,
+    /// compile-time constants declared in this function body, spliced at use
+    /// sites like top-level constants, but scoped to and dropped with the body
+    body_constants: HashMap<SymbolId, Constant<'hir>>,
+    /// when lowering a constant initialiser, the names of the enclosing
+    /// function's locals, referencing one is an error, not a resolution
+    outer_const_locals: HashSet<SymbolId>,
 }
 
 /// A freshly lowered expression
@@ -80,10 +88,13 @@ where
             next_expr_id: 0,
             locals: IndexVec::new(),
             typeck: TypeckResults::default(),
+            infer: InferTable::default(),
             scopes: vec![HashMap::new()],
             self_type,
             arena,
             generic_env: HashMap::new(),
+            body_constants: HashMap::new(),
+            outer_const_locals: HashSet::new(),
         }
     }
 
@@ -119,10 +130,13 @@ where
             next_expr_id: 0,
             locals: IndexVec::new(),
             typeck: TypeckResults::default(),
+            infer: InferTable::default(),
             scopes: vec![HashMap::new()],
             self_type: None,
             arena,
             generic_env: HashMap::new(),
+            body_constants: HashMap::new(),
+            outer_const_locals: HashSet::new(),
         }
     }
 
@@ -170,6 +184,7 @@ where
         );
 
         let (body, _) = self.lower_block(&function.body, true)?;
+        self.resolve_inference();
         let generics = declared_fn_names(&self.generic_env, self.symbols);
 
         Ok(Function {
@@ -200,6 +215,18 @@ where
         let mut statements_vec = Vec::with_capacity(block.statements.len());
         let mut returns = false;
         for (idx, statement) in block.statements.iter().enumerate() {
+            if let statement::Statement::Item(statement::Item {
+                kind: ItemKind::Const(constant),
+                ..
+            }) = statement
+            {
+                if let Err(error) = self.declare_body_const(constant) {
+                    self.soft(error)?;
+                }
+
+                continue;
+            }
+
             match self.lower_statement(statement, is_tail && idx == last_idx) {
                 Ok((statement, did_return)) => {
                     statements_vec.push(statement);
@@ -302,8 +329,52 @@ where
                 self.handle_tail_expr(expr, tail_ret)
             },
 
-            Stmt::Item(_) => unimplemented!("items are not supported inside function bodies yet"),
+            Stmt::Item(statement::Item { kind, .. }) => {
+                Err(hir_error!(kind.span(), NestedItem { kind: kind.keyword() }))
+            },
         }
+    }
+
+    /// lower a body-level `const` into a compile-time constant scoped to this
+    /// body
+    ///
+    /// the initialiser is evaluated in a dedicated const sub-builder that
+    /// sees earlier body constants but not the enclosing locals, so a captured
+    /// local is reported rather than resolved
+    fn declare_body_const(
+        &mut self,
+        constant: &statement::Const<'src>,
+    ) -> Result<(), HirError<'hir>> {
+        let typ = self
+            .resolve_type(&constant.typ.value(), constant.typ.span())
+            .or_else(|e| self.poison(e))?;
+
+        let name = self.symbols.insert(constant.name);
+        if self.body_constants.contains_key(&name) {
+            return Err(hir_error!(constant.span, DuplicateConstant { name: constant.name }));
+        }
+
+        let outer_locals = self.scopes.iter().flat_map(|scope| scope.keys().copied()).collect();
+        let siblings = self.body_constants.clone();
+
+        let (value, typeck) = {
+            let mut builder =
+                FunctionBuilder::new_for_const(self.scope, self.symbols, self.in_std, self.arena);
+            builder.outer_const_locals = outer_locals;
+            builder.body_constants = siblings;
+
+            let lowered = builder.lower_expr(&constant.value, Some(typ))?;
+            builder.assert_type(typ, lowered.typ, lowered.span)?;
+            builder.resolve_inference();
+
+            (lowered.expr, builder.typeck)
+        };
+
+        let decl_span = constant.span;
+        let constant = Constant { name, typ, value, typeck, is_pub: false, decl_span };
+        self.body_constants.insert(name, constant);
+
+        Ok(())
     }
 
     fn lower_identifier(
@@ -327,6 +398,13 @@ where
             .symbols
             .get_id(name)
             .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name }))?;
+
+        // reached only while lowering a constant initialiser
+        // the name resolves to a local of the enclosing function, which a constant cannot capture
+        if self.outer_const_locals.contains(&symbol) {
+            return Err(hir_error!(span, NonConstValue { name }));
+        }
+
         let id = self.resolve_local(symbol, span)?;
 
         Ok(self.local_expr(id, span))
@@ -379,6 +457,22 @@ where
                 Kind::Assign { target: target.expr, value: value.expr }
             },
             Kind::Path(symbol) => Kind::Path(*symbol),
+            Kind::Array { elements } => {
+                let elements = elements
+                    .iter()
+                    .map(|element| self.splice_const(element, const_typeck, span).expr)
+                    .collect::<Vec<_>>();
+                Kind::Array { elements: self.arena.alloc_slice_copy(&elements) }
+            },
+            Kind::ArrayRepeat { value, count } => {
+                let value = self.splice_const(value, const_typeck, span);
+                Kind::ArrayRepeat { value: value.expr, count: *count }
+            },
+            Kind::Index { base, index } => {
+                let base = self.splice_const(base, const_typeck, span);
+                let index = self.splice_const(index, const_typeck, span);
+                Kind::Index { base: base.expr, index: index.expr }
+            },
             Kind::MethodCall { name, receiver, args } => {
                 let receiver = self.splice_const(receiver, const_typeck, span);
                 let args = args
@@ -482,6 +576,57 @@ where
         Pattern { kind, span: pat.span }
     }
 
+    /// resolves every remaining integer inference variable in the body, pinning
+    /// unconstrained ones to `i32`, so no [TypeKind::Infer] reaches MIR
+    fn resolve_inference(&mut self) {
+        let infer = &mut self.infer;
+        let arrays = &self.scope.arrays;
+
+        for typ in self.typeck.node_types.iter_mut() {
+            *typ = Self::resolve_deep(infer, arrays, *typ);
+        }
+        for local in self.locals.iter_mut() {
+            local.typ = Self::resolve_deep(infer, arrays, local.typ);
+        }
+        for args in self.typeck.node_args.values_mut() {
+            for typ in args.iter_mut() {
+                *typ = Self::resolve_deep(infer, arrays, *typ);
+            }
+        }
+    }
+
+    /// resolves inference variables nested inside compound types, pinning the
+    /// elements of arrays left inferred so the [Hir] array table only ever exposes
+    /// concrete element types to later stages
+    fn resolve_deep(infer: &mut InferTable, arrays: &ArrayTable, typ: Type) -> Type {
+        match typ.kind() {
+            TypeKind::Array(id) => {
+                let array = arrays.get(id);
+                let element = Self::resolve_deep(infer, arrays, array.element);
+                // mutate in place rather than re-intern: an inferred array is unique
+                // to this body, so no other type id observes the change, and the
+                // global table never retains an unresolved element for MIR to lay out
+                if element != array.element {
+                    arrays.resolve(id, element);
+                }
+                typ
+            },
+            TypeKind::Slice { mutable, element } => {
+                match RefTarget::try_from(Self::resolve_deep(infer, arrays, element.into())) {
+                    Ok(target) => Type::slice(target, mutable),
+                    Err(()) => typ,
+                }
+            },
+            TypeKind::Ref { mutable, to } => {
+                match RefTarget::try_from(Self::resolve_deep(infer, arrays, to.into())) {
+                    Ok(target) => Type::refer(target, mutable),
+                    Err(()) => typ,
+                }
+            },
+            _ => infer.resolve_or_default(typ),
+        }
+    }
+
     fn local_id(&self, name: &str) -> Option<LocalId> {
         let symbol = self.symbols.get_id(name)?;
 
@@ -494,6 +639,13 @@ where
     }
 
     fn constant(&self, name: &str) -> Option<&Constant<'hir>> {
+        // a body-level constant lexically shadows any module or impl constant
+        if let Some(symbol) = self.symbols.get_id(name)
+            && let Some(constant) = self.body_constants.get(&symbol)
+        {
+            return Some(constant);
+        }
+
         if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
             let scoped = self.mangler().scoped_item(impl_type, name);
             if let Some(constant) = self.constant_by_symbol_name(&scoped) {
@@ -532,10 +684,14 @@ where
         use expression::Expression as Expr;
 
         match expr {
-            // literal coercion: use the hint to widen to the expected numeric type.
+            // a concrete numeric hint pins the literal; an inference hint joins
+            // its class; otherwise a fresh integer variable defers the choice to
+            // the literal's first constrained use
             Expr::Integer(value, span) => {
-                let typ =
-                    hint.and_then(|t| t.is_number().then_some(t)).unwrap_or(TypeKind::I32.into());
+                let typ = match hint {
+                    Some(t) if t.is_number() || t.is_infer() => t,
+                    _ => self.infer.fresh(),
+                };
 
                 Ok(self.alloc((*value).into(), typ, *span))
             },
@@ -566,10 +722,13 @@ where
             Expr::Cast { expr: inner, target_type, span } => {
                 let target = self.resolve_type(&target_type.value(), target_type.span())?;
                 let lowered_expr = self.lower_expr(inner, None)?;
-                let src = lowered_expr.typ;
+                // an unresolved integer variable is always cast-compatible: it
+                // resolves to an integral type, which is primitive-castable
+                let src = self.infer.resolve_shallow(lowered_expr.typ);
 
-                let src_castable =
-                    src.is_primitive_castable() || matches!(src.kind(), TypeKind::Enum(_));
+                let src_castable = src.is_primitive_castable()
+                    || src.is_infer()
+                    || matches!(src.kind(), TypeKind::Enum(_));
                 if !src_castable || !target.is_primitive_castable() {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
@@ -616,7 +775,7 @@ where
             },
 
             Expr::Unary { operator, expr, span } => {
-                let hint = match operator {
+                let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| {
@@ -627,9 +786,9 @@ where
                         };
                         Type::refer(to, false)
                     }),
-                    UnaryOperator::Ref => hint.map(|h| h.strip_reference()),
+                    UnaryOperator::Ref | UnaryOperator::RefMut => hint.map(|h| h.strip_reference()),
                 };
-                let expr = self.lower_expr(expr, hint)?;
+                let expr = self.lower_expr(expr, inner_hint)?;
 
                 // PERFORMANCE: fold unary operations when operand is a constant literal
                 let expected = match operator {
@@ -671,21 +830,29 @@ where
                         },
                     },
 
-                    UnaryOperator::Ref => {
-                        let to = RefTarget::try_from(expr.typ).map_err(|_| {
-                            hir_error!(
-                                expr.span,
-                                TypeMismatch {
-                                    expected: Type::structure(Default::default()),
-                                    found: expr.typ
-                                }
-                            )
-                        })?;
-                        Type::refer(to, false)
+                    UnaryOperator::Ref | UnaryOperator::RefMut => {
+                        match self.coerce_array_to_slice(expr.typ, hint) {
+                            // `&array` unsizes to a `&[T]`/`&mut [T]` slice in slice context
+                            Some(slice) => slice,
+                            None => {
+                                let err = hir_error!(
+                                    expr.span,
+                                    TypeMismatch {
+                                        expected: Type::structure(Default::default()),
+                                        found: expr.typ
+                                    }
+                                );
+                                let to = RefTarget::try_from(expr.typ).map_err(|_| err)?;
+                                Type::refer(to, *operator == UnaryOperator::RefMut)
+                            },
+                        }
                     },
                 };
 
-                if *operator != UnaryOperator::Deref && *operator != UnaryOperator::Ref {
+                if !matches!(
+                    operator,
+                    UnaryOperator::Deref | UnaryOperator::Ref | UnaryOperator::RefMut
+                ) {
                     self.assert_type(expected, expr.typ, expr.span)?;
                 }
 
@@ -716,7 +883,7 @@ where
                     | BinaryOperator::Ne
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
-                    | BinaryOperator::BitXor => Some(left.typ),
+                    | BinaryOperator::BitXor => Some(self.infer.resolve_shallow(left.typ)),
                     BinaryOperator::And | BinaryOperator::Or => Some(TypeKind::Bool.into()),
                     BinaryOperator::Shl | BinaryOperator::Shr => None,
                 };
@@ -781,18 +948,37 @@ where
 
             Expr::Assignment { target, value, span } => {
                 let target_lowered = self.lower_expr(target, None)?;
-                let local = place_base_local(target_lowered.expr)
-                    .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
 
-                if !self[local].mutable {
-                    let err_span = match &target_lowered.expr.kind {
-                        ExpressionKind::Local(_) => span,
-                        ExpressionKind::Field { .. } => &target.span(),
-                        _ => span,
-                    };
+                let through_slice = match &target_lowered.expr.kind {
+                    ExpressionKind::Index { base, .. } => {
+                        match self.typeck.type_of(base.id).kind() {
+                            TypeKind::Slice { mutable, .. } => Some(mutable),
+                            _ => None,
+                        }
+                    },
+                    _ => None,
+                };
 
-                    let name = self.arena.alloc_str(self.symbols.get(self[local].name));
-                    return Err(hir_error!(*err_span, ImmutableBind { name }));
+                match through_slice {
+                    Some(true) => {},
+                    Some(false) => return Err(hir_error!(target.span(), AssignBehindSharedRef)),
+                    None => {
+                        let local = place_base_local(target_lowered.expr)
+                            .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
+
+                        if !self[local].mutable {
+                            let err_span = match &target_lowered.expr.kind {
+                                ExpressionKind::Local(_) => span,
+                                ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
+                                    &target.span()
+                                },
+                                _ => span,
+                            };
+
+                            let name = self.arena.alloc_str(self.symbols.get(self[local].name));
+                            return Err(hir_error!(*err_span, ImmutableBind { name }));
+                        }
+                    },
                 }
 
                 let value = self.lower_expr(value, Some(target_lowered.typ))?;
@@ -890,6 +1076,89 @@ where
                 ))
             },
 
+            Expr::Array { elements, span } => {
+                let element_hint = hint.and_then(|h| self.element_type(h));
+                let mut lowered = Vec::with_capacity(elements.len());
+                let mut element_type = None;
+
+                for element in elements {
+                    let value = self.lower_expr(element, element_type.or(element_hint))?;
+
+                    let expected = element_type.get_or_insert(value.typ);
+                    self.assert_type(*expected, value.typ, value.span)?;
+
+                    lowered.push(value.expr);
+                }
+
+                let element_type = element_type
+                    .or(element_hint)
+                    .ok_or_else(|| hir_error!(*span, EmptyArrayType))?;
+                // an un-annotated element stays an inference variable so later uses
+                // (e.g. assigning a `uptr` into a slot) can pin it; `resolve_inference`
+                // settles the concrete element before the body leaves HIR
+                let element_type = self.infer.resolve_shallow(element_type);
+                let id = self.scope.arrays.intern(element_type, elements.len() as u32);
+                let elements = self.arena.alloc_slice_copy(&lowered);
+
+                Ok(self.alloc(ExpressionKind::Array { elements }, Type::array(id), *span))
+            },
+
+            Expr::ArrayRepeat { value, count, span } => {
+                let element_hint = hint.and_then(|h| self.element_type(h));
+                let value = self.lower_expr(value, element_hint)?;
+                let count = *count as u32;
+                // the element stays an inference variable until `resolve_inference`
+                // settles its concrete type in place (see `Expr::Array`)
+                let element_type = self.infer.resolve_shallow(value.typ);
+                let id = self.scope.arrays.intern(element_type, count);
+
+                Ok(self.alloc(
+                    ExpressionKind::ArrayRepeat { value: value.expr, count },
+                    Type::array(id),
+                    *span,
+                ))
+            },
+
+            Expr::Index { base, index, span } => {
+                let base_lowered = self.lower_expr(base, None)?;
+                let element = self
+                    .element_type(base_lowered.typ)
+                    .ok_or_else(|| hir_error!(*span, NotIndexable { typ: base_lowered.typ }))?;
+
+                let index_lowered = self.lower_expr(index, Some(TypeKind::Uptr.into()))?;
+                // an un-annotated counter used as an index defaults to `uptr`; a
+                // counter already pinned to another integer keeps it (indices are
+                // accepted at any integer width)
+                let index_type = self.infer.resolve_shallow(index_lowered.typ);
+                if index_type.is_infer() {
+                    self.infer.unify(TypeKind::Uptr.into(), index_type).ok();
+                }
+                let index_type = self.infer.resolve_shallow(index_type);
+                if !index_type.is_integer() {
+                    return Err(hir_error!(
+                        index_lowered.span,
+                        TypeMismatch { expected: TypeKind::Uptr.into(), found: index_type }
+                    ));
+                }
+
+                // a statically-known array index is bounds-checked at compile time,
+                // dynamic indices and all slices fall back to the runtime check in MIR
+                if let TypeKind::Array(id) = base_lowered.typ.kind()
+                    && let ExpressionKind::Literal(Literal::Int(k)) = index_lowered.expr.kind
+                {
+                    let len = self.scope.arrays.get(id).len;
+                    if k < 0 || k as u64 >= len as u64 {
+                        return Err(hir_error!(*span, IndexOutOfBounds { index: k as u64, len }));
+                    }
+                }
+
+                Ok(self.alloc(
+                    ExpressionKind::Index { base: base_lowered.expr, index: index_lowered.expr },
+                    element,
+                    *span,
+                ))
+            },
+
             Expr::Call { callee, args, span, type_args } => {
                 if let Expr::Field { expr: receiver, field: method_name, .. } = callee.as_ref() {
                     let receiver_lowered = self.lower_expr(receiver, None)?;
@@ -897,7 +1166,33 @@ where
                     let receiver_type = receiver_lowered.typ;
 
                     let receiver_base_type = receiver_type.strip_reference();
+
                     let method_symbol = self.symbols.insert(method_name);
+
+                    let lookup_type = match receiver_base_type.kind() {
+                        TypeKind::Slice { element, .. } => {
+                            self.scope.specialize_slice_impls(receiver_base_type, self.symbols)?;
+                            Type::slice(element, false)
+                        },
+                        TypeKind::Array(id) => {
+                            let resolved =
+                                self.infer.resolve_or_default(self.scope.arrays.get(id).element);
+                            let element = RefTarget::try_from(resolved).map_err(|_| {
+                                hir_error!(
+                                    receiver_lowered.span,
+                                    TypeMismatch {
+                                        expected: Type::structure(Default::default()),
+                                        found: resolved
+                                    }
+                                )
+                            })?;
+                            let slice = Type::slice(element, false);
+                            self.scope.specialize_slice_impls(slice, self.symbols)?;
+                            slice
+                        },
+                        _ => receiver_base_type,
+                    };
+
                     let struct_name = match receiver_base_type.kind() {
                         TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
                         TypeKind::Enum(id) => self
@@ -909,7 +1204,7 @@ where
                         _ => receiver_base_type.to_string(),
                     };
                     let function =
-                        *self.scope.methods.get(&(receiver_base_type, method_symbol)).ok_or_else(
+                        *self.scope.methods.get(&(lookup_type, method_symbol)).ok_or_else(
                             || {
                                 let struct_name = self.arena.alloc_str(&struct_name);
                                 hir_error!(*span, UnknownMethod { struct_name, name: method_name })
@@ -918,7 +1213,8 @@ where
 
                     if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
                         let return_type = self.scope.signatures[function].return_type;
-                        let args = self.arena.alloc_slice_copy(&[receiver_lowered.expr]);
+                        let receiver = self.coerce_method_receiver(receiver_lowered, lookup_type);
+                        let args = self.arena.alloc_slice_copy(&[receiver]);
                         return Ok(self.alloc(
                             ExpressionKind::IntrinsicCall { intrinsic, args },
                             return_type,
@@ -1041,6 +1337,7 @@ where
                     self.symbols,
                     &self.scope.struct_map,
                     &self.scope.enum_map,
+                    &self.scope.arrays,
                 );
                 let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
 
@@ -1346,6 +1643,7 @@ where
             self.symbols,
             &self.scope.struct_map,
             &self.scope.enum_map,
+            &self.scope.arrays,
         );
         if let Some(typ) = self.self_type {
             ctx = ctx.with_self(typ);
@@ -1548,7 +1846,8 @@ where
             | BinaryOperator::Mul
             | BinaryOperator::Div => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() {
+                let left = self.infer.resolve_shallow(left);
+                match left.is_number() || left.is_infer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1564,7 +1863,8 @@ where
             | BinaryOperator::Gt
             | BinaryOperator::GtEq => {
                 self.assert_type(left, right, span)?;
-                match left.is_number() || left == TypeKind::Char.into() {
+                let left = self.infer.resolve_shallow(left);
+                match left.is_number() || left.is_infer() || left == TypeKind::Char.into() {
                     true => Ok(TypeKind::Bool.into()),
                     _ => Err(type_mismatch(left)),
                 }
@@ -1579,19 +1879,21 @@ where
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 self.assert_type(left, right, span)?;
-
-                match left == TypeKind::Bool.into() || left.is_integer() {
+                let left = self.infer.resolve_shallow(left);
+                match left == TypeKind::Bool.into() || left.is_integer() || left.is_infer() {
                     true => Ok(left),
                     _ => Err(type_mismatch(left)),
                 }
             },
 
             BinaryOperator::Shl | BinaryOperator::Shr => {
-                if !left.is_integer() {
+                let left = self.infer.resolve_shallow(left);
+                let right = self.infer.resolve_shallow(right);
+                if !left.is_integer() && !left.is_infer() {
                     return Err(type_mismatch(left));
                 }
 
-                if !right.is_integer() {
+                if !right.is_integer() && !right.is_infer() {
                     return Err(type_mismatch(right));
                 }
 
@@ -1644,7 +1946,7 @@ where
                 Ok(Type::refer(to, false))
             },
 
-            statement::Type::Ref(inner) => {
+            statement::Type::Ref(inner, mutable) => {
                 let inner_type = self.resolve_type(inner, span)?;
                 let to = RefTarget::try_from(inner_type).map_err(|_| {
                     hir_error!(
@@ -1655,7 +1957,7 @@ where
                         }
                     )
                 })?;
-                Ok(Type::refer(to, false))
+                Ok(Type::refer(to, *mutable))
             },
 
             statement::Type::Generic(name, args) => {
@@ -1674,6 +1976,26 @@ where
                 Ok(typ)
             },
 
+            statement::Type::Array(element, len) => {
+                let element = self.resolve_type(element, span)?;
+                let id = self.scope.arrays.intern(element, *len as u32);
+                Ok(Type::array(id))
+            },
+
+            statement::Type::Slice(element, mutable) => {
+                let element = self.resolve_type(element, span)?;
+                let element = RefTarget::try_from(element).map_err(|_| {
+                    hir_error!(
+                        span,
+                        TypeMismatch {
+                            expected: Type::structure(Default::default()),
+                            found: element
+                        }
+                    )
+                })?;
+                Ok(Type::slice(element, *mutable))
+            },
+
             other => Type::from_primitive_ast(other)
                 .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
         }
@@ -1690,6 +2012,28 @@ where
         // a poison type is compatible with everything, so it never cascades
         if expected.is_error() || found.is_error() || expected == found {
             return Ok(());
+        }
+
+        if expected.is_infer() || found.is_infer() {
+            return match self.infer.unify(expected, found) {
+                Ok(()) => Ok(()),
+                Err(()) => {
+                    let expected = self.infer.resolve_or_default(expected);
+                    let found = self.infer.resolve_or_default(found);
+                    self.soft(hir_error!(span, TypeMismatch { expected, found }))
+                },
+            };
+        }
+
+        // two arrays of the same length agree when their elements do; this lets a
+        // let-init's twice-lowered literal unify the inference variables behind its
+        // distinct interned ids (see `Stmt::Let` lowering and `Expr::Array`)
+        if let (TypeKind::Array(expected), TypeKind::Array(found)) = (expected.kind(), found.kind())
+        {
+            let (lhs, rhs) = (self.scope.arrays.get(expected), self.scope.arrays.get(found));
+            if lhs.len == rhs.len {
+                return self.assert_type(lhs.element, rhs.element, span);
+            }
         }
 
         self.soft(hir_error!(span, TypeMismatch { expected, found }))
@@ -1782,7 +2126,59 @@ where
         Ok(None)
     }
 
-    /// Resolve a single field step on `current`, returning `(field_symbol, field_type)`
+    // TODO: this in the future will be replaced by some kind of
+    // Deref equivalent we find more convienient
+    // that would be much more important when we introduce more ds and iterables
+    fn coerce_array_to_slice(&mut self, operand: Type, hint: Option<Type>) -> Option<Type> {
+        let slice = hint?;
+        let TypeKind::Slice { element, .. } = slice.kind() else {
+            return None;
+        };
+        let TypeKind::Array(id) = operand.kind() else {
+            return None;
+        };
+
+        let array_element = self.scope.arrays.get(id).element;
+        // unifying pins an inferred element to the slice's element, so `&[0; 3]`
+        // in `&[uptr]` context yields a `[uptr; 3]` array
+        self.infer.unify(array_element, element.into()).ok().map(|()| slice)
+    }
+
+    fn coerce_method_receiver(
+        &mut self,
+        receiver: Lowered<'hir>,
+        lookup_type: Type,
+    ) -> &'hir Expression<'hir> {
+        let TypeKind::Array(id) = receiver.typ.kind() else {
+            return receiver.expr;
+        };
+        let TypeKind::Slice { element, .. } = lookup_type.kind() else {
+            return receiver.expr;
+        };
+
+        let array_element = self.infer.resolve_shallow(self.scope.arrays.get(id).element);
+        if !array_element.is_infer() && array_element != Type::from(element) {
+            return receiver.expr;
+        }
+
+        self.alloc(
+            ExpressionKind::Unary { operator: UnaryOperator::Ref, expr: receiver.expr },
+            lookup_type,
+            receiver.span,
+        )
+        .expr
+    }
+
+    /// The element type of an indexable type: an array, a slice, or a reference to either.
+    fn element_type(&self, typ: Type) -> Option<Type> {
+        match typ.kind() {
+            TypeKind::Array(id) => Some(self.scope.arrays.get(id).element),
+            TypeKind::Slice { element, .. } => Some(element.into()),
+            TypeKind::Ref { to, .. } => self.element_type(to.into()),
+            _ => None,
+        }
+    }
+
     fn lookup_field(
         &mut self,
         current: Type,
@@ -1969,6 +2365,7 @@ where
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
+    builder.resolve_inference();
 
     Ok((lowered.expr, builder.typeck))
 }

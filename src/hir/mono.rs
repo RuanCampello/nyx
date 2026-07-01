@@ -51,7 +51,7 @@ use crate::hir::{
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
-    scope::{FunctionSignature, Scope},
+    scope::{FunctionSignature, Scope, receiver_param_type},
     symbols::SymbolTable,
 };
 use crate::lexer::token::Span;
@@ -246,7 +246,7 @@ fn specialise<'hir>(
     let mut params =
         Vec::with_capacity(template.params.len() + usize::from(receiver_type.is_some()));
     if let (Some(receiver), Some(receiver_type)) = (template.receiver, receiver_type) {
-        params.push(Type::receiver_ref(receiver_type, receiver.mutable));
+        params.push(receiver_param_type(receiver_type, receiver.mutable));
     }
     params.extend(scope.resolve_params(&template.params, symbols, receiver_type, Some(&env))?);
     let return_type = scope.resolve_return_type(

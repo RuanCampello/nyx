@@ -2,8 +2,8 @@
 
 use crate::{
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, SymbolId,
-        SymbolTable, Type, TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, RefTarget, Statement,
+        SymbolId, SymbolTable, Type, TypeKind, index_vec::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -30,6 +30,7 @@ struct FunctionLower<'a, 'hir> {
     strings: &'a mut Vec<String>,
     structs: &'a IndexVec<hir::StructId, hir::Struct>,
     enums: &'a IndexVec<hir::EnumId, hir::Enum>,
+    arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
     typeck: &'a hir::TypeckResults,
     local_symbols: IndexVec<LocalId, SymbolId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
@@ -59,6 +60,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
     let mut strings = Vec::new();
     let structs = &hir.structs;
     let enums = &hir.enums;
+    let arrays = &hir.arrays;
     let symbols = hir.symbols;
 
     let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
@@ -74,11 +76,22 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
             &symbols,
             structs,
             enums,
+            arrays,
             &mut strings,
             &functions_map,
             &runtime_uses_map,
         )?);
     }
+
+    let array_layouts = hir
+        .arrays
+        .iter()
+        .map(|array| {
+            let (size, align) = hir::type_layout(array.element, structs, enums, arrays);
+            let contains_float = element_contains_float(array.element, structs, enums, arrays);
+            Layout::new(size * array.len, align, contains_float)
+        })
+        .collect();
 
     Ok(Mir {
         functions,
@@ -86,7 +99,23 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         strings,
         struct_layouts: hir.structs.iter().map(|s| s.layout).collect(),
         enum_layouts: hir.enums.iter().map(|e| e.layout).collect(),
+        array_layouts,
     })
+}
+
+fn element_contains_float(
+    typ: Type,
+    structs: &IndexVec<hir::StructId, hir::Struct>,
+    enums: &IndexVec<hir::EnumId, hir::Enum>,
+    arrays: &IndexVec<hir::ArrayId, hir::ArrayType>,
+) -> bool {
+    match typ.kind() {
+        TypeKind::F32 | TypeKind::F64 => true,
+        TypeKind::Struct(id) => structs[id].layout.contains_float(),
+        TypeKind::Enum(id) => enums[id].layout.contains_float(),
+        TypeKind::Array(id) => element_contains_float(arrays[id].element, structs, enums, arrays),
+        _ => false,
+    }
 }
 
 const fn temp_value_type(typ: Type) -> Type {
@@ -102,6 +131,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         symbols: &'a SymbolTable,
         structs: &'a IndexVec<hir::StructId, hir::Struct>,
         enums: &'a IndexVec<hir::EnumId, hir::Enum>,
+        arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
         strings: &'a mut Vec<String>,
         functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
         runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
@@ -136,6 +166,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             strings,
             structs,
             enums,
+            arrays,
             typeck: &function.typeck,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
@@ -328,6 +359,20 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Unary { operator, expr: inner } => {
                 let operator = *operator;
                 let inner = *inner;
+
+                // `&base[i]` / `&mut base[i]` takes the element's address rather than
+                // loading its value, so it never goes through the value-producing path
+                if matches!(operator, UnaryOperator::Ref | UnaryOperator::RefMut)
+                    && let ExpressionKind::Index { base, index } = &inner.kind
+                {
+                    let base_type = self.typeck.type_of(base.id);
+                    let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                    let index = self.lower_expr(index)?;
+                    let dest = self.fresh_temporary(typ);
+                    self.emit(dest, Kind::ElementAddr { base, index, bound, stride });
+                    return Ok(Operand::Place(dest));
+                }
+
                 let rhs = self.lower_expr(inner)?;
                 let dest = self.fresh_temporary(temp_value_type(typ));
 
@@ -335,12 +380,37 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     UnaryOperator::Deref => {
                         self.emit(dest, Kind::FieldLoad { src: rhs, offset: 0, typ })
                     },
-                    UnaryOperator::Ref => {
+                    UnaryOperator::Ref | UnaryOperator::RefMut => {
                         let src = match rhs {
                             Operand::Place(place) => place,
                             Operand::Const(_) => unreachable!("cannot take address of constant"),
                         };
-                        self.emit(dest, Kind::AddressOf { src, offset: 0 })
+
+                        match typ.is_slice() {
+                            // `&array` builds a (ptr, len) fat pointer
+                            true => {
+                                let (_, _, len) = self.array_info(self.typeck.type_of(inner.id));
+                                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                                let ptr = self.fresh_temporary(pointer);
+                                self.emit(ptr, Kind::AddressOf { src, offset: 0 });
+
+                                self.emit(
+                                    dest,
+                                    Kind::FieldStore { value: Operand::Place(ptr), offset: 0 },
+                                );
+                                self.emit(
+                                    dest,
+                                    Kind::FieldStore {
+                                        value: Operand::Const(Const::Int(
+                                            len as i64,
+                                            TypeKind::Uptr.into(),
+                                        )),
+                                        offset: 8,
+                                    },
+                                );
+                            },
+                            false => self.emit(dest, Kind::AddressOf { src, offset: 0 }),
+                        }
                     },
                     _ => self.emit(dest, Kind::Unary { operation: operator, rhs }),
                 };
@@ -397,6 +467,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Assign { target, value } => {
                 let target = *target;
                 let value_expr = *value;
+
+                if let ExpressionKind::Index { base, index } = &target.kind {
+                    let base_type = self.typeck.type_of(base.id);
+                    let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                    let index = self.lower_expr(index)?;
+                    let value = self.lower_expr(value_expr)?;
+                    let base = match base {
+                        Operand::Place(place) => place,
+                        Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+                    };
+
+                    self.emit(base, Kind::ElementStore { index, bound, value, stride });
+
+                    return Ok(value);
+                }
+
                 if let ExpressionKind::Local(local) = &target.kind {
                     self.constant_locals[*local] = self.capture_constant_expr(value_expr);
                 }
@@ -512,7 +598,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::TypeIntrinsic { kind, typ: target } => {
-                let (size, align) = hir::type_layout(*target, self.structs, self.enums);
+                let (size, align) =
+                    hir::type_layout(*target, self.structs, self.enums, self.arrays);
                 let value = match kind {
                     TypeIntrinsicKind::SizeOf => size as i64,
                     TypeIntrinsicKind::AlignOf => align as i64,
@@ -553,6 +640,42 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let (origin, offset, typ) = self.place_info(expr);
                 let dest = self.fresh_temporary(typ);
                 self.emit(dest, Kind::FieldLoad { src: Operand::Place(origin), offset, typ });
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::Array { elements } => {
+                let (_, elem_size, _) = self.array_info(typ);
+                let dest = self.fresh_temporary(typ);
+
+                for (index, element) in elements.iter().enumerate() {
+                    let value = self.lower_expr(element)?;
+                    let offset = index as u32 * elem_size;
+                    self.emit(dest, Kind::FieldStore { value, offset });
+                }
+
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::ArrayRepeat { value, count } => {
+                let (_, elem_size, _) = self.array_info(typ);
+                let dest = self.fresh_temporary(typ);
+                let value = self.lower_expr(value)?;
+
+                for index in 0..*count {
+                    self.emit(dest, Kind::FieldStore { value, offset: index * elem_size });
+                }
+
+                Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::Index { base, index } => {
+                let base_type = self.typeck.type_of(base.id);
+                let (base, bound, element, stride) = self.index_operands(base, base_type)?;
+                let index = self.lower_expr(index)?;
+                let dest = self.fresh_temporary(element);
+
+                self.emit(dest, Kind::ElementLoad { base, index, bound, stride, typ: element });
+
                 Ok(Operand::Place(dest))
             },
 
@@ -657,7 +780,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let (then_block, else_block, short_value) = match operator {
             BinaryOperator::And => (right_id, short_id, false),
             BinaryOperator::Or => (short_id, right_id, true),
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => unreachable!("lower_short_circuit called with non-short-circuiting operator"),
         };
 
         self.terminate(Terminator::Branch { condition: left_operand, then_block, else_block });
@@ -679,12 +802,48 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_overloaded(&mut self, left: &'hir Expression, typ: Type) -> Result<Place, MirError> {
         let place = self.fresh_temporary(typ);
 
+        if let Some(array_id) = self.array_coerced_to_slice(left, typ) {
+            let TypeKind::Slice { mutable, .. } = typ.kind() else {
+                unreachable!("array_coerced_to_slice only returns Some for slice targets")
+            };
+            let (_, _, len) = self.array_info(Type::array(array_id));
+            let src = match self.is_place_expr(left) {
+                true => {
+                    let (origin, offset, _) = self.place_info(left);
+                    let ptr =
+                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    self.emit(ptr, InstructionKind::AddressOf { src: origin, offset });
+                    ptr
+                },
+                false => {
+                    let lowered = self.lower_expr(left)?;
+                    let value = self.fresh_temporary(self.typeck.type_of(left.id));
+                    self.emit(value, InstructionKind::Assign(lowered));
+
+                    let ptr =
+                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    self.emit(ptr, InstructionKind::AddressOf { src: value, offset: 0 });
+                    ptr
+                },
+            };
+
+            self.emit(place, InstructionKind::FieldStore { value: Operand::Place(src), offset: 0 });
+
+            let value = Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into()));
+            let instr = InstructionKind::FieldStore { value, offset: 8 };
+            self.emit(place, instr);
+
+            return Ok(place);
+        }
+
         match self.is_place_expr(left) {
             true => {
                 let (origin, offset, typ) = self.place_info(left);
                 debug_assert!(typ.kind() != TypeKind::Unit);
 
-                let instr = match (offset, typ.is_ref()) {
+                // a slice receiver is the fat pointer itself, passed by value; other
+                // aggregates (`&self` on a struct) are passed as a pointer to the storage
+                let instr = match (offset, typ.is_ref() || typ.is_slice()) {
                     (0, true) => InstructionKind::Assign(Operand::Place(origin)),
                     (_, true) => {
                         InstructionKind::FieldLoad { src: Operand::Place(origin), offset, typ }
@@ -698,7 +857,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let val_type = self.typeck.type_of(left.id);
                 let lowered = self.lower_expr(left)?;
 
-                match val_type.is_ref() {
+                match val_type.is_ref() || val_type.is_slice() {
                     true => self.emit(place, InstructionKind::Assign(lowered)),
                     _ => {
                         let val_place = self.fresh_temporary(val_type);
@@ -710,6 +869,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
 
         Ok(place)
+    }
+
+    #[inline]
+    fn array_coerced_to_slice(&self, expr: &'hir Expression, target: Type) -> Option<hir::ArrayId> {
+        let TypeKind::Slice { element, .. } = target.kind() else {
+            return None;
+        };
+        let TypeKind::Array(id) = self.typeck.type_of(expr.id).kind() else {
+            return None;
+        };
+        (self.arrays[id].element == element.into()).then_some(id)
     }
 
     #[inline(always)]
@@ -734,6 +904,74 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 (origin, base_offset + layout.offset, layout.typ)
             },
             _ => panic!("place_info called on non-place expression: {:?}", expr),
+        }
+    }
+
+    /// `(element, element_size, length)` of a fixed-size array type
+    fn array_info(&self, array_type: Type) -> (Type, u32, u32) {
+        match array_type.kind() {
+            TypeKind::Array(id) => {
+                let array = self.arrays[id];
+                let (size, _) =
+                    hir::type_layout(array.element, self.structs, self.enums, self.arrays);
+                (array.element, size, array.len)
+            },
+            _ => unreachable!("array_info on a non-array type"),
+        }
+    }
+
+    /// `(element, element_size)` of an indexable type (array or slice)
+    fn element_info(&self, typ: Type) -> (Type, u32) {
+        let element = match typ.kind() {
+            TypeKind::Array(id) => self.arrays[id].element,
+            TypeKind::Slice { element, .. } => element.into(),
+            _ => unreachable!("element_info on a non-indexable type"),
+        };
+        let (stride, _) = hir::type_layout(element, self.structs, self.enums, self.arrays);
+        (element, stride)
+    }
+
+    /// lower an index base into `(base, bound, element, stride)` so the same
+    /// [InstructionKind::ElementLoad]/[InstructionKind::ElementStore] serve arrays
+    /// and slices: arrays index their own stack storage against a constant length,
+    /// slices index through the fat pointer's `ptr` against its runtime `len`
+    fn index_operands(
+        &mut self,
+        base: &Expression<'hir>,
+        base_type: Type,
+    ) -> Result<(Operand, Operand, Type, u32), MirError> {
+        let (element, stride) = self.element_info(base_type);
+
+        match base_type.kind() {
+            TypeKind::Slice { .. } => {
+                let slice = match self.lower_expr(base)? {
+                    Operand::Place(place) => place,
+                    Operand::Const(_) => unreachable!("indexing a constant slice"),
+                };
+                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                let ptr = self.fresh_temporary(pointer);
+                let instr = InstructionKind::FieldLoad {
+                    src: Operand::Place(slice),
+                    offset: 0,
+                    typ: pointer,
+                };
+                self.emit(ptr, instr);
+
+                let len = self.fresh_temporary(TypeKind::Uptr.into());
+                let instr = InstructionKind::FieldLoad {
+                    src: Operand::Place(slice),
+                    offset: 8,
+                    typ: TypeKind::Uptr.into(),
+                };
+                self.emit(len, instr);
+                Ok((Operand::Place(ptr), Operand::Place(len), element, stride))
+            },
+            _ => {
+                let (_, _, len) = self.array_info(base_type);
+                let base = self.lower_expr(base)?;
+                let bound = Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into()));
+                Ok((base, bound, element, stride))
+            },
         }
     }
 
@@ -814,21 +1052,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         return Ok(());
                     },
                 };
-                let cond = self.fresh_temporary(TypeKind::Bool.into());
-                self.emit(
-                    cond,
-                    Kind::Binary {
-                        operation: BinaryOperator::Eq,
-                        lhs: Operand::Place(place),
-                        rhs: Operand::Const(rhs),
-                        checked: false,
-                    },
-                );
-                self.terminate(Terminator::Branch {
-                    condition: Operand::Place(cond),
-                    then_block: success_block,
-                    else_block: fail_block,
-                });
+                self.emit_eq_branch(Operand::Place(place), rhs, success_block, fail_block);
                 Ok(())
             },
             PatternKind::Or(alternatives) => {
@@ -858,65 +1082,61 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     tag_place,
                     Kind::FieldLoad { src: Operand::Place(place), offset: 0, typ: tag_ty },
                 );
+                let tag_const = Const::Int(tag_val, tag_ty);
+                let tag_place = Operand::Place(tag_place);
 
-                let match_cond_block = self.current_block_id();
-
-                if let Some(sub_pat) = sub {
-                    let sub_block = self.new_block();
-
+                match sub {
                     // first branch on the tag: a match continues into `sub_block`,
                     // a mismatch falls through to `fail_block`
-                    let _ = match_cond_block;
-                    let cond = self.fresh_temporary(TypeKind::Bool.into());
-                    self.emit(
-                        cond,
-                        Kind::Binary {
-                            operation: BinaryOperator::Eq,
-                            lhs: Operand::Place(tag_place),
-                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
-                            checked: false,
-                        },
-                    );
-                    self.terminate(Terminator::Branch {
-                        condition: Operand::Place(cond),
-                        then_block: sub_block,
-                        else_block: fail_block,
-                    });
+                    Some(sub_pat) => {
+                        let sub_block = self.new_block();
+                        self.emit_eq_branch(tag_place, tag_const, sub_block, fail_block);
+                        self.switch_to(sub_block);
 
-                    // only inside `sub_block` (tag confirmed) do we read the payload
-                    // and recursively match the sub-pattern
-                    self.switch_to(sub_block);
-                    let offset = self.enums[*enum_id].payload_offset;
-                    let typ = variant
-                        .payload
-                        .expect("Variant must have payload type since it has subpattern");
-                    let payload_place = self.fresh_temporary(typ);
-                    self.emit(
-                        payload_place,
-                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
-                    );
-                    self.lower_pattern_match(payload_place, sub_pat, success_block, fail_block)?;
-                } else {
-                    // Just check tag
-                    let cond = self.fresh_temporary(TypeKind::Bool.into());
-                    self.emit(
-                        cond,
-                        Kind::Binary {
-                            operation: BinaryOperator::Eq,
-                            lhs: Operand::Place(tag_place),
-                            rhs: Operand::Const(Const::Int(tag_val, tag_ty)),
-                            checked: false,
-                        },
-                    );
-                    self.terminate(Terminator::Branch {
-                        condition: Operand::Place(cond),
-                        then_block: success_block,
-                        else_block: fail_block,
-                    });
+                        let offset = self.enums[*enum_id].payload_offset;
+                        let typ = variant
+                            .payload
+                            .expect("variant must have payload type since it has subpattern");
+                        let payload_place = self.fresh_temporary(typ);
+                        let instr = Kind::FieldLoad { src: Operand::Place(place), offset, typ };
+                        self.emit(payload_place, instr);
+                        self.lower_pattern_match(
+                            payload_place,
+                            sub_pat,
+                            success_block,
+                            fail_block,
+                        )?;
+                    },
+                    // just check the tag
+                    None => self.emit_eq_branch(tag_place, tag_const, success_block, fail_block),
                 }
                 Ok(())
             },
         }
+    }
+
+    /// emit `cond = lhs == rhs`, then branch to `then_block` if `cond` is true,
+    /// otherwise to `else_block`
+    fn emit_eq_branch(
+        &mut self,
+        lhs: Operand,
+        rhs: Const,
+        then_block: BlockId,
+        else_block: BlockId,
+    ) {
+        let cond = self.fresh_temporary(TypeKind::Bool.into());
+        let instr = InstructionKind::Binary {
+            operation: BinaryOperator::Eq,
+            lhs,
+            rhs: Operand::Const(rhs),
+            checked: false,
+        };
+        self.emit(cond, instr);
+        self.terminate(Terminator::Branch {
+            condition: Operand::Place(cond),
+            then_block,
+            else_block,
+        });
     }
 
     #[inline(always)]
@@ -1284,6 +1504,16 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
             }
         },
         ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
+        ExpressionKind::Array { elements } => {
+            for element in *elements {
+                visit_expr_runtime_uses(element, uses);
+            }
+        },
+        ExpressionKind::ArrayRepeat { value, .. } => visit_expr_runtime_uses(value, uses),
+        ExpressionKind::Index { base, index } => {
+            visit_place_runtime_uses(base, uses);
+            visit_expr_runtime_uses(index, uses);
+        },
         ExpressionKind::TypeIntrinsic { .. }
         | ExpressionKind::Literal(_)
         | ExpressionKind::Path(_) => {},

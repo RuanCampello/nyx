@@ -1,11 +1,12 @@
 //! Struct lowering: AST -> HIR with topological field-type resolution
 
 use crate::hir::{
-    Enum, EnumId, Layout, Struct, StructField, StructId, SymbolId, SymbolTable, Type, TypeKind,
+    ArrayId, ArrayType, Enum, EnumId, Layout, Struct, StructField, StructId, SymbolId, SymbolTable,
+    Type, TypeKind,
     diagnostics::Diagnostics,
     error::{HirError, hir_error},
     index_vec::IndexVec,
-    scope::{Enums, Structs},
+    scope::{ArrayTable, Enums, Structs},
     type_resolver,
 };
 use crate::parser::statement::{self, StructRepr, StructReprKind};
@@ -16,6 +17,7 @@ struct Lowering<'a, 'h> {
     declarations: &'a [(SymbolId, &'a statement::Struct<'h>)],
     map: &'a Structs,
     enum_map: &'a Enums,
+    arrays: &'a ArrayTable,
     symbols: &'a SymbolTable,
     states: Vec<Visit>,
 }
@@ -25,6 +27,7 @@ struct Lowering<'a, 'h> {
 struct LayoutEngine<'s> {
     structs: &'s IndexVec<StructId, Struct>,
     enums: &'s IndexVec<EnumId, Enum>,
+    arrays: &'s IndexVec<ArrayId, ArrayType>,
     struct_layouts: Vec<Option<StructLayout>>,
     enum_layouts: Vec<Option<EnumLayout>>,
     struct_states: Vec<Visit>,
@@ -69,6 +72,7 @@ pub(in crate::hir) fn lower_structs<'h>(
     declarations: &[(SymbolId, &statement::Struct<'h>)],
     map: &Structs,
     enum_map: &Enums,
+    arrays: &ArrayTable,
     symbols: &mut SymbolTable,
     lowered: &mut [Option<Struct>],
     mut sink: Option<&mut Diagnostics>,
@@ -83,6 +87,7 @@ pub(in crate::hir) fn lower_structs<'h>(
         declarations,
         map,
         enum_map,
+        arrays,
         symbols,
         states: vec![Visit::Unvisited; declarations.len()],
     };
@@ -98,8 +103,9 @@ pub(in crate::hir) fn lower_structs<'h>(
 pub(in crate::hir) fn compute_layouts(
     structs: &mut IndexVec<StructId, Struct>,
     enums: &mut IndexVec<EnumId, Enum>,
+    arrays: &IndexVec<ArrayId, ArrayType>,
 ) {
-    let (struct_layouts, enum_layouts) = LayoutEngine::new(structs, enums).compute();
+    let (struct_layouts, enum_layouts) = LayoutEngine::new(structs, enums, arrays).compute();
 
     for (definition, computed) in structs.iter_mut().zip(struct_layouts) {
         definition.layout = computed.summary;
@@ -119,12 +125,18 @@ pub(crate) fn type_layout(
     typ: Type,
     structs: &IndexVec<StructId, Struct>,
     enums: &IndexVec<EnumId, Enum>,
+    arrays: &IndexVec<ArrayId, ArrayType>,
 ) -> (u32, u32) {
     match scalar_layout(typ) {
         Some(layout) => layout,
         None => match typ.kind() {
             TypeKind::Struct(id) => structs[id].layout.into(),
             TypeKind::Enum(id) => enums[id].layout.into(),
+            TypeKind::Array(id) => {
+                let array = arrays[id];
+                let (size, align) = type_layout(array.element, structs, enums, arrays);
+                (size * array.len, align)
+            },
             TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1),
             _ => unreachable!("type has no runtime layout"),
         },
@@ -163,7 +175,7 @@ const fn scalar_layout(typ: Type) -> Option<(u32, u32)> {
             Some((8, 8))
         },
         TypeKind::Ref { .. } => Some((8, 8)),
-        TypeKind::Str => Some((16, 8)),
+        TypeKind::Str | TypeKind::Slice { .. } => Some((16, 8)),
         TypeKind::String => Some((24, 8)),
         TypeKind::Unit | TypeKind::Never => Some((0, 1)),
         _ => None,
@@ -212,7 +224,8 @@ impl<'a, 'h> Lowering<'a, 'h> {
                 }
             }
 
-            let ctx = type_resolver::ResolveCtx::root(self.symbols, self.map, self.enum_map);
+            let ctx =
+                type_resolver::ResolveCtx::root(self.symbols, self.map, self.enum_map, self.arrays);
             let mut typ =
                 match type_resolver::resolve_annotation(&ctx, &field.typ.value(), field.typ.span())
                 {
@@ -255,10 +268,15 @@ impl<'a, 'h> Lowering<'a, 'h> {
 }
 
 impl<'s> LayoutEngine<'s> {
-    fn new(structs: &'s IndexVec<StructId, Struct>, enums: &'s IndexVec<EnumId, Enum>) -> Self {
+    fn new(
+        structs: &'s IndexVec<StructId, Struct>,
+        enums: &'s IndexVec<EnumId, Enum>,
+        arrays: &'s IndexVec<ArrayId, ArrayType>,
+    ) -> Self {
         Self {
             structs,
             enums,
+            arrays,
             struct_layouts: vec![None; structs.len()],
             enum_layouts: vec![None; enums.len()],
             struct_states: vec![Visit::Unvisited; structs.len()],
@@ -447,6 +465,11 @@ impl<'s> LayoutEngine<'s> {
                         .summary
                         .into()
                 },
+                TypeKind::Array(id) => {
+                    let array = self.arrays[id];
+                    let (size, align) = self.layout_of(array.element);
+                    (size * array.len, align)
+                },
                 TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1),
                 _ => unreachable!("type has no runtime layout"),
             },
@@ -456,6 +479,7 @@ impl<'s> LayoutEngine<'s> {
     fn contains_float(&mut self, typ: Type) -> bool {
         match typ.kind() {
             TypeKind::F32 | TypeKind::F64 => true,
+            TypeKind::Array(id) => self.contains_float(self.arrays[id].element),
             TypeKind::Struct(id) => {
                 self.compute_struct(id);
                 self.struct_layouts[id.0 as usize]

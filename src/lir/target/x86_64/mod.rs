@@ -1,7 +1,7 @@
 use crate::{
     hir::{SyscallCode, Type, TypeKind},
     lir::{
-        CheckedOperation, Layouts, MachineType, VReg, aggregate_chunks,
+        Checked, Layouts, MachineType, Panic, VReg, aggregate_chunks,
         target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
     },
     parser::expression::BinaryOperator,
@@ -67,6 +67,8 @@ pub enum X86Instr {
     // comparison
     Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
     Test { lhs: VReg, rhs: X86Operand, bytes: u8 },
+    /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
+    BoundsCheck { index: VReg, bound: X86Operand },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8 },
@@ -366,7 +368,7 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::FieldStore { .. } | Self::PtrStore { .. }
             | Self::Cmp { .. } | Self::Test { .. }
-            | Self::Ucomis { .. } => &[],
+            | Self::Ucomis { .. } | Self::BoundsCheck { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
@@ -440,6 +442,13 @@ impl Instruction<X86_64> for X86Instr {
                 uses.push(*lhs);
                 if let X86Operand::VReg(rhs) = rhs {
                     uses.push(*rhs);
+                }
+            }
+
+            Self::BoundsCheck { index, bound } => {
+                uses.push(*index);
+                if let X86Operand::VReg(bound) = bound {
+                    uses.push(*bound);
                 }
             }
 
@@ -594,12 +603,12 @@ impl PhysicalReg for X86Reg {
     }
 }
 
-impl CheckedOperation for X86Instr {
-    fn flag(&self) -> Option<u8> {
+impl Checked for X86Instr {
+    fn overflow_panic(&self) -> Option<Panic> {
         match self {
-            Self::Add { checked: true, .. } => Some(Self::ADD),
-            Self::Sub { checked: true, .. } => Some(Self::SUB),
-            Self::Imul { checked: true, .. } => Some(Self::MUL),
+            Self::Add { checked: true, .. } => Some(Panic::AddOverflow),
+            Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
+            Self::Imul { checked: true, .. } => Some(Panic::MulOverflow),
             _ => None,
         }
     }

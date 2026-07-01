@@ -38,6 +38,7 @@ pub struct Mir {
     pub(crate) functions: Vec<Function>,
     pub(crate) struct_layouts: Vec<Layout>,
     pub(crate) enum_layouts: Vec<Layout>,
+    pub(crate) array_layouts: Vec<Layout>,
 }
 
 /// Single side-effecting or value-producing operation.
@@ -100,8 +101,24 @@ pub enum InstructionKind {
     /// load `typ` bytes from an aggregate place at byte `offset`
     FieldLoad { src: Operand, offset: u32, typ: Type },
 
+    /// load `typ` from `base[index]` in a row-major aggregate of `stride`-byte elements
+    ///
+    /// `bound` is the element count the index is checked against, the bounds check and
+    /// its panic are materialised entirely by the backend
+    ElementLoad { base: Operand, index: Operand, bound: Operand, stride: u32, typ: Type },
+
     /// store `value` into the destination aggregate at byte `offset`
     FieldStore { value: Operand, offset: u32 },
+
+    /// store `value` into `dest[index]` of a row-major aggregate of `stride`-byte elements
+    ///
+    /// the destination aggregate is the instruction's `dest` place, `bound` drives the
+    /// same backend-only bounds check as [InstructionKind::ElementLoad]
+    ElementStore { index: Operand, bound: Operand, value: Operand, stride: u32 },
+
+    /// the address of `base[index]` (i.e. `&base[index]`): like [InstructionKind::ElementLoad]
+    /// but yields the element pointer instead of loading it, with the same bounds check
+    ElementAddr { base: Operand, index: Operand, bound: Operand, stride: u32 },
 
     AddressOf { src: Place, offset: u32 },
 

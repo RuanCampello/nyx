@@ -1,5 +1,5 @@
 use crate::lir::{
-    CheckedOperation, MachineType, VReg,
+    Checked, MachineType, Panic, VReg,
     target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
 };
 use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
@@ -56,6 +56,8 @@ pub enum A64Instr {
     Cset { dest: VReg, cond: A64Cond },
     Cmn { lhs: VReg, rhs: A64Operand, bytes: u8 },
     Tst { lhs: VReg, rhs: A64Operand, bytes: u8 },
+    /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
+    BoundsCheck { index: VReg, bound: A64Operand },
 
     // float movs
     FMov { dest: VReg, src: VReg, bytes: u8 },
@@ -428,7 +430,8 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Extend { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
-            Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. } => &[],
+            Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. }
+            | Self::BoundsCheck { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
                std::slice::from_ref(r)
             },
@@ -466,6 +469,13 @@ impl Instruction<AArch64> for A64Instr {
                     | Self::FAdd { rhs, .. } | Self::FSub { rhs, .. }
                     | Self::FMul { rhs, .. } | Self::FDiv { rhs, .. } => uses.push(*rhs),
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+            },
+
+            Self::BoundsCheck { index, bound } => {
+                uses.push(*index);
+                if let A64Operand::VReg(bound) = bound {
+                    uses.push(*bound);
                 }
             },
 
@@ -598,12 +608,12 @@ impl PhysicalReg for A64Reg {
     }
 }
 
-impl CheckedOperation for A64Instr {
-    fn flag(&self) -> Option<u8> {
+impl Checked for A64Instr {
+    fn overflow_panic(&self) -> Option<Panic> {
         match self {
-            Self::Add { checked: true, .. } => Some(Self::ADD),
-            Self::Sub { checked: true, .. } => Some(Self::SUB),
-            Self::Mul { checked: true, .. } => Some(Self::MUL),
+            Self::Add { checked: true, .. } => Some(Panic::AddOverflow),
+            Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
+            Self::Mul { checked: true, .. } => Some(Panic::MulOverflow),
             _ => None,
         }
     }
