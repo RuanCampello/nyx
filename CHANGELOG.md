@@ -2,6 +2,37 @@
 
 All notable changes to the Nyx compiler will be documented in this file
 
+## [0.5.0] - 2026-07-01
+
+Added fixed-size arrays (`[T; N]`) and borrowed slices (`&[T]` / `&mut [T]`) with bounds-checked indexing, element assignment, and array→slice coercion threaded from the parser through `x86_64`/`aarch64` codegen, alongside function-scoped `const` declarations evaluated at compile time.
+
+### Language Server (`nyx-lsp` 0.2.1)
+
+- Hover and inlay hints now render array and slice types ([!10])
+- Corrected inlay-hint placement for array bindings ([!10])
+
+### Added
+
+- **Arrays & Slices** ([!10]):
+  - Array and repeat literals (`[a, b, c]`, `[0; N]`), `[T; N]` and `&[T]` / `&mut [T]` type syntax, and indexing / index-assignment expressions
+  - HIR representation, type resolution, layout computation and array interning, array→slice coercion, and `impl [T]` method blocks
+  - MIR `ElementLoad`, `ElementStore`, and `ElementAddr` instructions for indexing, storing, and yielding a pointer instead of loading
+  - LIR lowering and emission of the element instructions for both `x86_64` and `aarch64`
+- **Bounds Checking** ([!10]):
+  - `BoundsCheck` instruction that panics on out-of-range access, wired for both targets, with panic constants folded into a `Panic` enum
+- **Function-Scoped Constants** ([!10]):
+  - `const` declarations inside function bodies, evaluated at compile time and spliced at use sites so they occupy no stack slot
+  - references to an enclosing local report a `NonConstValue` error (matching `rustc`'s E0435), and body constants lexically shadow module and impl constants
+- **Type Inference** ([!10]):
+  - an `infer` type that lazily resolves the more ambiguous operations, such as array `len`
+
+### Changed & Refactored
+
+- **Parser** ([!10]): deduplicated parsing paths behind helpers, including unsigned-literal parsing
+- **MIR** ([!10]): removed a duplicated lowering pattern and added an `eq` branch helper
+- **Register Allocation** ([!10]): dropped the call-crossed over-approximation and the redundant `degree` tracking
+- **Standard Library** ([!10]): slices are included in the prelude, removing the explicit import
+
 ## [0.4.1] - 2026-06-14
 
 Added `///` documentation comments across the language, removing the old `/* ... */` block-comment syntax, and surfaced them through `nyx-lsp` hover. Alongside that, enums now pick the smallest tag representation that fits their variants, and a HIR/LIR rearchitecture drops the duplicate MIR layout engine and unifies `aarch64`/`x86_64` target lowering.
@@ -170,6 +201,7 @@ Initial release of the Nyx compiler, introducing support for `struct`s, implemen
 [!6]: https://gitlab.com/ruancampello/nyx/-/merge_requests/6
 [!7]: https://gitlab.com/ruancampello/nyx/-/merge_requests/7
 [!8]: https://gitlab.com/ruancampello/nyx/-/merge_requests/8
+[!10]: https://gitlab.com/ruancampello/nyx/-/merge_requests/10
 [`d763e04`]: https://gitlab.com/ruancampello/nyx/-/commit/d763e04
 [`b58cee7`]: https://gitlab.com/ruancampello/nyx/-/commit/b58cee7
 [`e38f6c6`]: https://gitlab.com/ruancampello/nyx/-/commit/e38f6c6
