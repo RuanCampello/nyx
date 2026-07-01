@@ -2075,8 +2075,9 @@ where
         let TypeKind::Slice { element, .. } = lookup_type.kind() else {
             return receiver.expr;
         };
-        let array_element = self.scope.arrays.get(id).element;
-        if self.infer.unify(array_element, element.into()).is_err() {
+
+        let array_element = self.infer.resolve_shallow(self.scope.arrays.get(id).element);
+        if !array_element.is_infer() && array_element != Type::from(element) {
             return receiver.expr;
         }
 

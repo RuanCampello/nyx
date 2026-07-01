@@ -871,6 +871,17 @@ mod tests {
     }
 
     #[test]
+    fn array_element_infers_from_len_assignment() {
+        let a = analyse(
+            "array_len_assign",
+            "fn main() { let mut arr = [0; 3]; arr[2] = arr.len(); let s = arr[0]; }",
+        );
+        assert!(a.diagnostics.is_empty(), "no type mismatch: {:?}", a.diagnostics);
+        let hints: Vec<_> = a.inlay_hints.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(hints.contains(&"[uptr; 3]"), "element infers to uptr from len(): {hints:?}");
+    }
+
+    #[test]
     fn valid_buffer_analyses_with_hints() {
         let a = analyse("valid", "fn main() { let x = 232; }");
         assert!(a.ok, "valid source must analyse into HIR");
