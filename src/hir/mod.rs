@@ -1695,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn const_in_function_body_binds_as_local() {
+    fn const_in_function_body_is_spliced_not_a_local() {
         let src = r#"
             fn main(): i32 {
                 const ANSWER: i32 = 42;
@@ -1706,14 +1706,96 @@ mod tests {
         let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
         let func = &hir.functions[0];
 
-        assert!(matches!(func.body.statements[0], Statement::LetInit { .. }));
+        assert_eq!(func.body.statements.len(), 1);
+        assert!(func.locals.is_empty());
 
-        let ret_expr = match &func.body.statements[1] {
+        let ret_expr = match &func.body.statements[0] {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
+        assert_eq!(ret_expr.kind, 42.into());
+    }
+
+    #[test]
+    fn const_in_function_body_folds_binary_use() {
+        let src = r#"
+            fn main(): i32 {
+                const BASE: i32 = 10;
+                BASE + 2
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        match &ret_expr.kind {
+            ExpressionKind::Binary { left, right, .. } => {
+                assert_eq!(left.kind, 10.into());
+                assert_eq!(right.kind, 2.into());
+            },
+            other => panic!("expected Binary expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn const_in_function_body_references_earlier_const() {
+        let src = r#"
+            fn main(): i32 {
+                const A: i32 = 10;
+                const B: i32 = A + 5;
+                B
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let func = &hir.functions[0];
+
+        let ret_expr = match &func.body.statements[0] {
+            Statement::Return(Some(expr)) => *expr,
+            other => panic!("expected Return statement, got {other:?}"),
+        };
+        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
+        // B splices to `A + 5`, and A within it splices to its literal
+        match &ret_expr.kind {
+            ExpressionKind::Binary { left, right, .. } => {
+                assert_eq!(left.kind, 10.into());
+                assert_eq!(right.kind, 5.into());
+            },
+            other => panic!("expected Binary expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn const_in_function_body_cannot_capture_local() {
+        let src = r#"
+            fn main(): i32 {
+                let x: i32 = 5;
+                const BAD: i32 = x;
+                0
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::NonConstValue { name: "x" });
+    }
+
+    #[test]
+    fn const_in_function_body_rejects_duplicate() {
+        let src = r#"
+            fn main(): i32 {
+                const N: i32 = 1;
+                const N: i32 = 2;
+                N
+            }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "N" });
     }
 
     #[test]
