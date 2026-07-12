@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         self, ArrayId, ArrayType, Constant, Enum, EnumId, EnumRepr, EnumVariant, Function,
-        FunctionId, FunctionKind, Intrinsic, Layout, Method, RefTarget, Struct, StructField,
-        StructId, SymbolId, SymbolTable, Type, TypeKind, constants,
+        FunctionId, FunctionKind, Intrinsic, Layout, Method, Struct, StructField, StructId,
+        SymbolId, SymbolTable, Type, TypeKind, constants,
         declarations::Declarations,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -11,6 +11,7 @@ use crate::{
         lower::{self},
         structs,
         symbols::{Mangler, qualified},
+        type_resolver::{self, TypeResolver},
     },
     lexer::{Spanned, token::Span},
     parser::statement,
@@ -99,6 +100,14 @@ pub(in crate::hir) struct InterfaceMethodSignature {
     pub return_type: Type,
     pub(in crate::hir) has_receiver: bool,
     pub(in crate::hir) receiver_mut: bool,
+}
+
+/// [TypeResolver] over the item table: instantiates generic templates on demand
+struct ScopeResolver<'a, 'hir> {
+    scope: &'a mut Scope<'hir>,
+    symbols: &'a mut SymbolTable,
+    self_type: Option<Type>,
+    env: Option<&'a GenericEnv>,
 }
 
 pub(in crate::hir) type Functions = HashMap<SymbolId, FunctionId>;
@@ -880,88 +889,8 @@ impl<'hir> Scope<'hir> {
     where
         'h: 'hir,
     {
-        match typ {
-            statement::Type::Named(name) => {
-                if let Some(env) = env
-                    && let Some(&t) = env.get(*name)
-                {
-                    return Ok(t);
-                }
-                symbols
-                    .get_id(name)
-                    .and_then(|symbol| self.nominal_type(symbol))
-                    .ok_or_else(|| hir_error!(span, UnknownType { name }))
-            },
-
-            statement::Type::Ref(inner, mutable) => {
-                let inner = self.resolve_type(inner, span, symbols, self_type, env)?;
-                let to = RefTarget::try_from(inner).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: inner
-                        }
-                    )
-                })?;
-                Ok(Type::refer(to, *mutable))
-            },
-
-            statement::Type::SelfType => Ok(self_type.unwrap_or(TypeKind::SelfType.into())),
-            statement::Type::RefSelf => self_type.map_or(
-                Ok(Type::refer(RefTarget::new(TypeKind::SelfType), false)),
-                |self_typ| {
-                    let to = RefTarget::try_from(self_typ).map_err(|_| {
-                        hir_error!(
-                            span,
-                            TypeMismatch {
-                                expected: Type::structure(Default::default()),
-                                found: self_typ,
-                            }
-                        )
-                    })?;
-                    Ok(Type::refer(to, false))
-                },
-            ),
-
-            statement::Type::Generic(name, args) => {
-                let mut resolved = Vec::with_capacity(args.len());
-                for arg in args {
-                    resolved.push(self.resolve_type(
-                        arg.value_ref(),
-                        arg.span(),
-                        symbols,
-                        self_type,
-                        env,
-                    )?);
-                }
-                self.instantiate_generic(name, &resolved, span, symbols)
-            },
-
-            statement::Type::Array(element, len) => {
-                let element = self.resolve_type(element, span, symbols, self_type, env)?;
-                Ok(Type::array(self.arrays.intern(element, *len as u32)))
-            },
-
-            statement::Type::Slice(element, mutable) => {
-                let element = self.resolve_type(element, span, symbols, self_type, env)?;
-                let element = RefTarget::try_from(element).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: element
-                        }
-                    )
-                })?;
-                Ok(Type::slice(element, *mutable))
-            },
-
-            // `Generic` is handled above; this arm only sees primitives, which `from_primitive_ast`
-            // always resolves, so the error branch is effectively unreachable
-            other => Type::from_primitive_ast(other)
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
-        }
+        let mut resolver = ScopeResolver { scope: self, symbols, self_type, env };
+        type_resolver::resolve(&mut resolver, typ, span)
     }
 
     /// Specialise a generic struct/enum template for the concrete `args`, returning the resulting nominal [`Type`]
@@ -1438,6 +1367,38 @@ impl<'s> Index<EnumId> for Scope<'s> {
     type Output = Enum;
     fn index(&self, id: EnumId) -> &Enum {
         &self.enums[id]
+    }
+}
+
+impl<'a, 'hir> TypeResolver<'hir> for ScopeResolver<'a, 'hir> {
+    fn named(&mut self, name: &'hir str, span: Span) -> Result<Type, HirError<'hir>> {
+        if let Some(env) = self.env
+            && let Some(&t) = env.get(name)
+        {
+            return Ok(t);
+        }
+
+        self.symbols
+            .get_id(name)
+            .and_then(|symbol| self.scope.nominal_type(symbol))
+            .ok_or_else(|| hir_error!(span, UnknownType { name }))
+    }
+
+    fn generic(
+        &mut self,
+        name: &'hir str,
+        args: &[Type],
+        span: Span,
+    ) -> Result<Type, HirError<'hir>> {
+        self.scope.instantiate_generic(name, args, span, self.symbols)
+    }
+
+    fn self_type(&mut self, _span: Span) -> Result<Type, HirError<'hir>> {
+        Ok(self.self_type.unwrap_or(TypeKind::SelfType.into()))
+    }
+
+    fn arrays(&self) -> &ArrayTable {
+        &self.scope.arrays
     }
 }
 

@@ -10,7 +10,7 @@ use crate::{
         place_base_local,
         scope::{ArrayTable, GenericEnv, Scope},
         symbols::{Mangler, qualified},
-        type_resolver::{self, resolve_annotation},
+        type_resolver::{self, TypeResolver, resolve_annotation},
     },
     lexer::{Spanned, token::Span},
     parser::{
@@ -76,26 +76,12 @@ where
             .impl_type
             .and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
 
-        Self {
-            scope,
-            symbols,
-            is_const: function.is_const,
-            in_std,
-            return_type: TypeKind::Unit.into(),
-            function: Some(function),
-            function_id,
-            next_local: 0,
-            next_expr_id: 0,
-            locals: IndexVec::new(),
-            typeck: TypeckResults::default(),
-            infer: InferTable::default(),
-            scopes: vec![HashMap::new()],
-            self_type,
-            arena,
-            generic_env: HashMap::new(),
-            body_constants: HashMap::new(),
-            outer_const_locals: HashSet::new(),
-        }
+        let mut builder = Self::raw(scope, symbols, in_std, arena);
+        builder.is_const = function.is_const;
+        builder.function = Some(function);
+        builder.function_id = function_id;
+        builder.self_type = self_type;
+        builder
     }
 
     pub fn new_instance(
@@ -113,6 +99,15 @@ where
     }
 
     pub fn new_for_const(
+        scope: &'s mut Scope<'hir>,
+        symbols: &'s mut SymbolTable,
+        in_std: bool,
+        arena: &'hir bumpalo::Bump,
+    ) -> Self {
+        Self::raw(scope, symbols, in_std, arena)
+    }
+
+    fn raw(
         scope: &'s mut Scope<'hir>,
         symbols: &'s mut SymbolTable,
         in_std: bool,
@@ -1019,7 +1014,6 @@ where
 
                 let definition_name = self.scope[id].name;
                 let struct_name = self.arena.alloc_str(self.symbols.get(definition_name));
-                let definition_fields = self.scope[id].fields.clone();
 
                 let mut seen = HashSet::with_capacity(fields.len());
                 let mut lowered = Vec::with_capacity(fields.len());
@@ -1030,8 +1024,9 @@ where
                         return Err(hir_error!(field.span, DuplicateField { name: field.name }));
                     }
 
-                    let Some(expected) = definition_fields.iter().find(|f| f.name == field_symbol)
-                    else {
+                    let expected =
+                        self.scope[id].fields.iter().find(|f| f.name == field_symbol).copied();
+                    let Some(expected) = expected else {
                         return Err(hir_error!(
                             field.span,
                             UnknownField { struct_name, field: field.name }
@@ -1043,16 +1038,16 @@ where
                     lowered.push((field_symbol, value.expr));
                 }
 
-                for expected in &definition_fields {
-                    if !seen.contains(&expected.name) {
-                        return Err(hir_error!(
-                            *span,
-                            MissingField {
-                                struct_name,
-                                field: self.arena.alloc_str(self.symbols.get(expected.name)),
-                            }
-                        ));
-                    }
+                let missing =
+                    self.scope[id].fields.iter().find(|f| !seen.contains(&f.name)).map(|f| f.name);
+                if let Some(name) = missing {
+                    return Err(hir_error!(
+                        *span,
+                        MissingField {
+                            struct_name,
+                            field: self.arena.alloc_str(self.symbols.get(name)),
+                        }
+                    ));
                 }
 
                 let fields = self.arena.alloc_slice_copy(&lowered);
@@ -1914,91 +1909,7 @@ where
         typ: &statement::Type<'src>,
         span: Span,
     ) -> Result<Type, HirError<'hir>> {
-        match typ {
-            statement::Type::Named(name) => {
-                if let Some(&typ) = self.generic_env.get(*name) {
-                    return Ok(typ);
-                }
-
-                let symbol = self.symbols.insert(name);
-                self.scope
-                    .nominal_type(symbol)
-                    .ok_or_else(|| hir_error!(span, UnknownType { name }))
-            },
-
-            statement::Type::SelfType => {
-                self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
-            },
-
-            statement::Type::RefSelf => {
-                let self_ty =
-                    self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
-                let to = RefTarget::try_from(self_ty).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: self_ty
-                        }
-                    )
-                })?;
-
-                Ok(Type::refer(to, false))
-            },
-
-            statement::Type::Ref(inner, mutable) => {
-                let inner_type = self.resolve_type(inner, span)?;
-                let to = RefTarget::try_from(inner_type).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: inner_type
-                        }
-                    )
-                })?;
-                Ok(Type::refer(to, *mutable))
-            },
-
-            statement::Type::Generic(name, args) => {
-                let mut resolved = Vec::with_capacity(args.len());
-                for arg in args {
-                    resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
-                }
-                let typ = self.scope.instantiate_generic(name, &resolved, span, self.symbols)?;
-                if let Some(struct_sym) = self.symbols.get_id(name) {
-                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
-                        self.check_bounds(&template.generics, &resolved, span)?;
-                    } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
-                        self.check_bounds(&template.generics, &resolved, span)?;
-                    }
-                }
-                Ok(typ)
-            },
-
-            statement::Type::Array(element, len) => {
-                let element = self.resolve_type(element, span)?;
-                let id = self.scope.arrays.intern(element, *len as u32);
-                Ok(Type::array(id))
-            },
-
-            statement::Type::Slice(element, mutable) => {
-                let element = self.resolve_type(element, span)?;
-                let element = RefTarget::try_from(element).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: element
-                        }
-                    )
-                })?;
-                Ok(Type::slice(element, *mutable))
-            },
-
-            other => Type::from_primitive_ast(other)
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
-        }
+        type_resolver::resolve(self, typ, span)
     }
 
     #[inline(always)]
@@ -2368,6 +2279,47 @@ where
     builder.resolve_inference();
 
     Ok((lowered.expr, builder.typeck))
+}
+
+impl<'s, 'f, 'hir, 'src> TypeResolver<'hir> for FunctionBuilder<'s, 'f, 'hir, 'src>
+where
+    'src: 'hir,
+{
+    fn named(&mut self, name: &'hir str, span: Span) -> Result<Type, HirError<'hir>> {
+        if let Some(&typ) = self.generic_env.get(name) {
+            return Ok(typ);
+        }
+
+        let symbol = self.symbols.insert(name);
+        self.scope
+            .nominal_type(symbol)
+            .ok_or_else(|| hir_error!(span, UnknownType { name }))
+    }
+
+    fn generic(
+        &mut self,
+        name: &'hir str,
+        args: &[Type],
+        span: Span,
+    ) -> Result<Type, HirError<'hir>> {
+        let typ = self.scope.instantiate_generic(name, args, span, self.symbols)?;
+        if let Some(struct_sym) = self.symbols.get_id(name) {
+            if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                self.check_bounds(&template.generics, args, span)?;
+            } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
+                self.check_bounds(&template.generics, args, span)?;
+            }
+        }
+        Ok(typ)
+    }
+
+    fn self_type(&mut self, span: Span) -> Result<Type, HirError<'hir>> {
+        self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
+    }
+
+    fn arrays(&self) -> &ArrayTable {
+        &self.scope.arrays
+    }
 }
 
 impl<'s, 'f, 'hir, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'hir, 'src> {

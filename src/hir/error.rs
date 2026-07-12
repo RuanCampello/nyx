@@ -316,7 +316,7 @@ pub enum ConstFnViolationKind<'h> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum CmpInterface {
+pub enum CmpInterface {
     Equality,
     Ordering,
 }
