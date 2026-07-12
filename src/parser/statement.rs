@@ -1,5 +1,5 @@
 use crate::lexer::Spanned;
-use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
+use crate::lexer::token::{Keyword, Punct, Span, Token, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
 use crate::parser::{Parsable, Parser};
@@ -759,59 +759,45 @@ impl<'i> Parsable<'i> for Impl<'i> {
         let mut constants = Vec::new();
         let mut member_docs = Vec::new();
 
-        loop {
-            let docs = parser.parse_outer_docs();
-            match parser.peek_nth(0) {
-                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    let close = parser.expect_token(Punct::CloseBrace)?;
-                    let span = impl_token.span + close.span;
+        let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
+            Some(Ok(_)) if parser.is_const_decl() => {
+                let constant = parser.parse_node::<Const>()?;
+                push_member_docs(&mut member_docs, constant.span, docs);
+                constants.push(constant);
+                Ok(())
+            },
 
-                    return Ok(Self {
-                        name,
-                        receiver,
-                        interface_type,
-                        interface,
-                        generics,
-                        methods,
-                        constants,
-                        member_docs,
-                        span,
-                    });
-                },
+            Some(Ok(token)) if token.is_fn_start() => {
+                let mut method = parser.parse_node::<Function>()?;
+                push_member_docs(&mut member_docs, method.span, docs);
+                method.impl_type = Some(name);
+                methods.push(method);
+                Ok(())
+            },
 
-                Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+            Some(Ok(token)) => Err(ParserError::new(
+                ParseErrorKind::Expected {
+                    expected: TokenKind::Keyword(Keyword::Fn),
+                    found: token.kind,
                 },
+                token.span,
+            )),
 
-                Some(Ok(_)) if parser.is_const_decl() => {
-                    let constant = parser.parse_node::<Const>()?;
-                    push_member_docs(&mut member_docs, constant.span, docs);
-                    constants.push(constant);
-                },
+            Some(Err(err)) => Err((&err).into()),
+            _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, impl_token.span)),
+        })?;
 
-                Some(Ok(token)) if token.is_fn_start() => {
-                    let mut method = parser.parse_node::<Function>()?;
-                    push_member_docs(&mut member_docs, method.span, docs);
-                    method.impl_type = Some(name);
-                    methods.push(method);
-                },
-
-                Some(Ok(token)) => {
-                    return Err(ParserError::new(
-                        ParseErrorKind::Expected {
-                            expected: TokenKind::Keyword(Keyword::Fn),
-                            found: token.kind,
-                        },
-                        token.span,
-                    ));
-                },
-
-                Some(Err(err)) => return Err((&err).into()),
-                None => {
-                    return Err(ParserError::new(ParseErrorKind::UnexpectedEof, impl_token.span));
-                },
-            }
-        }
+        Ok(Self {
+            name,
+            receiver,
+            interface_type,
+            interface,
+            generics,
+            methods,
+            constants,
+            member_docs,
+            span: impl_token.span + close.span,
+        })
     }
 }
 
@@ -964,29 +950,22 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let mut methods = Vec::new();
         let mut member_docs = Vec::new();
 
-        loop {
-            let docs = parser.parse_outer_docs();
-            match parser.peek() {
-                Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                    let close = parser.expect_token(Punct::CloseBrace)?;
-                    return Ok(Self {
-                        name,
-                        generics,
-                        superinterfaces,
-                        span: interface_token.span + close.span,
-                        methods,
-                        member_docs,
-                        is_pub,
-                    });
-                },
-                Some(Err(err)) => return Err(err.into()),
-                _ => {
-                    let method = InterfaceMethod::parse(parser)?;
-                    push_member_docs(&mut member_docs, method.span, docs);
-                    methods.push(method);
-                },
-            }
-        }
+        let close = parse_braced_members(parser, |parser, docs| {
+            let method = InterfaceMethod::parse(parser)?;
+            push_member_docs(&mut member_docs, method.span, docs);
+            methods.push(method);
+            Ok(())
+        })?;
+
+        Ok(Self {
+            name,
+            generics,
+            superinterfaces,
+            span: interface_token.span + close.span,
+            methods,
+            member_docs,
+            is_pub,
+        })
     }
 }
 
@@ -1447,6 +1426,26 @@ pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
     match parser.consume_token(Punct::Lt)? {
         true => parse_angle_bracketed(parser),
         _ => Ok(Vec::new()),
+    }
+}
+
+/// A `}`-terminated member list
+fn parse_braced_members<'i>(
+    parser: &mut Parser<'i>,
+    mut member: impl FnMut(&mut Parser<'i>, Box<[&'i str]>) -> Result<(), ParserError<'i>>,
+) -> Result<Token<'i>, ParserError<'i>> {
+    loop {
+        let docs = parser.parse_outer_docs();
+        match parser.peek() {
+            Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
+                return parser.expect_token(Punct::CloseBrace);
+            },
+            Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+            },
+            Some(Err(err)) => return Err(err.into()),
+            _ => member(parser, docs)?,
+        }
     }
 }
 
