@@ -3,9 +3,13 @@ name = "nyx"
 version = "0.5.0"
 edition = "2024"
 
+[lib]
+bench = false
+
 [[bin]]
 name = "nyx"
 path = "src/main.rs"
+bench = false
 
 [workspace]
 members = ["nyx-macros", "nyx-lsp"]
@@ -27,5 +31,11 @@ name = "basic"
 harness = false
 
 [[bench]]
-name = "parsing"
+name = "stages"
 harness = false
+
+[profile.bench]
+opt-level = 3
+codegen-units = 1
+lto = false
+debug = false
