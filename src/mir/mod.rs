@@ -173,10 +173,6 @@ pub enum Terminator {
     /// Conditional branch: if `condition` is true
     Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
 
-    /// N-way switch based on discriminant value
-    #[allow(unused)]
-    Switch { discriminant: Operand, targets: Vec<(i64, BlockId)>, default: BlockId },
-
     /// Return from the function, optionally carrying a returned value
     Return(Option<Operand>),
 }
