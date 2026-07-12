@@ -1,8 +1,14 @@
 use crate::lir::{
-    Checked, MachineType, Panic, VReg,
-    target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
+    self, BlockId, Checked, Layouts, MachineType, Panic, VReg,
+    target::{
+        self, CallArgMoves, Instruction, MemOps, PhysicalReg, RegClass, StackArgs, Target,
+        TargetOperand, TargetOps,
+    },
 };
-use crate::{hir::SyscallCode, parser::expression::BinaryOperator};
+use crate::{
+    hir::{SyscallCode, Type},
+    parser::expression::BinaryOperator,
+};
 
 mod codegen;
 mod lower;
@@ -54,8 +60,6 @@ pub enum A64Instr {
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
     Cset { dest: VReg, cond: A64Cond },
-    Cmn { lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Tst { lhs: VReg, rhs: A64Operand, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: A64Operand },
 
@@ -119,6 +123,7 @@ pub enum A64Instr {
         /// stack-passed arguments in call order
         stack_args: Vec<(A64Operand, MachineType)>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
     },
  
     /// linux syscall (SVC #0)
@@ -217,7 +222,6 @@ impl Target for AArch64 {
             A64Reg::X4,  A64Reg::X5,  A64Reg::X6,  A64Reg::X7,
             A64Reg::X8,  A64Reg::X9,  A64Reg::X10, A64Reg::X11,
             A64Reg::X12, A64Reg::X13, A64Reg::X14, A64Reg::X15,
-            A64Reg::X17,
             A64Reg::X19, A64Reg::X20, A64Reg::X21, A64Reg::X22,
             A64Reg::X23, A64Reg::X24, A64Reg::X25, A64Reg::X26,
             A64Reg::X27, A64Reg::X28,
@@ -232,7 +236,7 @@ impl Target for AArch64 {
             A64Reg::D4,  A64Reg::D5,  A64Reg::D6,  A64Reg::D7,
             A64Reg::D8,  A64Reg::D9,  A64Reg::D10, A64Reg::D11,
             A64Reg::D12, A64Reg::D13, A64Reg::D14, A64Reg::D15,
-            A64Reg::D17, A64Reg::D18, A64Reg::D19,
+            A64Reg::D18, A64Reg::D19,
             A64Reg::D20, A64Reg::D21, A64Reg::D22, A64Reg::D23,
             A64Reg::D24, A64Reg::D25, A64Reg::D26, A64Reg::D27,
             A64Reg::D28, A64Reg::D29, A64Reg::D30, A64Reg::D31,
@@ -408,6 +412,43 @@ impl TargetOps for AArch64 {
     fn load_stack_addr(dest: VReg, origin: VReg) -> A64Instr {
         A64Instr::StackAddr { dest, origin }
     }
+
+    #[inline(always)]
+    fn bounds_check(index: VReg, bound: Self::Operand) -> Self::Instruction {
+        A64Instr::BoundsCheck { index, bound }
+    }
+
+    fn mul_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, imm: i64) {
+        let rhs = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+        lir.push_instr(block, A64Instr::MovImm { dest: rhs, imm, bytes: 8 });
+        lir.push_instr(block, A64Instr::Mul { dest, lhs, rhs, bytes: 8, checked: false });
+    }
+
+    fn add_vregs(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, rhs: VReg) {
+        let rhs = A64Operand::VReg(rhs);
+        lir.push_instr(block, A64Instr::Add { dest, lhs, rhs, bytes: 8, checked: false });
+    }
+
+    fn add_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, imm: i64) {
+        let rhs = A64Operand::Imm(imm);
+        lir.push_instr(block, A64Instr::Add { dest, lhs: dest, rhs, bytes: 8, checked: false });
+    }
+
+    #[inline(always)]
+    fn build_call(
+        target: String,
+        moves: CallArgMoves<Self>,
+        stack_args: StackArgs<Self>,
+        ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
+    ) -> Self::Instruction {
+        A64Instr::call(target, moves, stack_args, ret, aggregate_ret)
+    }
+
+    #[inline(always)]
+    fn small_aggregate_return(typ: Type, layouts: Layouts) -> Option<Vec<(i32, u8, Self::Reg)>> {
+        target::small_aggregate_chunks([A64Reg::X0, A64Reg::X1], typ, layouts)
+    }
 }
 
 impl Instruction<AArch64> for A64Instr {
@@ -430,13 +471,14 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Extend { dest, .. }
             | Self::Adr { dest, .. } => std::slice::from_ref(dest),
 
-            Self::Cmp { .. } | Self::Cmn { .. } | Self::Tst { .. } | Self::FCmp { .. }
+            Self::Cmp { .. } | Self::FCmp { .. }
             | Self::BoundsCheck { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
                std::slice::from_ref(r)
             },
+            Self::Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
             Self::FieldStore { .. } | Self::PtrStore { .. }
-            | Self::Call { ret: None, .. } | Self::Syscall { ret: None, .. } => &[],
+            | Self::Syscall { ret: None, .. } => &[],
         }
     }
 
@@ -451,8 +493,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::And { lhs, rhs, .. } | Self::Or { lhs, rhs, .. }
             | Self::Eor { lhs, rhs, .. } | Self::Lsl { lhs, rhs, .. }
             | Self::Lsr { lhs, rhs, .. } | Self::Asr { lhs, rhs, .. }
-            | Self::Cmp { lhs, rhs, .. } | Self::Cmn { lhs, rhs, .. }
-            | Self::Tst { lhs, rhs, .. } => {
+            | Self::Cmp { lhs, rhs, .. } => {
                 uses.push(*lhs);
 
                 if let A64Operand::VReg(rhs) = rhs {
@@ -531,6 +572,7 @@ impl A64Instr {
         moves: Vec<(VReg, A64Reg)>,
         stack_args: Vec<(A64Operand, MachineType)>,
         ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
     ) -> Self {
         let mut uses: Vec<VReg> = moves.iter().map(|(v, _)| *v).collect();
 
@@ -540,7 +582,7 @@ impl A64Instr {
             }
         }
 
-        Self::Call { target, moves, uses, ret, stack_args }
+        Self::Call { target, moves, uses, ret, stack_args, aggregate_ret }
     }
 }
 

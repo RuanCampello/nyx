@@ -495,15 +495,12 @@ impl Function<X86_64> {
                 emit!(out, "set{}  {dest}", condition.as_str())
             },
 
-            Inst::Test { lhs, rhs, bytes, .. } | Inst::Cmp { lhs, rhs, bytes, .. } => {
+            Inst::Cmp { lhs, rhs, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
 
-                match matches!(instruction, Inst::Cmp { .. }) {
-                    true => emit!(out, "cmp{suffix}    {rhs}, {lhs}"),
-                    _ => emit!(out, "test{suffix}    {rhs}, {lhs}"),
-                }
+                emit!(out, "cmp{suffix}    {rhs}, {lhs}");
             },
 
             Inst::BoundsCheck { index, bound } => {
@@ -703,32 +700,6 @@ impl Function<X86_64> {
                 }
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
-            },
-
-            Term::Switch { cond, targets, default } => {
-                let bytes = self.reg_bytes(cond);
-                let condition = alloc.location(cond, &bytes);
-                let suffix = suffix(&bytes);
-
-                let cmp_src = match condition.contains("(%rbp)") {
-                    true => {
-                        let scratch = match bytes {
-                            8 => "%r11",
-                            4 => "%r11d",
-                            2 => "%r11w",
-                            _ => "%r11b",
-                        };
-                        emit!(out, "mov{suffix}    {condition}, {scratch}");
-                        scratch
-                    },
-                    _ => condition.as_str(),
-                };
-
-                for (val, block) in targets {
-                    emit!(out, "cmp{suffix}    ${val}, {cmp_src}");
-                    emit!(out, "je          .L_block_{name}_{}", block.0);
-                }
-                emit!(out, "jmp         .L_block_{name}_{}", default.0);
             },
 
             Term::Return(Some(vreg)) => {

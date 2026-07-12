@@ -10,11 +10,11 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{self, SymbolTable, TypeKind};
+use crate::hir::{SymbolTable, TypeKind};
 use crate::lir::{
-    self, BlockId, MachineType, Term, VReg, assembly_label,
+    self, BlockId, MachineType, VReg,
     target::{
-        self, AggregateCopy, Lower, Lowerable, MemOps, RegClass, Target, aggregate_copy,
+        self, AggregateCopy, Lower, Lowerable, MemOps, Target, aggregate_copy,
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
@@ -316,301 +316,22 @@ impl<'f> Lower<'f, X86_64> {
             },
 
             InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
-                let typ = *typ;
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-
-                // materialise the index into a 64-bit register, shared by the
-                // bounds check and the address computation
-                let index_reg = self.lir.new_vreg(int8);
-                let index_src = self.lower_operand(index);
-                let instr = X86Instr::Mov { dest: index_reg, src: index_src, bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let bound = self.lower_operand(bound);
-                let instr = X86Instr::BoundsCheck { index: index_reg, bound };
-                self.lir.push_instr(id, instr);
-
-                // element address = base address + index * stride
-                let Operand::Place(base) = base else {
-                    unreachable!("indexing a constant aggregate");
-                };
-                let origin = self.value[base.id];
-                let addr = self.lir.new_vreg(int8);
-                match base.typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr =
-                            X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 };
-                        self.lir.push_instr(id, instr)
-                    },
-                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin }),
-                }
-
-                let offset = self.lir.new_vreg(int8);
-                let instr =
-                    X86Instr::Mov { dest: offset, src: X86Operand::VReg(index_reg), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let src = X86Operand::Imm(*stride as i64);
-                let instr = X86Instr::Imul { dest: offset, src, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                // the accumulator is freshly copied before the add,
-                // so its register stays distinct from the base address
-                let element = self.lir.new_vreg(int8);
-                let instr = X86Instr::Mov { dest: element, src: X86Operand::VReg(addr), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let src = X86Operand::VReg(offset);
-                let instr = X86Instr::Add { dest: element, src, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                match typ.is_aggregate() {
-                    true => {
-                        let size = typ.machine_type(self.layouts).stack_size() as u32;
-                        let copy = AggregateCopy {
-                            src: element,
-                            dest,
-                            src_ref: true,
-                            dest_ref: false,
-                            src_base: 0,
-                            dest_base: 0,
-                            size,
-                        };
-                        aggregate_copy(&mut self.lir, id, copy);
-                    },
-                    false => {
-                        let mt = typ.machine_type(self.layouts);
-                        let instruction = X86_64::scalar_load(
-                            true,
-                            dest,
-                            element,
-                            0,
-                            mt.bytes(),
-                            typ.is_float(),
-                            mt.is_signed(),
-                        );
-                        self.lir.push_instr(id, instruction);
-                    },
-                }
+                self.lower_element_load(id, dest, base, index, bound, *stride, *typ)
             },
 
             InstructionKind::ElementStore { index, bound, value, stride } => {
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-                let index_reg = self.lir.new_vreg(int8);
-                let index_src = self.lower_operand(index);
-                self.lir
-                    .push_instr(id, X86Instr::Mov { dest: index_reg, src: index_src, bytes: 8 });
-
-                let bound = self.lower_operand(bound);
-                self.lir.push_instr(id, X86Instr::BoundsCheck { index: index_reg, bound });
-
-                let addr = self.lir.new_vreg(int8);
-                match typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr =
-                            X86Instr::Mov { dest: addr, src: X86Operand::VReg(dest), bytes: 8 };
-                        self.lir.push_instr(id, instr);
-                    },
-                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin: dest }),
-                }
-
-                let offset = self.lir.new_vreg(int8);
-                let instr =
-                    X86Instr::Mov { dest: offset, src: X86Operand::VReg(index_reg), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let src = X86Operand::Imm(*stride as i64);
-                let instr = X86Instr::Imul { dest: offset, src, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                let element = self.lir.new_vreg(int8);
-                let instr = X86Instr::Mov { dest: element, src: X86Operand::VReg(addr), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let src = X86Operand::VReg(offset);
-                let instr = X86Instr::Add { dest: element, src, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                let value_typ = value.typ();
-                match value_typ.is_aggregate() {
-                    true => {
-                        let Operand::Place(src) = value else {
-                            unreachable!("aggregate element store source must be a place");
-                        };
-                        let src = self.value[src.id];
-                        let size = value_typ.machine_type(self.layouts).stack_size() as u32;
-                        let copy = AggregateCopy {
-                            src,
-                            dest: element,
-                            src_ref: false,
-                            dest_ref: true,
-                            src_base: 0,
-                            dest_base: 0,
-                            size,
-                        };
-                        aggregate_copy(&mut self.lir, id, copy);
-                    },
-
-                    false => {
-                        let mt = value_typ.machine_type(self.layouts);
-                        let src = self.lower_operand(value);
-                        let instruction = X86_64::scalar_store(
-                            true,
-                            element,
-                            src,
-                            0,
-                            mt.bytes(),
-                            value_typ.is_float(),
-                        );
-                        self.lir.push_instr(id, instruction);
-                    },
-                }
+                self.lower_element_store(id, dest, typ, index, bound, value, *stride)
             },
 
             InstructionKind::ElementAddr { base, index, bound, stride } => {
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-
-                let index_reg = self.lir.new_vreg(int8);
-                let index_src = self.lower_operand(index);
-                self.lir
-                    .push_instr(id, X86Instr::Mov { dest: index_reg, src: index_src, bytes: 8 });
-
-                let bound = self.lower_operand(bound);
-                self.lir.push_instr(id, X86Instr::BoundsCheck { index: index_reg, bound });
-
-                let base = match base {
-                    Operand::Place(place) => place,
-                    Operand::Const(_) => unreachable!("indexing a constant aggregate"),
-                };
-                let origin = self.value[base.id];
-                let addr = self.lir.new_vreg(int8);
-                match base.typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr =
-                            X86Instr::Mov { dest: addr, src: X86Operand::VReg(origin), bytes: 8 };
-                        self.lir.push_instr(id, instr);
-                    },
-                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest: addr, origin }),
-                }
-
-                let offset = self.lir.new_vreg(int8);
-                let instr =
-                    X86Instr::Mov { dest: offset, src: X86Operand::VReg(index_reg), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let src = X86Operand::Imm(*stride as i64);
-                let instr = X86Instr::Imul { dest: offset, src, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                // `dest` is the element pointer, 2-address form copies the base first
-                let instr = X86Instr::Mov { dest, src: X86Operand::VReg(addr), bytes: 8 };
-                self.lir.push_instr(id, instr);
-
-                let instr = X86Instr::Add {
-                    dest,
-                    src: X86Operand::VReg(offset),
-                    bytes: 8,
-                    checked: false,
-                };
-                self.lir.push_instr(id, instr);
+                self.lower_element_addr(id, dest, base, index, bound, *stride)
             },
 
-            #[rustfmt::skip]
             InstructionKind::AddressOf { src, offset } => {
-                let origin = self.value[src.id];
-                match src.typ.kind() {
-                    TypeKind::Ref { .. } => self.lir.push_instr(id, X86Instr::Mov { dest, src: X86Operand::VReg(origin), bytes: 8 }),
-                    _ => self.lir.push_instr(id, X86Instr::StackAddr { dest, origin }),
-                }
-
-                if *offset != 0 {
-                    self.lir.push_instr(
-                        id,
-                        X86Instr::Add { dest, src: X86Operand::Imm(*offset as i64), bytes: 8, checked: false },
-                    );
-                }
+                self.lower_address_of(id, dest, src, *offset)
             },
 
-            InstructionKind::Call { callee, args } => {
-                let callee_id = *callee;
-                let callee_fn = self
-                    .all_functions
-                    .iter()
-                    .find(|f| f.id == callee_id)
-                    .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
-
-                let (bytes, signed, is_float) = (8, false, false);
-
-                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
-                    let ptr = self.operand(&args[0], id);
-                    return self.lir.push_instr(
-                        id,
-                        X86Instr::PtrLoad { dest, ptr, offset: 8, bytes, is_float },
-                    );
-                }
-
-                let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
-
-                let mut int_idx = 0;
-                let return_type = callee_fn.return_type;
-                let aggregate_ret = match return_type.is_aggregate() {
-                    true => {
-                        super::small_integer_return(return_type, self.layouts).unwrap_or_default()
-                    },
-                    _ => Vec::new(),
-                };
-
-                let mut moves = Vec::new();
-                if return_type.is_aggregate() && aggregate_ret.is_empty() {
-                    let ptr = self.stack_addr(id, dest);
-                    let abi_reg = X86_64::param(int_idx, RegClass::Int)
-                        .expect("sret pointer must fit in the first integer argument register");
-                    moves.push((ptr, abi_reg));
-                    int_idx += 1;
-                }
-
-                let value = &self.value;
-                let layouts = self.layouts;
-
-                let (arg_moves, stack_args) = target::prepare_call_args(
-                    &mut self.lir,
-                    id,
-                    args,
-                    layouts,
-                    |vid| value[vid],
-                    |lir, op, block| target::operand(lir, op, block, layouts, |vid| value[vid]),
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
-                    |lir, block, origin| {
-                        let dest = lir.new_vreg(MachineType::Int { bytes, signed });
-                        lir.push_instr(block, X86Instr::StackAddr { dest, origin });
-                        dest
-                    },
-                    int_idx,
-                    0,
-                );
-                moves.extend(arg_moves);
-
-                let ret = (return_type.kind() != TypeKind::Unit && !return_type.is_aggregate())
-                    .then_some(dest);
-                let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
-                for &(_, bytes, reg) in &aggregate_ret {
-                    let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
-                    self.lir.add_precolour(vreg, reg);
-                    ret_vregs.push(vreg);
-                }
-
-                self.lir.push_instr(
-                    id,
-                    X86Instr::call(callee, moves, stack_args, ret, ret_vregs.clone()),
-                );
-
-                for ((offset, bytes, _), src) in aggregate_ret.into_iter().zip(ret_vregs) {
-                    let src = X86Operand::VReg(src);
-                    #[rustfmt::skip]
-                    let instr = X86Instr::FieldStore { origin: dest, src, offset, bytes, is_float: false };
-                    self.lir.push_instr(id, instr);
-                }
-            },
+            InstructionKind::Call { callee, args } => self.lower_call(id, dest, *callee, args),
 
             InstructionKind::Syscall { code, args, returns } => {
                 let value = &self.value;
@@ -677,7 +398,7 @@ impl<'f> Lower<'f, X86_64> {
                 let X86Operand::VReg(lhs) = lhs else {
                     panic!("float lhs must be a virtual register");
                 };
-                self.lir.push_instr(id, X86Instr::cmp::<2>(lhs, rhs, bytes));
+                self.lir.push_instr(id, X86Instr::Ucomis { lhs, rhs, bytes });
             },
 
             _ => {
@@ -691,7 +412,7 @@ impl<'f> Lower<'f, X86_64> {
                     },
                 };
 
-                self.lir.push_instr(id, X86Instr::cmp::<0>(lhs, rhs, bytes));
+                self.lir.push_instr(id, X86Instr::Cmp { lhs, rhs, bytes });
             },
         }
 
@@ -708,61 +429,6 @@ impl<'f> Lower<'f, X86_64> {
 
         // movzx widens 1-byte setcc result to i32, so we need to update dest's type
         self.lir.set_vreg_type(dest, MachineType::Int { bytes: 4, signed: false });
-    }
-
-    fn lower_terminator(&mut self, id: &BlockId, terminator: mir::Terminator) {
-        use crate::mir::Terminator as T;
-
-        let terminator = match terminator {
-            T::Return(None) => Term::Return(None),
-            T::Return(Some(operand)) if operand.typ().is_aggregate() => {
-                let typ = operand.typ();
-                let Operand::Place(place) = operand else {
-                    unreachable!("aggregate return source must be a place");
-                };
-
-                let src_vreg = self.value[place.id];
-
-                match super::small_integer_return(typ, self.layouts) {
-                    Some(chunks) => {
-                        for (offset, bytes, reg) in chunks {
-                            let ret = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
-                            #[rustfmt::skip]
-                            let load = X86Instr::FieldLoad { dest: ret, origin: src_vreg, offset, bytes, is_float: false };
-                            self.lir.add_precolour(ret, reg);
-                            self.lir.push_instr(id, load);
-                        }
-                    },
-
-                    None => {
-                        let sret_ptr = self
-                            .sret_ptr
-                            .expect("struct-returning function must have an sret pointer");
-                        let size = typ.machine_type(self.layouts).stack_size() as u32;
-                        let copy = AggregateCopy::new(src_vreg, sret_ptr, size).with_dest_ref();
-
-                        aggregate_copy(&mut self.lir, id, copy);
-                    },
-                }
-
-                Term::Return(None)
-            },
-            T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
-            T::Jump(block) => Term::Jump(block.into()),
-            T::Branch { condition, then_block, else_block } => Term::Branch {
-                cond: self.operand(&condition, id),
-                then_block: then_block.into(),
-                else_block: else_block.into(),
-            },
-            T::Switch { discriminant, targets, default } => {
-                let cond = self.operand(&discriminant, id);
-                let targets =
-                    targets.iter().map(|(val, target)| (*val, (*target).into())).collect();
-                Term::Switch { cond, targets, default: default.into() }
-            },
-        };
-
-        self.lir.set_term(id, terminator);
     }
 
     fn lower_block(&mut self, id: &BlockId, block: &mir::Block) {

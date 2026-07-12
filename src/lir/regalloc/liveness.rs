@@ -105,12 +105,6 @@ impl<I> Block<I> {
                 f(*then_block);
                 f(*else_block);
             },
-            Term::Switch { targets, default, .. } => {
-                for &(_, target) in targets {
-                    f(target);
-                }
-                f(*default);
-            },
             Term::Return(_) => {},
         }
     }

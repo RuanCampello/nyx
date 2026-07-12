@@ -13,11 +13,11 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{self, SymbolTable, Type, TypeKind},
+    hir::{SymbolTable, Type, TypeKind},
     lir::{
-        self, BlockId, MachineType, Term, VReg, assembly_label,
+        self, BlockId, VReg,
         target::{
-            self, AggregateCopy, Lower, Lowerable, MemOps, RegClass, Target,
+            self, AggregateCopy, Lower, Lowerable, MemOps, Target,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
             aggregate_copy,
         },
@@ -229,64 +229,7 @@ impl<'f> Lower<'f, AArch64> {
                 }
             },
 
-            InstructionKind::Call { callee, args } => {
-                let callee_id = *callee;
-                let callee_fn = self
-                    .all_functions
-                    .iter()
-                    .find(|f| f.id == callee_id)
-                    .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
-
-                let (bytes, _signed, is_float) = (8, false, false);
-
-                if callee_fn.intrinsic == Some(hir::Intrinsic::Len) {
-                    let ptr = self.operand(&args[0], id);
-                    return self.lir.push_instr(
-                        id,
-                        A64Instr::PtrLoad { dest, ptr, offset: 8, bytes, is_float, signed: false },
-                    );
-                }
-
-                let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
-
-                let mut moves = Vec::with_capacity(args.len());
-                let mut int_idx = 0;
-
-                if typ.is_aggregate() {
-                    let ptr = self.stack_addr(id, dest);
-                    let abi_reg = AArch64::param(int_idx, RegClass::Int)
-                        .expect("sret pointer must fit in the first integer argument register");
-                    moves.push((ptr, abi_reg));
-                    int_idx += 1;
-                }
-
-                let value = &self.value;
-                let layouts = self.layouts;
-                let (arg_moves, stack_args) = lir::target::prepare_call_args(
-                    &mut self.lir,
-                    id,
-                    args,
-                    layouts,
-                    |vid| value[vid],
-                    |lir, op, block| {
-                        lir::target::operand(lir, op, block, layouts, |vid| value[vid])
-                    },
-                    |lir, op, _block| lir::target::lower_operand(lir, op, |vid| value[vid]),
-                    |lir, block, origin| {
-                        let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-                        lir.push_instr(block, A64Instr::StackAddr { dest, origin });
-                        dest
-                    },
-                    int_idx,
-                    0,
-                );
-                moves.extend(arg_moves);
-
-                let return_type = callee_fn.return_type;
-                let ret = (return_type.kind() != TypeKind::Unit && !return_type.is_aggregate())
-                    .then_some(dest);
-                self.lir.push_instr(id, A64Instr::call(callee, moves, stack_args, ret));
-            },
+            InstructionKind::Call { callee, args } => self.lower_call(id, dest, *callee, args),
 
             InstructionKind::Syscall { code, args, returns } => {
                 let value = &self.value;
@@ -399,205 +342,19 @@ impl<'f> Lower<'f, AArch64> {
             },
 
             InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
-                let typ = *typ;
-                let uptr = TypeKind::Uptr.into();
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-
-                let index = self.lower_operand(index);
-                let index = self.ensure_vreg(index, uptr, id);
-                let bound = self.lower_operand(bound);
-                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
-
-                let Operand::Place(base) = base else {
-                    unreachable!("indexing a constant aggregate")
-                };
-                let origin = self.value[base.id];
-                let addr = self.lir.new_vreg(int8);
-                match base.typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr = A64Instr::Mov { dest: addr, src: origin, bytes: 8 };
-                        self.lir.push_instr(id, instr)
-                    },
-                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin }),
-                }
-
-                // element address = base address + index * stride
-                let stride = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
-                let offset = self.lir.new_vreg(int8);
-                let instr = A64Instr::Mul {
-                    dest: offset,
-                    lhs: index,
-                    rhs: stride,
-                    bytes: 8,
-                    checked: false,
-                };
-                self.lir.push_instr(id, instr);
-                let element = self.lir.new_vreg(int8);
-
-                let rhs = A64Operand::VReg(offset);
-                let instr =
-                    A64Instr::Add { dest: element, lhs: addr, rhs, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                match typ.is_aggregate() {
-                    true => {
-                        let size = typ.machine_type(self.layouts).stack_size() as u32;
-                        aggregate_copy(
-                            &mut self.lir,
-                            id,
-                            AggregateCopy {
-                                src: element,
-                                dest,
-                                src_ref: true,
-                                dest_ref: false,
-                                src_base: 0,
-                                dest_base: 0,
-                                size,
-                            },
-                        );
-                    },
-                    false => {
-                        let mt = typ.machine_type(self.layouts);
-                        let instruction = AArch64::scalar_load(
-                            true,
-                            dest,
-                            element,
-                            0,
-                            mt.bytes(),
-                            typ.is_float(),
-                            mt.is_signed(),
-                        );
-                        self.lir.push_instr(id, instruction);
-                    },
-                }
+                self.lower_element_load(id, dest, base, index, bound, *stride, *typ)
             },
 
             InstructionKind::ElementStore { index, bound, value, stride } => {
-                let uptr: Type = TypeKind::Uptr.into();
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-
-                let index = self.lower_operand(index);
-                let index = self.ensure_vreg(index, uptr, id);
-                let bound = self.lower_operand(bound);
-                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
-
-                let addr = self.lir.new_vreg(int8);
-                match typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr = A64Instr::Mov { dest: addr, src: dest, bytes: 8 };
-                        self.lir.push_instr(id, instr);
-                    },
-                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin: dest }),
-                }
-
-                // element address = base address + index * stride
-                let rhs = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
-                let offset = self.lir.new_vreg(int8);
-                let instr =
-                    A64Instr::Mul { dest: offset, lhs: index, rhs, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                let element = self.lir.new_vreg(int8);
-                let rhs = A64Operand::VReg(offset);
-                let instr =
-                    A64Instr::Add { dest: element, lhs: addr, rhs, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
-
-                let value_typ = value.typ();
-                match value_typ.is_aggregate() {
-                    true => {
-                        let Operand::Place(src) = value else {
-                            unreachable!("aggregate element store source must be a place");
-                        };
-                        let src = self.value[src.id];
-                        let size = value_typ.machine_type(self.layouts).stack_size() as u32;
-                        let copy = AggregateCopy {
-                            src,
-                            dest: element,
-                            src_ref: false,
-                            dest_ref: true,
-                            src_base: 0,
-                            dest_base: 0,
-                            size,
-                        };
-                        aggregate_copy(&mut self.lir, id, copy);
-                    },
-
-                    false => {
-                        let mt = value_typ.machine_type(self.layouts);
-                        let src = self.lower_operand(value);
-                        let instr = AArch64::scalar_store(
-                            true,
-                            element,
-                            src,
-                            0,
-                            mt.bytes(),
-                            value_typ.is_float(),
-                        );
-                        self.lir.push_instr(id, instr);
-                    },
-                }
+                self.lower_element_store(id, dest, typ, index, bound, value, *stride)
             },
 
             InstructionKind::ElementAddr { base, index, bound, stride } => {
-                let uptr = TypeKind::Uptr.into();
-                let int8 = MachineType::Int { bytes: 8, signed: false };
-
-                let index = self.lower_operand(index);
-                let index = self.ensure_vreg(index, uptr, id);
-                let bound = self.lower_operand(bound);
-                self.lir.push_instr(id, A64Instr::BoundsCheck { index, bound });
-
-                let base = match base {
-                    Operand::Place(place) => place,
-                    Operand::Const(_) => unreachable!("indexing a constant aggregate"),
-                };
-                let origin = self.value[base.id];
-                let addr = self.lir.new_vreg(int8);
-                match base.typ.kind() {
-                    TypeKind::Ref { .. } => {
-                        let instr = A64Instr::Mov { dest: addr, src: origin, bytes: 8 };
-                        self.lir.push_instr(id, instr)
-                    },
-                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest: addr, origin }),
-                }
-
-                let stride = self.ensure_vreg(A64Operand::Imm(*stride as i64), uptr, id);
-                let offset = self.lir.new_vreg(int8);
-                let instr = A64Instr::Mul {
-                    dest: offset,
-                    lhs: index,
-                    rhs: stride,
-                    bytes: 8,
-                    checked: false,
-                };
-                self.lir.push_instr(id, instr);
-
-                let rhs = A64Operand::VReg(offset);
-                let instr = A64Instr::Add { dest, lhs: addr, rhs, bytes: 8, checked: false };
-                self.lir.push_instr(id, instr);
+                self.lower_element_addr(id, dest, base, index, bound, *stride)
             },
 
             InstructionKind::AddressOf { src, offset } => {
-                let origin = self.value[src.id];
-                match src.typ.kind() {
-                    #[rustfmt::skip]
-                    TypeKind::Ref { .. } => self.lir.push_instr( id, A64Instr::Mov { dest, src: origin, bytes: 8 }),
-                    _ => self.lir.push_instr(id, A64Instr::StackAddr { dest, origin }),
-                }
-
-                if *offset != 0 {
-                    self.lir.push_instr(
-                        id,
-                        A64Instr::Add {
-                            dest,
-                            lhs: dest,
-                            rhs: A64Operand::Imm(*offset as i64),
-                            bytes: 8,
-                            checked: false,
-                        },
-                    );
-                }
+                self.lower_address_of(id, dest, src, *offset)
             },
 
             InstructionKind::Cast { src, typ } => {
@@ -686,43 +443,6 @@ impl<'f> Lower<'f, AArch64> {
         }
 
         self.lir.push_instr(id, A64Instr::Cset { dest, cond });
-    }
-
-    #[inline(always)]
-    fn lower_terminator(&mut self, id: &BlockId, terminator: mir::Terminator) {
-        use crate::mir::Terminator as T;
-
-        let terminator = match terminator {
-            T::Return(None) => Term::Return(None),
-            T::Return(Some(operand)) if operand.typ().is_aggregate() => {
-                let typ = operand.typ();
-                let Operand::Place(place) = operand else {
-                    unreachable!("aggregate return source must be a place");
-                };
-                let sret_ptr =
-                    self.sret_ptr.expect("struct-returning function must have an sret pointer");
-                let src_vreg = self.value[place.id];
-                let size = typ.machine_type(self.layouts).stack_size() as u32;
-                let copy = AggregateCopy::new(src_vreg, sret_ptr, size).with_dest_ref();
-                aggregate_copy(&mut self.lir, id, copy);
-                Term::Return(None)
-            },
-            T::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, id))),
-            T::Jump(block) => Term::Jump(block.into()),
-            T::Branch { condition, then_block, else_block } => Term::Branch {
-                cond: self.operand(&condition, id),
-                then_block: then_block.into(),
-                else_block: else_block.into(),
-            },
-            T::Switch { discriminant, targets, default } => {
-                let cond = self.operand(&discriminant, id);
-                let targets =
-                    targets.iter().map(|(val, target)| (*val, (*target).into())).collect();
-                Term::Switch { cond, targets, default: default.into() }
-            },
-        };
-
-        self.lir.set_term(id, terminator);
     }
 
     /// if the operand is already a `VReg`, return it

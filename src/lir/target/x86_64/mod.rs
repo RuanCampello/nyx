@@ -1,8 +1,11 @@
 use crate::{
-    hir::{SyscallCode, Type, TypeKind},
+    hir::{SyscallCode, Type},
     lir::{
-        Checked, Layouts, MachineType, Panic, VReg, aggregate_chunks,
-        target::{Instruction, MemOps, PhysicalReg, RegClass, Target, TargetOperand, TargetOps},
+        self, BlockId, Checked, Layouts, MachineType, Panic, VReg,
+        target::{
+            self, CallArgMoves, Instruction, MemOps, PhysicalReg, RegClass, StackArgs, Target,
+            TargetOperand, TargetOps,
+        },
     },
     parser::expression::BinaryOperator,
 };
@@ -66,7 +69,6 @@ pub enum X86Instr {
 
     // comparison
     Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
-    Test { lhs: VReg, rhs: X86Operand, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: X86Operand },
     /// float comparison
@@ -340,8 +342,43 @@ impl TargetOps for X86_64 {
     }
 
     #[inline(always)]
-    fn uses_sret(typ: Type, layouts: Layouts) -> bool {
-        typ.is_aggregate() && small_integer_return(typ, layouts).is_none()
+    fn bounds_check(index: VReg, bound: Self::Operand) -> Self::Instruction {
+        X86Instr::BoundsCheck { index, bound }
+    }
+
+    fn mul_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, imm: i64) {
+        let src = X86Operand::VReg(lhs);
+        lir.push_instr(block, X86Instr::Mov { dest, src, bytes: 8 });
+        let src = X86Operand::Imm(imm);
+        lir.push_instr(block, X86Instr::Imul { dest, src, bytes: 8, checked: false });
+    }
+
+    fn add_vregs(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, rhs: VReg) {
+        let src = X86Operand::VReg(lhs);
+        lir.push_instr(block, X86Instr::Mov { dest, src, bytes: 8 });
+        let src = X86Operand::VReg(rhs);
+        lir.push_instr(block, X86Instr::Add { dest, src, bytes: 8, checked: false });
+    }
+
+    fn add_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, imm: i64) {
+        let src = X86Operand::Imm(imm);
+        lir.push_instr(block, X86Instr::Add { dest, src, bytes: 8, checked: false });
+    }
+
+    #[inline(always)]
+    fn build_call(
+        target: String,
+        moves: CallArgMoves<Self>,
+        stack_args: StackArgs<Self>,
+        ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
+    ) -> Self::Instruction {
+        X86Instr::call(target, moves, stack_args, ret, aggregate_ret)
+    }
+
+    #[inline(always)]
+    fn small_aggregate_return(typ: Type, layouts: Layouts) -> Option<Vec<(i32, u8, Self::Reg)>> {
+        target::small_aggregate_chunks([X86Reg::Rax, X86Reg::Rdx], typ, layouts)
     }
 }
 
@@ -367,7 +404,7 @@ impl Instruction<X86_64> for X86Instr {
             Self::IDiv { result, .. } => std::slice::from_ref(result),
 
             Self::FieldStore { .. } | Self::PtrStore { .. }
-            | Self::Cmp { .. } | Self::Test { .. }
+            | Self::Cmp { .. }
             | Self::Ucomis { .. } | Self::BoundsCheck { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
@@ -437,7 +474,6 @@ impl Instruction<X86_64> for X86Instr {
             Self::Neg { dest, .. } | Self::Not { dest, .. } => uses.push(*dest),
 
             Self::Cmp { lhs, rhs, .. }
-            | Self::Test { lhs, rhs, .. }
             | Self::Ucomis { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 if let X86Operand::VReg(rhs) = rhs {
@@ -514,22 +550,6 @@ impl X86Instr {
         }
 
         Self::Call { target, moves, uses, ret, aggregate_ret, stack_args }
-    }
-
-    /// Creates a comparation instruction depending on `O`
-    ///
-    /// - *0*: `cmp`
-    /// - *1*: `ucomis`
-    /// - *2*: `test`
-    #[inline(always)]
-    #[rustfmt::skip]
-    pub const fn cmp<const O: u8>(lhs: VReg, rhs: X86Operand, bytes: u8) -> Self {
-        match O {
-            0 => Self::Cmp { lhs, rhs, bytes },
-            1 => Self::Test { lhs, rhs, bytes },
-            2 => Self::Ucomis { lhs, rhs, bytes },
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }
     }
 
     #[inline(always)]
@@ -648,24 +668,3 @@ impl Condition {
     }
 }
 
-/// Small aggregates (<= 16 bytes, no floats) are returned directly in RAX/RDX
-/// under the SysV ABI. Returns the per-register `(offset, bytes, reg)` chunks
-/// when `typ` qualifies, or `None` when it must be returned via an sret pointer.
-fn small_integer_return(typ: Type, layouts: Layouts) -> Option<Vec<(i32, u8, X86Reg)>> {
-    let size = typ.machine_type(layouts).stack_size() as u32;
-    let contains_float = match typ.kind() {
-        TypeKind::Struct(sid) => layouts.structs[sid.0 as usize].contains_float(),
-        _ => false,
-    };
-    if size == 0 || size > 16 || contains_float {
-        return None;
-    }
-
-    let regs = [X86Reg::Rax, X86Reg::Rdx];
-    Some(
-        aggregate_chunks(size)
-            .zip(regs)
-            .map(|((offset, bytes), reg)| (offset, bytes, reg))
-            .collect(),
-    )
-}

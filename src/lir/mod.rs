@@ -54,7 +54,6 @@ pub struct Block<I> {
 pub enum Term {
     Jump(BlockId),
     Branch { cond: VReg, then_block: BlockId, else_block: BlockId },
-    Switch { cond: VReg, targets: Vec<(i64, BlockId)>, default: BlockId },
     Return(Option<VReg>),
 }
 
@@ -421,7 +420,7 @@ impl Term {
     pub fn uses_of(&self) -> &[VReg] {
         match self {
             Self::Return(Some(v)) => std::slice::from_ref(v),
-            Self::Branch { cond, .. } | Self::Switch { cond, .. } => std::slice::from_ref(cond),
+            Self::Branch { cond, .. } => std::slice::from_ref(cond),
             Self::Return(None) | Self::Jump(_) => &[],
         }
     }
