@@ -211,12 +211,19 @@ impl<'a, 'h> Walker<'a, 'h> {
                     self.block(eb);
                 }
             },
-            Statement::While { condition, body } => {
-                self.expr(condition);
+            Statement::Loop { kind, body } => {
+                match kind {
+                    hir::LoopKind::Infinite => {},
+                    hir::LoopKind::Range { start, end, .. } => {
+                        self.expr(start);
+                        self.expr(end);
+                    },
+                    hir::LoopKind::Iterable { iterable, .. } => self.expr(iterable),
+                }
                 self.block(body);
             },
             Statement::Block(b) => self.block(b),
-            Statement::Return(None) => {},
+            Statement::Return(None) | Statement::Break | Statement::Continue => {},
         }
     }
 
