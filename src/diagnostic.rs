@@ -812,15 +812,9 @@ mod tests {
     }
 
     #[test]
-    fn hir_type_mismatch_while_condition() {
-        let kind = hir_check!("fn main() { while 1 { } }");
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Bool.into(),
-                found: TypeKind::I32.into()
-            }
-        );
+    fn hir_rejects_float_range() {
+        let kind = hir_check!("fn main() { loop 1.0..2.0 { } }");
+        assert_eq!(kind, HirErrorKind::InvalidRangeType { typ: TypeKind::F64.into() });
     }
 
     #[test]

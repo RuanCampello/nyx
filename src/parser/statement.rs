@@ -28,7 +28,9 @@ pub enum Statement<'i> {
     Let(Let<'i>),
     Return(Return<'i>),
     If(If<'i>),
-    While(While<'i>),
+    Loop(Loop<'i>),
+    Break(Span),
+    Continue(Span),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
     Match(Match<'i>),
@@ -69,9 +71,15 @@ pub struct If<'i> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct While<'i> {
-    pub condition: Expression<'i>,
+pub struct Loop<'i> {
+    pub header: LoopHeader<'i>,
     pub body: Block<'i>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct LoopBinding<'i> {
+    pub name: &'i str,
     pub span: Span,
 }
 
@@ -90,6 +98,21 @@ pub struct MatchArm<'i> {
     pub guard: Option<Expression<'i>>,
     pub body: Expression<'i>,
     pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LoopHeader<'i> {
+    /// `loop {}`
+    Infinite,
+    /// `loop 0..10` or `loop 10..=0`
+    Range {
+        binding: Option<LoopBinding<'i>>,
+        start: Expression<'i>,
+        end: Expression<'i>,
+        inclusive: bool,
+    },
+    /// `loop i in iterable {}`
+    Iterable { binding: LoopBinding<'i>, iterable: Expression<'i> },
 }
 
 /// An inline literal value in a pattern position.
@@ -340,8 +363,18 @@ impl<'i> Parsable<'i> for Statement<'i> {
             TokenKind::Keyword(Keyword::Match) => {
                 return Ok(Statement::Match(parser.parse_node()?));
             },
-            TokenKind::Keyword(Keyword::While) => {
-                return Ok(Statement::While(parser.parse_node()?));
+            TokenKind::Keyword(Keyword::Loop) => {
+                return Ok(Statement::Loop(parser.parse_node()?));
+            },
+            TokenKind::Keyword(Keyword::Break) => {
+                let keyword = parser.expect_token(Keyword::Break)?;
+                let semicolon = parser.expect_token(Punct::Semicolon)?;
+                return Ok(Statement::Break(keyword.span + semicolon.span));
+            },
+            TokenKind::Keyword(Keyword::Continue) => {
+                let keyword = parser.expect_token(Keyword::Continue)?;
+                let semicolon = parser.expect_token(Punct::Semicolon)?;
+                return Ok(Statement::Continue(keyword.span + semicolon.span));
             },
             TokenKind::Keyword(Keyword::Return) => {
                 return Ok(Statement::Return(parser.parse_node()?));
@@ -557,14 +590,54 @@ impl<'i> Parsable<'i> for If<'i> {
     }
 }
 
-impl<'i> Parsable<'i> for While<'i> {
+impl<'i> Parsable<'i> for Loop<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
-        let while_token = parser.expect_token(Keyword::While)?;
-        let condition = Expression::parse(parser)?;
-        let body = Block::parse(parser)?;
-        let span = while_token.span + body.span;
+        let loop_token = parser.expect_token(Keyword::Loop)?;
+        if matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::OpenBrace)) {
+            let body = Block::parse(parser)?;
+            let span = loop_token.span + body.span;
+            return Ok(Self { header: LoopHeader::Infinite, body, span });
+        }
 
-        Ok(While { condition, body, span })
+        let binding = match (parser.peek_nth(0), parser.peek_nth(1)) {
+            (Some(Ok(name)), Some(Ok(in_token)))
+                if matches!(name.kind, TokenKind::Identifier(_))
+                    && in_token.is_kind(Keyword::In) =>
+            {
+                let (name, span) = parser.expect_identifier()?;
+                parser.expect_token(Keyword::In)?;
+                Some(LoopBinding { name, span })
+            },
+            _ => None,
+        };
+
+        let start = Expression::parse(parser)?;
+        let header = match parser.peek() {
+            Some(Ok(token)) if token.is_kind(Punct::Range) || token.is_kind(Punct::RangeEq) => {
+                let inclusive = parser.consume_token(Punct::RangeEq)?;
+                if !inclusive {
+                    parser.expect_token(Punct::Range)?;
+                }
+                let end = Expression::parse(parser)?;
+                LoopHeader::Range { binding, start, end, inclusive }
+            },
+            Some(Ok(token)) => {
+                let binding = binding.ok_or_else(|| {
+                    let err = ParseErrorKind::Expected {
+                        expected: Punct::Range.into(),
+                        found: token.kind,
+                    };
+                    ParserError::new(err, token.span)
+                })?;
+                LoopHeader::Iterable { binding, iterable: start }
+            },
+            Some(Err(error)) => return Err(error.into()),
+            None => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, start.span())),
+        };
+        let body = Block::parse(parser)?;
+        let span = loop_token.span + body.span;
+
+        Ok(Self { header, body, span })
     }
 }
 
@@ -1483,7 +1556,8 @@ impl<'s> Statement<'s> {
             Self::Let(s) => s.span,
             Self::Return(s) => s.span,
             Self::If(s) => s.span,
-            Self::While(s) => s.span,
+            Self::Loop(s) => s.span,
+            Self::Break(span) | Self::Continue(span) => *span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
             Self::Match(m) => m.span,
