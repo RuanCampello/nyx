@@ -14,12 +14,6 @@ use crate::{
 };
 use std::collections::HashMap;
 
-struct PartialBlock {
-    id: BlockId,
-    instructions: Vec<Instruction>,
-    terminator: Option<Terminator>,
-}
-
 struct FunctionLower<'a, 'hir> {
     blocks: Vec<PartialBlock>,
     current: usize,
@@ -38,6 +32,7 @@ struct FunctionLower<'a, 'hir> {
     functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
     runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
+    loop_targets: Vec<LoopTargets>,
 }
 
 struct InlineContext<'a> {
@@ -47,6 +42,18 @@ struct InlineContext<'a> {
     local_symbols: IndexVec<LocalId, SymbolId>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
     typeck: &'a hir::TypeckResults,
+}
+
+struct PartialBlock {
+    id: BlockId,
+    instructions: Vec<Instruction>,
+    terminator: Option<Terminator>,
+}
+
+#[derive(Clone, Copy)]
+struct LoopTargets {
+    break_target: BlockId,
+    continue_target: BlockId,
 }
 
 pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
@@ -174,6 +181,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             functions_map,
             runtime_uses_map,
             inlined_return_target: None,
+            loop_targets: Vec::new(),
         };
 
         builder.new_block();
@@ -285,29 +293,14 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.switch_to(merge_id);
             },
 
-            Stmt::While { condition, body } => {
-                let header_id = self.new_block();
-                let body_id = self.new_block();
-                let exit_id = self.new_block();
-
-                self.terminate(Terminator::Jump(header_id));
-
-                self.switch_to(header_id);
-                let condition = self.lower_expr(condition)?;
-
-                self.terminate(Terminator::Branch {
-                    condition,
-                    then_block: body_id,
-                    else_block: exit_id,
-                });
-
-                self.switch_to(body_id);
-                self.lower_block(body)?;
-                if !self.is_terminated() {
-                    self.terminate(Terminator::Jump(header_id));
-                }
-
-                self.switch_to(exit_id);
+            Stmt::Loop { kind, body } => self.lower_loop(*kind, body)?,
+            Stmt::Break => {
+                let target = self.loop_targets.last().expect("break without an enclosing loop");
+                self.terminate(Terminator::Jump(target.break_target));
+            },
+            Stmt::Continue => {
+                let target = self.loop_targets.last().expect("continue without an enclosing loop");
+                self.terminate(Terminator::Jump(target.continue_target));
             },
 
             Stmt::Block(inner) => {
@@ -316,6 +309,252 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
 
         Ok(())
+    }
+
+    fn lower_loop(
+        &mut self,
+        kind: hir::LoopKind<'hir>,
+        body: &hir::Block<'hir>,
+    ) -> Result<(), MirError> {
+        match kind {
+            hir::LoopKind::Infinite => self.lower_infinite_loop(body),
+            hir::LoopKind::Range { binding, start, end, inclusive } => {
+                self.lower_range_loop(binding, start, end, inclusive, body)
+            },
+            hir::LoopKind::Iterable { binding, iterable } => {
+                self.lower_iterable_loop(binding, iterable, body)
+            },
+        }
+    }
+
+    fn lower_infinite_loop(&mut self, body: &hir::Block<'hir>) -> Result<(), MirError> {
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+
+        self.terminate(Terminator::Jump(header));
+        self.switch_to(header);
+        self.terminate(Terminator::Jump(body_block));
+
+        self.switch_to(body_block);
+        self.loop_targets
+            .push(LoopTargets { break_target: exit, continue_target: header });
+        self.lower_block(body)?;
+        self.loop_targets.pop();
+        if !self.is_terminated() {
+            self.terminate(Terminator::Jump(header));
+        }
+
+        self.switch_to(exit);
+        Ok(())
+    }
+
+    fn lower_range_loop(
+        &mut self,
+        binding: Option<LocalId>,
+        start: &Expression<'hir>,
+        end: &Expression<'hir>,
+        inclusive: bool,
+        body: &hir::Block<'hir>,
+    ) -> Result<(), MirError> {
+        let typ = self.typeck.type_of(start.id);
+        let counter = self.fresh_temporary(typ);
+        let start = self.lower_expr(start)?;
+        self.emit(counter, InstructionKind::Assign(start));
+
+        let end_place = self.fresh_temporary(typ);
+        let end = self.lower_expr(end)?;
+        self.emit(end_place, InstructionKind::Assign(end));
+
+        let ascending = self.fresh_temporary(TypeKind::Bool.into());
+        let direction = match inclusive {
+            true => BinaryOperator::LtEq,
+            false => BinaryOperator::Lt,
+        };
+        self.emit_binary(ascending, direction, Operand::Place(counter), Operand::Place(end_place));
+
+        let header = self.new_block();
+        let ascending_check = self.new_block();
+        let descending_check = self.new_block();
+        let body_block = self.new_block();
+        let step = self.new_block();
+        let ascending_step = self.new_block();
+        let descending_step = self.new_block();
+        let exit = self.new_block();
+
+        self.terminate(Terminator::Jump(header));
+
+        self.switch_to(header);
+        self.terminate(Terminator::Branch {
+            condition: Operand::Place(ascending),
+            then_block: ascending_check,
+            else_block: descending_check,
+        });
+
+        self.switch_to(ascending_check);
+        let comparison = match inclusive {
+            true => BinaryOperator::LtEq,
+            false => BinaryOperator::Lt,
+        };
+        let condition =
+            self.binary_temporary(comparison, Operand::Place(counter), Operand::Place(end_place));
+        self.terminate(Terminator::Branch { condition, then_block: body_block, else_block: exit });
+
+        self.switch_to(descending_check);
+        let comparison = match inclusive {
+            true => BinaryOperator::GtEq,
+            false => BinaryOperator::Gt,
+        };
+        let condition =
+            self.binary_temporary(comparison, Operand::Place(counter), Operand::Place(end_place));
+        self.terminate(Terminator::Branch { condition, then_block: body_block, else_block: exit });
+
+        self.switch_to(body_block);
+        if let Some(binding) = binding {
+            let destination = self.place_for_local(binding, typ);
+            self.emit(destination, InstructionKind::Assign(Operand::Place(counter)));
+        }
+        self.loop_targets
+            .push(LoopTargets { break_target: exit, continue_target: step });
+        self.lower_block(body)?;
+        self.loop_targets.pop();
+        if !self.is_terminated() {
+            self.terminate(Terminator::Jump(step));
+        }
+
+        self.switch_to(step);
+        self.terminate(Terminator::Branch {
+            condition: Operand::Place(ascending),
+            then_block: ascending_step,
+            else_block: descending_step,
+        });
+
+        self.switch_to(ascending_step);
+        self.lower_range_step(
+            counter,
+            end_place,
+            typ,
+            inclusive,
+            BinaryOperator::Add,
+            header,
+            exit,
+        );
+
+        self.switch_to(descending_step);
+        self.lower_range_step(
+            counter,
+            end_place,
+            typ,
+            inclusive,
+            BinaryOperator::Sub,
+            header,
+            exit,
+        );
+
+        self.switch_to(exit);
+        Ok(())
+    }
+
+    fn lower_range_step(
+        &mut self,
+        counter: Place,
+        end: Place,
+        typ: Type,
+        inclusive: bool,
+        operation: BinaryOperator,
+        header: BlockId,
+        exit: BlockId,
+    ) {
+        if inclusive {
+            let update = self.new_block();
+            let condition = self.binary_temporary(
+                BinaryOperator::Eq,
+                Operand::Place(counter),
+                Operand::Place(end),
+            );
+            self.terminate(Terminator::Branch { condition, then_block: exit, else_block: update });
+            self.switch_to(update);
+        }
+
+        self.emit_binary(
+            counter,
+            operation,
+            Operand::Place(counter),
+            Operand::Const(Const::Int(1, typ)),
+        );
+        self.terminate(Terminator::Jump(header));
+    }
+
+    fn lower_iterable_loop(
+        &mut self,
+        binding: LocalId,
+        iterable: &Expression<'hir>,
+        body: &hir::Block<'hir>,
+    ) -> Result<(), MirError> {
+        let iterable_type = self.typeck.type_of(iterable.id);
+        let (base, bound, element, stride) = self.index_operands(iterable, iterable_type)?;
+        let index_type = TypeKind::Uptr.into();
+        let index = self.fresh_temporary(index_type);
+        self.emit(index, InstructionKind::Assign(Operand::Const(Const::Int(0, index_type))));
+
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let step = self.new_block();
+        let exit = self.new_block();
+        self.terminate(Terminator::Jump(header));
+
+        self.switch_to(header);
+        let condition = self.binary_temporary(BinaryOperator::Lt, Operand::Place(index), bound);
+        self.terminate(Terminator::Branch { condition, then_block: body_block, else_block: exit });
+
+        self.switch_to(body_block);
+        let destination = self.place_for_local(binding, element);
+        self.emit(
+            destination,
+            InstructionKind::ElementLoad {
+                base,
+                index: Operand::Place(index),
+                bound,
+                stride,
+                typ: element,
+            },
+        );
+        self.loop_targets
+            .push(LoopTargets { break_target: exit, continue_target: step });
+        self.lower_block(body)?;
+        self.loop_targets.pop();
+        if !self.is_terminated() {
+            self.terminate(Terminator::Jump(step));
+        }
+
+        self.switch_to(step);
+        self.emit_binary(
+            index,
+            BinaryOperator::Add,
+            Operand::Place(index),
+            Operand::Const(Const::Int(1, index_type)),
+        );
+        self.terminate(Terminator::Jump(header));
+
+        self.switch_to(exit);
+        Ok(())
+    }
+
+    #[inline]
+    fn binary_temporary(
+        &mut self,
+        operation: BinaryOperator,
+        lhs: Operand,
+        rhs: Operand,
+    ) -> Operand {
+        let destination = self.fresh_temporary(TypeKind::Bool.into());
+        self.emit_binary(destination, operation, lhs, rhs);
+        Operand::Place(destination)
+    }
+
+    #[inline]
+    fn emit_binary(&mut self, dest: Place, operation: BinaryOperator, lhs: Operand, rhs: Operand) {
+        self.emit(dest, InstructionKind::Binary { operation, lhs, rhs, checked: false });
     }
 
     fn lower_expr(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
@@ -1462,10 +1701,25 @@ fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId,
                     visit_block_runtime_uses(else_block, uses);
                 }
             },
-            hir::Statement::While { condition, body } => {
-                visit_expr_runtime_uses(condition, uses);
+            hir::Statement::Loop { kind, body } => {
+                use hir::LoopKind::*;
+                match kind {
+                    Infinite => {},
+                    Range { binding, start, end, .. } => {
+                        if let Some(binding) = binding {
+                            uses[*binding] = true;
+                        }
+                        visit_expr_runtime_uses(start, uses);
+                        visit_expr_runtime_uses(end, uses);
+                    },
+                    Iterable { binding, iterable } => {
+                        uses[*binding] = true;
+                        visit_expr_runtime_uses(iterable, uses);
+                    },
+                }
                 visit_block_runtime_uses(body, uses);
             },
+            Statement::Break | Statement::Continue => {},
             Statement::Block(block) => visit_block_runtime_uses(block, uses),
         }
     }
