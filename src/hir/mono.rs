@@ -52,7 +52,6 @@ use crate::hir::{
     index_vec::IndexVec,
     lower::FunctionBuilder,
     scope::{FunctionSignature, Scope, receiver_param_type},
-    symbols::SymbolTable,
 };
 use crate::lexer::token::Span;
 use std::collections::HashMap;
@@ -71,7 +70,6 @@ struct Collector {
 pub(in crate::hir) fn monomorphise<'hir>(
     mut functions: IndexVec<FunctionId, Function<'hir>>,
     scope: &mut Scope<'hir>,
-    symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
 ) -> Result<IndexVec<FunctionId, Function<'hir>>, HirError<'hir>> {
     if scope.generic_fns.is_empty() {
@@ -89,7 +87,7 @@ pub(in crate::hir) fn monomorphise<'hir>(
             continue;
         }
 
-        let (id, function) = match specialise(&key, scope, symbols, arena) {
+        let (id, function) = match specialise(&key, scope, arena) {
             Ok(instance) => instance,
             Err(error) => {
                 // a failed specialisation keeps its call sites pointed at the open
@@ -117,7 +115,6 @@ pub(in crate::hir) fn monomorphise<'hir>(
 /// inside template bodies that no concrete instantiation ever demands
 pub(in crate::hir) fn analyse_templates<'hir>(
     scope: &mut Scope<'hir>,
-    symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
 ) -> Vec<Function<'hir>> {
     let adts: Vec<(String, usize, Span)> = scope
@@ -133,7 +130,7 @@ pub(in crate::hir) fn analyse_templates<'hir>(
         .collect();
 
     for (name, arity, span) in adts {
-        let Ok(typ) = scope.instantiate_generic(&name, &identity_args(arity), span, symbols) else {
+        let Ok(typ) = scope.instantiate_generic(&name, &identity_args(arity), span) else {
             continue;
         };
 
@@ -155,7 +152,7 @@ pub(in crate::hir) fn analyse_templates<'hir>(
     let mut lowered = Vec::new();
     for id in templates {
         let arity = scope.generic_fns[&id].generics.len();
-        if let Ok((_, function)) = specialise(&(id, identity_args(arity)), scope, symbols, arena) {
+        if let Ok((_, function)) = specialise(&(id, identity_args(arity)), scope, arena) {
             lowered.push(function);
         }
     }
@@ -215,7 +212,6 @@ impl Collector {
 fn specialise<'hir>(
     key: &InstanceKey,
     scope: &mut Scope<'hir>,
-    symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
 ) -> Result<(FunctionId, Function<'hir>), HirError<'hir>> {
     let (template_id, args) = key;
@@ -223,12 +219,12 @@ fn specialise<'hir>(
     let template = scope.generic_fns[template_id].clone();
     let open = &scope.signatures[*template_id];
 
-    let base = symbols.get(open.name).to_string();
+    let base = scope.symbols.get(open.name).to_string();
     let kind = open.kind;
     let is_const = open.is_const;
 
-    let mangled = scope.mangle_generic(&base, args, symbols);
-    let name = symbols.insert(&mangled);
+    let mangled = scope.mangle_generic(&base, args);
+    let name = scope.symbols.insert(&mangled);
 
     let mut env = scope.generic_fn_envs.get(template_id).cloned().unwrap_or_default();
     env.extend(
@@ -248,13 +244,9 @@ fn specialise<'hir>(
     if let (Some(receiver), Some(receiver_type)) = (template.receiver, receiver_type) {
         params.push(receiver_param_type(receiver_type, receiver.mutable));
     }
-    params.extend(scope.resolve_params(&template.params, symbols, receiver_type, Some(&env))?);
-    let return_type = scope.resolve_return_type(
-        template.return_type.as_ref(),
-        symbols,
-        receiver_type,
-        Some(&env),
-    )?;
+    params.extend(scope.resolve_params(&template.params, receiver_type, Some(&env))?);
+    let return_type =
+        scope.resolve_return_type(template.return_type.as_ref(), receiver_type, Some(&env))?;
 
     let id = scope.push_signature(FunctionSignature { name, params, return_type, kind, is_const });
     if matches!(kind, FunctionKind::Free) {
@@ -263,8 +255,8 @@ fn specialise<'hir>(
 
     // Generic templates currently do not record their origin module, so std-only
     // lowering rules such as `syscall` must stay out of generic templates.
-    let function =
-        FunctionBuilder::new_instance(scope, symbols, id, &template, false, arena, env).lower()?;
+    scope.in_std = false;
+    let function = FunctionBuilder::new_instance(scope, id, &template, arena, env).lower()?;
 
     Ok((id, function))
 }

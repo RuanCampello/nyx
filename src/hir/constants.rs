@@ -49,15 +49,13 @@ struct Dfs<'a, 'hir, 'd, 's> {
 pub(in crate::hir) fn extend<'hir, 'd, 's>(
     scope: &mut Scope<'hir>,
     declarations: &Declarations<'d, 's>,
-    symbols: &mut SymbolTable,
-    in_std: bool,
     arena: &'hir bumpalo::Bump,
 ) -> Result<(), HirError<'hir>>
 where
     's: 'hir,
 {
-    let decls = collect(scope, declarations, symbols)?;
-    let sorted = match topo_sort(&decls, &scope.mangler, symbols, arena) {
+    let decls = collect(scope, declarations)?;
+    let sorted = match topo_sort(&decls, &scope.mangler, &scope.symbols, arena) {
         Ok(sorted) => sorted,
         // a dependency cycle leaves no usable order, skip the whole batch
         Err(error) => return scope.soft(error),
@@ -65,15 +63,15 @@ where
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
-        let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
-        let ctx = type_resolver::ResolveCtx::root(symbols, structs, enums, arrays);
-        let expected_type =
+        let resolved = {
+            let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
+            let ctx = type_resolver::ResolveCtx::root(&scope.symbols, structs, enums, arrays);
             type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())
-                .or_else(|error| scope.poison(error))?;
+        };
+        let expected_type = resolved.or_else(|error| scope.poison(error))?;
 
         let (value, typeck) =
-            match lower::lower_const(scope, symbols, &decl.ast.value, expected_type, in_std, arena)
-            {
+            match lower::lower_const(scope, &decl.ast.value, expected_type, arena) {
                 Ok(lowered) => lowered,
                 Err(error) => {
                     scope.soft(error)?;
@@ -81,17 +79,15 @@ where
                 },
             };
 
-        scope.constants.insert(
-            symbol_id,
-            Constant {
-                name: symbol_id,
-                typ: expected_type,
-                typeck,
-                value,
-                is_pub: decl.ast.is_pub,
-                decl_span: decl.ast.span,
-            },
-        );
+        let constant = arena.alloc(Constant {
+            name: symbol_id,
+            typ: expected_type,
+            typeck,
+            value,
+            is_pub: decl.ast.is_pub,
+            decl_span: decl.ast.span,
+        });
+        scope.constants.insert(symbol_id, constant);
     }
 
     Ok(())
@@ -100,7 +96,6 @@ where
 fn collect<'hir, 'd, 's>(
     scope: &mut Scope<'hir>,
     declarations: &Declarations<'d, 's>,
-    symbols: &mut SymbolTable,
 ) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'hir>>
 where
     's: 'hir,
@@ -108,7 +103,7 @@ where
     let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
 
     for c in &declarations.constants {
-        let symbol_id = symbols.insert(&scope.mangler.item(c.name));
+        let symbol_id = scope.symbols.insert(&scope.mangler.item(c.name));
         if decls.contains_key(&symbol_id) {
             scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name }))?;
             continue;
@@ -118,7 +113,7 @@ where
 
     for imp in &declarations.impls {
         for c in &imp.constants {
-            let symbol_id = symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
+            let symbol_id = scope.symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
             if decls.contains_key(&symbol_id) {
                 let name = qualified(scope.arena, imp.name, c.name);
                 scope.soft(hir_error!(c.span, DuplicateConstant { name }))?;

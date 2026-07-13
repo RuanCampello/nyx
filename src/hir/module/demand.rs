@@ -1,6 +1,6 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
-    hir::{self, Declarations, FunctionId, SymbolTable, index_vec::IndexVec, scope::Scope},
+    hir::{self, Declarations, FunctionId, index_vec::IndexVec, scope::Scope},
     parser::{
         expression::{BinaryOperator, Expression},
         statement::Function,
@@ -16,7 +16,6 @@ pub(super) struct DemandSet {
 
 struct ReachabilityVisitor<'a, 'hir> {
     scope: &'a Scope<'hir>,
-    symbols: &'a SymbolTable,
     found: &'a mut Vec<FunctionId>,
 }
 
@@ -25,23 +24,18 @@ pub(super) fn lower_reachable<'hir, 'src>(
     declarations: &[Declarations<'_, 'src>],
     order: &[usize],
     scope: &mut Scope<'hir>,
-    symbols: &mut SymbolTable,
     arena: &'hir bumpalo::Bump,
 ) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError>
 where
     'src: 'hir,
 {
-    let demand = build_demand(graph, declarations, order, scope, symbols)?;
+    let demand = build_demand(graph, declarations, order, scope)?;
     let mut functions = IndexVec::new();
 
     for &idx in order {
-        let mut lowered = scope.lower_matching_functions(
-            &declarations[idx],
-            symbols,
-            graph.nodes[idx].in_std,
-            |id| demand.contains(id),
-            arena,
-        )?;
+        scope.in_std = graph.nodes[idx].in_std;
+        let mut lowered =
+            scope.lower_matching_functions(&declarations[idx], |id| demand.contains(id), arena)?;
 
         functions.append(&mut lowered);
     }
@@ -54,10 +48,9 @@ fn build_demand<'hir, 'src>(
     declarations: &[Declarations<'_, 'src>],
     order: &[usize],
     scope: &Scope<'hir>,
-    symbols: &mut SymbolTable,
 ) -> Result<DemandSet, ModuleError> {
-    let function_map = collect_functions(graph, declarations, order, scope, symbols)?;
-    let main = scope.resolve_function(symbols, |m| m.item("main"));
+    let function_map = collect_functions(graph, declarations, order, scope)?;
+    let main = scope.resolve_function(|m| m.item("main"));
 
     let mut demand = DemandSet::default();
     let mut stack = Vec::new();
@@ -85,7 +78,7 @@ fn build_demand<'hir, 'src>(
         };
 
         let mut found = Vec::new();
-        let mut visitor = ReachabilityVisitor { scope, symbols, found: &mut found };
+        let mut visitor = ReachabilityVisitor { scope, found: &mut found };
         visitor.visit_block(&function.body);
 
         for callee in found {
@@ -105,7 +98,6 @@ fn collect_functions<'hir, 'src>(
     declarations: &[Declarations<'_, 'src>],
     order: &[usize],
     scope: &Scope<'hir>,
-    symbols: &SymbolTable,
 ) -> Result<HashMap<FunctionId, (Function<'src>, bool)>, ModuleError> {
     let mut functions = HashMap::new();
     let entry = order.last().copied();
@@ -114,7 +106,7 @@ fn collect_functions<'hir, 'src>(
         let in_project = !graph.nodes[idx].in_std || entry == Some(idx);
 
         for function in declarations[idx].functions() {
-            if let Some(id) = lookup_declaration_id(function, scope, symbols) {
+            if let Some(id) = lookup_declaration_id(function, scope) {
                 functions.insert(id, (function.clone(), in_project));
             }
         }
@@ -123,30 +115,22 @@ fn collect_functions<'hir, 'src>(
     Ok(functions)
 }
 
-fn lookup_declaration_id(
-    function: &Function<'_>,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-) -> Option<FunctionId> {
+fn lookup_declaration_id(function: &Function<'_>, scope: &Scope<'_>) -> Option<FunctionId> {
     match function.impl_type {
-        Some(impl_type) => match find_interface_for_method(function, scope, symbols) {
-            Some(interface) => scope.resolve_function(symbols, |m| {
-                m.interface_item(impl_type, &interface, function.name)
-            }),
-            None => scope.resolve_function(symbols, |m| m.scoped_item(impl_type, function.name)),
+        Some(impl_type) => match find_interface_for_method(function, scope) {
+            Some(interface) => {
+                scope.resolve_function(|m| m.interface_item(impl_type, &interface, function.name))
+            },
+            _ => scope.resolve_function(|m| m.scoped_item(impl_type, function.name)),
         },
-        None => scope.resolve_function(symbols, |m| m.item(function.name)),
+        _ => scope.resolve_function(|m| m.item(function.name)),
     }
 }
 
-fn find_interface_for_method(
-    function: &Function<'_>,
-    scope: &Scope<'_>,
-    symbols: &SymbolTable,
-) -> Option<String> {
+fn find_interface_for_method(function: &Function<'_>, scope: &Scope<'_>) -> Option<String> {
     let impl_type = function.impl_type?;
-    let receiver_type = scope.lookup_named_type(impl_type, symbols)?;
-    let method_name = symbols.get_id(function.name)?;
+    let receiver_type = scope.lookup_named_type(impl_type)?;
+    let method_name = scope.symbols.get_id(function.name)?;
 
     scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
         |&(_, interface_sym)| {
@@ -155,7 +139,7 @@ fn find_interface_for_method(
                 .methods
                 .iter()
                 .any(|method| method.name == method_name)
-                .then(|| symbols.get(interface_sym).to_string())
+                .then(|| scope.symbols.get(interface_sym).to_string())
         },
     )
 }
@@ -176,8 +160,7 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
             Expression::Call { callee, args, .. } => {
                 match callee.as_ref() {
                     Expression::Identifier(name, _) => {
-                        if let Some(id) = self.scope.resolve_function_call(None, name, self.symbols)
-                        {
+                        if let Some(id) = self.scope.resolve_function_call(None, name) {
                             self.found.push(id);
                         }
                     },
@@ -191,9 +174,7 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                 }
             },
             Expression::QualifiedCall { qualifier, name, args, .. } => {
-                if let Some(id) =
-                    self.scope.resolve_function_call(Some(qualifier), name, self.symbols)
-                {
+                if let Some(id) = self.scope.resolve_function_call(Some(qualifier), name) {
                     self.found.push(id);
                 }
                 for arg in args {
@@ -202,7 +183,7 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
             },
             Expression::TypeIntrinsic { kind, qualifier, .. } => {
                 let name = kind.into();
-                if let Some(id) = self.scope.resolve_function_call(*qualifier, name, self.symbols) {
+                if let Some(id) = self.scope.resolve_function_call(*qualifier, name) {
                     self.found.push(id);
                 }
             },

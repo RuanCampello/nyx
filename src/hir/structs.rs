@@ -121,7 +121,7 @@ pub(in crate::hir) fn compute_layouts(
 }
 
 /// size and alignment of any runtime type, reading the cached nominal layouts
-pub(crate) fn type_layout(
+pub fn type_layout(
     typ: Type,
     structs: &IndexVec<StructId, Struct>,
     enums: &IndexVec<EnumId, Enum>,
