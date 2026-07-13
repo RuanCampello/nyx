@@ -345,6 +345,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(Operand::Place(self.place_for_local(*local_id, typ)))
             },
 
+            // the constant's value tree lives in its own ExprId space, so its
+            // typeck is swapped in for the duration of the subtree
+            ExpressionKind::Const(constant) => {
+                let outer = std::mem::replace(&mut self.typeck, &constant.typeck);
+                let value = self.lower_expr(constant.value);
+                self.typeck = outer;
+                value
+            },
+
             ExpressionKind::Cast { from, to } => {
                 let from = *from;
                 let to = *to;
@@ -1465,6 +1474,9 @@ fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId,
 fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
     match &expr.kind {
         ExpressionKind::Local(id) => uses[*id] = true,
+        // a constant's tree has its own local space, nothing here can
+        // reference the enclosing body's locals
+        ExpressionKind::Const(_) => {},
         ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
         ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(from, uses),
         ExpressionKind::Binary { left, right, .. } => {

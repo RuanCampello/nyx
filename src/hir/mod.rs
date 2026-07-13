@@ -69,7 +69,7 @@ pub struct Struct {
     pub fields: Vec<StructField>,
     pub(in crate::hir) repr: StructRepr,
     /// Cached byte layout, filled once every nominal type is collected
-    pub(in crate::hir) layout: Layout,
+    pub layout: Layout,
     /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
     /// Populated only on open (identity) template instances, for display
     pub generics: Vec<SymbolId>,
@@ -219,7 +219,7 @@ pub struct Parameter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Local {
-    pub(in crate::hir) id: LocalId,
+    pub id: LocalId,
     pub name: SymbolId,
     pub typ: Type,
     pub decl_span: Span,
