@@ -4,3 +4,18 @@ pub const fn size_of() {}
 pub const fn align_of() {}
 
 pub interface Copy: Clone {}
+
+impl i8 with Copy {}
+impl u8 with Copy {}
+impl i16 with Copy {}
+impl u16 with Copy {}
+impl i32 with Copy {}
+impl u32 with Copy {}
+impl i64 with Copy {}
+impl u64 with Copy {}
+impl iptr with Copy {}
+impl uptr with Copy {}
+impl f32 with Copy {}
+impl f64 with Copy {}
+impl bool with Copy {}
+impl char with Copy {}

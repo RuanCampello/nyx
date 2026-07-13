@@ -18,10 +18,8 @@ impl [T] {
     }
 
     pub fn fill(&mut self, value: T) {
-        let mut i: uptr = 0;
-        while i < self.len() {
+        loop i in 0..self.len() {
             self[i] = value;
-            i = i + 1;
         }
     }
 
