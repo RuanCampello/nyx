@@ -89,6 +89,7 @@ Inspiration and architectural references for the Nyx compiler and standard libra
 - [rustc IR guide](https://rustc-dev-guide.rust-lang.org/part-3-intro.html) - Documentation on different levels to represent a rust source code before code generation
 - [rustc architecture overview](https://rustc-dev-guide.rust-lang.org/overview.html) - Overhaul processing of rust compiler pipeline
 - [rustc niche optimisations](https://www.0xatticus.com/posts/understanding_rust_niche/) - Blog post on specific optimisations of some rust's types
+- [rust ranges](https://kaylynn.gay/blog/post/rust_ranges_and_suffering) - Blog post critique over rust `Range` type take in consideration when implementing Nyx's ranges
 
 ### Algorithms
 
