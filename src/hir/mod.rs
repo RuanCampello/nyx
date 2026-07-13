@@ -136,11 +136,30 @@ pub enum Statement<'hir> {
         then_block: Block<'hir>,
         else_block: Option<Block<'hir>>,
     },
-    While {
-        condition: &'hir Expression<'hir>,
+    Loop {
+        kind: LoopKind<'hir>,
         body: Block<'hir>,
     },
+    Break,
+    Continue,
     Block(Block<'hir>),
+}
+
+/// resolved loop [header](crate::parser::statement::LoopHeader)
+/// with the respective indexes
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoopKind<'hir> {
+    Infinite,
+    Range {
+        binding: Option<LocalId>,
+        start: &'hir Expression<'hir>,
+        end: &'hir Expression<'hir>,
+        inclusive: bool,
+    },
+    Iterable {
+        binding: LocalId,
+        iterable: &'hir Expression<'hir>,
+    },
 }
 
 /// An expression node in the read-only HIR database
@@ -745,13 +764,12 @@ mod tests {
     }
 
     #[test]
-    fn while_condition_must_be_bool() {
+    fn range_endpoints_must_be_integers() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new(
             r#"
             fn main() {
-                let x: i32 = 1;
-                while x { }
+                loop 1.0..2.0 { }
             }
         "#,
         )
@@ -759,13 +777,16 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Bool.into(),
-                found: TypeKind::I32.into()
-            }
-        )
+        assert_eq!(err.kind, HirErrorKind::InvalidRangeType { typ: TypeKind::F64.into() })
+    }
+
+    #[test]
+    fn loop_control_requires_a_loop() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn main() { break; }").parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+
+        assert_eq!(err.kind, HirErrorKind::LoopControlOutsideLoop { kind: "break" });
     }
 
     #[test]
@@ -1165,15 +1186,13 @@ mod tests {
     }
 
     #[test]
-    fn uptr_while_comparison() {
+    fn uptr_range() {
         let arena = bumpalo::Bump::new();
         let src = r#"
             fn triangle(limit: uptr): uptr {
                 let mut acc: uptr = 0;
-                let mut i: uptr = 1;
-                while i <= limit {
+                loop i in 1..=limit {
                     acc = acc + i;
-                    i = i + 1;
                 }
                 acc
             }

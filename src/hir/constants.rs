@@ -70,14 +70,14 @@ where
         };
         let expected_type = resolved.or_else(|error| scope.poison(error))?;
 
-        let (value, typeck) =
-            match lower::lower_const(scope, &decl.ast.value, expected_type, arena) {
-                Ok(lowered) => lowered,
-                Err(error) => {
-                    scope.soft(error)?;
-                    continue;
-                },
-            };
+        let (value, typeck) = match lower::lower_const(scope, &decl.ast.value, expected_type, arena)
+        {
+            Ok(lowered) => lowered,
+            Err(error) => {
+                scope.soft(error)?;
+                continue;
+            },
+        };
 
         let constant = arena.alloc(Constant {
             name: symbol_id,

@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
-        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
-        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        Intrinsic, Literal, Local, LocalId, LoopKind, Parameter, Pattern, PatternKind, RefTarget,
+        Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
@@ -45,6 +45,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     /// when lowering a constant initialiser, the names of the enclosing
     /// function's locals, referencing one is an error, not a resolution
     outer_const_locals: HashSet<SymbolId>,
+    loop_depth: u32,
 }
 
 /// A freshly lowered expression
@@ -68,9 +69,7 @@ where
         function: &'f statement::Function<'src>,
         arena: &'hir bumpalo::Bump,
     ) -> Self {
-        let self_type = function
-            .impl_type
-            .and_then(|impl_type| scope.lookup_named_type(impl_type));
+        let self_type = function.impl_type.and_then(|impl_type| scope.lookup_named_type(impl_type));
 
         let mut builder = Self::raw(scope, arena);
         builder.is_const = function.is_const;
@@ -114,6 +113,7 @@ where
             generic_env: HashMap::new(),
             body_constants: HashMap::new(),
             outer_const_locals: HashSet::new(),
+            loop_depth: 0,
         }
     }
 
@@ -165,10 +165,7 @@ where
         if !returns && signature.return_type.kind() != TypeKind::Unit {
             let name = self.arena.alloc_str(self.scope.symbols.get(symbol));
             let span = function.return_type.as_ref().map_or(function.span, Spanned::span);
-            self.soft(hir_error!(
-                span,
-                MissingReturn { name, expected: signature.return_type }
-            ))?;
+            self.soft(hir_error!(span, MissingReturn { name, expected: signature.return_type }))?;
         }
 
         self.resolve_inference();
@@ -289,14 +286,20 @@ where
 
             Stmt::If(statement) => self.lower_if(statement, is_tail),
 
-            Stmt::While(statement) => {
-                let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(TypeKind::Bool, condition.typ, statement.span)?;
-
-                // PERFORMANCE: remove loops with constant false conditions
-                let (body, _) = self.lower_block(&statement.body, false)?;
-
-                Ok((Statement::While { condition: condition.expr, body }, false))
+            Stmt::Loop(statement) => self.lower_loop(statement),
+            Stmt::Break(span) => {
+                if self.loop_depth == 0 {
+                    let err = hir_error!(*span, LoopControlOutsideLoop { kind: "break" });
+                    return Err(err);
+                }
+                Ok((Statement::Break, false))
+            },
+            Stmt::Continue(span) => {
+                if self.loop_depth == 0 {
+                    let err = hir_error!(*span, LoopControlOutsideLoop { kind: "continue" });
+                    return Err(err);
+                }
+                Ok((Statement::Continue, false))
             },
             Stmt::Expr(expr, _) => {
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
@@ -319,6 +322,107 @@ where
             Stmt::Item(statement::Item { kind, .. }) => {
                 Err(hir_error!(kind.span(), NestedItem { kind: kind.keyword() }))
             },
+        }
+    }
+
+    fn lower_loop(
+        &mut self,
+        statement: &statement::Loop<'src>,
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
+        use statement::LoopHeader;
+
+        let (kind, body) = match &statement.header {
+            LoopHeader::Infinite => {
+                let body = self.lower_loop_body(&statement.body)?;
+                (LoopKind::Infinite, body)
+            },
+            LoopHeader::Range { binding, start, end, inclusive } => {
+                let start = self.lower_expr(start, None)?;
+                let end = self.lower_expr(end, Some(start.typ))?;
+                self.assert_type(start.typ, end.typ, end.span)?;
+                let typ = self.infer.resolve_shallow(start.typ);
+                if !typ.is_integer() && !typ.is_infer() {
+                    return Err(hir_error!(start.span, InvalidRangeType { typ }));
+                }
+
+                self.push_scope();
+                let binding = binding
+                    .map(|binding| {
+                        let symbol = self.scope.symbols.insert(binding.name);
+                        self.declare_local(symbol, typ, false, binding.span)
+                    })
+                    .transpose()?;
+                let body = self.lower_loop_body(&statement.body);
+                self.pop_scope();
+
+                (
+                    LoopKind::Range {
+                        binding,
+                        start: start.expr,
+                        end: end.expr,
+                        inclusive: *inclusive,
+                    },
+                    body?,
+                )
+            },
+            LoopHeader::Iterable { binding, iterable } => {
+                let iterable = self.lower_expr(iterable, None)?;
+                let element = match iterable.typ.kind() {
+                    TypeKind::Array(id) => self.scope.arrays.get(id).element,
+                    TypeKind::Slice { element, .. } => element.into(),
+                    _ => return Err(hir_error!(iterable.span, NotIterable { typ: iterable.typ })),
+                };
+                if !self.is_copy_type(element) {
+                    return Err(hir_error!(binding.span, NonCopyLoopItem { typ: element }));
+                }
+
+                self.push_scope();
+                let symbol = self.scope.symbols.insert(binding.name);
+                let binding = self.declare_local(symbol, element, false, binding.span)?;
+                let body = self.lower_loop_body(&statement.body);
+                self.pop_scope();
+
+                (LoopKind::Iterable { binding, iterable: iterable.expr }, body?)
+            },
+        };
+
+        Ok((Statement::Loop { kind, body }, false))
+    }
+
+    #[inline]
+    fn lower_loop_body(
+        &mut self,
+        body: &statement::Block<'src>,
+    ) -> Result<Block<'hir>, HirError<'hir>> {
+        self.loop_depth += 1;
+        let body = self.lower_block(body, false).map(|(body, _)| body);
+        self.loop_depth -= 1;
+        body
+    }
+
+    #[inline(always)]
+    fn is_copy_type(&self, typ: Type) -> bool {
+        match typ.kind() {
+            TypeKind::I8
+            | TypeKind::U8
+            | TypeKind::I16
+            | TypeKind::U16
+            | TypeKind::I32
+            | TypeKind::U32
+            | TypeKind::I64
+            | TypeKind::U64
+            | TypeKind::F32
+            | TypeKind::F64
+            | TypeKind::Bool
+            | TypeKind::Uptr
+            | TypeKind::Iptr
+            | TypeKind::Char
+            | TypeKind::Ref { .. } => true,
+            _ => self
+                .scope
+                .symbols
+                .get_id("Copy")
+                .is_some_and(|copy| self.scope.interface_impls.contains(&(typ, copy))),
         }
     }
 
@@ -345,8 +449,7 @@ where
         let siblings = self.body_constants.clone();
 
         let (value, typeck) = {
-            let mut builder =
-                FunctionBuilder::new_for_const(self.scope, self.arena);
+            let mut builder = FunctionBuilder::new_for_const(self.scope, self.arena);
             builder.outer_const_locals = outer_locals;
             builder.body_constants = siblings;
 
@@ -359,7 +462,8 @@ where
 
         let decl_span = constant.span;
         let constant =
-            self.arena.alloc(Constant { name, typ, value, typeck, is_pub: false, decl_span });
+            self.arena
+                .alloc(Constant { name, typ, value, typeck, is_pub: false, decl_span });
         self.body_constants.insert(name, constant);
 
         Ok(())
@@ -747,7 +851,9 @@ where
                         }
 
                         let type_name = match receiver.kind() {
-                            TypeKind::Struct(sid) => self.scope.symbols.get(self[sid].name).to_string(),
+                            TypeKind::Struct(sid) => {
+                                self.scope.symbols.get(self[sid].name).to_string()
+                            },
                             TypeKind::Enum(id) => self
                                 .scope
                                 .enums
@@ -811,7 +917,8 @@ where
                                 _ => span,
                             };
 
-                            let name = self.arena.alloc_str(self.scope.symbols.get(self[local].name));
+                            let name =
+                                self.arena.alloc_str(self.scope.symbols.get(self[local].name));
                             return Err(hir_error!(*err_span, ImmutableBind { name }));
                         }
                     },
@@ -838,8 +945,7 @@ where
                     if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
                         self.check_bounds(&template.generics, &resolved, *span)?;
                     }
-                    let typ =
-                        self.scope.instantiate_generic(name, &resolved, *span)?;
+                    let typ = self.scope.instantiate_generic(name, &resolved, *span)?;
                     match typ.kind() {
                         TypeKind::Struct(id) => id,
                         _ => return Err(hir_error!(*span, UnknownType { name })),
@@ -1145,10 +1251,8 @@ where
                     return Ok(lowered);
                 }
 
-                let id = self
-                    .scope
-                    .resolve_function_call(Some(qualifier), name)
-                    .ok_or_else(|| {
+                let id =
+                    self.scope.resolve_function_call(Some(qualifier), name).ok_or_else(|| {
                         let name = qualified(self.arena, qualifier, name);
                         hir_error!(*span, UnknownFunction { name })
                     })?;
@@ -1161,8 +1265,7 @@ where
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
                 let name: &str = kind.into();
-                let exists =
-                    self.scope.resolve_function_call(*qualifier, name).is_some();
+                let exists = self.scope.resolve_function_call(*qualifier, name).is_some();
 
                 if !exists {
                     let name = qualifier.map_or(name, |q| qualified(self.arena, q, name));
@@ -1269,8 +1372,10 @@ where
                     let id = self.enum_type(scrutinee_type, span)?;
                     let enum_def = &self.scope[id];
 
-                    if let Some(idx) =
-                        enum_def.variants.iter().position(|v| self.scope.symbols.get(v.name) == *name)
+                    if let Some(idx) = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| self.scope.symbols.get(v.name) == *name)
                     {
                         let variant = enum_def.variants[idx];
                         if variant.payload.is_some() {
