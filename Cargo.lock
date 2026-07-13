@@ -720,6 +720,7 @@ dependencies = [
 name = "nyx-lsp"
 version = "0.2.1"
 dependencies = [
+ "bumpalo",
  "expect-test",
  "nyx",
  "serde_json",
