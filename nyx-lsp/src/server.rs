@@ -1,11 +1,11 @@
 //! The Nyx language server: state, request handlers, and the debounced,
 //! cancellable analysis pipeline
 
+use crate::analysis::{SemanticAnalysis, SymbolKind};
 use crate::convert::{self, Encoding};
 use crate::document::{self, Documents};
 use crate::feature::diagnostics::{self, DEBOUNCE};
 use crate::feature::{highlight, tokens};
-use nyx::{SemanticAnalysis, SymbolKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
