@@ -674,6 +674,46 @@ mod tests {
     }
 
     #[test]
+    fn missing_return() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn answer(): i32 {}").parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::MissingReturn { name: "nyx::answer", expected: TypeKind::I32.into() }
+        );
+
+        let statements = Parser::new(
+            r#"
+            fn sign(x: i32): i32 {
+                if x < 0 {
+                    return -1;
+                }
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::MissingReturn { .. }));
+
+        let statements = Parser::new(
+            r#"
+            fn sign(x: i32): i32 {
+                if x < 0 {
+                    return -1;
+                }
+
+                1
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        assert!(super::lower(statements, &arena).is_ok());
+    }
+
+    #[test]
     fn mutability() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new(

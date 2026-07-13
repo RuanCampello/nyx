@@ -167,6 +167,13 @@ pub enum HirErrorKind<'h> {
     TypeMismatch { expected: Type, found: Type },
 
     #[diagnostic(
+        message = "function {name!} must return {expected!}, but its body can complete without returning a value",
+        primary = "{expected!} is declared here",
+        help = "return {expected!} from every path, or end the body with an expression of type {expected!}"
+    )]
+    MissingReturn { name: &'h str, expected: Type },
+
+    #[diagnostic(
         message = "cannot assign to immutable binding {name!}",
         primary = "{name!} is immutable and cannot be reassigned",
         note = "bindings are immutable by default",
