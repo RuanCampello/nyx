@@ -4,7 +4,7 @@
 // by using a function that represents the sorted sequence: seq(i) = i * 3.
 // finds the index where seq(index) == target, or -1 if not found.
 //
-// demonstrates: while, if/else if/else, multiple locals, bool variables.
+// demonstrates: loop/break, if/else if/else, multiple locals, bool variables.
 //
 // exit code: binary_search(0, 99, 33) = 11  (because 11 * 3 = 33)
 
@@ -18,7 +18,8 @@ fn binary_search(lo: i32, hi: i32, target: i32): i32 {
     let mut result: i32 = -1;
     let mut found: bool = false;
 
-    while left <= right && !found {
+    loop {
+        if !(left <= right && !found) { break; }
         let mid = left + (right - left) / 2;
         let val = seq(mid);
 

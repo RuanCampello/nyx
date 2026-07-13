@@ -15,7 +15,8 @@ fn is_prime(n: i32): bool {
     let mut i: i32 = 2;
     let mut prime: bool = true;
 
-    while i * i <= n && prime {
+    loop {
+        if !(i * i <= n && prime) { break; }
         if modulo(n, i) == 0 {
             prime = false;
         }
@@ -30,7 +31,8 @@ fn nth_prime(target: i32): i32 {
     let mut current: i32 = 2;
     let mut last_prime: i32 = 2;
     
-    while count < target {
+    loop {
+        if count >= target { break; }
         if is_prime(current) {
             count = count + 1;
             last_prime = current;

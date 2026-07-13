@@ -1,0 +1,33 @@
+fn main(): i32 {
+    let mut total = 0;
+    loop value in 0..10 {
+        total = total + value;
+    }
+
+    loop value in 10..=0 {
+        total = total + value;
+    }
+
+    let mut runs = 0;
+    loop 0..5 {
+        runs = runs + 1;
+    }
+
+    let values: [i32; 3] = [2, 3, 5];
+    loop value in values {
+        total = total + value;
+    }
+
+    loop value in 0..10 {
+        if value == 3 { continue; }
+        if value == 7 { break; }
+        total = total + value;
+    }
+
+    loop {
+        total = total + 1;
+        break;
+    }
+
+    total + runs
+}

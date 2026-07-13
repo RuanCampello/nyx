@@ -83,6 +83,11 @@ const CASES: &[Case] = &[
         exit_code: Some(77),
     },
     Case {
+        name: "loops",
+        file: "tests/single/loops.nyx",
+        exit_code: Some(134),
+    },
+    Case {
         name: "basic_struct",
         file: "tests/single/basic_struct.nyx",
         exit_code: Some(0),

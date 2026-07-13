@@ -7,11 +7,11 @@
 // inference that unifies index variables to `usize`).
 
 fn bubble_sort(arr: &mut [i32]) {
-    let mut i = 0;
-    while i < arr.len() {
+    loop i in 0..arr.len() {
         let mut j = 0;
         // `j + i + 1 < len` avoids the unsigned underflow of `len - i - 1`
-        while j + i + 1 < arr.len() {
+        loop {
+            if !(j + i + 1 < arr.len()) { break; }
             if arr[j] > arr[j + 1] {
                 let temp: i32 = arr[j];
                 arr[j] = arr[j + 1];
@@ -19,7 +19,6 @@ fn bubble_sort(arr: &mut [i32]) {
             }
             j = j + 1;
         }
-        i = i + 1;
     }
 }
 
@@ -27,7 +26,8 @@ fn binary_search(arr: &[i32], target: i32): i32 {
     let mut left: uptr = 0;
     let mut right: uptr = arr.len();
 
-    while left < right {
+    loop {
+        if !(left < right) { break; }
         let mid: uptr = left + (right - left) / 2;
         let val: i32 = arr[mid];
 
@@ -43,10 +43,8 @@ fn main(): i32 {
     let mut data: [i32; 15] = [0; 15];
 
     // fill in descending order so the sort has real work to do
-    let mut idx = 0;
-    while idx < 15 {
+    loop idx in 0..15 {
         data[idx] = 14 - (idx as i32);
-        idx = idx + 1;
     }
 
     bubble_sort(&mut data);
