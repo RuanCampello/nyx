@@ -426,7 +426,8 @@ mod tests {
             fn sort(s: &mut [i32]) {
                 let mut i = 0;
                 let mut j = 0;
-                while j + i < s.len() {
+                loop {
+                    if !(j + i < s.len()) { break; }
                     s[j] = 0;
                     j = j + 1;
                 }
