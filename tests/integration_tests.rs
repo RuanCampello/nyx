@@ -238,6 +238,26 @@ const CASES: &[Case] = &[
         file: "tests/single/slice_oob_panic.nyx",
         exit_code: Some(101),
     },
+    Case {
+        name: "hash",
+        file: "tests/single/hash.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "wrapping_arithmetic",
+        file: "tests/single/wrapping_arithmetic.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "u64_literals",
+        file: "tests/single/u64_literals.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "generic_methods",
+        file: "tests/single/generic_methods.nyx",
+        exit_code: Some(42),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

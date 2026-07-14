@@ -1,0 +1,87 @@
+use std::hash::{Hash, Hasher, Fnv64, hash_of};
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.x.hash(hasher);
+        self.y.hash(hasher);
+    }
+}
+
+struct ByteSum {
+    total: u64,
+}
+
+impl ByteSum with Hasher {
+    fn write(&mut self, bytes: &[u8]) {
+        loop i in 0..bytes.len() {
+            self.total = self.total.wrapping_add(bytes[i] as u64);
+        }
+    }
+
+    fn finish(&self): u64 {
+        self.total
+    }
+}
+
+fn main(): i32 {
+    let empty = Fnv64::new();
+    if empty.finish() != 14695981039346656037 return 1;
+
+    let a: u8 = 42;
+    if hash_of(&a) != 12638128926439346813 return 2;
+
+    let b: u32 = 5;
+    if hash_of(&b) != 3260635086596433184 return 3;
+
+    let c: u64 = 18446744073709551615;
+    if hash_of(&c) != 10157053723145373757 return 4;
+
+    let d: i32 = -1;
+    if hash_of(&d) != 11047178588169845073 return 5;
+
+    let e: i64 = -2;
+    if hash_of(&e) != 18165890468499916316 return 6;
+
+    let f: bool = true;
+    if hash_of(&f) != 12638152016183539244 return 7;
+
+    let g: char = 'a';
+    if hash_of(&g) != 12430017993500518788 return 8;
+
+    let h: u16 = 65535;
+    if hash_of(&h) != 763862646787557219 return 9;
+
+    let i: uptr = 7;
+    if hash_of(&i) != 5465015992139406178 return 10;
+
+    // equal values hash equal, distinct values do not collide here
+    let j: u64 = 99;
+    let k: u64 = 99;
+    if hash_of(&j) != hash_of(&k) return 11;
+    if hash_of(&j) == hash_of(&c) return 12;
+
+    let p = Point { x: 3, y: 4 };
+    if hash_of(&p) != 5176904375371731362 return 13;
+
+    let mut split = Fnv64::new();
+    split.write_u32(3 as u32);
+    split.write_u32(4 as u32);
+    let mut whole = Fnv64::new();
+    p.hash(&mut whole);
+    if split.finish() != whole.finish() return 14;
+
+    let mut sum = ByteSum { total: 0 };
+    p.hash(&mut sum);
+    if sum.finish() != 7 return 15;
+
+    let mut sum_max = ByteSum { total: 0 };
+    c.hash(&mut sum_max);
+    if sum_max.finish() != 2040 return 16;
+
+    0
+}

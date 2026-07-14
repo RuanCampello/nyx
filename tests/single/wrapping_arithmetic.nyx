@@ -1,0 +1,22 @@
+use std::int;
+
+fn main(): i32 {
+    let max: u64 = 18446744073709551615;
+    if max.wrapping_add(1) != 0 return 1;
+    if max.wrapping_mul(2) != 18446744073709551614 return 2;
+
+    let zero: u64 = 0;
+    if zero.wrapping_sub(1) != max return 3;
+
+    let basis: u64 = 14695981039346656037;
+    let prime: u64 = 1099511628211;
+    if (basis ^ 97).wrapping_mul(prime) != 12638187200555641996 return 4;
+
+    let imax: i32 = 2147483647;
+    if imax.wrapping_add(1) != -2147483648 return 5;
+
+    let small: u8 = 255;
+    if small.wrapping_add(1) != 0 return 6;
+
+    0
+}
