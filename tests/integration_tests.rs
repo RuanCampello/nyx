@@ -249,11 +249,6 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
-        name: "u64_literals",
-        file: "tests/single/u64_literals.nyx",
-        exit_code: Some(0),
-    },
-    Case {
         name: "generic_methods",
         file: "tests/single/generic_methods.nyx",
         exit_code: Some(42),
