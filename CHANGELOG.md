@@ -23,6 +23,7 @@ Added the standard library hashing API (`std/hash.nyx`), `Hash`/`Hasher` interfa
 ### Fixed
 
 - **Wide Immediates** ([!11]): integer constants outside the sign-extended 32-bit range are materialised into a register instead of being emitted into instruction encodings that cannot carry them (`x86_64` / `aarch64`)
+- **Logical Immediates** ([!11]): `aarch64` `and`/`orr`/`eor` only accept bitmask-encodable immediates, anything else (e.g. `x ^ 97`) is now materialised into a register instead of being rejected by the assembler
 - **Receiver Mutability** ([!11]): calling a `&mut self` method through a `&mut T` binding no longer requires the binding itself to be `mut`
 
 ## [0.5.0] - 2026-07-01

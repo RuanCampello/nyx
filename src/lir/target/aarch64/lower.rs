@@ -198,15 +198,15 @@ impl<'f> Lower<'f, AArch64> {
                             },
 
                             B::And | B::BitAnd => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
                                 self.lir.push_instr(id, A64Instr::And { dest, lhs, rhs, bytes });
                             },
                             B::Or | B::BitOr => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
                                 self.lir.push_instr(id, A64Instr::Or { dest, lhs, rhs, bytes });
                             },
                             B::BitXor => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, id);
+                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
                                 self.lir.push_instr(id, A64Instr::Eor { dest, lhs, rhs, bytes });
                             },
                             B::Shl | B::Shr => {
@@ -493,18 +493,18 @@ impl<'f> Lower<'f, AArch64> {
         }
     }
 
-    /// for AND/ORR/EOR: logical immediates have complex encoding rules on ARM
-    /// for simplicity we only allow small immediates that are valid bitmask patterns
-    /// in practice, boolean logic (AND 1, OR 1, EOR 1) always fits
+    /// for AND/ORR/EOR: only valid bitmask immediates can be encoded inline,
+    /// everything else is materialised into a register
     #[inline(always)]
     fn fit_logical_operand(
         &mut self,
         op: A64Operand,
         hint_type: Type,
+        bytes: u8,
         block: &BlockId,
     ) -> A64Operand {
         match op {
-            A64Operand::Imm(n) if n > 0 && fits_imm12(n) => A64Operand::Imm(n),
+            A64Operand::Imm(n) if is_bitmask_imm(n, bytes) => A64Operand::Imm(n),
             A64Operand::VReg(_) => op,
             _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
         }
@@ -540,4 +540,55 @@ impl<'f> Lower<'f, AArch64> {
 #[inline(always)]
 const fn fits_imm12(val: i64) -> bool {
     val >= 0 && val <= 4095
+}
+
+#[inline]
+const fn is_bitmask_imm(val: i64, bytes: u8) -> bool {
+    let mut v = val as u64;
+    if bytes != 8 {
+        v &= 0xffff_ffff;
+        v |= v << 32;
+    }
+    if v == 0 || v == u64::MAX {
+        return false;
+    }
+
+    // reduce to the smallest repeating element
+    let mut size = 64u32;
+    while size > 2 {
+        let half = size / 2;
+        let mask = (1u64 << half) - 1;
+        if (v & mask) != ((v >> half) & mask) {
+            break;
+        }
+        size = half;
+    }
+
+    // a single cyclic run of ones has exactly two edges against its rotation
+    let mask = match size == 64 {
+        true => u64::MAX,
+        false => (1u64 << size) - 1,
+    };
+    let elem = v & mask;
+    let rotated = ((elem >> 1) | (elem << (size - 1))) & mask;
+    (elem ^ rotated).count_ones() == 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bitmask_imm;
+
+    #[test]
+    fn bitmask_immediate_encoding() {
+        for valid in [1, 3, 6, 0xff, 0x0f0f_0f0f_0f0f_0f0f, 0x1_0000_0001, i64::MIN] {
+            assert!(is_bitmask_imm(valid, 8), "{valid:#x} should encode");
+        }
+        for invalid in [0, -1, 5, 97, 0x101] {
+            assert!(!is_bitmask_imm(invalid, 8), "{invalid:#x} should not encode");
+        }
+
+        assert!(is_bitmask_imm(0xff, 4));
+        assert!(!is_bitmask_imm(97, 4));
+        assert!(!is_bitmask_imm(-1, 4));
+    }
 }
