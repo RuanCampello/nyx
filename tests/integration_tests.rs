@@ -10,6 +10,7 @@ struct Case<'c> {
     exit_code: Option<i32>,
 }
 
+// TODO: make this auto generated and derived from the actual files
 const CASES: &[Case] = &[
     Case { name: "add", file: "tests/single/add.nyx", exit_code: None },
     Case {
@@ -85,7 +86,7 @@ const CASES: &[Case] = &[
     Case {
         name: "loops",
         file: "tests/single/loops.nyx",
-        exit_code: Some(134),
+        exit_code: Some(165),
     },
     Case {
         name: "basic_struct",

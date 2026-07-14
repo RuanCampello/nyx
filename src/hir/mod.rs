@@ -781,6 +781,50 @@ mod tests {
     }
 
     #[test]
+    fn loop_over_inferred_array() {
+        let arena = bumpalo::Bump::new();
+
+        let statements = Parser::new(
+            r#"
+            fn main(): i32 {
+                let values = [2, 3, 5];
+                let mut total = 0;
+                loop value in values {
+                    total = total + value;
+                }
+                total
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        let hir = super::lower(statements, &arena).unwrap();
+        assert_eq!(hir.arrays[0].element, TypeKind::I32.into());
+
+        for (annotation, expected) in [
+            ("u8", TypeKind::U8),
+            ("i16", TypeKind::I16),
+            ("u32", TypeKind::U32),
+            ("i64", TypeKind::I64),
+        ] {
+            let source = format!(
+                r#"
+                fn main() {{
+                    let values = [1, 2, 3];
+                    let mut total: {annotation} = 0;
+                    loop value in values {{
+                        total = total + value;
+                    }}
+                }}
+            "#
+            );
+            let statements = Parser::new(&source).parse().unwrap();
+            let hir = super::lower(statements, &arena).unwrap();
+            assert_eq!(hir.arrays[0].element, expected.into(), "element should be {annotation}");
+        }
+    }
+
+    #[test]
     fn loop_control_requires_a_loop() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new("fn main() { break; }").parse().unwrap();

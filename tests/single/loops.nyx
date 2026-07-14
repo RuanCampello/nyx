@@ -18,6 +18,10 @@ fn main(): i32 {
         total = total + value;
     }
 
+    loop value in [7, 11, 13] {
+        total = total + value;
+    }
+
     loop value in 0..10 {
         if value == 3 { continue; }
         if value == 7 { break; }
