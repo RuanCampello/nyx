@@ -372,8 +372,12 @@ where
                     TypeKind::Slice { element, .. } => element.into(),
                     _ => return Err(hir_error!(iterable.span, NotIterable { typ: iterable.typ })),
                 };
-                if !self.is_copy_type(element) {
-                    return Err(hir_error!(binding.span, NonCopyLoopItem { typ: element }));
+                // an unresolved element is an unconstrained integer literal,
+                // which is always Copy, keep the variable on the binding so
+                // uses in the body still constrain the array's element type
+                let resolved = self.infer.resolve_shallow(element);
+                if !resolved.is_infer() && !self.is_copy_type(resolved) {
+                    return Err(hir_error!(binding.span, NonCopyLoopItem { typ: resolved }));
                 }
 
                 self.push_scope();
