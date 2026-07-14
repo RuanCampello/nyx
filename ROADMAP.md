@@ -48,6 +48,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [ ] Type definition
   - [x] Generics with monomorphisation (`<T>`)
     - [x] Interface bounds / constraints (`where` clause)
+    - [x] Generic methods on interfaces and impls (`fn hash<H: Hasher>`)
   - [ ] Polymorphism (`Interface`)
     - [x] Static dispatch
     - [ ] Dynamic dispatch
@@ -168,12 +169,13 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Equality comparison (`cmp`)
     - [x] Default value initialisation (`default`)
     - [x] Cloning (`clone`)
-    - [ ] Hashing (`hash`)
-      - [ ] FNV hashing
+    - [x] Hashing (`hash`)
+      - [x] FNV hashing
   - [ ] Primitive helpers
     - [ ] Integers
       - [x] Integer constants & basic properties
-      - [ ] Checked/wrapping integer arithmetic
+      - [x] Wrapping integer arithmetic
+      - [ ] Checked integer arithmetic (`checked_add` returning `Optional`)
     - [ ] Floating-point
       - [x] Floating-point constants
       - [ ] Floating-point mathematics (abs, floor, ceil, power, trigonometry)

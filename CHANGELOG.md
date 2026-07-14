@@ -2,6 +2,29 @@
 
 All notable changes to the Nyx compiler will be documented in this file
 
+## [0.6.0] - 2026-07-14
+
+Added the standard library hashing API (`std/hash.nyx`), `Hash`/`Hasher` interfaces with a default FNV-1a hasher, unblocked by three compiler features: full-range `u64` integer literals, wrapping arithmetic intrinsics, and generic methods on interfaces and impls.
+
+### Added
+
+- **Hashing** ([!11]):
+  - `Hash` and `Hasher` interfaces: a hasher implements only `write(&[u8])` and `finish(): u64`, with default little-endian `write_u8`…`write_u64`, signed, and pointer-width helpers
+  - `Fnv64` (FNV-1a) as the default hasher, with a `Default` impl and a `hash_of<T: Hash>` convenience function
+  - `Hash` impls for the integer types, `bool`, and `char`
+- **Generic Methods** ([!11]):
+  - interface and `impl` methods may declare their own type parameters (`fn hash<H: Hasher>(&self, hasher: &mut H)`)
+  - call sites infer the type arguments from the argument types (or a turbofish), check the declared bounds, and monomorphise through the existing template machinery
+- **u64 Literals** ([!11]):
+  - integer literals lex as an unsigned 64-bit magnitude with `-` as a unary operator, making the full `u64` range (and `i64::MIN`) representable
+- **Wrapping Arithmetic** ([!11]):
+  - `wrapping_add` / `wrapping_sub` / `wrapping_mul` intrinsics on every integer type, lowering to unchecked operations that wrap at all optimisation levels
+
+### Fixed
+
+- **Wide Immediates** ([!11]): integer constants outside the sign-extended 32-bit range are materialised into a register instead of being emitted into instruction encodings that cannot carry them (`x86_64` / `aarch64`)
+- **Receiver Mutability** ([!11]): calling a `&mut self` method through a `&mut T` binding no longer requires the binding itself to be `mut`
+
 ## [0.5.0] - 2026-07-01
 
 Added fixed-size arrays (`[T; N]`) and borrowed slices (`&[T]` / `&mut [T]`) with bounds-checked indexing, element assignment, and array→slice coercion threaded from the parser through `x86_64`/`aarch64` codegen, alongside function-scoped `const` declarations evaluated at compile time.
@@ -202,6 +225,7 @@ Initial release of the Nyx compiler, introducing support for `struct`s, implemen
 [!7]: https://gitlab.com/ruancampello/nyx/-/merge_requests/7
 [!8]: https://gitlab.com/ruancampello/nyx/-/merge_requests/8
 [!10]: https://gitlab.com/ruancampello/nyx/-/merge_requests/10
+[!11]: https://gitlab.com/ruancampello/nyx/-/merge_requests/11
 [`d763e04`]: https://gitlab.com/ruancampello/nyx/-/commit/d763e04
 [`b58cee7`]: https://gitlab.com/ruancampello/nyx/-/commit/b58cee7
 [`e38f6c6`]: https://gitlab.com/ruancampello/nyx/-/commit/e38f6c6
