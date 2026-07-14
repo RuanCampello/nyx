@@ -1,0 +1,45 @@
+interface Sink {
+    fn put(&mut self, value: u64);
+    fn total(&self): u64;
+}
+
+interface Feed {
+    fn feed<S: Sink>(&self, sink: &mut S);
+}
+
+struct Adder {
+    sum: u64,
+}
+
+impl Adder with Sink {
+    fn put(&mut self, value: u64) {
+        self.sum = self.sum + value;
+    }
+
+    fn total(&self): u64 {
+        self.sum
+    }
+}
+
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+impl Point with Feed {
+    fn feed<S: Sink>(&self, sink: &mut S) {
+        sink.put(self.x);
+        sink.put(self.y);
+    }
+}
+
+fn feed_of<T: Feed, S: Sink>(value: &T, sink: &mut S): u64 {
+    value.feed(sink);
+    sink.total()
+}
+
+fn main(): i32 {
+    let p = Point { x: 30, y: 12 };
+    let mut a = Adder { sum: 0 };
+    feed_of(&p, &mut a) as i32
+}
