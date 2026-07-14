@@ -700,7 +700,7 @@ impl<'i> Parsable<'i> for Pattern<'i> {
         // Literal patterns: integers, floats, bools, chars.
         if let Some(Ok(token)) = parser.peek() {
             let lit = match token.kind {
-                TokenKind::Integer(n) => Some(PatternLit::Int(n)),
+                TokenKind::Integer(n) => Some(PatternLit::Int(n as i64)),
                 TokenKind::Float(f) => Some(PatternLit::Float(f)),
                 TokenKind::Bool(b) => Some(PatternLit::Bool(b)),
                 TokenKind::Char(c) => Some(PatternLit::Char(c)),
@@ -951,10 +951,9 @@ impl<'i> Parsable<'i> for Enum<'i> {
                 let token = parser.expect_next()?;
                 match token.kind {
                     TokenKind::Integer(value) => {
-                        let value = if negative {
-                            -value
-                        } else {
-                            value
+                        let value = match negative {
+                            true => (value as i64).wrapping_neg(),
+                            false => value as i64,
                         };
                         (Some(value), variant_span + token.span)
                     },

@@ -8,7 +8,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, PartialEq)]
 #[rustfmt::skip]
 pub enum Expression<'i> {
-    Integer(i64, Span),
+    Integer(u64, Span),
     Float(f64, Span),
     String(&'i str, Span),
     Char(char, Span),

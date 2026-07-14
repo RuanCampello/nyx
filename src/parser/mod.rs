@@ -149,7 +149,7 @@ impl<'i> Parser<'i> {
     pub fn expect_unsigned_literal(&mut self) -> Result<u64, ParserError<'i>> {
         let token = self.expect_next()?;
         match token.kind {
-            TokenKind::Integer(n) if n >= 0 => Ok(n as u64),
+            TokenKind::Integer(n) => Ok(n),
             _ => Err(ParserError::new(
                 ParseErrorKind::ExpectedExpression { found: token.kind },
                 token.span,
