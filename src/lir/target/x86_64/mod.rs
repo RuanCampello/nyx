@@ -667,4 +667,3 @@ impl Condition {
         }
     }
 }
-

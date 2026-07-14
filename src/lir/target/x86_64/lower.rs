@@ -73,7 +73,7 @@ impl<'f> Lower<'f, X86_64> {
                     op,
                     layouts,
                     |vid| value[vid],
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
+                    |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -85,7 +85,7 @@ impl<'f> Lower<'f, X86_64> {
                 const NEG_ZERO: u64 = (-0.0f64).to_bits();
                 const NEG_ZERO_32: u64 = (-0.0f32).to_bits() as u64;
 
-                let src = self.lower_operand(rhs);
+                let src = self.lower_operand(rhs, id);
 
                 // 2-address: copy rhs into dest first to mutate it in-place
                 let copy = match is_float {
@@ -141,8 +141,8 @@ impl<'f> Lower<'f, X86_64> {
                 let is_signed = lhs_mt.is_signed();
                 let lhs_type = lhs.typ();
                 let is_float = lhs_type.is_float();
-                let lhs = self.lower_operand(lhs);
-                let rhs = self.lower_operand(rhs);
+                let lhs = self.lower_operand(lhs, id);
+                let rhs = self.lower_operand(rhs, id);
                 let checked = *checked;
 
                 match operation {
@@ -302,7 +302,7 @@ impl<'f> Lower<'f, X86_64> {
                 let mt = value.typ().machine_type(self.layouts);
                 let bytes = mt.bytes();
                 let is_float = value.typ().is_float();
-                let src = self.lower_operand(value);
+                let src = self.lower_operand(value, id);
 
                 let instruction = X86_64::scalar_store(
                     matches!(typ.kind(), TypeKind::Ref { .. }),
@@ -336,10 +336,13 @@ impl<'f> Lower<'f, X86_64> {
             InstructionKind::Syscall { code, args, returns } => {
                 let value = &self.value;
                 let layouts = self.layouts;
-                let (syscall_moves, syscall_uses) =
-                    target::prepare_syscall_args(&mut self.lir, id, args, layouts, |lir, op, _| {
-                        target::lower_operand(lir, op, |vid| value[vid])
-                    });
+                let (syscall_moves, syscall_uses) = target::prepare_syscall_args(
+                    &mut self.lir,
+                    id,
+                    args,
+                    layouts,
+                    |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
+                );
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
                 self.lir.push_instr(
@@ -361,7 +364,7 @@ impl<'f> Lower<'f, X86_64> {
                 let dest_mt = typ.machine_type(self.layouts);
                 let dest_bytes = dest_mt.bytes();
 
-                let src_op = self.lower_operand(src);
+                let src_op = self.lower_operand(src, id);
 
                 let is_downcast_or_equal = src_bytes >= dest_bytes;
                 let is_immediate = matches!(src_op, X86Operand::Imm(_));

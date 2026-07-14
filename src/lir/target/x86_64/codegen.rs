@@ -830,7 +830,11 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
         return;
     }
 
-    match src.contains("(%rbp)") && dest.contains("(%rbp)") {
+    let wide_imm = src
+        .strip_prefix('$')
+        .is_some_and(|v| v.parse::<i64>().is_ok_and(|n| i32::try_from(n).is_err()));
+
+    match (src.contains("(%rbp)") || wide_imm) && dest.contains("(%rbp)") {
         true => match is_float {
             true => {
                 emit!(out, "mov{suffix}    {src}, %xmm15");

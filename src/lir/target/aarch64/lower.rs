@@ -85,7 +85,7 @@ impl<'f> Lower<'f, AArch64> {
                     operand,
                     layouts,
                     |vid| value[vid],
-                    |lir, op, _| target::lower_operand(lir, op, |vid| value[vid]),
+                    |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
                 ) {
                     self.lir.push_instr(id, instr);
                 }
@@ -125,8 +125,8 @@ impl<'f> Lower<'f, AArch64> {
                 let lhs_type = lhs.typ();
                 let rhs_type = rhs.typ();
                 let is_float = lhs_type.is_float();
-                let lhs = self.lower_operand(lhs);
-                let rhs = self.lower_operand(rhs);
+                let lhs = self.lower_operand(lhs, id);
+                let rhs = self.lower_operand(rhs, id);
                 let checked = *checked;
 
                 match operation {
@@ -239,7 +239,7 @@ impl<'f> Lower<'f, AArch64> {
                     id,
                     args,
                     layouts,
-                    |lir, op, _block| lir::target::lower_operand(lir, op, |vid| value[vid]),
+                    |lir, op, block| lir::target::lower_operand(lir, op, block, |vid| value[vid]),
                 );
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
@@ -328,7 +328,7 @@ impl<'f> Lower<'f, AArch64> {
                 let is_float = value.typ().is_float();
                 let mt = value.typ().machine_type(self.layouts);
                 let bytes = mt.bytes();
-                let src = self.lower_operand(value);
+                let src = self.lower_operand(value, id);
 
                 let instruction = AArch64::scalar_store(
                     matches!(typ.kind(), TypeKind::Ref { .. }),
@@ -367,7 +367,7 @@ impl<'f> Lower<'f, AArch64> {
                 let dest_mt = typ.machine_type(self.layouts);
                 let dest_bytes = dest_mt.bytes();
 
-                let op = self.lower_operand(src);
+                let op = self.lower_operand(src, id);
 
                 #[rustfmt::skip]
                 let instr = match src_bytes.cmp(&dest_bytes) {

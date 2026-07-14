@@ -376,9 +376,9 @@ where
 
     /// translate a MIR operand into a target-specific operand
     #[inline(always)]
-    pub(crate) fn lower_operand(&mut self, op: &Operand) -> T::Operand {
+    pub(crate) fn lower_operand(&mut self, op: &Operand, block: &BlockId) -> T::Operand {
         let value = &self.value;
-        lower_operand(&mut self.lir, op, |vid| value[vid])
+        lower_operand(&mut self.lir, op, block, |vid| value[vid])
     }
 
     /// materialise the frame-relative address of a stack slot into a fresh VReg
@@ -471,7 +471,7 @@ where
     ) -> VReg {
         let int8 = MachineType::Int { bytes: 8, signed: false };
 
-        let index_op = self.lower_operand(index);
+        let index_op = self.lower_operand(index, block);
         let index = match index_op.as_vreg() {
             Some(vreg) => vreg,
             None => {
@@ -480,7 +480,7 @@ where
                 dest
             },
         };
-        let bound = self.lower_operand(bound);
+        let bound = self.lower_operand(bound, block);
         self.lir.push_instr(block, T::bounds_check(index, bound));
 
         let addr = self.lir.new_vreg(int8);
@@ -558,7 +558,7 @@ where
             },
             false => {
                 let mt = value_typ.machine_type(self.layouts);
-                let src = self.lower_operand(value);
+                let src = self.lower_operand(value, block);
                 let store = T::ptr_store(element, src, 0, mt.bytes(), value_typ.is_float());
                 self.lir.push_instr(block, store);
             },
@@ -649,7 +649,7 @@ where
             layouts,
             |vid| value[vid],
             |lir, op, block| operand(lir, op, block, layouts, |vid| value[vid]),
-            |lir, op, _| lower_operand(lir, op, |vid| value[vid]),
+            |lir, op, block| lower_operand(lir, op, block, |vid| value[vid]),
             |lir, block, origin| {
                 let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
                 lir.push_instr(block, T::load_stack_addr(dest, origin));
@@ -790,6 +790,29 @@ pub fn resolve_parallel_moves<Reg, Ctx, FMove, FCycle>(
 pub fn lower_operand<T: TargetOps>(
     lir: &mut lir::Function<T>,
     op: &Operand,
+    block: &BlockId,
+    vreg_map: impl FnMut(ValueId) -> VReg,
+) -> T::Operand
+where
+    T::Operand: TargetOperand,
+{
+    if let Operand::Const(Const::Int(n, _)) = op
+        && i32::try_from(*n).is_err()
+    {
+        let vreg = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+        let mov = T::mov_op(vreg, T::Operand::from_imm(*n), 8, false);
+        lir.push_instr(block, mov);
+        return T::Operand::from_vreg(vreg);
+    }
+
+    raw_operand(lir, op, vreg_map)
+}
+
+/// lower an operand without wide-immediate materialisation, only valid where
+/// the consuming instruction can carry a full 64-bit immediate
+fn raw_operand<T: TargetOps>(
+    lir: &mut lir::Function<T>,
+    op: &Operand,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
 ) -> T::Operand
 where
@@ -828,7 +851,7 @@ where
     T::Operand: TargetOperand,
 {
     let bytes = c.typ().machine_type(layouts).bytes();
-    let src = lower_operand(lir, &Operand::Const(*c), |_| unreachable!());
+    let src = raw_operand(lir, &Operand::Const(*c), |_| unreachable!());
 
     T::mov_op(dest, src, bytes, c.typ().is_float())
 }
