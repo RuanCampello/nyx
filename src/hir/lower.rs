@@ -637,7 +637,7 @@ where
                     _ => self.infer.fresh(),
                 };
 
-                Ok(self.alloc((*value).into(), typ, *span))
+                Ok(self.alloc((*value as i64).into(), typ, *span))
             },
 
             Expr::Float(value, span) => {
@@ -1158,6 +1158,17 @@ where
                         )?;
 
                     if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
+                        if intrinsic.is_wrapping() {
+                            return self.lower_wrapping_call(
+                                intrinsic,
+                                function,
+                                receiver_lowered,
+                                args,
+                                method_name,
+                                *span,
+                            );
+                        }
+
                         let return_type = self.scope.signatures[function].return_type;
                         let receiver = self.coerce_method_receiver(receiver_lowered, lookup_type);
                         let args = self.arena.alloc_slice_copy(&[receiver]);
@@ -1174,7 +1185,13 @@ where
                         "method call resolved to a free function"
                     );
 
+                    // a receiver that is already `&mut` mutates the pointee, not
+                    // the binding, so the binding itself needn't be `mut`
+                    let receiver_is_mut_ref =
+                        matches!(receiver_type.kind(), TypeKind::Ref { mutable: true, .. });
+
                     if signature.receiver_mutable()
+                        && !receiver_is_mut_ref
                         && base_local.filter(|&id| self[id].mutable).is_none()
                     {
                         let name = base_local.map_or("temporary", |id| {
@@ -1194,6 +1211,17 @@ where
                                 found: args.len()
                             }
                         ));
+                    }
+
+                    if self.scope.generic_fns.contains_key(&function) {
+                        return self.lower_generic_method_call(
+                            function,
+                            method_symbol,
+                            receiver_lowered.expr,
+                            args,
+                            type_args,
+                            *span,
+                        );
                     }
 
                     let lowered_args = args
@@ -1506,6 +1534,46 @@ where
         ))
     }
 
+    /// lower a `x.wrapping_*(rhs)` call: the receiver is passed by value so MIR
+    /// can emit a plain unchecked binary operation
+    fn lower_wrapping_call(
+        &mut self,
+        intrinsic: Intrinsic,
+        function_id: FunctionId,
+        receiver: Lowered<'hir>,
+        args: &[expression::Expression<'src>],
+        method_name: &'hir str,
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let [arg] = args else {
+            return Err(hir_error!(
+                span,
+                ArityMismatch { name: method_name, expected: 1, found: args.len() }
+            ));
+        };
+
+        let signature = &self.scope.signatures[function_id];
+        let (rhs_param, return_type) = (signature.params[1], signature.return_type);
+
+        let receiver_expr = match receiver.typ.kind() {
+            TypeKind::Ref { to, .. } => {
+                self.alloc(
+                    ExpressionKind::Unary { operator: UnaryOperator::Deref, expr: receiver.expr },
+                    to.into(),
+                    receiver.span,
+                )
+                .expr
+            },
+            _ => receiver.expr,
+        };
+
+        let arg = self.lower_expr(arg, Some(rhs_param))?;
+        self.assert_type(rhs_param, arg.typ, arg.span)?;
+
+        let args = self.arena.alloc_slice_copy(&[receiver_expr, arg.expr]);
+        Ok(self.alloc(ExpressionKind::IntrinsicCall { intrinsic, args }, return_type, span))
+    }
+
     fn lower_direct_call(
         &mut self,
         function_id: FunctionId,
@@ -1640,6 +1708,49 @@ where
             .insert(lowered.expr.id, Res::Variant { id: enum_id, index });
 
         Ok(Some(lowered))
+    }
+
+    fn lower_generic_method_call(
+        &mut self,
+        function_id: FunctionId,
+        method_symbol: SymbolId,
+        receiver: &'hir Expression<'hir>,
+        args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let generic_count = self.scope.generic_fns[&function_id].generics.len();
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            let lowered = self.lower_expr(arg, None)?;
+            arg_types.push(lowered.typ);
+            lowered_args.push(lowered.expr);
+        }
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+
+        let substs = match type_args.is_empty() {
+            false => self.resolve_turbofish(type_args)?,
+            true => {
+                let open_params = self.scope.signatures[function_id].explicit_params();
+                infer_type_args(open_params, &arg_types, generic_count)
+            },
+        };
+
+        let template = &self.scope.generic_fns[&function_id];
+        self.check_bounds(&template.generics, &substs, span)?;
+
+        let return_type = self.scope.signatures[function_id].return_type.subst(&substs);
+        let kind = ExpressionKind::MethodCall { name: method_symbol, receiver, args: lowered_args };
+        let lowered = self.alloc(kind, return_type, span);
+
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
+        self.typeck.node_args.insert(lowered.expr.id, substs);
+
+        Ok(lowered)
     }
 
     fn lower_generic_call(

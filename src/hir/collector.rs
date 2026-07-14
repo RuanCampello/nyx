@@ -279,12 +279,22 @@ impl<'hir> Scope<'hir> {
                 .map(|(i, g)| (g.name.to_owned(), Type::generic_param(i as u8)))
                 .collect();
 
-            let env = (!param_env.is_empty()).then_some(&param_env);
+            let base_env = (!param_env.is_empty()).then_some(&param_env);
             let mut methods = Vec::with_capacity(interface.methods.len());
             for method in &interface.methods {
                 let name = self.symbols.insert(method.name);
                 let has_receiver = method.receiver.is_some();
                 let receiver_mut = method.receiver.map(|r| r.mutable).unwrap_or(false);
+
+                let mut method_env = None;
+                let env = match method.generics.is_empty() {
+                    true => base_env,
+                    false => {
+                        let mut extended = param_env.clone();
+                        extended.extend(generic_param_env(&method.generics));
+                        Some(&*method_env.insert(extended))
+                    },
+                };
 
                 let params = self.resolve_params(&method.params, None, env)?;
                 let return_type =
@@ -418,9 +428,18 @@ impl<'hir> Scope<'hir> {
             };
 
             let impl_param_env = self.build_impl_param_env(implementation, receiver_type)?;
-            let impl_env_ref = impl_param_env.as_ref();
 
             for method in &implementation.methods {
+                let mut method_env = None;
+                let impl_env_ref = match method.generics.is_empty() {
+                    true => impl_param_env.as_ref(),
+                    false => {
+                        let mut env = impl_param_env.clone().unwrap_or_default();
+                        env.extend(generic_param_env(&method.generics));
+                        Some(&*method_env.insert(env))
+                    },
+                };
+
                 let method_symbol = self.symbols.insert(method.name);
                 let mangled = match implementation.interface {
                     Some(interface) => self.symbols.insert(&self.mangler.interface_item(
@@ -480,6 +499,13 @@ impl<'hir> Scope<'hir> {
                             kind,
                             is_const: method.is_const,
                         });
+
+                        if !method.generics.is_empty() && intrinsic.is_none() {
+                            self.generic_fns.insert(id, method.clone());
+                            if let Some(env) = &impl_param_env {
+                                self.generic_fn_envs.insert(id, env.clone());
+                            }
+                        }
                     },
 
                     None => {
@@ -507,6 +533,13 @@ impl<'hir> Scope<'hir> {
                             is_const: method.is_const,
                             kind: FunctionKind::Free,
                         });
+
+                        if !method.generics.is_empty() {
+                            self.generic_fns.insert(id, method.clone());
+                            if let Some(env) = &impl_param_env {
+                                self.generic_fn_envs.insert(id, env.clone());
+                            }
+                        }
                     },
                 }
             }

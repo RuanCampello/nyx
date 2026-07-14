@@ -400,6 +400,9 @@ pub enum Intrinsic {
     Print,
     Syscall,
     Len,
+    WrappingAdd,
+    WrappingSub,
+    WrappingMul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,6 +496,24 @@ impl Layout {
 
     pub(crate) const fn contains_float(self) -> bool {
         self.contains_float
+    }
+}
+
+impl Intrinsic {
+    #[inline]
+    pub const fn is_wrapping(self) -> bool {
+        self.binary_operator().is_some()
+    }
+
+    /// the arithmetic operation a wrapping intrinsic lowers to
+    #[inline]
+    pub const fn binary_operator(self) -> Option<BinaryOperator> {
+        match self {
+            Self::WrappingAdd => Some(BinaryOperator::Add),
+            Self::WrappingSub => Some(BinaryOperator::Sub),
+            Self::WrappingMul => Some(BinaryOperator::Mul),
+            _ => None,
+        }
     }
 }
 

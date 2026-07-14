@@ -841,6 +841,9 @@ pub(in crate::hir) fn intrinsic_method(
 ) -> Option<Intrinsic> {
     match (in_std, receiver, method) {
         (true, "str", "len") | (_, SLICE_IMPL_NAME, "len") => Some(Intrinsic::Len),
+        (true, _, "wrapping_add") => Some(Intrinsic::WrappingAdd),
+        (true, _, "wrapping_sub") => Some(Intrinsic::WrappingSub),
+        (true, _, "wrapping_mul") => Some(Intrinsic::WrappingMul),
         _ => None,
     }
 }
