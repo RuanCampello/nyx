@@ -26,7 +26,7 @@ pub struct BytePos(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'src> {
-    Integer(i64),
+    Integer(u64),
     Float(f64),
     String(&'src str),
     Char(char),
@@ -34,7 +34,7 @@ pub enum TokenKind<'src> {
     Identifier(&'src str),
     Keyword(Keyword),
     Punct(Punct),
-    /// A `///` line; the text is everything after the slashes up to the newline.
+    /// A `///` line, the text is everything after the slashes up to the newline
     DocComment(&'src str),
     Eof,
 }

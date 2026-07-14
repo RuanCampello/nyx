@@ -49,7 +49,7 @@ impl<'src> Tokenize<'src> for NumberLiteral {
             },
 
             false => {
-                let value: i64 = parse_str
+                let value: u64 = parse_str
                     .parse()
                     .map_err(|_| LexError::new(LexErrorKind::InvalidInteger(text), span))?;
                 TokenKind::Integer(value)
@@ -79,6 +79,21 @@ mod tests {
         assert_eq!(tok("42").kind, TokenKind::Integer(42));
         assert_eq!(tok("0").kind, TokenKind::Integer(0));
         assert_eq!(tok("1_000").kind, TokenKind::Integer(1000));
+    }
+
+    #[test]
+    fn full_u64_range() {
+        // values above i64::MAX must lex
+        assert_eq!(tok("14695981039346656037").kind, TokenKind::Integer(14695981039346656037));
+        assert_eq!(tok("18446744073709551615").kind, TokenKind::Integer(u64::MAX));
+    }
+
+    #[test]
+    fn integer_overflow_is_rejected() {
+        // one past u64::MAX
+        let mut cursor = Cursor::new("18446744073709551616", BytePos(0));
+        let start = cursor.position();
+        assert!(NumberLiteral.lex(&mut cursor, start).is_err());
     }
 
     #[test]
