@@ -842,6 +842,21 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         },
                         other => unreachable!("str length of a non-str operand: {other:?}"),
                     },
+
+                    Intrinsic::WrappingAdd | Intrinsic::WrappingSub | Intrinsic::WrappingMul => {
+                        let operation = intrinsic
+                            .binary_operator()
+                            .expect("wrapping intrinsic must maps to a binary operator");
+                        let lhs = self.lower_expr(args[0])?;
+                        let rhs = self.lower_expr(args[1])?;
+
+                        let dest = self.fresh_temporary(typ);
+                        self.emit(
+                            dest,
+                            InstructionKind::Binary { operation, lhs, rhs, checked: false },
+                        );
+                        Ok(Operand::Place(dest))
+                    },
                 }
             },
 
