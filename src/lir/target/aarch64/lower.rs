@@ -161,6 +161,9 @@ impl<'f> Lower<'f, AArch64> {
                                     },
                                 };
                                 self.lir.push_instr(id, instr);
+                                if !checked && !is_float {
+                                    self.normalise_subword(dest, lhs_type, bytes, id);
+                                }
                             },
 
                             B::Sub => {
@@ -177,6 +180,9 @@ impl<'f> Lower<'f, AArch64> {
                                 };
 
                                 self.lir.push_instr(id, instr);
+                                if !checked && !is_float {
+                                    self.normalise_subword(dest, lhs_type, bytes, id);
+                                }
                             },
 
                             B::Mul => {
@@ -186,6 +192,9 @@ impl<'f> Lower<'f, AArch64> {
                                     false => A64Instr::Mul { dest, lhs, rhs, bytes, checked },
                                 };
                                 self.lir.push_instr(id, instr);
+                                if !checked && !is_float {
+                                    self.normalise_subword(dest, lhs_type, bytes, id);
+                                }
                             },
 
                             B::Div => {
@@ -491,6 +500,17 @@ impl<'f> Lower<'f, AArch64> {
             A64Operand::VReg(_) => op,
             _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
         }
+    }
+
+    /// unchecked arithmetic on sub-word types must wrap at the type's width
+    fn normalise_subword(&mut self, dest: VReg, typ: Type, bytes: u8, block: &BlockId) {
+        if bytes >= 4 {
+            return;
+        }
+        let signed = typ.machine_type(self.layouts).is_signed();
+        #[rustfmt::skip]
+        let instr = A64Instr::Extend { dest, src: dest, src_bytes: bytes, dest_bytes: 4, signed };
+        self.lir.push_instr(block, instr);
     }
 
     /// for AND/ORR/EOR: only valid bitmask immediates can be encoded inline,
