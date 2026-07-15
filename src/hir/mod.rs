@@ -1421,6 +1421,25 @@ mod tests {
     }
 
     #[test]
+    fn enum_payload_can_reference_a_later_struct() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            enum Msg {
+                ChangeColour(Colour),
+            }
+
+            struct Colour {
+                r: u8,
+                g: u8,
+                b: u8,
+            }
+        "#;
+
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        assert_eq!(hir.enums[0].variants[0].payload, Some(Type::structure(StructId(0))));
+    }
+
+    #[test]
     fn circular_structs_are_rejected() {
         let arena = bumpalo::Bump::new();
         let src = r#"

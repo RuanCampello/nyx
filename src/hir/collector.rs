@@ -11,7 +11,7 @@ use crate::{
         interfaces, lower,
         scope::{
             FunctionSignature, GenericEnv, InterfaceMethodSignature, InterfaceSignature, Scope,
-            Structs, generic_param_env, intrinsic_method, is_generic_impl, resolve_primitive_type,
+            generic_param_env, intrinsic_method, is_generic_impl, resolve_primitive_type,
         },
         structs,
         symbols::qualified,
@@ -34,8 +34,10 @@ impl<'hir> Scope<'hir> {
         's: 'hir,
     {
         self.collect_docs(declarations);
-        self.extend_enums(declarations)?;
-        self.extend_structs(declarations)?;
+        let structs = self.declare_structs(declarations)?;
+        let enums = self.declare_enums(declarations)?;
+        self.lower_structs(&structs)?;
+        self.lower_enums(&enums)?;
         self.extend_interfaces(declarations)?;
         self.extend_signatures(declarations)?;
         constants::extend(self, declarations, arena)?;
@@ -96,23 +98,22 @@ impl<'hir> Scope<'hir> {
         Ok(lowered)
     }
 
-    fn extend_structs<'d, 's>(
+    fn declare_structs<'d, 's>(
         &mut self,
         declarations: &Declarations<'d, 's>,
-    ) -> Result<(), HirError<'hir>>
+    ) -> Result<Vec<&'d statement::Struct<'s>>, HirError<'hir>>
     where
         's: 'hir,
     {
-        let offset = self.structs.len() as u32;
-        let mut local_map = Structs::new();
-        let mut local_declarations = Vec::new();
+        let mut structs = Vec::new();
 
         for struct_decl in &declarations.structs {
             let symbol = self.symbols.insert(struct_decl.name);
 
             let already_exists = self.struct_map.contains_key(&symbol)
                 || self.enum_map.contains_key(&symbol)
-                || local_map.contains_key(&symbol);
+                || self.generic_structs.contains_key(&symbol)
+                || self.generic_enums.contains_key(&symbol);
 
             if already_exists {
                 self.soft(hir_error!(
@@ -127,20 +128,38 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let local_id = StructId(local_declarations.len() as u32);
-            local_map.insert(symbol, local_id);
-            local_declarations.push((symbol, *struct_decl));
+            let id = StructId((self.structs.len() + structs.len()) as u32);
+            self.struct_map.insert(symbol, id);
+            structs.push(*struct_decl);
         }
 
-        if local_declarations.is_empty() {
+        Ok(structs)
+    }
+
+    fn lower_structs<'s>(
+        &mut self,
+        declarations: &[&statement::Struct<'s>],
+    ) -> Result<(), HirError<'hir>>
+    where
+        's: 'hir,
+    {
+        if declarations.is_empty() {
             return Ok(());
         }
 
+        let local_declarations: Vec<_> = declarations
+            .iter()
+            .map(|declaration| {
+                let symbol =
+                    self.symbols.get_id(declaration.name).expect("declared struct is interned");
+                (symbol, *declaration)
+            })
+            .collect();
         let mut lowered = vec![None; local_declarations.len()];
 
         structs::lower_structs(
             &local_declarations,
-            &local_map,
+            &self.struct_map,
             &self.enum_map,
             &self.arrays,
             &mut self.symbols,
@@ -148,34 +167,27 @@ impl<'hir> Scope<'hir> {
             self.recover.then_some(&mut self.diagnostics),
         )?;
 
-        for mut s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
-            s.id = StructId(s.id.0 + offset);
-            for field in &mut s.fields {
-                if let TypeKind::Struct(mut id) = field.typ.kind() {
-                    id.0 += offset;
-                    field.typ = Type::structure(id);
-                }
-            }
-            self.struct_map.insert(s.name, s.id);
+        for s in lowered.into_iter().map(|s| s.expect("every struct must be lowered")) {
             self.structs.push(s);
         }
 
         Ok(())
     }
 
-    fn extend_enums<'d, 's>(
+    fn declare_enums<'d, 's>(
         &mut self,
         declarations: &Declarations<'d, 's>,
-    ) -> Result<(), HirError<'hir>>
+    ) -> Result<Vec<(EnumId, &'d statement::Enum<'s>)>, HirError<'hir>>
     where
         's: 'hir,
     {
+        let mut enums = Vec::new();
         for enum_decl in &declarations.enums {
             let symbol = self.symbols.insert(enum_decl.name);
             if self.enum_map.contains_key(&symbol)
                 || self.struct_map.contains_key(&symbol)
                 || self.generic_enums.contains_key(&symbol)
-                || declarations.structs.iter().any(|s| s.name == enum_decl.name)
+                || self.generic_structs.contains_key(&symbol)
             {
                 self.soft(hir_error!(enum_decl.span, DuplicateEnum { name: enum_decl.name }))?;
                 continue;
@@ -217,6 +229,21 @@ impl<'hir> Scope<'hir> {
                 payload_offset: 0,
                 generics: Vec::new(),
             });
+            enums.push((id, *enum_decl));
+        }
+
+        Ok(enums)
+    }
+
+    fn lower_enums<'s>(
+        &mut self,
+        declarations: &[(EnumId, &statement::Enum<'s>)],
+    ) -> Result<(), HirError<'hir>>
+    where
+        's: 'hir,
+    {
+        for &(id, enum_decl) in declarations {
+            let symbol = self.enums[id].name;
 
             let mut seen = HashSet::new();
             let mut next_value = 0;

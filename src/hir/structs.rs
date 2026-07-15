@@ -10,7 +10,7 @@ use crate::hir::{
     type_resolver,
 };
 use crate::parser::statement::{self, StructRepr, StructReprKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// One module's struct batch being lowered in topological field order
 struct Lowering<'a, 'h> {
@@ -19,6 +19,7 @@ struct Lowering<'a, 'h> {
     enum_map: &'a Enums,
     arrays: &'a ArrayTable,
     symbols: &'a SymbolTable,
+    local_ids: HashMap<StructId, usize>,
     states: Vec<Visit>,
 }
 
@@ -89,6 +90,11 @@ pub(in crate::hir) fn lower_structs<'h>(
         enum_map,
         arrays,
         symbols,
+        local_ids: declarations
+            .iter()
+            .enumerate()
+            .map(|(index, (symbol, _))| (map[symbol], index))
+            .collect(),
         states: vec![Visit::Unvisited; declarations.len()],
     };
 
@@ -237,7 +243,8 @@ impl<'a, 'h> Lowering<'a, 'h> {
                 };
 
             if let TypeKind::Struct(dep) = typ.kind()
-                && let Err(error) = self.lower_struct(dep.0 as usize, lowered, sink.as_deref_mut())
+                && let Some(&local_id) = self.local_ids.get(&dep)
+                && let Err(error) = self.lower_struct(local_id, lowered, sink.as_deref_mut())
             {
                 // poisoning the back-edge field breaks the by-value cycle, so the
                 // layout engine never recurses through it
@@ -253,7 +260,7 @@ impl<'a, 'h> Lowering<'a, 'h> {
         let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
         let decl_span = declaration.span;
         lowered[id] = Some(Struct {
-            id: StructId(id as u32),
+            id: self.map[&name],
             name,
             decl_span,
             fields,
