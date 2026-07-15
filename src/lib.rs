@@ -1,16 +1,14 @@
 use crate::{diagnostic::Diagnostic, hir::module};
 use std::path::Path;
 
-pub mod analysis;
 pub mod diagnostic;
-pub(crate) mod hir;
-pub(crate) mod lexer;
-pub(crate) mod lir;
-pub(crate) mod mir;
-pub(crate) mod parser;
+pub mod hir;
+pub mod lexer;
+pub mod lir;
+pub mod mir;
+pub mod parser;
 pub mod source_map;
 
-pub use analysis::{Analysis, CheckError, DocumentSymbol, HoverInfo, SemanticAnalysis, SymbolKind};
 pub use diagnostic::{Label, RichDiagnostic, Severity};
 pub use lexer::token::{BytePos, Span};
 pub use lexer::{HasSpan, is_keyword};

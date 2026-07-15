@@ -3,6 +3,7 @@
 //! The binary in `main.rs` serves this over stdio
 //! integration tests boot the same server over an in-memory transport
 
+mod analysis;
 mod convert;
 mod document;
 mod feature;

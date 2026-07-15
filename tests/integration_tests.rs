@@ -10,6 +10,7 @@ struct Case<'c> {
     exit_code: Option<i32>,
 }
 
+// TODO: make this auto generated and derived from the actual files
 const CASES: &[Case] = &[
     Case { name: "add", file: "tests/single/add.nyx", exit_code: None },
     Case {
@@ -81,6 +82,11 @@ const CASES: &[Case] = &[
         name: "target_dependent",
         file: "tests/single/target_dependent.nyx",
         exit_code: Some(77),
+    },
+    Case {
+        name: "loops",
+        file: "tests/single/loops.nyx",
+        exit_code: Some(165),
     },
     Case {
         name: "basic_struct",
@@ -231,6 +237,21 @@ const CASES: &[Case] = &[
         name: "slice_oob_panic",
         file: "tests/single/slice_oob_panic.nyx",
         exit_code: Some(101),
+    },
+    Case {
+        name: "hash",
+        file: "tests/single/hash.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "wrapping_arithmetic",
+        file: "tests/single/wrapping_arithmetic.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "generic_methods",
+        file: "tests/single/generic_methods.nyx",
+        exit_code: Some(42),
     },
 ];
 

@@ -167,6 +167,13 @@ pub enum HirErrorKind<'h> {
     TypeMismatch { expected: Type, found: Type },
 
     #[diagnostic(
+        message = "function {name!} must return {expected!}, but its body can complete without returning a value",
+        primary = "{expected!} is declared here",
+        help = "return {expected!} from every path, or end the body with an expression of type {expected!}"
+    )]
+    MissingReturn { name: &'h str, expected: Type },
+
+    #[diagnostic(
         message = "cannot assign to immutable binding {name!}",
         primary = "{name!} is immutable and cannot be reassigned",
         note = "bindings are immutable by default",
@@ -196,6 +203,37 @@ pub enum HirErrorKind<'h> {
         primary = "index {index} is out of bounds for an array of length {len}"
     )]
     IndexOutOfBounds { index: u64, len: u32 },
+
+    #[diagnostic(
+        message = "range endpoints must be integers",
+        primary = "{typ!} cannot be used as a range endpoint",
+        help = "use an integer type such as {`i32`} or {`uptr`}"
+    )]
+    InvalidRangeType { typ: Type },
+
+
+    // TODO: this should be more generic, because the loop/range 
+    // should just require the copy interface as any other function that requires a generic
+    // interface thing, not a special case for loop + copy
+    #[diagnostic(
+        message = "loop item type {typ!} does not implement {`Copy`}",
+        primary = "this loop copies each element into its binding",
+        help = "implement {`Copy`} for {typ!}, or iterate by reference when that is supported"
+    )]
+    NonCopyLoopItem { typ: Type },
+
+    #[diagnostic(
+        message = "cannot iterate over {typ!}",
+        primary = "this value is not an array or slice",
+        help = "loop iteration currently supports fixed arrays and slices"
+    )]
+    NotIterable { typ: Type },
+
+    #[diagnostic(
+        message = "{kind!} used outside a loop",
+        primary = "this control-flow statement needs an enclosing loop"
+    )]
+    LoopControlOutsideLoop { kind: &'static str },
 
     // TODO: suggest help based on the real user input code
 
@@ -316,7 +354,7 @@ pub enum ConstFnViolationKind<'h> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum CmpInterface {
+pub enum CmpInterface {
     Equality,
     Ordering,
 }

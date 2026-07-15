@@ -1,0 +1,34 @@
+// every iteration builds two 16-byte structs through calls and keeps many
+// values live across them, forcing spills and aggregate-return traffic
+
+struct Pair {
+    a: i64,
+    b: i64,
+}
+
+fn make(i: i64): Pair {
+    Pair { a: i * 3 + 1, b: i * 5 + 2 }
+}
+
+fn churn(n: i64): i64 {
+    let mut acc: i64 = 0;
+    loop i in 0..n {
+        let p = make(i);
+        let q = make(i + 1);
+        let a = p.a + q.b;
+        let b = p.b - q.a;
+        let c = a * 2 + b;
+        let d = b * 2 - a;
+        let e = a + b + c - d;
+        let f = c - b + d;
+        let g = e + f - a;
+        let h = f - e + b;
+        acc = acc + g - h + p.a - q.b;
+    }
+
+    acc
+}
+
+fn main(): i64 {
+    churn(100000)
+}

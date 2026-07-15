@@ -1,0 +1,200 @@
+use std::int;
+use std::default::{Default};
+
+/// A hashable type
+///
+/// Implementations feed the value's data into the given `Hasher`, so any
+/// type can be hashed by any hasher
+pub interface Hash {
+    /// Feeds this value into the given `Hasher`
+    fn hash<H: Hasher>(&self, hasher: &mut H);
+}
+
+/// A streaming hash function
+///
+/// A hasher consumes an arbitrary stream of bytes and produces a 64-bit
+/// hash of everything written so far
+pub interface Hasher {
+    /// Feeds `bytes` into this hasher
+    fn write(&mut self, bytes: &[u8]);
+
+    /// Materialises the hash of the bytes written so far
+    ///
+    /// This does not reset the hasher, writing more bytes afterwards
+    /// continues the same stream
+    fn finish(&self): u64;
+
+    inline fn write_u8(&mut self, value: u8) {
+        let buf: [u8; 1] = [value];
+        self.write(&buf);
+    }
+
+    inline fn write_u16(&mut self, value: u16) {
+        let buf: [u8; 2] = [
+            (value & 255) as u8,
+            ((value >> 8) & 255) as u8,
+        ];
+        self.write(&buf);
+    }
+
+    inline fn write_u32(&mut self, value: u32) {
+        let buf: [u8; 4] = [
+            (value & 255) as u8,
+            ((value >> 8) & 255) as u8,
+            ((value >> 16) & 255) as u8,
+            ((value >> 24) & 255) as u8,
+        ];
+        self.write(&buf);
+    }
+
+    inline fn write_u64(&mut self, value: u64) {
+        let buf: [u8; 8] = [
+            (value & 255) as u8,
+            ((value >> 8) & 255) as u8,
+            ((value >> 16) & 255) as u8,
+            ((value >> 24) & 255) as u8,
+            ((value >> 32) & 255) as u8,
+            ((value >> 40) & 255) as u8,
+            ((value >> 48) & 255) as u8,
+            ((value >> 56) & 255) as u8,
+        ];
+        self.write(&buf);
+    }
+
+    inline fn write_uptr(&mut self, value: uptr) {
+        self.write_u64(value as u64);
+    }
+
+    inline fn write_i8(&mut self, value: i8) {
+        self.write_u8(value as u8);
+    }
+
+    inline fn write_i16(&mut self, value: i16) {
+        self.write_u16(value as u16);
+    }
+
+    inline fn write_i32(&mut self, value: i32) {
+        self.write_u32(value as u32);
+    }
+
+    inline fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
+    }
+
+    inline fn write_iptr(&mut self, value: iptr) {
+        self.write_uptr(value as uptr);
+    }
+}
+
+/// 64-bit FNV-1a hasher
+///
+/// A fast, non-cryptographic hash with good dispersion for short keys
+pub struct Fnv64 {
+    state: u64,
+}
+
+const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
+const FNV_PRIME: u64 = 1099511628211;
+
+impl Fnv64 {
+    pub fn new(): Fnv64 {
+        Fnv64 { state: FNV_OFFSET_BASIS }
+    }
+}
+
+impl Fnv64 with Default {
+    fn default(): Self {
+        Fnv64::new()
+    }
+}
+
+impl Fnv64 with Hasher {
+    fn write(&mut self, bytes: &[u8]) {
+        loop i in 0..bytes.len() {
+            self.state = (self.state ^ (bytes[i] as u64)).wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    fn finish(&self): u64 {
+        self.state
+    }
+}
+
+/// Hashes a single value with the default hasher
+pub fn hash_of<T: Hash>(value: &T): u64 {
+    let mut hasher = Fnv64::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl u8 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u8(*self);
+    }
+}
+
+impl u16 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u16(*self);
+    }
+}
+
+impl u32 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u32(*self);
+    }
+}
+
+impl u64 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u64(*self);
+    }
+}
+
+impl uptr with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_uptr(*self);
+    }
+}
+
+impl i8 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_i8(*self);
+    }
+}
+
+impl i16 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_i16(*self);
+    }
+}
+
+impl i32 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_i32(*self);
+    }
+}
+
+impl i64 with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_i64(*self);
+    }
+}
+
+impl iptr with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_iptr(*self);
+    }
+}
+
+impl bool with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u8((*self) as u8);
+    }
+}
+
+impl char with Hash {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u32((*self) as u32);
+    }
+}

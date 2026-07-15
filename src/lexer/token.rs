@@ -26,7 +26,7 @@ pub struct BytePos(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'src> {
-    Integer(i64),
+    Integer(u64),
     Float(f64),
     String(&'src str),
     Char(char),
@@ -34,7 +34,7 @@ pub enum TokenKind<'src> {
     Identifier(&'src str),
     Keyword(Keyword),
     Punct(Punct),
-    /// A `///` line; the text is everything after the slashes up to the newline.
+    /// A `///` line, the text is everything after the slashes up to the newline
     DocComment(&'src str),
     Eof,
 }
@@ -48,7 +48,10 @@ pub enum Keyword {
     If,
     Else,
     Return,
-    While,
+    Loop,
+    Break,
+    Continue,
+    In,
     For,
     Struct,
     Enum,
@@ -103,6 +106,8 @@ pub enum Punct {
     Semicolon,  // ;
     Comma,      // ,
     Dot,        // .
+    Range,      // ..
+    RangeEq,    // ..=
     Arrow,      // ->
 }
 
@@ -229,7 +234,10 @@ impl Keyword {
             Self::If => "if",
             Self::Else => "else",
             Self::Return => "return",
-            Self::While => "while",
+            Self::Loop => "loop",
+            Self::Break => "break",
+            Self::Continue => "continue",
+            Self::In => "in",
             Self::For => "for",
             Self::Struct => "struct",
             Self::Enum => "enum",
@@ -258,7 +266,10 @@ impl std::str::FromStr for Keyword {
             "if" => Self::If,
             "else" => Self::Else,
             "return" => Self::Return,
-            "while" => Self::While,
+            "loop" => Self::Loop,
+            "break" => Self::Break,
+            "continue" => Self::Continue,
+            "in" => Self::In,
             "for" => Self::For,
             "struct" => Self::Struct,
             "enum" => Self::Enum,
@@ -316,6 +327,8 @@ impl Punct {
             Self::Semicolon => ";",
             Self::Comma => ",",
             Self::Dot => ".",
+            Self::Range => "..",
+            Self::RangeEq => "..=",
             Self::Arrow => "->",
         }
     }

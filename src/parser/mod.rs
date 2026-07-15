@@ -149,7 +149,7 @@ impl<'i> Parser<'i> {
     pub fn expect_unsigned_literal(&mut self) -> Result<u64, ParserError<'i>> {
         let token = self.expect_next()?;
         match token.kind {
-            TokenKind::Integer(n) if n >= 0 => Ok(n as u64),
+            TokenKind::Integer(n) => Ok(n),
             _ => Err(ParserError::new(
                 ParseErrorKind::ExpectedExpression { found: token.kind },
                 token.span,
@@ -249,7 +249,7 @@ mod tests {
         lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Item, ItemKind, Let, Return, Type},
+            statement::{Item, ItemKind, Let, Loop, LoopHeader, Return, Type},
         },
     };
 
@@ -761,6 +761,41 @@ mod tests {
         assert_eq!(*count, 4);
 
         assert!(matches!(&body[2], Statement::Expr(Expression::Index { .. }, _)));
+    }
+
+    #[test]
+    fn loop_forms_parse() {
+        let stmts = Parser::new(
+            "fn f(){loop {} loop 0..10 {} loop value in 0..=10 {} loop item in values { continue; }}",
+        )
+        .parse()
+        .unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &stmts[0] else {
+            panic!("expected function");
+        };
+
+        assert!(matches!(
+            function.body.statements[0],
+            Statement::Loop(Loop { header: LoopHeader::Infinite, .. })
+        ));
+        assert!(matches!(
+            function.body.statements[1],
+            Statement::Loop(Loop {
+                header: LoopHeader::Range { binding: None, inclusive: false, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            function.body.statements[2],
+            Statement::Loop(Loop {
+                header: LoopHeader::Range { binding: Some(_), inclusive: true, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            function.body.statements[3],
+            Statement::Loop(Loop { header: LoopHeader::Iterable { .. }, .. })
+        ));
     }
 
     #[test]

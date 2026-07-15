@@ -13,6 +13,10 @@ impl i8 {
     pub inline const fn signum(&self): i8 {
         ((*self > 0) as i8) - ((*self < 0) as i8)
     }
+
+    pub inline const fn wrapping_add(&self, rhs: i8): i8 {}
+    pub inline const fn wrapping_sub(&self, rhs: i8): i8 {}
+    pub inline const fn wrapping_mul(&self, rhs: i8): i8 {}
 }
 
 impl u8 {
@@ -23,6 +27,10 @@ impl u8 {
     pub inline const fn is_power_of_two(&self): bool {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
+
+    pub inline const fn wrapping_add(&self, rhs: u8): u8 {}
+    pub inline const fn wrapping_sub(&self, rhs: u8): u8 {}
+    pub inline const fn wrapping_mul(&self, rhs: u8): u8 {}
 }
 
 impl i16 {
@@ -38,6 +46,10 @@ impl i16 {
     pub inline const fn signum(&self): i16 {
         ((*self > 0) as i16) - ((*self < 0) as i16)
     }
+
+    pub inline const fn wrapping_add(&self, rhs: i16): i16 {}
+    pub inline const fn wrapping_sub(&self, rhs: i16): i16 {}
+    pub inline const fn wrapping_mul(&self, rhs: i16): i16 {}
 }
 
 impl u16 {
@@ -48,6 +60,10 @@ impl u16 {
     pub inline const fn is_power_of_two(&self): bool {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
+
+    pub inline const fn wrapping_add(&self, rhs: u16): u16 {}
+    pub inline const fn wrapping_sub(&self, rhs: u16): u16 {}
+    pub inline const fn wrapping_mul(&self, rhs: u16): u16 {}
 }
 
 impl i32 {
@@ -63,6 +79,10 @@ impl i32 {
     pub inline const fn signum(&self): i32 {
         ((*self > 0) as i32) - ((*self < 0) as i32)
     }
+
+    pub inline const fn wrapping_add(&self, rhs: i32): i32 {}
+    pub inline const fn wrapping_sub(&self, rhs: i32): i32 {}
+    pub inline const fn wrapping_mul(&self, rhs: i32): i32 {}
 }
 
 impl u32 {
@@ -73,6 +93,10 @@ impl u32 {
     pub inline const fn is_power_of_two(&self): bool {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
+
+    pub inline const fn wrapping_add(&self, rhs: u32): u32 {}
+    pub inline const fn wrapping_sub(&self, rhs: u32): u32 {}
+    pub inline const fn wrapping_mul(&self, rhs: u32): u32 {}
 }
 
 impl i64 {
@@ -88,6 +112,10 @@ impl i64 {
     pub inline const fn signum(&self): i64 {
         ((*self > 0) as i64) - ((*self < 0) as i64)
     }
+
+    pub inline const fn wrapping_add(&self, rhs: i64): i64 {}
+    pub inline const fn wrapping_sub(&self, rhs: i64): i64 {}
+    pub inline const fn wrapping_mul(&self, rhs: i64): i64 {}
 }
 
 impl u64 {
@@ -98,6 +126,10 @@ impl u64 {
     pub inline const fn is_power_of_two(&self): bool {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
+
+    pub inline const fn wrapping_add(&self, rhs: u64): u64 {}
+    pub inline const fn wrapping_sub(&self, rhs: u64): u64 {}
+    pub inline const fn wrapping_mul(&self, rhs: u64): u64 {}
 }
 
 impl iptr {
@@ -113,6 +145,10 @@ impl iptr {
     pub inline const fn signum(&self): iptr {
         ((*self > 0) as iptr) - ((*self < 0) as iptr)
     }
+
+    pub inline const fn wrapping_add(&self, rhs: iptr): iptr {}
+    pub inline const fn wrapping_sub(&self, rhs: iptr): iptr {}
+    pub inline const fn wrapping_mul(&self, rhs: iptr): iptr {}
 }
 
 impl uptr {
@@ -123,4 +159,8 @@ impl uptr {
     pub inline const fn is_power_of_two(&self): bool {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
+
+    pub inline const fn wrapping_add(&self, rhs: uptr): uptr {}
+    pub inline const fn wrapping_sub(&self, rhs: uptr): uptr {}
+    pub inline const fn wrapping_mul(&self, rhs: uptr): uptr {}
 }

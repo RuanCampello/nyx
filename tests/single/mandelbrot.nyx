@@ -11,7 +11,8 @@ fn mandelbrot(cr: i32, ci: i32, max_iter: i32): i32 {
 	  let mut iter = 0;
 	  let scale = 100; 
 
-	  while iter < max_iter {
+	  loop {
+			  if iter >= max_iter { break; }
 			  let zr_sq = (zr * zr) / scale;
 			  let zi_sq = (zi * zi) / scale;
 

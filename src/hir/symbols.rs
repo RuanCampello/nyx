@@ -53,10 +53,6 @@ impl<'m> Mangler<'m> {
         Self { module }
     }
 
-    pub fn default() -> Self {
-        Self::new(Self::DEFAULT_MODULE)
-    }
-
     pub fn item(&self, name: &str) -> String {
         format!("{}::{name}", self.module)
     }
@@ -67,6 +63,12 @@ impl<'m> Mangler<'m> {
 
     pub fn interface_item(&self, scope: &str, interface: &str, name: &str) -> String {
         format!("{}::{scope}::{interface}::{name}", self.module)
+    }
+}
+
+impl<'m> Default for Mangler<'m> {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_MODULE)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::{
-    hir::{SymbolTable, SyscallCode, Type, TypeKind},
-    lir::{self, BlockId, Layouts, MachineType, VReg, assembly_label, regalloc},
+    hir::{FunctionId, Intrinsic, SymbolTable, SyscallCode, Type, TypeKind},
+    lir::{self, BlockId, Layouts, MachineType, Term, VReg, assembly_label, regalloc},
     mir::{self, Const, Function, Operand, ValueId},
 };
 
@@ -170,11 +170,40 @@ where
     /// Materialise the frame-relative address of stack slot `origin` into `dest`
     fn load_stack_addr(dest: VReg, origin: VReg) -> Self::Instruction;
 
+    /// Abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
+    fn bounds_check(index: VReg, bound: Self::Operand) -> Self::Instruction;
+
+    /// Emit `dest = lhs * imm`
+    fn mul_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, imm: i64);
+
+    /// Emit `dest = lhs + rhs`
+    fn add_vregs(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, rhs: VReg);
+
+    /// Emit `dest = dest + imm`
+    fn add_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, imm: i64);
+
+    /// Build a call instruction; `aggregate_ret` carries the precoloured VRegs a
+    /// small aggregate is returned in
+    fn build_call(
+        target: String,
+        moves: CallArgMoves<Self>,
+        stack_args: StackArgs<Self>,
+        ret: Option<VReg>,
+        aggregate_ret: Vec<VReg>,
+    ) -> Self::Instruction;
+
+    /// The per-register `(offset, bytes, reg)` chunks a small aggregate is returned
+    /// in, or `None` when it must go through an sret pointer
+    #[inline(always)]
+    fn small_aggregate_return(_typ: Type, _layouts: Layouts) -> Option<Vec<(i32, u8, Self::Reg)>> {
+        None
+    }
+
     /// Whether a value of type `typ` is returned through an implicit sret pointer
     /// argument rather than in registers
     #[inline(always)]
-    fn uses_sret(typ: Type, _layouts: Layouts) -> bool {
-        typ.is_aggregate()
+    fn uses_sret(typ: Type, layouts: Layouts) -> bool {
+        typ.is_aggregate() && Self::small_aggregate_return(typ, layouts).is_none()
     }
 }
 
@@ -347,9 +376,9 @@ where
 
     /// translate a MIR operand into a target-specific operand
     #[inline(always)]
-    pub(crate) fn lower_operand(&mut self, op: &Operand) -> T::Operand {
+    pub(crate) fn lower_operand(&mut self, op: &Operand, block: &BlockId) -> T::Operand {
         let value = &self.value;
-        lower_operand(&mut self.lir, op, |vid| value[vid])
+        lower_operand(&mut self.lir, op, block, |vid| value[vid])
     }
 
     /// materialise the frame-relative address of a stack slot into a fresh VReg
@@ -427,6 +456,298 @@ where
             *reg_idx += 1;
         }
     }
+
+    /// bounds-checked element pointer: `base address + index * stride`,
+    /// written into `dest` when given, a fresh VReg otherwise
+    fn element_addr_into(
+        &mut self,
+        block: &BlockId,
+        dest: Option<VReg>,
+        base: VReg,
+        base_is_ref: bool,
+        index: &Operand,
+        bound: &Operand,
+        stride: u32,
+    ) -> VReg {
+        let int8 = MachineType::Int { bytes: 8, signed: false };
+
+        let index_op = self.lower_operand(index, block);
+        let index = match index_op.as_vreg() {
+            Some(vreg) => vreg,
+            None => {
+                let dest = self.lir.new_vreg(int8);
+                self.lir.push_instr(block, T::mov_op(dest, index_op, 8, false));
+                dest
+            },
+        };
+        let bound = self.lower_operand(bound, block);
+        self.lir.push_instr(block, T::bounds_check(index, bound));
+
+        let addr = self.lir.new_vreg(int8);
+        match base_is_ref {
+            true => {
+                let src = T::Operand::from_vreg(base);
+                self.lir.push_instr(block, T::mov_op(addr, src, 8, false));
+            },
+            false => self.lir.push_instr(block, T::load_stack_addr(addr, base)),
+        }
+
+        let offset = self.lir.new_vreg(int8);
+        T::mul_imm(&mut self.lir, block, offset, index, stride as i64);
+
+        let element = dest.unwrap_or_else(|| self.lir.new_vreg(int8));
+        T::add_vregs(&mut self.lir, block, element, addr, offset);
+        element
+    }
+
+    pub(crate) fn lower_element_load(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        base: &Operand,
+        index: &Operand,
+        bound: &Operand,
+        stride: u32,
+        typ: Type,
+    ) {
+        let Operand::Place(base) = base else {
+            unreachable!("indexing a constant aggregate");
+        };
+        let origin = self.value[base.id];
+        let is_ref = matches!(base.typ.kind(), TypeKind::Ref { .. });
+        let element = self.element_addr_into(block, None, origin, is_ref, index, bound, stride);
+
+        match typ.is_aggregate() {
+            true => {
+                let size = typ.machine_type(self.layouts).stack_size() as u32;
+                let copy = AggregateCopy::new(element, dest, size).with_src_ref();
+                aggregate_copy(&mut self.lir, block, copy);
+            },
+            false => {
+                let mt = typ.machine_type(self.layouts);
+                let load =
+                    T::ptr_load(dest, element, 0, mt.bytes(), typ.is_float(), mt.is_signed());
+                self.lir.push_instr(block, load);
+            },
+        }
+    }
+
+    pub(crate) fn lower_element_store(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        dest_typ: Type,
+        index: &Operand,
+        bound: &Operand,
+        value: &Operand,
+        stride: u32,
+    ) {
+        let is_ref = matches!(dest_typ.kind(), TypeKind::Ref { .. });
+        let element = self.element_addr_into(block, None, dest, is_ref, index, bound, stride);
+
+        let value_typ = value.typ();
+        match value_typ.is_aggregate() {
+            true => {
+                let Operand::Place(src) = value else {
+                    unreachable!("aggregate element store source must be a place");
+                };
+                let src = self.value[src.id];
+                let size = value_typ.machine_type(self.layouts).stack_size() as u32;
+                let copy = AggregateCopy::new(src, element, size).with_dest_ref();
+                aggregate_copy(&mut self.lir, block, copy);
+            },
+            false => {
+                let mt = value_typ.machine_type(self.layouts);
+                let src = self.lower_operand(value, block);
+                let store = T::ptr_store(element, src, 0, mt.bytes(), value_typ.is_float());
+                self.lir.push_instr(block, store);
+            },
+        }
+    }
+
+    pub(crate) fn lower_element_addr(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        base: &Operand,
+        index: &Operand,
+        bound: &Operand,
+        stride: u32,
+    ) {
+        let base = match base {
+            Operand::Place(place) => place,
+            Operand::Const(_) => unreachable!("indexing a constant aggregate"),
+        };
+        let origin = self.value[base.id];
+        let is_ref = matches!(base.typ.kind(), TypeKind::Ref { .. });
+        self.element_addr_into(block, Some(dest), origin, is_ref, index, bound, stride);
+    }
+
+    pub(crate) fn lower_address_of(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        src: &mir::Place,
+        offset: u32,
+    ) {
+        let origin = self.value[src.id];
+        match src.typ.kind() {
+            TypeKind::Ref { .. } => {
+                let src = T::Operand::from_vreg(origin);
+                self.lir.push_instr(block, T::mov_op(dest, src, 8, false));
+            },
+            _ => self.lir.push_instr(block, T::load_stack_addr(dest, origin)),
+        }
+
+        if offset != 0 {
+            T::add_imm(&mut self.lir, block, dest, offset as i64);
+        }
+    }
+
+    pub(crate) fn lower_call(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        callee_id: FunctionId,
+        args: &[Operand],
+    ) {
+        let callee_fn = self
+            .all_functions
+            .iter()
+            .find(|f| f.id == callee_id)
+            .unwrap_or_else(|| panic!("callee function {callee_id:?} not found"));
+
+        if callee_fn.intrinsic == Some(Intrinsic::Len) {
+            let ptr = self.operand(&args[0], block);
+            let load = T::ptr_load(dest, ptr, 8, 8, false, false);
+            return self.lir.push_instr(block, load);
+        }
+
+        let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
+        let return_type = callee_fn.return_type;
+        let aggregate_ret = match return_type.is_aggregate() {
+            true => T::small_aggregate_return(return_type, self.layouts).unwrap_or_default(),
+            false => Vec::new(),
+        };
+
+        let mut int_idx = 0;
+        let mut moves = Vec::new();
+        if return_type.is_aggregate() && aggregate_ret.is_empty() {
+            let ptr = self.stack_addr(block, dest);
+            let abi_reg = T::param(int_idx, RegClass::Int)
+                .expect("sret pointer must fit in the first integer argument register");
+            moves.push((ptr, abi_reg));
+            int_idx += 1;
+        }
+
+        let value = &self.value;
+        let layouts = self.layouts;
+        let (arg_moves, stack_args) = prepare_call_args(
+            &mut self.lir,
+            block,
+            args,
+            layouts,
+            |vid| value[vid],
+            |lir, op, block| operand(lir, op, block, layouts, |vid| value[vid]),
+            |lir, op, block| lower_operand(lir, op, block, |vid| value[vid]),
+            |lir, block, origin| {
+                let dest = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+                lir.push_instr(block, T::load_stack_addr(dest, origin));
+                dest
+            },
+            int_idx,
+            0,
+        );
+        moves.extend(arg_moves);
+
+        let ret =
+            (return_type.kind() != TypeKind::Unit && !return_type.is_aggregate()).then_some(dest);
+        let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
+        for &(_, bytes, reg) in &aggregate_ret {
+            let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
+            self.lir.add_precolour(vreg, reg);
+            ret_vregs.push(vreg);
+        }
+
+        let call = T::build_call(callee, moves, stack_args, ret, ret_vregs.clone());
+        self.lir.push_instr(block, call);
+
+        for ((offset, bytes, _), src) in aggregate_ret.into_iter().zip(ret_vregs) {
+            let src = T::Operand::from_vreg(src);
+            let store = T::field_store(dest, src, offset, bytes, false);
+            self.lir.push_instr(block, store);
+        }
+    }
+
+    pub(crate) fn lower_terminator(&mut self, block: &BlockId, terminator: mir::Terminator) {
+        use mir::Terminator as MirTerm;
+
+        let terminator = match terminator {
+            MirTerm::Return(None) => Term::Return(None),
+            MirTerm::Return(Some(operand)) if operand.typ().is_aggregate() => {
+                let typ = operand.typ();
+                let Operand::Place(place) = operand else {
+                    unreachable!("aggregate return source must be a place");
+                };
+                let src_vreg = self.value[place.id];
+
+                match T::small_aggregate_return(typ, self.layouts) {
+                    Some(chunks) => {
+                        for (offset, bytes, reg) in chunks {
+                            let ret = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
+                            let load = T::field_load(ret, src_vreg, offset, bytes, false, false);
+                            self.lir.add_precolour(ret, reg);
+                            self.lir.push_instr(block, load);
+                        }
+                    },
+                    None => {
+                        let sret_ptr = self
+                            .sret_ptr
+                            .expect("struct-returning function must have an sret pointer");
+                        let size = typ.machine_type(self.layouts).stack_size() as u32;
+                        let copy = AggregateCopy::new(src_vreg, sret_ptr, size).with_dest_ref();
+                        aggregate_copy(&mut self.lir, block, copy);
+                    },
+                }
+
+                Term::Return(None)
+            },
+            MirTerm::Return(Some(operand)) => Term::Return(Some(self.operand(&operand, block))),
+            MirTerm::Jump(target) => Term::Jump(target.into()),
+            MirTerm::Branch { condition, then_block, else_block } => Term::Branch {
+                cond: self.operand(&condition, block),
+                then_block: then_block.into(),
+                else_block: else_block.into(),
+            },
+        };
+
+        self.lir.set_term(block, terminator);
+    }
+}
+
+/// aggregates of at most 16 bytes and no float members are returned directly in
+/// the two integer return registers, the per-register `(offset, bytes, reg)`
+/// chunks are produced by the same walk both abis share
+pub fn small_aggregate_chunks<R: Copy>(
+    regs: [R; 2],
+    typ: Type,
+    layouts: Layouts,
+) -> Option<Vec<(i32, u8, R)>> {
+    let size = typ.machine_type(layouts).stack_size() as u32;
+    let contains_float = match typ.kind() {
+        TypeKind::Struct(sid) => layouts.structs[sid.0 as usize].contains_float(),
+        _ => false,
+    };
+    if size == 0 || size > 16 || contains_float {
+        return None;
+    }
+
+    Some(
+        lir::aggregate_chunks(size)
+            .zip(regs)
+            .map(|((offset, bytes), reg)| (offset, bytes, reg))
+            .collect(),
+    )
 }
 
 /// Serialise a set of parallel register moves without data corruption
@@ -469,6 +790,29 @@ pub fn resolve_parallel_moves<Reg, Ctx, FMove, FCycle>(
 pub fn lower_operand<T: TargetOps>(
     lir: &mut lir::Function<T>,
     op: &Operand,
+    block: &BlockId,
+    vreg_map: impl FnMut(ValueId) -> VReg,
+) -> T::Operand
+where
+    T::Operand: TargetOperand,
+{
+    if let Operand::Const(Const::Int(n, _)) = op
+        && i32::try_from(*n).is_err()
+    {
+        let vreg = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+        let mov = T::mov_op(vreg, T::Operand::from_imm(*n), 8, false);
+        lir.push_instr(block, mov);
+        return T::Operand::from_vreg(vreg);
+    }
+
+    raw_operand(lir, op, vreg_map)
+}
+
+/// lower an operand without wide-immediate materialisation, only valid where
+/// the consuming instruction can carry a full 64-bit immediate
+fn raw_operand<T: TargetOps>(
+    lir: &mut lir::Function<T>,
+    op: &Operand,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
 ) -> T::Operand
 where
@@ -507,7 +851,7 @@ where
     T::Operand: TargetOperand,
 {
     let bytes = c.typ().machine_type(layouts).bytes();
-    let src = lower_operand(lir, &Operand::Const(*c), |_| unreachable!());
+    let src = raw_operand(lir, &Operand::Const(*c), |_| unreachable!());
 
     T::mov_op(dest, src, bytes, c.typ().is_float())
 }

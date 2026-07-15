@@ -122,3 +122,9 @@ pub fn assert_eq<A, B>(left: A, right: B) where A: PartialEq<B> { ... }
 ### Compilation Model
 
 Nyx uses static monomorphisation. Generic definitions are stored as template representations in the High-level IR (HIR) and lowered on-demand. When a generic definition is referenced with concrete type arguments, the compiler specialises the function or type, name-mangling the resulting instance (e.g. `Optional$i32`) to produce a distinct monomorphic definition in the Mid-level IR (MIR).
+
+## Integers
+
+An integer literal is lexed as an unsigned 64-bit magnitude; a leading `-` is a separate unary operator, not part of the literal. This mirrors Rust's literal model and keeps the full `u64` range (and `i64::MIN`) representable.
+
+Integer `+`, `-` and `*` panic on overflow in `debug` builds and wrap at the `sane`/`max` optimisation levels. The `wrapping_*` methods are intrinsics exempt from the check, so wrap-around algorithms (hashing, PRNGs) behave identically at every level.

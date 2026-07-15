@@ -1,10 +1,10 @@
-use crate::hir::module;
-use crate::hir::{
+use nyx::hir::module;
+use nyx::hir::{
     self, Block, Constant, Enum, ExpressionKind, Function, FunctionId, FunctionKind, Hir, Literal,
     Local, LocalId, Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
     TypeckResults, index_vec::IndexVec,
 };
-use crate::{
+use nyx::{
     diagnostic::AsDiagnostic,
     lexer::{HasSpan, token::Span},
     source_map::{FileId, SourceMap},
@@ -88,7 +88,7 @@ pub enum SymbolKind {
 const MAX_HOVER_ITEMS: usize = 5;
 
 /// A single compile-time error in structured form so consumers can render it as richly as the CLI
-pub type CheckError = crate::diagnostic::RichDiagnostic;
+type CheckError = nyx::diagnostic::RichDiagnostic;
 
 impl Analysis {
     /// Create a new analysis builder starting at the given entry path.
@@ -97,6 +97,7 @@ impl Analysis {
     }
 
     /// Add a single in-memory file overlay (e.g. unsaved editor buffer).
+    #[cfg(test)]
     pub fn with_overlay(mut self, path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
         self.overlays.insert(path.into(), content.into());
         self
@@ -135,7 +136,7 @@ impl Analysis {
         .recovering();
 
         let result = loader.load(&self.entry);
-        let source_map = crate::diagnostic::take_source_map();
+        let source_map = nyx::diagnostic::take_source_map();
 
         let mut analysis = match result {
             // recovery keeps a (partial) HIR even with errors: surface every
@@ -157,11 +158,9 @@ impl Analysis {
     }
 }
 
-impl<'hir> Hir<'hir> {
-    #[inline]
-    fn doc_text(&self, decl_span: Span) -> Option<String> {
-        self.docs.get(&decl_span).map(|docs| docs.to_string())
-    }
+#[inline]
+fn doc_text(hir: &Hir<'_>, decl_span: Span) -> Option<String> {
+    hir.docs.get(&decl_span).map(|docs| docs.to_string())
 }
 
 impl<'a, 'h> Walker<'a, 'h> {
@@ -212,12 +211,19 @@ impl<'a, 'h> Walker<'a, 'h> {
                     self.block(eb);
                 }
             },
-            Statement::While { condition, body } => {
-                self.expr(condition);
+            Statement::Loop { kind, body } => {
+                match kind {
+                    hir::LoopKind::Infinite => {},
+                    hir::LoopKind::Range { start, end, .. } => {
+                        self.expr(start);
+                        self.expr(end);
+                    },
+                    hir::LoopKind::Iterable { iterable, .. } => self.expr(iterable),
+                }
                 self.block(body);
             },
             Statement::Block(b) => self.block(b),
-            Statement::Return(None) => {},
+            Statement::Return(None) | Statement::Break | Statement::Continue => {},
         }
     }
 
@@ -265,6 +271,11 @@ impl<'a, 'h> Walker<'a, 'h> {
         match &expr.kind {
             ExpressionKind::Local(id) => {
                 self.defs.insert(expr.span, self.locals[*id].decl_span);
+            },
+            // a leaf here: the value tree belongs to the definition site and
+            // lives in the constant's own ExprId space
+            ExpressionKind::Const(constant) => {
+                self.defs.insert(expr.span, constant.decl_span);
             },
             ExpressionKind::Call { callee, args } => {
                 if let Some(target) = resolved {
@@ -536,12 +547,12 @@ fn type_hover(
         TypeKind::Struct(id) => {
             let structure = &hir.structs[id];
             let path = module_of(map, modules, structure.decl_span);
-            (path, struct_def(structure, hir), hir.doc_text(structure.decl_span))
+            (path, struct_def(structure, hir), doc_text(hir, structure.decl_span))
         },
         TypeKind::Enum(id) => {
             let enumeration = &hir.enums[id];
             let path = module_of(map, modules, enumeration.decl_span);
-            (path, enum_def(enumeration, hir), hir.doc_text(enumeration.decl_span))
+            (path, enum_def(enumeration, hir), doc_text(hir, enumeration.decl_span))
         },
         _ => return None,
     };
@@ -584,7 +595,7 @@ fn const_hover(
         path,
         ty,
         layout: None,
-        docs: hir.doc_text(constant.decl_span),
+        docs: doc_text(hir, constant.decl_span),
     }
 }
 
@@ -592,7 +603,7 @@ fn const_hover(
 // in the future instead of ad-hoc resolution here
 
 fn const_value(constant: &Constant<'_>, hir: &Hir<'_>) -> Option<String> {
-    use crate::parser::expression::UnaryOperator;
+    use nyx::parser::expression::UnaryOperator;
 
     match &constant.value.kind {
         ExpressionKind::Literal(Literal::Float(value)) => Some(value.to_string()),
@@ -617,7 +628,7 @@ fn const_value(constant: &Constant<'_>, hir: &Hir<'_>) -> Option<String> {
 }
 
 fn eval_const_int(expr: &hir::Expression<'_>, hir: &Hir<'_>) -> Option<i128> {
-    use crate::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
+    use nyx::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
 
     match &expr.kind {
         ExpressionKind::Literal(Literal::Int(value)) => Some(*value as i128),
@@ -695,7 +706,7 @@ fn fn_hover(
         ty = format!("impl {implementor}\n{ty}");
     }
 
-    HoverInfo { path, ty, layout: None, docs: hir.doc_text(func.decl_span) }
+    HoverInfo { path, ty, layout: None, docs: doc_text(hir, func.decl_span) }
 }
 
 #[inline]

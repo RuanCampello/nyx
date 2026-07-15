@@ -14,8 +14,16 @@ use std::{
 };
 
 /// **std** modules loaded eagerly so their inherent methods and interface are always in scope without an explicit `use`
-const PRELUDE: &[&str] =
-    &["int.nyx", "float.nyx", "char.nyx", "default.nyx", "cmp.nyx", "slice.nyx"];
+const PRELUDE: &[&str] = &[
+    "int.nyx",
+    "float.nyx",
+    "char.nyx",
+    "clone.nyx",
+    "mem.nyx",
+    "default.nyx",
+    "cmp.nyx",
+    "slice.nyx",
+];
 
 #[derive(Debug)]
 pub(super) struct ModuleGraph<'src> {
@@ -77,15 +85,23 @@ pub(super) fn build_graph<'src, F: FileSystem>(
 
 impl<'src> ModuleGraph<'src> {
     pub(super) fn all_nodes_order(&self) -> Vec<usize> {
+        let mut adjacency = vec![Vec::new(); self.nodes.len()];
+        for &(from, to) in &self.edges {
+            adjacency[from].push(to);
+        }
+        for deps in &mut adjacency {
+            deps.sort_by(|a, b| self.nodes[*a].path.cmp(&self.nodes[*b].path));
+        }
+
         let mut visited = HashSet::new();
         let mut order = Vec::new();
-        self.visit(self.entry, &mut visited, &mut order);
+        self.visit(self.entry, &adjacency, &mut visited, &mut order);
 
         let mut detached: Vec<_> =
             (0..self.nodes.len()).filter(|idx| !visited.contains(idx)).collect();
         detached.sort_by(|a, b| self.nodes[*a].path.cmp(&self.nodes[*b].path));
         for idx in detached {
-            self.visit(idx, &mut visited, &mut order);
+            self.visit(idx, &adjacency, &mut visited, &mut order);
         }
 
         order
@@ -102,20 +118,19 @@ impl<'src> ModuleGraph<'src> {
             .collect()
     }
 
-    fn visit(&self, idx: usize, visited: &mut HashSet<usize>, order: &mut Vec<usize>) {
+    fn visit(
+        &self,
+        idx: usize,
+        adjacency: &[Vec<usize>],
+        visited: &mut HashSet<usize>,
+        order: &mut Vec<usize>,
+    ) {
         if !visited.insert(idx) {
             return;
         }
 
-        let mut deps: Vec<_> = self
-            .edges
-            .iter()
-            .filter_map(|&(from, to)| (from == idx).then_some(to))
-            .collect();
-        deps.sort_by(|a, b| self.nodes[*a].path.cmp(&self.nodes[*b].path));
-
-        for dep in deps {
-            self.visit(dep, visited, order);
+        for &dep in &adjacency[idx] {
+            self.visit(dep, adjacency, visited, order);
         }
 
         order.push(idx);

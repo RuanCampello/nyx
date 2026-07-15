@@ -6,7 +6,16 @@ use std::time::Duration;
 const PROGRAMS: &[(&str, &str)] = &[
     ("mandelbrot", include_str!("../tests/single/mandelbrot.nyx")),
     ("nth_prime", include_str!("../tests/single/nth_prime.nyx")),
+    ("struct_pressure", include_str!("fixtures/struct_pressure.nyx")),
 ];
+
+fn main_symbol(asm: &str) -> String {
+    asm.lines()
+        .filter_map(|line| line.trim().strip_prefix(".globl "))
+        .find(|label| label.ends_with("main"))
+        .expect("assembly must export a main entry")
+        .to_string()
+}
 
 fn build(name: &str, asm: &str) -> PathBuf {
     let temp_dir = std::env::temp_dir();
@@ -49,10 +58,11 @@ fn execution(c: &mut Criterion) {
 
     for (name, src) in PROGRAMS {
         let asm = nyx::compile(src).expect("program must be compilable");
+        let symbol = format!("{}\0", main_symbol(&asm));
         let path = build(name, &asm);
         let lib = unsafe { Library::new(&path).expect("couldn't load library") };
         let main: Symbol<unsafe extern "C" fn() -> i32> =
-            unsafe { lib.get(b"nyx_main\0").expect("failed to solve main") };
+            unsafe { lib.get(symbol.as_bytes()).expect("failed to solve main") };
 
         group.bench_function(*name, |b| {
             b.iter(|| {

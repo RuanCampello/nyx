@@ -5,9 +5,7 @@ fn main(): i32 {
     let s: &[i32] = &a;
 
     let mut i = 0;
-    while i < 3 {
-        i = i + 1;
-    }
+    loop { if i >= 3 { break; } i = i + 1; }
 
     s[i]
 }

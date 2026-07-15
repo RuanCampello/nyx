@@ -1,17 +1,14 @@
 // power — integer exponentiation by repeated multiplication
 //
-// computes base^exp using a while loop.
-// shows: multiple function params, while, let mut.
+// computes base^exp using a range loop.
+// shows: multiple function params, ranges, let mut.
 //
 // exit code: power(2, 6) = 64
 
 fn power(base: i32, exp: i32): i32 {
     let mut result: i32 = 1;
-    let mut i: i32 = 0;
-
-    while i < exp {
+    loop 0..exp {
         result = result * base;
-        i = i + 1;
     }
 
     result

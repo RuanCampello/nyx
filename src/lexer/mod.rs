@@ -92,7 +92,14 @@ impl<'src> Lexer<'src> {
             ']' => self.single_punct(Punct::CloseBracket),
             ';' => self.single_punct(Punct::Semicolon),
             ',' => self.single_punct(Punct::Comma),
-            '.' => self.single_punct(Punct::Dot),
+            '.' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional('.') {
+                    true if self.cursor.consume_optional('=') => self.token(Punct::RangeEq, start),
+                    true => self.token(Punct::Range, start),
+                    false => self.token(Punct::Dot, start),
+                }
+            },
             '+' => self.single_punct(Punct::Plus),
             '*' => self.single_punct(Punct::Star),
 
@@ -339,7 +346,7 @@ mod tests {
 
     #[test]
     fn keywords_and_identifiers() {
-        let ks = kinds("fn let mut if else return while for struct foo _bar x1");
+        let ks = kinds("fn let mut if else return loop break continue in for struct foo _bar x1");
         assert_eq!(
             ks,
             vec![
@@ -349,12 +356,27 @@ mod tests {
                 TokenKind::Keyword(Keyword::If),
                 TokenKind::Keyword(Keyword::Else),
                 TokenKind::Keyword(Keyword::Return),
-                TokenKind::Keyword(Keyword::While),
+                TokenKind::Keyword(Keyword::Loop),
+                TokenKind::Keyword(Keyword::Break),
+                TokenKind::Keyword(Keyword::Continue),
+                TokenKind::Keyword(Keyword::In),
                 TokenKind::Keyword(Keyword::For),
                 TokenKind::Keyword(Keyword::Struct),
                 TokenKind::Identifier("foo"),
                 TokenKind::Identifier("_bar"),
                 TokenKind::Identifier("x1"),
+            ]
+        );
+    }
+
+    #[test]
+    fn range_punctuation() {
+        assert_eq!(
+            kinds(". .. ..="),
+            vec![
+                TokenKind::Punct(Punct::Dot),
+                TokenKind::Punct(Punct::Range),
+                TokenKind::Punct(Punct::RangeEq),
             ]
         );
     }

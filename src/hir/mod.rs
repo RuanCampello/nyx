@@ -22,19 +22,21 @@ use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
 pub(crate) use scope::SLICE_IMPL_NAME;
-pub(crate) use structs::{struct_field, type_layout};
+pub(crate) use structs::struct_field;
+pub use structs::type_layout;
 pub use symbols::SymbolTable;
 pub use types::*;
 
+mod collector;
 mod constants;
 mod declarations;
-pub(crate) mod diagnostics;
+pub mod diagnostics;
 pub mod error;
 pub mod index_vec;
 mod infer;
 mod interfaces;
 mod lower;
-pub(crate) mod module;
+pub mod module;
 mod mono;
 mod scope;
 mod structs;
@@ -52,7 +54,7 @@ pub struct Hir<'hir> {
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
-    pub(crate) docs: HashMap<Span, Box<str>>,
+    pub docs: HashMap<Span, Box<str>>,
     /// Recoverable lowering diagnostics
     /// Empty unless recovery mode was on
     pub diagnostics: Vec<diagnostic::RichDiagnostic>,
@@ -61,45 +63,45 @@ pub struct Hir<'hir> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
     id: StructId,
-    pub(crate) name: SymbolId,
-    pub(crate) decl_span: Span,
+    pub name: SymbolId,
+    pub decl_span: Span,
     /// Fields in source declaration order
-    pub(crate) fields: Vec<StructField>,
-    pub(crate) repr: StructRepr,
+    pub fields: Vec<StructField>,
+    pub(in crate::hir) repr: StructRepr,
     /// Cached byte layout, filled once every nominal type is collected
-    pub(crate) layout: Layout,
+    pub layout: Layout,
     /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
     /// Populated only on open (identity) template instances, for display
-    pub(crate) generics: Vec<SymbolId>,
+    pub generics: Vec<SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StructField {
-    pub(crate) name: SymbolId,
-    pub(crate) typ: Type,
+    pub name: SymbolId,
+    pub typ: Type,
     /// byte offset within the owning struct, filled by layout computation
-    pub(crate) offset: u32,
+    pub offset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Enum {
-    pub(crate) id: EnumId,
-    pub(crate) name: SymbolId,
-    pub(crate) decl_span: Span,
-    pub(crate) variants: Vec<EnumVariant>,
-    pub(crate) repr: EnumRepr,
+    pub id: EnumId,
+    pub name: SymbolId,
+    pub decl_span: Span,
+    pub variants: Vec<EnumVariant>,
+    pub repr: EnumRepr,
     /// cached byte layout, filled once every nominal type is collected
-    pub(crate) layout: Layout,
+    pub layout: Layout,
     /// byte offset of a variant payload past the discriminant tag
-    pub(crate) payload_offset: u32,
-    pub(crate) generics: Vec<SymbolId>,
+    pub payload_offset: u32,
+    pub generics: Vec<SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumVariant {
-    pub(crate) name: SymbolId,
-    pub(crate) value: i64,
-    pub(crate) payload: Option<Type>,
+    pub name: SymbolId,
+    pub value: i64,
+    pub payload: Option<Type>,
 }
 
 /// A fixed-size array type `[element; len]`, interned in the [Hir] array table
@@ -134,11 +136,30 @@ pub enum Statement<'hir> {
         then_block: Block<'hir>,
         else_block: Option<Block<'hir>>,
     },
-    While {
-        condition: &'hir Expression<'hir>,
+    Loop {
+        kind: LoopKind<'hir>,
         body: Block<'hir>,
     },
+    Break,
+    Continue,
     Block(Block<'hir>),
+}
+
+/// resolved loop [header](crate::parser::statement::LoopHeader)
+/// with the respective indexes
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoopKind<'hir> {
+    Infinite,
+    Range {
+        binding: Option<LocalId>,
+        start: &'hir Expression<'hir>,
+        end: &'hir Expression<'hir>,
+        inclusive: bool,
+    },
+    Iterable {
+        binding: LocalId,
+        iterable: &'hir Expression<'hir>,
+    },
 }
 
 /// An expression node in the read-only HIR database
@@ -146,9 +167,9 @@ pub enum Statement<'hir> {
 /// The node carries no type, types live in [`TypeckResults`]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Expression<'hir> {
-    pub(crate) id: ExprId,
-    pub(crate) kind: ExpressionKind<'hir>,
-    pub(crate) span: Span,
+    pub id: ExprId,
+    pub kind: ExpressionKind<'hir>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,31 +223,31 @@ pub struct Constant<'hir> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
-    pub(crate) receiver: Type,
-    pub(crate) name: SymbolId,
-    pub(crate) mutable: bool,
+    pub receiver: Type,
+    pub(in crate::hir) name: SymbolId,
+    pub(in crate::hir) mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parameter {
-    pub(crate) id: LocalId,
+    pub id: LocalId,
     name: SymbolId,
     mutable: bool,
-    pub(crate) typ: Type,
+    pub typ: Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Local {
-    pub(crate) id: LocalId,
-    pub(crate) name: SymbolId,
-    pub(crate) typ: Type,
-    pub(crate) decl_span: Span,
+    pub id: LocalId,
+    pub name: SymbolId,
+    pub typ: Type,
+    pub decl_span: Span,
     mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Block<'hir> {
-    pub(crate) statements: &'hir [Statement<'hir>],
+    pub statements: &'hir [Statement<'hir>],
     span: Span,
 }
 
@@ -308,6 +329,11 @@ pub enum ExpressionKind<'hir> {
     /// Carries only the structural name, the resolved [`FunctionId`] lives in
     /// [`TypeckResults::type_dependent_defs`], keyed by the enclosing call's id
     Path(SymbolId),
+    /// A use of a named constant
+    ///
+    /// The referenced value tree lives in the constant's own [`ExprId`] space,
+    /// MIR swaps to its [`TypeckResults`] when lowering through this node
+    Const(&'hir Constant<'hir>),
     /// A function call
     ///
     /// The `callee` is a structural [`ExpressionKind::Path`],
@@ -374,6 +400,9 @@ pub enum Intrinsic {
     Print,
     Syscall,
     Len,
+    WrappingAdd,
+    WrappingSub,
+    WrappingMul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,31 +440,30 @@ pub fn lower<'hir>(
         })
         .collect();
 
-    let mut symbols = SymbolTable::new();
     let declarations = Declarations::partition(&mut statements, |name| interfaces.get(name))?;
 
     let mut scope = Scope::new(arena);
-    scope.extend(&declarations, &mut symbols, false, arena)?;
+    scope.extend(&declarations, arena)?;
 
-    let functions = scope.lower_functions(&declarations, &mut symbols, false, arena)?;
-    let functions = mono::monomorphise(functions, &mut scope, &mut symbols, arena)?;
+    let functions = scope.lower_matching_functions(&declarations, |_| true, arena)?;
+    let functions = mono::monomorphise(functions, &mut scope, arena)?;
 
     let arrays = scope.arrays.snapshot();
     structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
 
     Ok(Hir {
-        symbols,
+        symbols: scope.symbols,
         structs: scope.structs,
         enums: scope.enums,
         arrays,
         functions,
-        constants: scope.constants.into_values().collect(),
+        constants: scope.constants.into_values().cloned().collect(),
         docs: scope.docs,
         diagnostics: scope.diagnostics.take_errors(),
     })
 }
 
-pub(crate) fn join_docs(lines: &[&str]) -> Option<Box<str>> {
+pub fn join_docs(lines: &[&str]) -> Option<Box<str>> {
     if lines.is_empty() {
         return None;
     }
@@ -471,6 +499,24 @@ impl Layout {
     }
 }
 
+impl Intrinsic {
+    #[inline]
+    pub const fn is_wrapping(self) -> bool {
+        self.binary_operator().is_some()
+    }
+
+    /// the arithmetic operation a wrapping intrinsic lowers to
+    #[inline]
+    pub const fn binary_operator(self) -> Option<BinaryOperator> {
+        match self {
+            Self::WrappingAdd => Some(BinaryOperator::Add),
+            Self::WrappingSub => Some(BinaryOperator::Sub),
+            Self::WrappingMul => Some(BinaryOperator::Mul),
+            _ => None,
+        }
+    }
+}
+
 impl FunctionKind {
     pub fn intrinsic(&self) -> Option<Intrinsic> {
         match self {
@@ -482,29 +528,24 @@ impl FunctionKind {
 
 impl TypeckResults {
     #[inline(always)]
-    pub(crate) fn type_of(&self, id: ExprId) -> Type {
+    pub fn type_of(&self, id: ExprId) -> Type {
         self.node_types[id]
     }
 
     #[inline(always)]
-    pub(crate) fn type_dependent_def(&self, id: ExprId) -> Option<Res> {
+    pub fn type_dependent_def(&self, id: ExprId) -> Option<Res> {
         self.type_dependent_defs.get(&id).copied()
     }
 
     #[inline(always)]
-    pub(crate) fn node_args(&self, id: ExprId) -> Option<&[Type]> {
-        self.node_args.get(&id).map(Vec::as_slice)
-    }
-
-    #[inline(always)]
-    pub(crate) fn const_use(&self, id: ExprId) -> Option<SymbolId> {
+    pub fn const_use(&self, id: ExprId) -> Option<SymbolId> {
         self.const_uses.get(&id).copied()
     }
 }
 
 impl Res {
     #[inline(always)]
-    pub(crate) fn function(self) -> Option<FunctionId> {
+    pub fn function(self) -> Option<FunctionId> {
         match self {
             Res::Function(id) => Some(id),
             Res::Variant { .. } => None,
@@ -673,6 +714,46 @@ mod tests {
     }
 
     #[test]
+    fn missing_return() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn answer(): i32 {}").parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+        assert_eq!(
+            err.kind,
+            HirErrorKind::MissingReturn { name: "nyx::answer", expected: TypeKind::I32.into() }
+        );
+
+        let statements = Parser::new(
+            r#"
+            fn sign(x: i32): i32 {
+                if x < 0 {
+                    return -1;
+                }
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::MissingReturn { .. }));
+
+        let statements = Parser::new(
+            r#"
+            fn sign(x: i32): i32 {
+                if x < 0 {
+                    return -1;
+                }
+
+                1
+            }
+        "#,
+        )
+        .parse()
+        .unwrap();
+        assert!(super::lower(statements, &arena).is_ok());
+    }
+
+    #[test]
     fn mutability() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new(
@@ -704,13 +785,12 @@ mod tests {
     }
 
     #[test]
-    fn while_condition_must_be_bool() {
+    fn range_endpoints_must_be_integers() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new(
             r#"
             fn main() {
-                let x: i32 = 1;
-                while x { }
+                loop 1.0..2.0 { }
             }
         "#,
         )
@@ -718,13 +798,60 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Bool.into(),
-                found: TypeKind::I32.into()
+        assert_eq!(err.kind, HirErrorKind::InvalidRangeType { typ: TypeKind::F64.into() })
+    }
+
+    #[test]
+    fn loop_over_inferred_array() {
+        let arena = bumpalo::Bump::new();
+
+        let statements = Parser::new(
+            r#"
+            fn main(): i32 {
+                let values = [2, 3, 5];
+                let mut total = 0;
+                loop value in values {
+                    total = total + value;
+                }
+                total
             }
+        "#,
         )
+        .parse()
+        .unwrap();
+        let hir = super::lower(statements, &arena).unwrap();
+        assert_eq!(hir.arrays[0].element, TypeKind::I32.into());
+
+        for (annotation, expected) in [
+            ("u8", TypeKind::U8),
+            ("i16", TypeKind::I16),
+            ("u32", TypeKind::U32),
+            ("i64", TypeKind::I64),
+        ] {
+            let source = format!(
+                r#"
+                fn main() {{
+                    let values = [1, 2, 3];
+                    let mut total: {annotation} = 0;
+                    loop value in values {{
+                        total = total + value;
+                    }}
+                }}
+            "#
+            );
+            let statements = Parser::new(&source).parse().unwrap();
+            let hir = super::lower(statements, &arena).unwrap();
+            assert_eq!(hir.arrays[0].element, expected.into(), "element should be {annotation}");
+        }
+    }
+
+    #[test]
+    fn loop_control_requires_a_loop() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn main() { break; }").parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+
+        assert_eq!(err.kind, HirErrorKind::LoopControlOutsideLoop { kind: "break" });
     }
 
     #[test]
@@ -1124,15 +1251,13 @@ mod tests {
     }
 
     #[test]
-    fn uptr_while_comparison() {
+    fn uptr_range() {
         let arena = bumpalo::Bump::new();
         let src = r#"
             fn triangle(limit: uptr): uptr {
                 let mut acc: uptr = 0;
-                let mut i: uptr = 1;
-                while i <= limit {
+                loop i in 1..=limit {
                     acc = acc + i;
-                    i = i + 1;
                 }
                 acc
             }
@@ -1527,6 +1652,13 @@ mod tests {
         assert_eq!(err.kind, HirErrorKind::OrphanImpl { name: "i64" });
     }
 
+    fn const_value<'hir>(expr: &Expression<'hir>) -> &'hir Expression<'hir> {
+        match expr.kind {
+            ExpressionKind::Const(constant) => constant.value,
+            ref other => panic!("expected Const node, got {other:?}"),
+        }
+    }
+
     #[test]
     fn const_top_level() {
         let src = r#"
@@ -1543,7 +1675,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert_eq!(ret_expr.kind, 42.into());
+        assert_eq!(const_value(ret_expr).kind, 42.into());
     }
 
     #[test]
@@ -1565,7 +1697,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
-        assert_eq!(ret_expr.kind, 127.into());
+        assert_eq!(const_value(ret_expr).kind, 127.into());
     }
 
     #[test]
@@ -1579,19 +1711,19 @@ mod tests {
             }
         "#;
         let arena = bumpalo::Bump::new();
-        let mut symbols = SymbolTable::new();
         let mut statements = Parser::new(src).parse().unwrap();
         let declarations = Declarations::partition(&mut statements, |_| None).unwrap();
         let mut scope = Scope::new(&arena);
-        scope.extend(&declarations, &mut symbols, true, &arena).unwrap();
-        let functions = scope.lower_functions(&declarations, &mut symbols, true, &arena).unwrap();
+        scope.in_std = true;
+        scope.extend(&declarations, &arena).unwrap();
+        let functions = scope.lower_matching_functions(&declarations, |_| true, &arena).unwrap();
         let main_func = &functions[0];
         let ret_expr = match &main_func.body.statements[0] {
             Statement::Return(Some(expr)) => *expr,
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(main_func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
-        assert_eq!(ret_expr.kind, 127.into());
+        assert_eq!(const_value(ret_expr).kind, 127.into());
     }
 
     #[test]
@@ -1611,10 +1743,10 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        match &ret_expr.kind {
+        match &const_value(ret_expr).kind {
             ExpressionKind::Binary { left, operator, right } => {
                 assert_eq!(*operator, BinaryOperator::Add);
-                assert_eq!(left.kind, 10.into());
+                assert_eq!(const_value(left).kind, 10.into());
                 assert_eq!(right.kind, 2.into());
             },
             other => panic!("expected Binary expression, got {other:?}"),
@@ -1695,7 +1827,7 @@ mod tests {
     }
 
     #[test]
-    fn const_in_function_body_is_spliced_not_a_local() {
+    fn const_in_function_body_is_a_const_use_not_a_local() {
         let src = r#"
             fn main(): i32 {
                 const ANSWER: i32 = 42;
@@ -1714,7 +1846,7 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert_eq!(ret_expr.kind, 42.into());
+        assert_eq!(const_value(ret_expr).kind, 42.into());
     }
 
     #[test]
@@ -1735,7 +1867,7 @@ mod tests {
         };
         match &ret_expr.kind {
             ExpressionKind::Binary { left, right, .. } => {
-                assert_eq!(left.kind, 10.into());
+                assert_eq!(const_value(left).kind, 10.into());
                 assert_eq!(right.kind, 2.into());
             },
             other => panic!("expected Binary expression, got {other:?}"),
@@ -1760,10 +1892,10 @@ mod tests {
             other => panic!("expected Return statement, got {other:?}"),
         };
         assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        // B splices to `A + 5`, and A within it splices to its literal
-        match &ret_expr.kind {
+        // B's value is `A + 5`, with A itself a nested constant reference
+        match &const_value(ret_expr).kind {
             ExpressionKind::Binary { left, right, .. } => {
-                assert_eq!(left.kind, 10.into());
+                assert_eq!(const_value(left).kind, 10.into());
                 assert_eq!(right.kind, 5.into());
             },
             other => panic!("expected Binary expression, got {other:?}"),

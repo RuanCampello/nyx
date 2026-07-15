@@ -406,20 +406,13 @@ impl Function<AArch64> {
             },
 
             #[rustfmt::skip]
-            A64Instr::Cmp { lhs, rhs, bytes }
-            | A64Instr::Cmn { lhs, rhs, bytes }
-            | A64Instr::Tst { lhs, rhs, bytes } => {
+            A64Instr::Cmp { lhs, rhs, bytes } => {
                 let lhs = alloc.location(lhs, bytes);
                 let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, false, A64Reg::X16, A64Reg::D16);
                 let rhs = self.operand(alloc, rhs, bytes);
                 let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, false, A64Reg::X17, A64Reg::D17);
 
-                match instruction {
-                    A64Instr::Cmp { .. } => emit!(out, "cmp     {lhs}, {rhs}"),
-                    A64Instr::Cmn { .. } => emit!(out, "cmn     {lhs}, {rhs}"),
-                    A64Instr::Tst { .. } => emit!(out, "tst     {lhs}, {rhs}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
+                emit!(out, "cmp     {lhs}, {rhs}");
             },
 
             A64Instr::Cset { dest, cond } => {
@@ -631,27 +624,6 @@ impl Function<AArch64> {
 
                 emit!(out, "cbnz    {condition}, .L_block_{name}_{}", then_block.0);
                 emit!(out, "b       .L_block_{name}_{}", else_block.0);
-            },
-
-            Term::Switch { cond, targets, default } => {
-                let bytes = self.reg_bytes(cond);
-                let condition = alloc.location(cond, &bytes);
-
-                // if the discriminant is on the stack, load it into a scratch register
-                let cmp_src = match is_mem(&condition) {
-                    true => {
-                        let scratch = A64Reg::X16.name(bytes);
-                        emit_load(out, scratch, &condition, bytes);
-                        scratch
-                    },
-                    false => condition.as_str(),
-                };
-
-                for (val, block) in targets {
-                    emit!(out, "cmp     {cmp_src}, #{val}");
-                    emit!(out, "b.eq    .L_block_{name}_{}", block.0);
-                }
-                emit!(out, "b       .L_block_{name}_{}", default.0);
             },
 
             Term::Return(Some(vreg)) => {

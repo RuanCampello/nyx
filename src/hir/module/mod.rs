@@ -3,7 +3,6 @@
 mod demand;
 mod graph;
 mod resolver;
-mod signatures;
 
 use crate::{
     diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
@@ -19,7 +18,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Maintains a cache of loaded modules and the shared symbol table
 /// to ensure symbol IDs remain unique across the entire compilation.
-pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
+pub struct ModuleLoader<'hir, F: FileSystem = FS> {
     resolver: ModuleResolver,
     /// shared symbols interner for all modules
     symbols: SymbolTable,
@@ -29,7 +28,7 @@ pub(crate) struct ModuleLoader<'hir, F: FileSystem = FS> {
     recover: bool,
 }
 
-pub(crate) struct FS;
+pub struct FS;
 
 pub struct OverlayFS {
     pub overlay: std::collections::HashMap<PathBuf, String>,
@@ -90,7 +89,7 @@ pub enum ModuleError {
     Check(Box<RichDiagnostic>),
 }
 
-pub(crate) trait FileSystem {
+pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, std::io::Error>;
     fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
 }
@@ -121,13 +120,13 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
     }
 
     #[inline]
-    pub(crate) fn recovering(mut self) -> Self {
+    pub fn recovering(mut self) -> Self {
         self.recover = true;
         self
     }
 
     pub fn load(
-        mut self,
+        self,
         entry: impl AsRef<Path>,
     ) -> Result<Hir<'hir>, (Vec<RichDiagnostic>, ModuleError)> {
         crate::diagnostic::reset();
@@ -144,14 +143,17 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         let mut scope = Scope::new(arena);
         scope.recover = self.recover;
-        let symbols = &mut self.symbols;
+        scope.symbols = self.symbols;
 
-        signatures::build_signatures(&graph, &declarations, &order, &mut scope, symbols, arena)
+        for &idx in &order {
+            scope.in_std = graph.nodes[idx].in_std;
+            scope
+                .extend(&declarations[idx], arena)
+                .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
+        }
+        let functions = demand::lower_reachable(&graph, &declarations, &order, &mut scope, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err))?;
-        let functions =
-            demand::lower_reachable(&graph, &declarations, &order, &mut scope, symbols, arena)
-                .map_err(|err| (scope.diagnostics.take_errors(), err))?;
-        let mut functions = mono::monomorphise(functions, &mut scope, symbols, arena)
+        let mut functions = mono::monomorphise(functions, &mut scope, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
 
         let diagnostics = scope.diagnostics.take_errors();
@@ -160,7 +162,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         // identity instance of each and discard the diagnostics, which are
         // noise (bounds cannot be solved without concrete types)
         if scope.recover {
-            for function in mono::analyse_templates(&mut scope, symbols, arena) {
+            for function in mono::analyse_templates(&mut scope, arena) {
                 functions.push(function);
             }
             scope.diagnostics.take_errors();
@@ -174,9 +176,9 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             structs: scope.structs,
             enums: scope.enums,
             arrays,
-            constants: scope.constants.into_values().collect(),
+            constants: scope.constants.into_values().cloned().collect(),
             docs: scope.docs,
-            symbols: self.symbols,
+            symbols: scope.symbols,
             diagnostics,
         })
     }
@@ -248,7 +250,7 @@ impl From<ModuleError> for Diagnostic {
 /// 1. `NYX_STD_PATH` environment variable
 /// 2. `<binary_dir>/std/`
 /// 3. `std/` relative to CWD
-pub(crate) fn resolve_std_root() -> PathBuf {
+pub fn resolve_std_root() -> PathBuf {
     if let Ok(env) = std::env::var("NYX_STD_PATH") {
         return PathBuf::from(env);
     }
@@ -262,7 +264,14 @@ pub(crate) fn resolve_std_root() -> PathBuf {
         }
     }
 
-    PathBuf::from("std")
+    let candidate = PathBuf::from("std");
+    if candidate.is_dir() {
+        return candidate;
+    }
+
+    // development fallback: the std shipped in this checkout, regardless of
+    // which workspace crate the process was started from
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
 }
 
 #[cfg(test)]
@@ -417,7 +426,8 @@ mod tests {
             fn sort(s: &mut [i32]) {
                 let mut i = 0;
                 let mut j = 0;
-                while j + i < s.len() {
+                loop {
+                    if !(j + i < s.len()) { break; }
                     s[j] = 0;
                     j = j + 1;
                 }

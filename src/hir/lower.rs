@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
-        Intrinsic, Literal, Local, LocalId, Parameter, Pattern, PatternKind, RefTarget, Res,
-        Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
+        Intrinsic, Literal, Local, LocalId, LoopKind, Parameter, Pattern, PatternKind, RefTarget,
+        Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
         TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
@@ -10,7 +10,7 @@ use crate::{
         place_base_local,
         scope::{ArrayTable, GenericEnv, Scope},
         symbols::{Mangler, qualified},
-        type_resolver::{self, resolve_annotation},
+        type_resolver::{self, TypeResolver, resolve_annotation},
     },
     lexer::{Spanned, token::Span},
     parser::{
@@ -33,9 +33,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     function_id: FunctionId,
     next_local: u32,
     next_expr_id: u32,
-    symbols: &'s mut SymbolTable,
     is_const: bool,
-    in_std: bool,
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
@@ -43,10 +41,11 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     generic_env: GenericEnv,
     /// compile-time constants declared in this function body, spliced at use
     /// sites like top-level constants, but scoped to and dropped with the body
-    body_constants: HashMap<SymbolId, Constant<'hir>>,
+    body_constants: HashMap<SymbolId, &'hir Constant<'hir>>,
     /// when lowering a constant initialiser, the names of the enclosing
     /// function's locals, referencing one is an error, not a resolution
     outer_const_locals: HashSet<SymbolId>,
+    loop_depth: u32,
 }
 
 /// A freshly lowered expression
@@ -66,63 +65,40 @@ where
 {
     pub fn new(
         scope: &'s mut Scope<'hir>,
-        symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
-        in_std: bool,
         arena: &'hir bumpalo::Bump,
     ) -> Self {
-        let self_type = function
-            .impl_type
-            .and_then(|impl_type| scope.lookup_named_type(impl_type, symbols));
+        let self_type = function.impl_type.and_then(|impl_type| scope.lookup_named_type(impl_type));
 
-        Self {
-            scope,
-            symbols,
-            is_const: function.is_const,
-            in_std,
-            return_type: TypeKind::Unit.into(),
-            function: Some(function),
-            function_id,
-            next_local: 0,
-            next_expr_id: 0,
-            locals: IndexVec::new(),
-            typeck: TypeckResults::default(),
-            infer: InferTable::default(),
-            scopes: vec![HashMap::new()],
-            self_type,
-            arena,
-            generic_env: HashMap::new(),
-            body_constants: HashMap::new(),
-            outer_const_locals: HashSet::new(),
-        }
+        let mut builder = Self::raw(scope, arena);
+        builder.is_const = function.is_const;
+        builder.function = Some(function);
+        builder.function_id = function_id;
+        builder.self_type = self_type;
+        builder
     }
 
     pub fn new_instance(
         scope: &'s mut Scope<'hir>,
-        symbols: &'s mut SymbolTable,
         function_id: FunctionId,
         function: &'f statement::Function<'src>,
-        in_std: bool,
         arena: &'hir bumpalo::Bump,
         generic_env: GenericEnv,
     ) -> Self {
-        let mut builder = Self::new(scope, symbols, function_id, function, in_std, arena);
+        let mut builder = Self::new(scope, function_id, function, arena);
         builder.generic_env = generic_env;
         builder
     }
 
-    pub fn new_for_const(
-        scope: &'s mut Scope<'hir>,
-        symbols: &'s mut SymbolTable,
-        in_std: bool,
-        arena: &'hir bumpalo::Bump,
-    ) -> Self {
+    pub fn new_for_const(scope: &'s mut Scope<'hir>, arena: &'hir bumpalo::Bump) -> Self {
+        Self::raw(scope, arena)
+    }
+
+    fn raw(scope: &'s mut Scope<'hir>, arena: &'hir bumpalo::Bump) -> Self {
         Self {
             scope,
-            symbols,
             is_const: true,
-            in_std,
             return_type: TypeKind::Unit.into(),
             function: None,
             function_id: FunctionId(0),
@@ -137,6 +113,7 @@ where
             generic_env: HashMap::new(),
             body_constants: HashMap::new(),
             outer_const_locals: HashSet::new(),
+            loop_depth: 0,
         }
     }
 
@@ -164,7 +141,7 @@ where
 
         if let Some(receiver) = function.receiver {
             let typ = signature.receiver_type().expect("receiver in AST without one in signature");
-            let symbol = self.symbols.insert("self");
+            let symbol = self.scope.symbols.insert("self");
             let id = self.declare_local(symbol, typ, receiver.mutable, receiver.span)?;
             params.push(Parameter { typ, id, name: symbol, mutable: receiver.mutable });
         }
@@ -175,7 +152,7 @@ where
                 .iter()
                 .zip(signature.explicit_params().iter())
                 .map(|(parameter, &typ)| -> Result<_, HirError> {
-                    let symbol = self.symbols.insert(parameter.name);
+                    let symbol = self.scope.symbols.insert(parameter.name);
                     let id = self.declare_local(symbol, typ, parameter.mutable, parameter.span)?;
 
                     Ok(Parameter { typ, id, name: symbol, mutable: parameter.mutable })
@@ -183,9 +160,16 @@ where
                 .collect::<Result<Vec<_>, _>>()?,
         );
 
-        let (body, _) = self.lower_block(&function.body, true)?;
+        let (body, returns) = self.lower_block(&function.body, true)?;
+
+        if !returns && signature.return_type.kind() != TypeKind::Unit {
+            let name = self.arena.alloc_str(self.scope.symbols.get(symbol));
+            let span = function.return_type.as_ref().map_or(function.span, Spanned::span);
+            self.soft(hir_error!(span, MissingReturn { name, expected: signature.return_type }))?;
+        }
+
         self.resolve_inference();
-        let generics = declared_fn_names(&self.generic_env, self.symbols);
+        let generics = declared_fn_names(&self.generic_env, &mut self.scope.symbols);
 
         Ok(Function {
             id,
@@ -261,7 +245,7 @@ where
                     ))?,
                 };
 
-                let symbol = self.symbols.insert(statement.name);
+                let symbol = self.scope.symbols.insert(statement.name);
                 let id = self.declare_local(symbol, typ, statement.mutable, statement.name_span)?;
 
                 let mut diverges = false;
@@ -302,14 +286,20 @@ where
 
             Stmt::If(statement) => self.lower_if(statement, is_tail),
 
-            Stmt::While(statement) => {
-                let condition = self.lower_expr(&statement.condition, None)?;
-                self.assert_type(TypeKind::Bool, condition.typ, statement.span)?;
-
-                // PERFORMANCE: remove loops with constant false conditions
-                let (body, _) = self.lower_block(&statement.body, false)?;
-
-                Ok((Statement::While { condition: condition.expr, body }, false))
+            Stmt::Loop(statement) => self.lower_loop(statement),
+            Stmt::Break(span) => {
+                if self.loop_depth == 0 {
+                    let err = hir_error!(*span, LoopControlOutsideLoop { kind: "break" });
+                    return Err(err);
+                }
+                Ok((Statement::Break, false))
+            },
+            Stmt::Continue(span) => {
+                if self.loop_depth == 0 {
+                    let err = hir_error!(*span, LoopControlOutsideLoop { kind: "continue" });
+                    return Err(err);
+                }
+                Ok((Statement::Continue, false))
             },
             Stmt::Expr(expr, _) => {
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
@@ -335,6 +325,111 @@ where
         }
     }
 
+    fn lower_loop(
+        &mut self,
+        statement: &statement::Loop<'src>,
+    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
+        use statement::LoopHeader;
+
+        let (kind, body) = match &statement.header {
+            LoopHeader::Infinite => {
+                let body = self.lower_loop_body(&statement.body)?;
+                (LoopKind::Infinite, body)
+            },
+            LoopHeader::Range { binding, start, end, inclusive } => {
+                let start = self.lower_expr(start, None)?;
+                let end = self.lower_expr(end, Some(start.typ))?;
+                self.assert_type(start.typ, end.typ, end.span)?;
+                let typ = self.infer.resolve_shallow(start.typ);
+                if !typ.is_integer() && !typ.is_infer() {
+                    return Err(hir_error!(start.span, InvalidRangeType { typ }));
+                }
+
+                self.push_scope();
+                let binding = binding
+                    .map(|binding| {
+                        let symbol = self.scope.symbols.insert(binding.name);
+                        self.declare_local(symbol, typ, false, binding.span)
+                    })
+                    .transpose()?;
+                let body = self.lower_loop_body(&statement.body);
+                self.pop_scope();
+
+                (
+                    LoopKind::Range {
+                        binding,
+                        start: start.expr,
+                        end: end.expr,
+                        inclusive: *inclusive,
+                    },
+                    body?,
+                )
+            },
+            LoopHeader::Iterable { binding, iterable } => {
+                let iterable = self.lower_expr(iterable, None)?;
+                let element = match iterable.typ.kind() {
+                    TypeKind::Array(id) => self.scope.arrays.get(id).element,
+                    TypeKind::Slice { element, .. } => element.into(),
+                    _ => return Err(hir_error!(iterable.span, NotIterable { typ: iterable.typ })),
+                };
+                // an unresolved element is an unconstrained integer literal,
+                // which is always Copy, keep the variable on the binding so
+                // uses in the body still constrain the array's element type
+                let resolved = self.infer.resolve_shallow(element);
+                if !resolved.is_infer() && !self.is_copy_type(resolved) {
+                    return Err(hir_error!(binding.span, NonCopyLoopItem { typ: resolved }));
+                }
+
+                self.push_scope();
+                let symbol = self.scope.symbols.insert(binding.name);
+                let binding = self.declare_local(symbol, element, false, binding.span)?;
+                let body = self.lower_loop_body(&statement.body);
+                self.pop_scope();
+
+                (LoopKind::Iterable { binding, iterable: iterable.expr }, body?)
+            },
+        };
+
+        Ok((Statement::Loop { kind, body }, false))
+    }
+
+    #[inline]
+    fn lower_loop_body(
+        &mut self,
+        body: &statement::Block<'src>,
+    ) -> Result<Block<'hir>, HirError<'hir>> {
+        self.loop_depth += 1;
+        let body = self.lower_block(body, false).map(|(body, _)| body);
+        self.loop_depth -= 1;
+        body
+    }
+
+    #[inline(always)]
+    fn is_copy_type(&self, typ: Type) -> bool {
+        match typ.kind() {
+            TypeKind::I8
+            | TypeKind::U8
+            | TypeKind::I16
+            | TypeKind::U16
+            | TypeKind::I32
+            | TypeKind::U32
+            | TypeKind::I64
+            | TypeKind::U64
+            | TypeKind::F32
+            | TypeKind::F64
+            | TypeKind::Bool
+            | TypeKind::Uptr
+            | TypeKind::Iptr
+            | TypeKind::Char
+            | TypeKind::Ref { .. } => true,
+            _ => self
+                .scope
+                .symbols
+                .get_id("Copy")
+                .is_some_and(|copy| self.scope.interface_impls.contains(&(typ, copy))),
+        }
+    }
+
     /// lower a body-level `const` into a compile-time constant scoped to this
     /// body
     ///
@@ -349,7 +444,7 @@ where
             .resolve_type(&constant.typ.value(), constant.typ.span())
             .or_else(|e| self.poison(e))?;
 
-        let name = self.symbols.insert(constant.name);
+        let name = self.scope.symbols.insert(constant.name);
         if self.body_constants.contains_key(&name) {
             return Err(hir_error!(constant.span, DuplicateConstant { name: constant.name }));
         }
@@ -358,8 +453,7 @@ where
         let siblings = self.body_constants.clone();
 
         let (value, typeck) = {
-            let mut builder =
-                FunctionBuilder::new_for_const(self.scope, self.symbols, self.in_std, self.arena);
+            let mut builder = FunctionBuilder::new_for_const(self.scope, self.arena);
             builder.outer_const_locals = outer_locals;
             builder.body_constants = siblings;
 
@@ -371,7 +465,9 @@ where
         };
 
         let decl_span = constant.span;
-        let constant = Constant { name, typ, value, typeck, is_pub: false, decl_span };
+        let constant =
+            self.arena
+                .alloc(Constant { name, typ, value, typeck, is_pub: false, decl_span });
         self.body_constants.insert(name, constant);
 
         Ok(())
@@ -387,14 +483,13 @@ where
         }
 
         if let Some(c) = self.constant(name) {
-            let (val, symbol) = (c.value, c.name);
-            let typeck = c.typeck.clone();
-            let lowered = self.splice_const(val, &typeck, span);
-            self.typeck.const_uses.insert(lowered.expr.id, symbol);
+            let lowered = self.alloc(ExpressionKind::Const(c), c.typ, span);
+            self.typeck.const_uses.insert(lowered.expr.id, c.name);
             return Ok(lowered);
         }
 
         let symbol = self
+            .scope
             .symbols
             .get_id(name)
             .ok_or_else(|| hir_error!(span, UndeclaredIdentifier { name }))?;
@@ -423,157 +518,6 @@ where
             },
             _ => Ok((Statement::Expr(expr.expr), tail_ret || expr.typ.diverges())),
         }
-    }
-
-    /// Copy a constant's expression subtree (nodes and their types) into this
-    /// body's arena, re-spanning the inlined root to the use site
-    fn splice_const(
-        &mut self,
-        expr: &Expression<'hir>,
-        const_typeck: &TypeckResults,
-        span: Span,
-    ) -> Lowered<'hir> {
-        use ExpressionKind as Kind;
-
-        let kind = match &expr.kind {
-            Kind::Literal(lit) => Kind::Literal(*lit),
-            Kind::Local(id) => Kind::Local(*id),
-            Kind::Unary { operator, expr } => {
-                let expr = self.splice_const(expr, const_typeck, span);
-                Kind::Unary { operator: *operator, expr: expr.expr }
-            },
-            Kind::Binary { operator, left, right } => {
-                let left = self.splice_const(left, const_typeck, span);
-                let right = self.splice_const(right, const_typeck, span);
-                Kind::Binary { operator: *operator, left: left.expr, right: right.expr }
-            },
-            Kind::Field { base, field } => {
-                let base = self.splice_const(base, const_typeck, span);
-                Kind::Field { base: base.expr, field: *field }
-            },
-            Kind::Assign { target, value } => {
-                let target = self.splice_const(target, const_typeck, span);
-                let value = self.splice_const(value, const_typeck, span);
-                Kind::Assign { target: target.expr, value: value.expr }
-            },
-            Kind::Path(symbol) => Kind::Path(*symbol),
-            Kind::Array { elements } => {
-                let elements = elements
-                    .iter()
-                    .map(|element| self.splice_const(element, const_typeck, span).expr)
-                    .collect::<Vec<_>>();
-                Kind::Array { elements: self.arena.alloc_slice_copy(&elements) }
-            },
-            Kind::ArrayRepeat { value, count } => {
-                let value = self.splice_const(value, const_typeck, span);
-                Kind::ArrayRepeat { value: value.expr, count: *count }
-            },
-            Kind::Index { base, index } => {
-                let base = self.splice_const(base, const_typeck, span);
-                let index = self.splice_const(index, const_typeck, span);
-                Kind::Index { base: base.expr, index: index.expr }
-            },
-            Kind::MethodCall { name, receiver, args } => {
-                let receiver = self.splice_const(receiver, const_typeck, span);
-                let args = args
-                    .iter()
-                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
-                    .collect::<Vec<_>>();
-                let args = self.arena.alloc_slice_copy(&args);
-                Kind::MethodCall { name: *name, receiver: receiver.expr, args }
-            },
-            Kind::Struct { id, fields } => {
-                let fields = fields
-                    .iter()
-                    .map(|(sym, val)| (*sym, self.splice_const(val, const_typeck, span).expr))
-                    .collect::<Vec<_>>();
-                let fields = self.arena.alloc_slice_copy(&fields);
-                Kind::Struct { id: *id, fields }
-            },
-            Kind::Call { callee, args } => {
-                let callee = self.splice_const(callee, const_typeck, span);
-                let args = args
-                    .iter()
-                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
-                    .collect::<Vec<_>>();
-                let args = self.arena.alloc_slice_copy(&args);
-                Kind::Call { callee: callee.expr, args }
-            },
-            Kind::Syscall { code, args } => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
-                    .collect::<Vec<_>>();
-                let args = self.arena.alloc_slice_copy(&args);
-                Kind::Syscall { code: *code, args }
-            },
-            Kind::IntrinsicCall { intrinsic, args } => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.splice_const(arg, const_typeck, span).expr)
-                    .collect::<Vec<_>>();
-                let args = self.arena.alloc_slice_copy(&args);
-                Kind::IntrinsicCall { intrinsic: *intrinsic, args }
-            },
-            Kind::TypeIntrinsic { kind, typ } => Kind::TypeIntrinsic { kind: *kind, typ: *typ },
-            Kind::Cast { from, to } => {
-                let from = self.splice_const(from, const_typeck, span);
-                Kind::Cast { from: from.expr, to: *to }
-            },
-            Kind::Match { scrutinee, arms } => {
-                let scrutinee = self.splice_const(scrutinee, const_typeck, span);
-                let mut arms_copied = Vec::with_capacity(arms.len());
-
-                for arm in *arms {
-                    let pattern = self.splice_pattern(arm.pattern);
-                    let guard = arm.guard.map(|g| self.splice_const(g, const_typeck, span).expr);
-                    let body = self.splice_const(arm.body, const_typeck, span);
-                    arms_copied.push(Arm {
-                        pattern: self.arena.alloc(pattern),
-                        guard,
-                        body: body.expr,
-                        span: arm.span,
-                    });
-                }
-                Kind::Match {
-                    scrutinee: scrutinee.expr,
-                    arms: self.arena.alloc_slice_copy(&arms_copied),
-                }
-            },
-        };
-
-        let typ = const_typeck.type_of(expr.id);
-        let lowered = self.alloc(kind, typ, span);
-
-        // carry over the resolved call target / generic args for spliced calls
-        const_typeck
-            .type_dependent_def(expr.id)
-            .and_then(|def| self.typeck.type_dependent_defs.insert(lowered.expr.id, def));
-        const_typeck
-            .node_args(expr.id)
-            .and_then(|args| self.typeck.node_args.insert(lowered.expr.id, args.to_vec()));
-
-        lowered
-    }
-
-    fn splice_pattern(&self, pat: &Pattern<'hir>) -> Pattern<'hir> {
-        let kind = match &pat.kind {
-            PatternKind::Wildcard => PatternKind::Wildcard,
-            PatternKind::Literal(lit) => PatternKind::Literal(*lit),
-            PatternKind::Binding(id) => PatternKind::Binding(*id),
-            PatternKind::Or(pats) => {
-                let spliced: Vec<_> = pats.iter().map(|p| self.splice_pattern(p)).collect();
-                PatternKind::Or(self.arena.alloc_slice_copy(&spliced))
-            },
-            PatternKind::Variant { id: enum_id, variant_idx, sub } => {
-                let sub = sub.map(|s| {
-                    let spliced = self.splice_pattern(s);
-                    &*self.arena.alloc(spliced)
-                });
-                PatternKind::Variant { id: *enum_id, variant_idx: *variant_idx, sub }
-            },
-        };
-        Pattern { kind, span: pat.span }
     }
 
     /// resolves every remaining integer inference variable in the body, pinning
@@ -628,7 +572,7 @@ where
     }
 
     fn local_id(&self, name: &str) -> Option<LocalId> {
-        let symbol = self.symbols.get_id(name)?;
+        let symbol = self.scope.symbols.get_id(name)?;
 
         self.scopes.iter().rev().find_map(|scope| scope.get(&symbol).copied())
     }
@@ -638,10 +582,10 @@ where
         self.alloc(ExpressionKind::Local(id), typ, span)
     }
 
-    fn constant(&self, name: &str) -> Option<&Constant<'hir>> {
+    fn constant(&self, name: &str) -> Option<&'hir Constant<'hir>> {
         // a body-level constant lexically shadows any module or impl constant
-        if let Some(symbol) = self.symbols.get_id(name)
-            && let Some(constant) = self.body_constants.get(&symbol)
+        if let Some(symbol) = self.scope.symbols.get_id(name)
+            && let Some(&constant) = self.body_constants.get(&symbol)
         {
             return Some(constant);
         }
@@ -659,10 +603,10 @@ where
     }
 
     #[inline]
-    fn constant_by_symbol_name(&self, name: &str) -> Option<&Constant<'hir>> {
-        let symbol = self.symbols.get_id(name)?;
+    fn constant_by_symbol_name(&self, name: &str) -> Option<&'hir Constant<'hir>> {
+        let symbol = self.scope.symbols.get_id(name)?;
 
-        self.scope.constants.get(&symbol)
+        self.scope.constants.get(&symbol).copied()
     }
 
     #[inline]
@@ -693,7 +637,7 @@ where
                     _ => self.infer.fresh(),
                 };
 
-                Ok(self.alloc((*value).into(), typ, *span))
+                Ok(self.alloc((*value as i64).into(), typ, *span))
             },
 
             Expr::Float(value, span) => {
@@ -704,7 +648,7 @@ where
             },
 
             Expr::String(value, span) => {
-                let sym = self.symbols.insert(value);
+                let sym = self.scope.symbols.insert(value);
                 Ok(self.alloc(
                     ExpressionKind::Literal(Literal::Str(sym)),
                     TypeKind::Str.into(),
@@ -743,8 +687,8 @@ where
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
             Expr::QualifiedName { qualifier, name, span } => {
-                let enum_symbol = self.symbols.insert(qualifier);
-                let variant_symbol = self.symbols.insert(name);
+                let enum_symbol = self.scope.symbols.insert(qualifier);
+                let variant_symbol = self.scope.symbols.insert(name);
                 if let Some((id, value)) =
                     self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
                 {
@@ -757,7 +701,7 @@ where
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let qualified = qualified(self.arena, qualifier, name);
-                let symbol = match self.symbols.get_id(&mangled_name) {
+                let symbol = match self.scope.symbols.get_id(&mangled_name) {
                     Some(sym) => sym,
                     None => {
                         return Err(hir_error!(*span, UndeclaredIdentifier { name: qualified }));
@@ -765,11 +709,11 @@ where
                 };
 
                 let c =
-                    self.scope.constants.get(&symbol).cloned().ok_or_else(|| {
+                    self.scope.constants.get(&symbol).copied().ok_or_else(|| {
                         hir_error!(*span, UndeclaredIdentifier { name: qualified })
                     })?;
 
-                let lowered = self.splice_const(c.value, &c.typeck, *span);
+                let lowered = self.alloc(ExpressionKind::Const(c), c.typ, *span);
                 self.typeck.const_uses.insert(lowered.expr.id, c.name);
                 Ok(lowered)
             },
@@ -892,7 +836,7 @@ where
                 if let Some(method) = operator.overload_method() {
                     let receiver = left.typ.strip_reference();
                     if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
-                        let method_symbol = self.symbols.insert(method);
+                        let method_symbol = self.scope.symbols.insert(method);
                         if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
                         {
                             let lowered = self.alloc(
@@ -911,12 +855,14 @@ where
                         }
 
                         let type_name = match receiver.kind() {
-                            TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                            TypeKind::Struct(sid) => {
+                                self.scope.symbols.get(self[sid].name).to_string()
+                            },
                             TypeKind::Enum(id) => self
                                 .scope
                                 .enums
                                 .get(id)
-                                .map(|e| self.symbols.get(e.name).to_string())
+                                .map(|e| self.scope.symbols.get(e.name).to_string())
                                 .unwrap_or_else(|| receiver.to_string()),
                             _ => receiver.to_string(),
                         };
@@ -975,7 +921,8 @@ where
                                 _ => span,
                             };
 
-                            let name = self.arena.alloc_str(self.symbols.get(self[local].name));
+                            let name =
+                                self.arena.alloc_str(self.scope.symbols.get(self[local].name));
                             return Err(hir_error!(*err_span, ImmutableBind { name }));
                         }
                     },
@@ -998,18 +945,17 @@ where
                     for arg in type_args {
                         resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
                     }
-                    let struct_sym = self.symbols.insert(name);
+                    let struct_sym = self.scope.symbols.insert(name);
                     if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
                         self.check_bounds(&template.generics, &resolved, *span)?;
                     }
-                    let typ =
-                        self.scope.instantiate_generic(name, &resolved, *span, self.symbols)?;
+                    let typ = self.scope.instantiate_generic(name, &resolved, *span)?;
                     match typ.kind() {
                         TypeKind::Struct(id) => id,
                         _ => return Err(hir_error!(*span, UnknownType { name })),
                     }
                 } else {
-                    let symbol = self.symbols.insert(name);
+                    let symbol = self.scope.symbols.insert(name);
                     self.scope
                         .struct_map
                         .get(&symbol)
@@ -1018,20 +964,20 @@ where
                 };
 
                 let definition_name = self.scope[id].name;
-                let struct_name = self.arena.alloc_str(self.symbols.get(definition_name));
-                let definition_fields = self.scope[id].fields.clone();
+                let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
 
                 let mut seen = HashSet::with_capacity(fields.len());
                 let mut lowered = Vec::with_capacity(fields.len());
 
                 for field in fields {
-                    let field_symbol = self.symbols.insert(field.name);
+                    let field_symbol = self.scope.symbols.insert(field.name);
                     if !seen.insert(field_symbol) {
                         return Err(hir_error!(field.span, DuplicateField { name: field.name }));
                     }
 
-                    let Some(expected) = definition_fields.iter().find(|f| f.name == field_symbol)
-                    else {
+                    let expected =
+                        self.scope[id].fields.iter().find(|f| f.name == field_symbol).copied();
+                    let Some(expected) = expected else {
                         return Err(hir_error!(
                             field.span,
                             UnknownField { struct_name, field: field.name }
@@ -1043,16 +989,16 @@ where
                     lowered.push((field_symbol, value.expr));
                 }
 
-                for expected in &definition_fields {
-                    if !seen.contains(&expected.name) {
-                        return Err(hir_error!(
-                            *span,
-                            MissingField {
-                                struct_name,
-                                field: self.arena.alloc_str(self.symbols.get(expected.name)),
-                            }
-                        ));
-                    }
+                let missing =
+                    self.scope[id].fields.iter().find(|f| !seen.contains(&f.name)).map(|f| f.name);
+                if let Some(name) = missing {
+                    return Err(hir_error!(
+                        *span,
+                        MissingField {
+                            struct_name,
+                            field: self.arena.alloc_str(self.scope.symbols.get(name)),
+                        }
+                    ));
                 }
 
                 let fields = self.arena.alloc_slice_copy(&lowered);
@@ -1167,11 +1113,11 @@ where
 
                     let receiver_base_type = receiver_type.strip_reference();
 
-                    let method_symbol = self.symbols.insert(method_name);
+                    let method_symbol = self.scope.symbols.insert(method_name);
 
                     let lookup_type = match receiver_base_type.kind() {
                         TypeKind::Slice { element, .. } => {
-                            self.scope.specialize_slice_impls(receiver_base_type, self.symbols)?;
+                            self.scope.specialize_slice_impls(receiver_base_type)?;
                             Type::slice(element, false)
                         },
                         TypeKind::Array(id) => {
@@ -1187,19 +1133,19 @@ where
                                 )
                             })?;
                             let slice = Type::slice(element, false);
-                            self.scope.specialize_slice_impls(slice, self.symbols)?;
+                            self.scope.specialize_slice_impls(slice)?;
                             slice
                         },
                         _ => receiver_base_type,
                     };
 
                     let struct_name = match receiver_base_type.kind() {
-                        TypeKind::Struct(sid) => self.symbols.get(self[sid].name).to_string(),
+                        TypeKind::Struct(sid) => self.scope.symbols.get(self[sid].name).to_string(),
                         TypeKind::Enum(id) => self
                             .scope
                             .enums
                             .get(id)
-                            .map(|e| self.symbols.get(e.name).to_string())
+                            .map(|e| self.scope.symbols.get(e.name).to_string())
                             .unwrap_or_else(|| receiver_base_type.to_string()),
                         _ => receiver_base_type.to_string(),
                     };
@@ -1212,6 +1158,17 @@ where
                         )?;
 
                     if let Some(intrinsic) = self.scope.signatures[function].kind.intrinsic() {
+                        if intrinsic.is_wrapping() {
+                            return self.lower_wrapping_call(
+                                intrinsic,
+                                function,
+                                receiver_lowered,
+                                args,
+                                method_name,
+                                *span,
+                            );
+                        }
+
                         let return_type = self.scope.signatures[function].return_type;
                         let receiver = self.coerce_method_receiver(receiver_lowered, lookup_type);
                         let args = self.arena.alloc_slice_copy(&[receiver]);
@@ -1228,11 +1185,17 @@ where
                         "method call resolved to a free function"
                     );
 
+                    // a receiver that is already `&mut` mutates the pointee, not
+                    // the binding, so the binding itself needn't be `mut`
+                    let receiver_is_mut_ref =
+                        matches!(receiver_type.kind(), TypeKind::Ref { mutable: true, .. });
+
                     if signature.receiver_mutable()
+                        && !receiver_is_mut_ref
                         && base_local.filter(|&id| self[id].mutable).is_none()
                     {
                         let name = base_local.map_or("temporary", |id| {
-                            self.arena.alloc_str(self.symbols.get(self[id].name))
+                            self.arena.alloc_str(self.scope.symbols.get(self[id].name))
                         });
 
                         return Err(hir_error!(*span, ImmutableBind { name }));
@@ -1248,6 +1211,17 @@ where
                                 found: args.len()
                             }
                         ));
+                    }
+
+                    if self.scope.generic_fns.contains_key(&function) {
+                        return self.lower_generic_method_call(
+                            function,
+                            method_symbol,
+                            receiver_lowered.expr,
+                            args,
+                            type_args,
+                            *span,
+                        );
                     }
 
                     let lowered_args = args
@@ -1286,7 +1260,7 @@ where
                 let function_id = match callee.as_ref() {
                     Expr::Identifier(name, _) => self
                         .scope
-                        .resolve_function_call(None, name, self.symbols)
+                        .resolve_function_call(None, name)
                         .ok_or_else(|| hir_error!(*span, UnknownFunction { name }))?,
 
                     other => {
@@ -1309,10 +1283,8 @@ where
                     return Ok(lowered);
                 }
 
-                let id = self
-                    .scope
-                    .resolve_function_call(Some(qualifier), name, self.symbols)
-                    .ok_or_else(|| {
+                let id =
+                    self.scope.resolve_function_call(Some(qualifier), name).ok_or_else(|| {
                         let name = qualified(self.arena, qualifier, name);
                         hir_error!(*span, UnknownFunction { name })
                     })?;
@@ -1325,8 +1297,7 @@ where
 
             Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
                 let name: &str = kind.into();
-                let exists =
-                    self.scope.resolve_function_call(*qualifier, name, self.symbols).is_some();
+                let exists = self.scope.resolve_function_call(*qualifier, name).is_some();
 
                 if !exists {
                     let name = qualifier.map_or(name, |q| qualified(self.arena, q, name));
@@ -1334,7 +1305,7 @@ where
                 }
 
                 let ctx = type_resolver::ResolveCtx::root(
-                    self.symbols,
+                    &self.scope.symbols,
                     &self.scope.struct_map,
                     &self.scope.enum_map,
                     &self.scope.arrays,
@@ -1433,8 +1404,10 @@ where
                     let id = self.enum_type(scrutinee_type, span)?;
                     let enum_def = &self.scope[id];
 
-                    if let Some(idx) =
-                        enum_def.variants.iter().position(|v| self.symbols.get(v.name) == *name)
+                    if let Some(idx) = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| self.scope.symbols.get(v.name) == *name)
                     {
                         let variant = enum_def.variants[idx];
                         if variant.payload.is_some() {
@@ -1454,7 +1427,7 @@ where
                     }
                 }
 
-                let symbol = self.symbols.insert(name);
+                let symbol = self.scope.symbols.insert(name);
                 let local_id = self.declare_local(symbol, scrutinee_type, false, span)?;
                 Ok(Pattern { kind: PatternKind::Binding(local_id), span })
             },
@@ -1467,9 +1440,10 @@ where
                     // the scrutinee type pins the concrete enum `id`; the qualifier
                     // must name either that concrete enum or — for a generic enum —
                     // its template base (`Optional` for `Optional$Ordering`)
-                    let enum_symbol = self.symbols.insert(qualifier);
-                    let matches = self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
-                        || self.scope.generic_enums.contains_key(&enum_symbol);
+                    let matches = self.scope.symbols.get_id(qualifier).is_some_and(|enum_symbol| {
+                        self.scope.enum_map.get(&enum_symbol).copied() == Some(id)
+                            || self.scope.generic_enums.contains_key(&enum_symbol)
+                    });
                     if !matches {
                         let name = qualified(self.arena, qualifier, name);
                         return Err(hir_error!(span, UnknownType { name }));
@@ -1479,7 +1453,7 @@ where
                 let variant_idx = enum_def
                     .variants
                     .iter()
-                    .position(|v| self.symbols.get(v.name) == *name)
+                    .position(|v| self.scope.symbols.get(v.name) == *name)
                     .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
 
                 let variant = enum_def.variants[variant_idx];
@@ -1560,6 +1534,46 @@ where
         ))
     }
 
+    /// lower a `x.wrapping_*(rhs)` call: the receiver is passed by value so MIR
+    /// can emit a plain unchecked binary operation
+    fn lower_wrapping_call(
+        &mut self,
+        intrinsic: Intrinsic,
+        function_id: FunctionId,
+        receiver: Lowered<'hir>,
+        args: &[expression::Expression<'src>],
+        method_name: &'hir str,
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let [arg] = args else {
+            return Err(hir_error!(
+                span,
+                ArityMismatch { name: method_name, expected: 1, found: args.len() }
+            ));
+        };
+
+        let signature = &self.scope.signatures[function_id];
+        let (rhs_param, return_type) = (signature.params[1], signature.return_type);
+
+        let receiver_expr = match receiver.typ.kind() {
+            TypeKind::Ref { to, .. } => {
+                self.alloc(
+                    ExpressionKind::Unary { operator: UnaryOperator::Deref, expr: receiver.expr },
+                    to.into(),
+                    receiver.span,
+                )
+                .expr
+            },
+            _ => receiver.expr,
+        };
+
+        let arg = self.lower_expr(arg, Some(rhs_param))?;
+        self.assert_type(rhs_param, arg.typ, arg.span)?;
+
+        let args = self.arena.alloc_slice_copy(&[receiver_expr, arg.expr]);
+        Ok(self.alloc(ExpressionKind::IntrinsicCall { intrinsic, args }, return_type, span))
+    }
+
     fn lower_direct_call(
         &mut self,
         function_id: FunctionId,
@@ -1571,7 +1585,7 @@ where
         let intrinsic = signature.kind.intrinsic();
 
         if self.is_const && !signature.is_const && intrinsic.is_none() {
-            let name = self.arena.alloc_str(self.symbols.get(signature.name));
+            let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
@@ -1583,7 +1597,7 @@ where
         }
 
         if intrinsic.is_none() && signature.params.len() != args.len() {
-            let name = self.arena.alloc_str(self.symbols.get(signature.name));
+            let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
                 ArityMismatch { name, expected: signature.params.len(), found: args.len() }
@@ -1640,7 +1654,7 @@ where
         }
 
         let mut ctx = type_resolver::ResolveCtx::root(
-            self.symbols,
+            &self.scope.symbols,
             &self.scope.struct_map,
             &self.scope.enum_map,
             &self.scope.arrays,
@@ -1667,7 +1681,7 @@ where
         hint: Option<Type>,
         span: Span,
     ) -> Result<Option<Lowered<'hir>>, HirError<'hir>> {
-        let qualifier_symbol = self.symbols.insert(qualifier);
+        let qualifier_symbol = self.scope.symbols.insert(qualifier);
 
         let Some(enum_id) =
             self.resolve_enum_id(qualifier, qualifier_symbol, type_args, hint, span)?
@@ -1675,7 +1689,7 @@ where
             return Ok(None);
         };
 
-        let variant_symbol = self.symbols.insert(name);
+        let variant_symbol = self.scope.symbols.insert(name);
         let enum_def = &self.scope.enums[enum_id];
         let Some(index) = enum_def.variants.iter().position(|v| v.name == variant_symbol) else {
             return Ok(None);
@@ -1696,6 +1710,49 @@ where
         Ok(Some(lowered))
     }
 
+    fn lower_generic_method_call(
+        &mut self,
+        function_id: FunctionId,
+        method_symbol: SymbolId,
+        receiver: &'hir Expression<'hir>,
+        args: &[expression::Expression<'src>],
+        type_args: &[Spanned<statement::Type<'src>>],
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let generic_count = self.scope.generic_fns[&function_id].generics.len();
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            let lowered = self.lower_expr(arg, None)?;
+            arg_types.push(lowered.typ);
+            lowered_args.push(lowered.expr);
+        }
+        let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
+
+        let substs = match type_args.is_empty() {
+            false => self.resolve_turbofish(type_args)?,
+            true => {
+                let open_params = self.scope.signatures[function_id].explicit_params();
+                infer_type_args(open_params, &arg_types, generic_count)
+            },
+        };
+
+        let template = &self.scope.generic_fns[&function_id];
+        self.check_bounds(&template.generics, &substs, span)?;
+
+        let return_type = self.scope.signatures[function_id].return_type.subst(&substs);
+        let kind = ExpressionKind::MethodCall { name: method_symbol, receiver, args: lowered_args };
+        let lowered = self.alloc(kind, return_type, span);
+
+        self.typeck
+            .type_dependent_defs
+            .insert(lowered.expr.id, Res::Function(function_id));
+        self.typeck.node_args.insert(lowered.expr.id, substs);
+
+        Ok(lowered)
+    }
+
     fn lower_generic_call(
         &mut self,
         function_id: FunctionId,
@@ -1710,7 +1767,7 @@ where
         let generic_count = self.scope.generic_fns[&function_id].generics.len();
 
         if arity != args.len() {
-            let name = self.arena.alloc_str(self.symbols.get(callee_name));
+            let name = self.arena.alloc_str(self.scope.symbols.get(callee_name));
             return Err(hir_error!(
                 span,
                 ArityMismatch { name, expected: arity, found: args.len() }
@@ -1756,7 +1813,7 @@ where
         return_type: Type,
         span: Span,
     ) -> Result<Lowered<'hir>, HirError<'hir>> {
-        if !self.in_std {
+        if !self.scope.in_std {
             return Err(hir_error!(span, UnknownFunction { name: "syscall" }));
         }
 
@@ -1914,91 +1971,7 @@ where
         typ: &statement::Type<'src>,
         span: Span,
     ) -> Result<Type, HirError<'hir>> {
-        match typ {
-            statement::Type::Named(name) => {
-                if let Some(&typ) = self.generic_env.get(*name) {
-                    return Ok(typ);
-                }
-
-                let symbol = self.symbols.insert(name);
-                self.scope
-                    .nominal_type(symbol)
-                    .ok_or_else(|| hir_error!(span, UnknownType { name }))
-            },
-
-            statement::Type::SelfType => {
-                self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
-            },
-
-            statement::Type::RefSelf => {
-                let self_ty =
-                    self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))?;
-                let to = RefTarget::try_from(self_ty).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: self_ty
-                        }
-                    )
-                })?;
-
-                Ok(Type::refer(to, false))
-            },
-
-            statement::Type::Ref(inner, mutable) => {
-                let inner_type = self.resolve_type(inner, span)?;
-                let to = RefTarget::try_from(inner_type).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: inner_type
-                        }
-                    )
-                })?;
-                Ok(Type::refer(to, *mutable))
-            },
-
-            statement::Type::Generic(name, args) => {
-                let mut resolved = Vec::with_capacity(args.len());
-                for arg in args {
-                    resolved.push(self.resolve_type(arg.value_ref(), arg.span())?);
-                }
-                let typ = self.scope.instantiate_generic(name, &resolved, span, self.symbols)?;
-                if let Some(struct_sym) = self.symbols.get_id(name) {
-                    if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
-                        self.check_bounds(&template.generics, &resolved, span)?;
-                    } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
-                        self.check_bounds(&template.generics, &resolved, span)?;
-                    }
-                }
-                Ok(typ)
-            },
-
-            statement::Type::Array(element, len) => {
-                let element = self.resolve_type(element, span)?;
-                let id = self.scope.arrays.intern(element, *len as u32);
-                Ok(Type::array(id))
-            },
-
-            statement::Type::Slice(element, mutable) => {
-                let element = self.resolve_type(element, span)?;
-                let element = RefTarget::try_from(element).map_err(|_| {
-                    hir_error!(
-                        span,
-                        TypeMismatch {
-                            expected: Type::structure(Default::default()),
-                            found: element
-                        }
-                    )
-                })?;
-                Ok(Type::slice(element, *mutable))
-            },
-
-            other => Type::from_primitive_ast(other)
-                .ok_or_else(|| hir_error!(span, UnknownType { name: "<unsupported type>" })),
-        }
+        type_resolver::resolve(self, typ, span)
     }
 
     #[inline(always)]
@@ -2059,7 +2032,7 @@ where
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
         if scope.contains_key(&name) {
-            let name = self.arena.alloc_str(self.symbols.get(name));
+            let name = self.arena.alloc_str(self.scope.symbols.get(name));
             return Err(hir_error!(decl_span, DuplicateBind { name }));
         }
 
@@ -2079,7 +2052,7 @@ where
             .rev()
             .find_map(|scope| scope.get(&name).copied())
             .ok_or_else(|| {
-                let name = self.arena.alloc_str(self.symbols.get(name));
+                let name = self.arena.alloc_str(self.scope.symbols.get(name));
                 hir_error!(span, UndeclaredIdentifier { name })
             })
     }
@@ -2110,8 +2083,7 @@ where
                     self.check_bounds(&template.generics, &resolved, span)?;
                 }
 
-                let typ =
-                    self.scope.instantiate_generic(qualifier, &resolved, span, self.symbols)?;
+                let typ = self.scope.instantiate_generic(qualifier, &resolved, span)?;
 
                 if let TypeKind::Enum(id) = typ.kind() {
                     return Ok(Some(id));
@@ -2201,9 +2173,9 @@ where
             })),
         };
 
-        let sym = self.symbols.insert(name);
+        let sym = self.scope.symbols.insert(name);
         let def = &self.scope[sid];
-        let struct_name = self.arena.alloc_str(self.symbols.get(def.name));
+        let struct_name = self.arena.alloc_str(self.scope.symbols.get(def.name));
 
         let field = def.fields.iter().find(|field| field.name == sym).ok_or_else(|| {
             let field = self.arena.alloc_str(name);
@@ -2242,7 +2214,7 @@ where
                             })
                         })
                     },
-                    _ => self.symbols.get_id(interface_name).is_some_and(|interface_sym| {
+                    _ => self.scope.symbols.get_id(interface_name).is_some_and(|interface_sym| {
                         self.scope.interface_impls.contains(&(concrete_type, interface_sym))
                     }),
                 };
@@ -2352,22 +2324,61 @@ fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
 
 pub(in crate::hir) fn lower_const<'hir, 'src>(
     scope: &mut Scope<'hir>,
-    symbols: &mut SymbolTable,
     expr: &expression::Expression<'src>,
     expected_type: Type,
-    in_std: bool,
     arena: &'hir bumpalo::Bump,
 ) -> Result<(&'hir Expression<'hir>, TypeckResults), HirError<'hir>>
 where
     'src: 'hir,
 {
-    let mut builder = FunctionBuilder::new_for_const(scope, symbols, in_std, arena);
+    let mut builder = FunctionBuilder::new_for_const(scope, arena);
     let lowered = builder.lower_expr(expr, Some(expected_type))?;
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
     builder.resolve_inference();
 
     Ok((lowered.expr, builder.typeck))
+}
+
+impl<'s, 'f, 'hir, 'src> TypeResolver<'hir> for FunctionBuilder<'s, 'f, 'hir, 'src>
+where
+    'src: 'hir,
+{
+    fn named(&mut self, name: &'hir str, span: Span) -> Result<Type, HirError<'hir>> {
+        if let Some(&typ) = self.generic_env.get(name) {
+            return Ok(typ);
+        }
+
+        let symbol = self.scope.symbols.insert(name);
+        self.scope
+            .nominal_type(symbol)
+            .ok_or_else(|| hir_error!(span, UnknownType { name }))
+    }
+
+    fn generic(
+        &mut self,
+        name: &'hir str,
+        args: &[Type],
+        span: Span,
+    ) -> Result<Type, HirError<'hir>> {
+        let typ = self.scope.instantiate_generic(name, args, span)?;
+        if let Some(struct_sym) = self.scope.symbols.get_id(name) {
+            if let Some(template) = self.scope.generic_structs.get(&struct_sym) {
+                self.check_bounds(&template.generics, args, span)?;
+            } else if let Some(template) = self.scope.generic_enums.get(&struct_sym) {
+                self.check_bounds(&template.generics, args, span)?;
+            }
+        }
+        Ok(typ)
+    }
+
+    fn self_type(&mut self, span: Span) -> Result<Type, HirError<'hir>> {
+        self.self_type.ok_or_else(|| hir_error!(span, UnknownType { name: "Self" }))
+    }
+
+    fn arrays(&self) -> &ArrayTable {
+        &self.scope.arrays
+    }
 }
 
 impl<'s, 'f, 'hir, 'src> Index<LocalId> for FunctionBuilder<'s, 'f, 'hir, 'src> {

@@ -1,6 +1,7 @@
 use crate::parser::expression::Expression;
 use crate::parser::statement::{
-    Block, Const, Function, If, Impl, Interface, ItemKind, Let, Match, Return, Statement, While,
+    self, Block, Const, Function, If, Impl, Interface, ItemKind, Let, Loop, Match, Return,
+    Statement,
 };
 
 pub trait Visitor<'i>: Sized {
@@ -9,7 +10,8 @@ pub trait Visitor<'i>: Sized {
             Statement::Let(let_stmt) => self.visit_let(let_stmt),
             Statement::Return(ret_stmt) => self.visit_return(ret_stmt),
             Statement::If(if_stmt) => self.visit_if(if_stmt),
-            Statement::While(while_stmt) => self.visit_while(while_stmt),
+            Statement::Loop(loop_stmt) => self.visit_loop(loop_stmt),
+            Statement::Break(_) | Statement::Continue(_) => {},
             Statement::Expr(expr, _) => self.visit_expression(expr),
             Statement::Block(block) => self.visit_block(block),
             Statement::Match(match_stmt) => self.visit_match(match_stmt),
@@ -74,9 +76,18 @@ pub trait Visitor<'i>: Sized {
         }
     }
 
-    fn visit_while(&mut self, while_stmt: &While<'i>) {
-        self.visit_expression(&while_stmt.condition);
-        self.visit_block(&while_stmt.body);
+    fn visit_loop(&mut self, loop_stmt: &Loop<'i>) {
+        use statement::LoopHeader::*;
+        match &loop_stmt.header {
+            Infinite => {},
+            Range { start, end, .. } => {
+                self.visit_expression(start);
+                self.visit_expression(end);
+            },
+            Iterable { iterable, .. } => self.visit_expression(iterable),
+        }
+
+        self.visit_block(&loop_stmt.body);
     }
 
     fn visit_function(&mut self, func: &Function<'i>) {
