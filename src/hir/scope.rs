@@ -636,6 +636,16 @@ impl<'hir> Scope<'hir> {
 
         self.resolve_function(|m| m.item(name))
     }
+
+    pub(in crate::hir) fn resolve_qualified_function_call(
+        &self,
+        path: &[&str],
+        name: &str,
+    ) -> Option<FunctionId> {
+        let qualifier = path.join("::");
+        self.resolve_function_call(Some(&qualifier), name)
+            .or_else(|| self.resolve_function_call(None, name))
+    }
 }
 
 impl ArrayTable {

@@ -221,9 +221,14 @@ impl<'i> visitor::Visitor<'i> for DepVisitor<'_, '_, 'i, '_> {
                     self.deps.push(sym);
                 }
             },
-            Expr::QualifiedName { qualifier, name, .. } => {
-                let mangled = self.mangler.scoped_item(qualifier, name);
+            Expr::QualifiedName { path, name, .. } => {
+                let qualifier = path.join("::");
+                let mangled = self.mangler.scoped_item(&qualifier, name);
                 if let Some(sym) = self.symbols.get_id(&mangled)
+                    && self.decls.contains_key(&sym)
+                {
+                    self.deps.push(sym);
+                } else if let Some(sym) = self.symbols.get_id(&self.mangler.item(name))
                     && self.decls.contains_key(&sym)
                 {
                     self.deps.push(sym);

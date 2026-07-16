@@ -686,7 +686,8 @@ where
 
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
-            Expr::QualifiedName { qualifier, name, span } => {
+            Expr::QualifiedName { path, name, span } => {
+                let qualifier = self.arena.alloc_str(&path.join("::"));
                 let enum_symbol = self.scope.symbols.insert(qualifier);
                 let variant_symbol = self.scope.symbols.insert(name);
                 if let Some((id, value)) =
@@ -701,12 +702,12 @@ where
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let qualified = qualified(self.arena, qualifier, name);
-                let symbol = match self.scope.symbols.get_id(&mangled_name) {
-                    Some(sym) => sym,
-                    None => {
-                        return Err(hir_error!(*span, UndeclaredIdentifier { name: qualified }));
-                    },
-                };
+                let symbol = self
+                    .scope
+                    .symbols
+                    .get_id(&mangled_name)
+                    .or_else(|| self.scope.symbols.get_id(&self.mangler().item(name)))
+                    .ok_or_else(|| hir_error!(*span, UndeclaredIdentifier { name: qualified }))?;
 
                 let c =
                     self.scope.constants.get(&symbol).copied().ok_or_else(|| {
@@ -1275,17 +1276,18 @@ where
                 }
             },
 
-            Expr::QualifiedCall { qualifier, name, args, span, type_args } => {
+            Expr::QualifiedCall { path, name, args, span, type_args } => {
                 // `Enum::Variant(payload)` constructs a tagged-union value
                 if let Some(lowered) =
-                    self.lower_variant(qualifier, name, args, type_args, hint, *span)?
+                    self.lower_variant(path, name, args, type_args, hint, *span)?
                 {
                     return Ok(lowered);
                 }
 
                 let id =
-                    self.scope.resolve_function_call(Some(qualifier), name).ok_or_else(|| {
-                        let name = qualified(self.arena, qualifier, name);
+                    self.scope.resolve_qualified_function_call(path, name).ok_or_else(|| {
+                        let qualifier = path.join("::");
+                        let name = qualified(self.arena, &qualifier, name);
                         hir_error!(*span, UnknownFunction { name })
                     })?;
 
@@ -1295,12 +1297,18 @@ where
                 }
             },
 
-            Expr::TypeIntrinsic { kind, qualifier, typ, span } => {
+            Expr::TypeIntrinsic { kind, path, typ, span } => {
                 let name: &str = kind.into();
-                let exists = self.scope.resolve_function_call(*qualifier, name).is_some();
+                let exists = match path {
+                    Some(path) => self.scope.resolve_qualified_function_call(path, name).is_some(),
+                    None => self.scope.resolve_function_call(None, name).is_some(),
+                };
 
                 if !exists {
-                    let name = qualifier.map_or(name, |q| qualified(self.arena, q, name));
+                    let name = path.as_ref().map_or(name, |path| {
+                        let qualifier = path.join("::");
+                        qualified(self.arena, &qualifier, name)
+                    });
                     return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
@@ -1674,13 +1682,17 @@ where
     /// call). For a generic enum, the concrete instantiation comes from `hint`.
     fn lower_variant(
         &mut self,
-        qualifier: &str,
+        path: &[&str],
         name: &'src str,
         args: &[expression::Expression<'src>],
         type_args: &[Spanned<statement::Type<'src>>],
         hint: Option<Type>,
         span: Span,
     ) -> Result<Option<Lowered<'hir>>, HirError<'hir>> {
+        if path.len() != 1 {
+            return Ok(None);
+        }
+        let qualifier = path[0];
         let qualifier_symbol = self.scope.symbols.insert(qualifier);
 
         let Some(enum_id) =

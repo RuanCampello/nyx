@@ -418,6 +418,28 @@ mod tests {
     }
 
     #[test]
+    fn direct_qualified_calls_load_std_and_project_modules() {
+        let arena = bumpalo::Bump::new();
+        let fs = VirtualFS::default()
+            .add("/project/math.nyx", "pub fn add(left: i32, right: i32): i32 { left + right }")
+            .add(
+                "/project/main.nyx",
+                r#"
+                    fn main(): i32 {
+                        std::io::println("ok");
+                        my_app::math::add(40, 2)
+                    }
+                "#,
+            );
+
+        let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
+        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
+
+        assert!(matches!(main.body.statements[0], Statement::Expr(_)));
+        assert_eq!(main.return_type, TypeKind::I32.into());
+    }
+
+    #[test]
     fn counters_infer_uptr_from_len_and_indexing() {
         let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add(

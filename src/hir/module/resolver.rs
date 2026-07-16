@@ -18,6 +18,10 @@ impl ModuleResolver {
         &self.std
     }
 
+    pub(super) fn is_known_root(&self, root: &str) -> bool {
+        root == self.name || root == "std"
+    }
+
     pub(super) fn resolve_path(
         &self,
         segments: &[&str],

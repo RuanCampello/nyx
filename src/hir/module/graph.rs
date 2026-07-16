@@ -5,7 +5,9 @@ use crate::{
     lexer::token::Span,
     parser::{
         Parser,
+        expression::Expression,
         statement::{Interface, Item, ItemKind, Statement, UseItems, inject_default_methods},
+        visitor::{self, Visitor},
     },
 };
 use std::{
@@ -48,6 +50,10 @@ struct GraphBuilder<'a, 'src, F> {
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
     in_flight: HashSet<PathBuf>,
+}
+
+struct QualifiedCallCollector<'src> {
+    calls: Vec<(Vec<&'src str>, &'src str, Span)>,
 }
 
 pub(super) fn build_graph<'src, F: FileSystem>(
@@ -223,9 +229,43 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             }
         }
 
+        for (path, name, span) in qualified_calls(&self.nodes[idx].statements) {
+            if !self.resolver.is_known_root(path[0]) {
+                continue;
+            }
+
+            let resolved = self.resolver.resolve_path(&path, span)?;
+            let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
+            let import_idx = self.discover(import.clone(), Some(span))?;
+            self.edges.push((idx, import_idx));
+
+            if !self.nodes[import_idx].exports.contains(name) {
+                return Err(ModuleError::UnknownExport { path: import, name: name.into(), span });
+            }
+        }
+
         self.in_flight.remove(&canonical);
         Ok(idx)
     }
+}
+
+impl<'src> Visitor<'src> for QualifiedCallCollector<'src> {
+    fn visit_expression(&mut self, expr: &Expression<'src>) {
+        match expr {
+            Expression::QualifiedCall { path, name, .. } => {
+                self.calls.push((path.clone(), name, expr.span()));
+            },
+            _ => visitor::walk_expression(self, expr),
+        }
+    }
+}
+
+fn qualified_calls<'src>(statements: &[Statement<'src>]) -> Vec<(Vec<&'src str>, &'src str, Span)> {
+    let mut collector = QualifiedCallCollector { calls: Vec::new() };
+    for statement in statements {
+        collector.visit_statement(statement);
+    }
+    collector.calls
 }
 
 fn collect_interfaces<'src>(nodes: &[ModuleNode<'src>]) -> HashMap<String, Interface<'src>> {

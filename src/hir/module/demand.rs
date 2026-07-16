@@ -173,17 +173,21 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                     self.visit_expression(arg);
                 }
             },
-            Expression::QualifiedCall { qualifier, name, args, .. } => {
-                if let Some(id) = self.scope.resolve_function_call(Some(qualifier), name) {
+            Expression::QualifiedCall { path, name, args, .. } => {
+                if let Some(id) = self.scope.resolve_qualified_function_call(path, name) {
                     self.found.push(id);
                 }
                 for arg in args {
                     self.visit_expression(arg);
                 }
             },
-            Expression::TypeIntrinsic { kind, qualifier, .. } => {
+            Expression::TypeIntrinsic { kind, path, .. } => {
                 let name = kind.into();
-                if let Some(id) = self.scope.resolve_function_call(*qualifier, name) {
+                let id = match path {
+                    Some(path) => self.scope.resolve_qualified_function_call(path, name),
+                    None => self.scope.resolve_function_call(None, name),
+                };
+                if let Some(id) = id {
                     self.found.push(id);
                 }
             },
