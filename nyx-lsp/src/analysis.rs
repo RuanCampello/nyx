@@ -916,6 +916,14 @@ mod tests {
     }
 
     #[test]
+    fn direct_qualified_std_call_has_no_diagnostics() {
+        let a = analyse("qualified_std", "fn main() { std::io::println(\"ok\"); }");
+
+        assert!(a.ok, "{:#?}", a.diagnostics);
+        assert!(a.diagnostics.is_empty(), "{:#?}", a.diagnostics);
+    }
+
+    #[test]
     fn broken_buffer_is_not_ok_and_yields_no_features() {
         let a = analyse("broken", "fn main() { let x = ");
         assert!(!a.ok, "a parse error must leave the analysis incomplete");

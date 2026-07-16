@@ -701,6 +701,18 @@ mod tests {
     }
 
     #[test]
+    fn qualified_function_paths_are_highlighted() {
+        check(
+            "std::io::println(\"ok\");",
+            expect![[r#"
+            namespace std
+            namespace io
+            function println
+            string "ok""#]],
+        );
+    }
+
+    #[test]
     fn variant_constructors_match_bare_variants() {
         check(
             "match self { Some(value) -> value, None -> false, }",
