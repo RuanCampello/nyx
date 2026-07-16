@@ -36,19 +36,19 @@ pub enum Expression<'i> {
         span: Span,
     },
     QualifiedCall {
-        qualifier: &'i str,
+        path: Vec<&'i str>,
         name: &'i str,
         args: Vec<Expression<'i>>,
         type_args: Vec<Spanned<Type<'i>>>,
         span: Span,
     },
-    QualifiedName { qualifier: &'i str, name: &'i str, span: Span },
+    QualifiedName { path: Vec<&'i str>, name: &'i str, span: Span },
     /// Special compiler intrinsics that accept a type annotation as an argument
     /// these must be handled at the expression parser level because types are not value-level expressions,
     /// so standard function/intrinsic call parsing would fail on them
     TypeIntrinsic {
         kind: TypeIntrinsicKind,
-        qualifier: Option<&'i str>,
+        path: Option<Vec<&'i str>>,
         typ: Spanned<Type<'i>>,
         span: Span,
     },
@@ -366,9 +366,14 @@ impl<'i> Expression<'i> {
                     });
                 }
 
-                // path / associated item access (e.g., `left::name...`)
-                let Expression::Identifier(qualifier, _) = left else {
-                    return Err(invalid_expr());
+                // path / associated item access (e.g., `std::io::println...`)
+                let (path, start_span) = match left {
+                    Expression::Identifier(name, span) => (vec![name], span),
+                    Expression::QualifiedName { mut path, name, span } => {
+                        path.push(name);
+                        (path, span)
+                    },
+                    _ => return Err(invalid_expr()),
                 };
                 let (name, name_span) = parser.expect_identifier()?;
 
@@ -383,10 +388,10 @@ impl<'i> Expression<'i> {
                     parser.expect_token(Punct::ColonColon)?;
                     let type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
 
-                    let (args, end_span) = Self::parse_call_args(parser, left.span())?;
+                    let (args, end_span) = Self::parse_call_args(parser, start_span)?;
                     return Ok(Expression::QualifiedCall {
-                        span: left.span() + end_span,
-                        qualifier,
+                        span: start_span + end_span,
+                        path,
                         name,
                         args,
                         type_args,
@@ -402,16 +407,16 @@ impl<'i> Expression<'i> {
 
                         return Ok(Expression::TypeIntrinsic {
                             kind,
-                            qualifier: Some(qualifier),
+                            path: Some(path),
                             typ,
-                            span: left.span() + end_span,
+                            span: start_span + end_span,
                         });
                     }
 
                     let (args, end_span) = Self::parse_call_args(parser, name_span)?;
                     return Ok(Expression::QualifiedCall {
-                        span: left.span() + end_span,
-                        qualifier,
+                        span: start_span + end_span,
+                        path,
                         name,
                         args,
                         type_args: Vec::new(),
@@ -419,7 +424,7 @@ impl<'i> Expression<'i> {
                 }
 
                 // plain associated path / variable (e.g., `Container::CONSTANT`)
-                Ok(Expression::QualifiedName { span: left.span() + name_span, qualifier, name })
+                Ok(Expression::QualifiedName { span: start_span + name_span, path, name })
             },
             TokenKind::Punct(Punct::OpenParen) => {
                 if let Expression::Identifier(name, _) = &left
@@ -429,7 +434,7 @@ impl<'i> Expression<'i> {
                     let end_span = parser.expect_token(Punct::CloseParen)?.span;
                     let span = left.span() + end_span;
 
-                    return Ok(Expression::TypeIntrinsic { kind, qualifier: None, typ, span });
+                    return Ok(Expression::TypeIntrinsic { kind, path: None, typ, span });
                 }
 
                 let (args, end_span) = Self::parse_call_args_after_paren(parser, token.span)?;
