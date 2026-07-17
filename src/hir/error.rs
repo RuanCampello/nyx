@@ -211,6 +211,13 @@ pub enum HirErrorKind<'h> {
     )]
     InvalidRangeType { typ: Type },
 
+    #[diagnostic(
+        message = "empty range pattern",
+        primary = "this range matches no values",
+        help = "make the lower bound less than or equal to the upper bound"
+    )]
+    EmptyRange,
+
 
     // TODO: this should be more generic, because the loop/range 
     // should just require the copy interface as any other function that requires a generic

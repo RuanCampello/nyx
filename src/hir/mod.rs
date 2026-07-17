@@ -271,12 +271,18 @@ pub enum PatternKind<'hir> {
     Wildcard,
     /// Binds the matched value to a local (e.g. `x` in `match v { x => ... }`)
     Binding(LocalId),
+    /// `name @ sub`, binds the matched value while testing `sub`
+    Bind { local: LocalId, sub: &'hir Pattern<'hir> },
     /// Enum variant pattern (e.g. `Some(x)`)
     Variant { id: EnumId, variant_idx: usize, sub: Option<&'hir Pattern<'hir>> },
+    /// Struct destructuring (e.g. `Foo { bar, baz: 0 }`), unnamed fields are unchecked
+    Struct { id: StructId, fields: &'hir [(SymbolId, &'hir Pattern<'hir>)] },
     /// Or-pattern `A | B | C`
     Or(&'hir [Pattern<'hir>]),
     /// Literal value
     Literal(Literal),
+    /// Range pattern `start..end` / `start..=end` over integer or char literals
+    Range { start: Literal, end: Literal, inclusive: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

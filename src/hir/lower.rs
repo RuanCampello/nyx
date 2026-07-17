@@ -693,6 +693,17 @@ where
                 if let Some((id, value)) =
                     self.scope.enum_variants.get(&(enum_symbol, variant_symbol)).copied()
                 {
+                    // a fieldless variant of a payload-carrying enum is still a
+                    // tagged union: build it through the constructor path so it
+                    // gets a place, not a bare tag constant
+                    let has_payload = self.scope[id].variants.iter().any(|v| v.payload.is_some());
+                    if has_payload
+                        && let Some(lowered) =
+                            self.lower_variant(path, name, &[], &[], hint, *span)?
+                    {
+                        return Ok(lowered);
+                    }
+
                     return Ok(self.alloc(
                         ExpressionKind::Literal(Literal::Int(value)),
                         Type::enumerable(id),
@@ -1385,17 +1396,144 @@ where
         pattern: &statement::Pattern<'src>,
         span: Span,
     ) -> Result<Pattern<'hir>, HirError<'hir>> {
+        use PatternLit as Lit;
         match pattern {
             statement::Pattern::Wildcard => Ok(Pattern { kind: PatternKind::Wildcard, span }),
 
             statement::Pattern::Literal(lit) => {
                 let kind = match lit {
-                    PatternLit::Int(n) => PatternKind::Literal(Literal::Int(*n)),
-                    PatternLit::Float(f) => PatternKind::Literal(Literal::Float(*f)),
-                    PatternLit::Bool(b) => PatternKind::Literal(Literal::Bool(*b)),
-                    PatternLit::Char(c) => PatternKind::Literal(Literal::Char(*c)),
+                    Lit::Int(n) => PatternKind::Literal(Literal::Int(*n)),
+                    Lit::Float(f) => PatternKind::Literal(Literal::Float(*f)),
+                    Lit::Bool(b) => PatternKind::Literal(Literal::Bool(*b)),
+                    Lit::Char(c) => PatternKind::Literal(Literal::Char(*c)),
                 };
                 Ok(Pattern { kind, span })
+            },
+
+            statement::Pattern::Range { start, end, inclusive } => {
+                let is_int = scrutinee_type.is_integer()
+                    || matches!(scrutinee_type.kind(), TypeKind::Infer(_));
+                let endpoints = match (start, end) {
+                    (Lit::Int(a), Lit::Int(b)) if is_int => {
+                        Some((Literal::Int(*a), Literal::Int(*b), *a, *b))
+                    },
+                    (Lit::Char(a), Lit::Char(b)) if scrutinee_type.kind() == TypeKind::Char => {
+                        Some((Literal::Char(*a), Literal::Char(*b), *a as i64, *b as i64))
+                    },
+                    _ => None,
+                };
+                let Some((start, end, low, high)) = endpoints else {
+                    return Err(hir_error!(span, InvalidRangeType { typ: scrutinee_type }));
+                };
+
+                if low > high || (!inclusive && low == high) {
+                    return Err(hir_error!(span, EmptyRange));
+                }
+
+                Ok(Pattern {
+                    kind: PatternKind::Range { start, end, inclusive: *inclusive },
+                    span,
+                })
+            },
+
+            statement::Pattern::Binding { name, sub } => {
+                let symbol = self.scope.symbols.insert(name);
+                let local = self.declare_local(symbol, scrutinee_type, false, span)?;
+                let lowered = self.lower_pattern(scrutinee_type, sub.value_ref(), sub.span())?;
+                Ok(Pattern {
+                    kind: PatternKind::Bind { local, sub: self.arena.alloc(lowered) },
+                    span,
+                })
+            },
+
+            statement::Pattern::Struct { name, fields, rest } => {
+                let struct_sym = self.scope.symbols.get_id(name);
+                let named_id = struct_sym.and_then(|sym| self.scope.struct_map.get(&sym).copied());
+
+                let id = match scrutinee_type.kind() {
+                    TypeKind::Struct(id) => id,
+                    _ => {
+                        let found = named_id
+                            .map(Type::structure)
+                            .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
+                        return Err(hir_error!(
+                            span,
+                            TypeMismatch { expected: scrutinee_type, found }
+                        ));
+                    },
+                };
+
+                // the scrutinee type pins the concrete struct `id`, the pattern
+                // must name that concrete struct or, for a generic struct, its template base
+                let matches_scrutinee = struct_sym.is_some_and(|sym| {
+                    self.scope.struct_map.get(&sym).copied() == Some(id)
+                        || self.scope.generic_structs.contains_key(&sym)
+                });
+                if !matches_scrutinee {
+                    return match named_id {
+                        Some(other) => Err(hir_error!(
+                            span,
+                            TypeMismatch {
+                                expected: scrutinee_type,
+                                found: Type::structure(other),
+                            }
+                        )),
+                        None => Err(hir_error!(span, UnknownType { name })),
+                    };
+                }
+
+                let definition_name = self.scope[id].name;
+                let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
+
+                let mut seen = HashSet::with_capacity(fields.len());
+                let mut lowered = Vec::with_capacity(fields.len());
+
+                for field in fields {
+                    let field_symbol = self.scope.symbols.insert(field.name);
+                    if !seen.insert(field_symbol) {
+                        return Err(hir_error!(field.span, DuplicateField { name: field.name }));
+                    }
+
+                    let expected =
+                        self.scope[id].fields.iter().find(|f| f.name == field_symbol).copied();
+                    let Some(expected) = expected else {
+                        return Err(hir_error!(
+                            field.span,
+                            UnknownField { struct_name, field: field.name }
+                        ));
+                    };
+
+                    let sub = match &field.pattern {
+                        Some(sub) => {
+                            self.lower_pattern(expected.typ, sub.value_ref(), sub.span())?
+                        },
+                        None => {
+                            let local =
+                                self.declare_local(field_symbol, expected.typ, false, field.span)?;
+                            Pattern { kind: PatternKind::Binding(local), span: field.span }
+                        },
+                    };
+                    lowered.push((field_symbol, &*self.arena.alloc(sub)));
+                }
+
+                if !rest
+                    && let Some(missing) = self.scope[id]
+                        .fields
+                        .iter()
+                        .find(|f| !seen.contains(&f.name))
+                        .map(|f| f.name)
+                {
+                    return Err(hir_error!(
+                        span,
+                        MissingField {
+                            struct_name,
+                            field: self.arena.alloc_str(self.scope.symbols.get(missing)),
+                        }
+                    ));
+                }
+
+                let fields = self.arena.alloc_slice_copy(&lowered);
+                Ok(Pattern { kind: PatternKind::Struct { id, fields }, span })
             },
 
             statement::Pattern::Or(alts) => {

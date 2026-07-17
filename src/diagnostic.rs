@@ -501,8 +501,8 @@ mod tests {
 
     #[test]
     fn lex_unexpected_char() {
-        let kind = lex_check!("let x = @;");
-        assert_eq!(kind, LexErrorKind::UnexpectedChar('@'));
+        let kind = lex_check!("let x = `;");
+        assert_eq!(kind, LexErrorKind::UnexpectedChar('`'));
     }
 
     #[test]
@@ -608,6 +608,37 @@ mod tests {
     fn hir_undeclared_identifier() {
         let kind = hir_check!("fn main() { x + 1; }");
         assert_eq!(kind, HirErrorKind::UndeclaredIdentifier { name: "x" });
+    }
+
+    #[test]
+    fn hir_empty_range_pattern() {
+        let kind = hir_check!("fn main(): i32 { let x = 1; match x { 5..=1 -> 0, _ -> 1 } }");
+        assert_eq!(kind, HirErrorKind::EmptyRange);
+    }
+
+    #[test]
+    fn hir_range_pattern_type_mismatch() {
+        let kind =
+            hir_check!("fn main(): i32 { let x = 1; match x { 'a'..='z' -> 0, _ -> 1 } }");
+        assert!(matches!(kind, HirErrorKind::InvalidRangeType { .. }), "got {kind:?}");
+    }
+
+    #[test]
+    fn hir_struct_pattern_unknown_field() {
+        let kind = hir_check!(
+            "struct Point { x: i32, y: i32 }
+             fn main(): i32 { let p = Point { x: 1, y: 2 }; match p { Point { z } -> 0, _ -> 1 } }"
+        );
+        assert_eq!(kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
+    }
+
+    #[test]
+    fn hir_struct_pattern_missing_field() {
+        let kind = hir_check!(
+            "struct Point { x: i32, y: i32 }
+             fn main(): i32 { let p = Point { x: 1, y: 2 }; match p { Point { x } -> x, _ -> 1 } }"
+        );
+        assert_eq!(kind, HirErrorKind::MissingField { struct_name: "Point", field: "y" });
     }
 
     #[test]
