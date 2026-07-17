@@ -249,7 +249,9 @@ mod tests {
         lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{Item, ItemKind, Let, Loop, LoopHeader, Return, Type},
+            statement::{
+                Item, ItemKind, Let, Loop, LoopHeader, Pattern, PatternLit, Return, Type,
+            },
         },
     };
 
@@ -811,5 +813,80 @@ mod tests {
         assert!(
             matches!(block.receiver.value_ref(), Type::Slice(element, false) if matches!(element.as_ref(), Type::Named("T")))
         );
+    }
+
+    #[test]
+    fn struct_pattern_with_rest() {
+        let pattern = Pattern::parse(&mut Parser::new("Colour { r, g: 0, .. }")).unwrap();
+        let Pattern::Struct { name, fields, rest } = pattern else {
+            panic!("expected struct pattern");
+        };
+
+        assert_eq!(name, "Colour");
+        assert!(rest);
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "r");
+        assert!(fields[0].pattern.is_none());
+        assert_eq!(fields[1].name, "g");
+        assert!(matches!(
+            fields[1].pattern.as_ref().unwrap().value_ref(),
+            Pattern::Literal(PatternLit::Int(0))
+        ));
+    }
+
+    #[test]
+    fn range_patterns() {
+        let pattern = Pattern::parse(&mut Parser::new("1..=5")).unwrap();
+        assert_eq!(
+            pattern,
+            Pattern::Range {
+                start: PatternLit::Int(1),
+                end: PatternLit::Int(5),
+                inclusive: true
+            }
+        );
+
+        let pattern = Pattern::parse(&mut Parser::new("'a'..'z'")).unwrap();
+        assert_eq!(
+            pattern,
+            Pattern::Range {
+                start: PatternLit::Char('a'),
+                end: PatternLit::Char('z'),
+                inclusive: false
+            }
+        );
+    }
+
+    #[test]
+    fn range_pattern_requires_literal_endpoint() {
+        let err = Pattern::parse(&mut Parser::new("1..=x")).unwrap_err();
+        assert!(matches!(err.kind, ParseErrorKind::ExpectedPatternLiteral { .. }));
+    }
+
+    #[test]
+    fn at_binding_pattern() {
+        let pattern = Pattern::parse(&mut Parser::new("id @ 3..=7")).unwrap();
+        let Pattern::Binding { name, sub } = pattern else {
+            panic!("expected binding pattern");
+        };
+
+        assert_eq!(name, "id");
+        assert!(matches!(sub.value_ref(), Pattern::Range { inclusive: true, .. }));
+    }
+
+    #[test]
+    fn variant_with_struct_subpattern() {
+        let pattern =
+            Pattern::parse(&mut Parser::new("Msg::ChangeColour(Colour { r, g, b })")).unwrap();
+        let Pattern::Variant { qualifier: Some("Msg"), name: "ChangeColour", sub: Some(sub) } =
+            pattern
+        else {
+            panic!("expected qualified variant pattern");
+        };
+
+        assert!(matches!(
+            sub.value_ref(),
+            Pattern::Struct { name: "Colour", fields, rest: false } if fields.len() == 3
+        ));
     }
 }

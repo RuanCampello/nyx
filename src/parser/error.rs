@@ -46,6 +46,12 @@ pub enum ParseErrorKind<'i> {
     )]
     ExpectedExpression { found: TokenKind<'i> },
     #[diagnostic(
+        message = "expected literal, found {found~}",
+        primary = "a literal was expected here",
+        note = "range pattern endpoints must be literals"
+    )]
+    ExpectedPatternLiteral { found: TokenKind<'i> },
+    #[diagnostic(
         message = "expected type name, found {found!}",
         primary = "a type name was expected here"
     )]

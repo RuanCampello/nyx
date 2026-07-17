@@ -135,16 +135,30 @@ pub enum Pattern<'i> {
     Wildcard,
     /// An inline literal value, e.g. `42`, `true`, `'x'`
     Literal(PatternLit),
-    /// `A | B | C` — or-pattern; alternatives are never empty and never nested
+    /// `1..5` or `1..=5`, range over literal endpoints
+    Range { start: PatternLit, end: PatternLit, inclusive: bool },
+    /// `A | B | C`, or-pattern, alternatives are never empty and never nested
     Or(Vec<Spanned<Pattern<'i>>>),
     /// bare identifier, fieldless variant or a payload binding
     Ident(&'i str),
+    /// `name @ sub`, binds the matched value while testing `sub`
+    Binding { name: &'i str, sub: Box<Spanned<Pattern<'i>>> },
     /// `Qualifier::Name`, `Name(sub)`, or `Qualifier::Name(sub)`
     Variant {
         qualifier: Option<&'i str>,
         name: &'i str,
         sub: Option<Box<Spanned<Pattern<'i>>>>,
     },
+    /// `Foo { bar, baz: 0, .. }`, struct destructuring, `rest` is the `..`
+    Struct { name: &'i str, fields: Vec<PatternField<'i>>, rest: bool },
+}
+
+/// One field of a struct pattern
+#[derive(Debug, PartialEq, Clone)]
+pub struct PatternField<'i> {
+    pub name: &'i str,
+    pub pattern: Option<Spanned<Pattern<'i>>>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -697,19 +711,15 @@ impl<'i> Parsable<'i> for Match<'i> {
 
 impl<'i> Parsable<'i> for Pattern<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Pattern<'i>, ParserError<'i>> {
-        // Literal patterns: integers, floats, bools, chars.
-        if let Some(Ok(token)) = parser.peek() {
-            let lit = match token.kind {
-                TokenKind::Integer(n) => Some(PatternLit::Int(n as i64)),
-                TokenKind::Float(f) => Some(PatternLit::Float(f)),
-                TokenKind::Bool(b) => Some(PatternLit::Bool(b)),
-                TokenKind::Char(c) => Some(PatternLit::Char(c)),
-                _ => None,
-            };
-            if let Some(lit) = lit {
-                parser.expect_next()?;
-                return Ok(Pattern::Literal(lit));
+        // literal patterns, a following
+        // `..`/`..=` turns the literal into a range endpoints
+        if let Some(start) = consume_pattern_lit(parser)? {
+            let inclusive = parser.consume_token(Punct::RangeEq)?;
+            if inclusive || parser.consume_token(Punct::Range)? {
+                let end = expect_pattern_lit(parser)?;
+                return Ok(Pattern::Range { start, end, inclusive });
             }
+            return Ok(Pattern::Literal(start));
         }
 
         let pattern_payload = |parser: &mut Parser<'i>| -> Result<_, ParserError<'i>> {
@@ -724,6 +734,16 @@ impl<'i> Parsable<'i> for Pattern<'i> {
 
         let (ident, _) = parser.expect_identifier()?;
 
+        if ident == "_" {
+            return Ok(Pattern::Wildcard);
+        }
+
+        // `name @ sub`
+        if parser.consume_token(Punct::At)? {
+            let sub: Spanned<Pattern> = parser.parse_node()?;
+            return Ok(Pattern::Binding { name: ident, sub: Box::new(sub) });
+        }
+
         // `Qualifier::Name` (optionally `Qualifier::Name(sub)`)
         if parser.consume_token(Punct::ColonColon)? {
             let (name, _) = parser.expect_identifier()?;
@@ -731,15 +751,17 @@ impl<'i> Parsable<'i> for Pattern<'i> {
             return Ok(Pattern::Variant { qualifier: Some(ident), name, sub });
         }
 
+        // `Name { field, field: sub, .. }`
+        if matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::OpenBrace)) {
+            return parse_struct_pattern(parser, ident);
+        }
+
         // `Name(sub)`
         if let Some(sub) = pattern_payload(parser)? {
             return Ok(Pattern::Variant { qualifier: None, name: ident, sub: Some(sub) });
         }
 
-        Ok(match ident {
-            "_" => Pattern::Wildcard,
-            _ => Pattern::Ident(ident),
-        })
+        Ok(Pattern::Ident(ident))
     }
 }
 
@@ -1426,6 +1448,7 @@ fn parse_where_clause<'i>(
     Ok(())
 }
 
+#[inline(always)]
 fn push_member_docs<'i>(
     member_docs: &mut Vec<(Span, Box<[&'i str]>)>,
     span: Span,
@@ -1434,6 +1457,70 @@ fn push_member_docs<'i>(
     if !docs.is_empty() {
         member_docs.push((span, docs));
     }
+}
+
+fn consume_pattern_lit<'i>(parser: &mut Parser<'i>) -> Result<Option<PatternLit>, ParserError<'i>> {
+    let Some(Ok(token)) = parser.peek() else {
+        return Ok(None);
+    };
+
+    let lit = match token.kind {
+        TokenKind::Integer(n) => PatternLit::Int(n as i64),
+        TokenKind::Float(f) => PatternLit::Float(f),
+        TokenKind::Bool(b) => PatternLit::Bool(b),
+        TokenKind::Char(c) => PatternLit::Char(c),
+        _ => return Ok(None),
+    };
+
+    parser.expect_next()?;
+    Ok(Some(lit))
+}
+
+fn expect_pattern_lit<'i>(parser: &mut Parser<'i>) -> Result<PatternLit, ParserError<'i>> {
+    let token = parser.expect_next()?;
+    match token.kind {
+        TokenKind::Integer(n) => Ok(PatternLit::Int(n as i64)),
+        TokenKind::Float(f) => Ok(PatternLit::Float(f)),
+        TokenKind::Bool(b) => Ok(PatternLit::Bool(b)),
+        TokenKind::Char(c) => Ok(PatternLit::Char(c)),
+        _ => Err(ParserError::new(
+            ParseErrorKind::ExpectedPatternLiteral { found: token.kind },
+            token.span,
+        )),
+    }
+}
+
+fn parse_struct_pattern<'i>(
+    parser: &mut Parser<'i>,
+    name: &'i str,
+) -> Result<Pattern<'i>, ParserError<'i>> {
+    parser.expect_token(Punct::OpenBrace)?;
+
+    let mut fields = Vec::new();
+    let mut rest = false;
+
+    while !parser.consume_token(Punct::CloseBrace)? {
+        // `..` covers the remaining fields and must come last
+        if parser.consume_token(Punct::Range)? {
+            rest = true;
+            parser.consume_token(Punct::Comma)?;
+            parser.expect_token(Punct::CloseBrace)?;
+            break;
+        }
+
+        let (field_name, name_span) = parser.expect_identifier()?;
+        let pattern: Option<Spanned<Pattern<'i>>> =
+            parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
+        let span = pattern.as_ref().map_or(name_span, |sub| name_span + sub.span());
+        fields.push(PatternField { name: field_name, pattern, span });
+
+        if !parser.consume_token(Punct::Comma)? {
+            parser.expect_token(Punct::CloseBrace)?;
+            break;
+        }
+    }
+
+    Ok(Pattern::Struct { name, fields, rest })
 }
 
 pub(crate) fn parse_comma_separated<'i, T>(
