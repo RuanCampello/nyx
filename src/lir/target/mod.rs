@@ -409,7 +409,8 @@ where
         for (vid, typ) in &self.function.params {
             let (vid, typ) = (*vid, *typ);
 
-            if typ.is_aggregate() {
+            // payload-carrying enums are passed by pointer like any aggregate
+            if typ.is_aggregate_lir(self.layouts) {
                 let ptr_mt = MachineType::Int { bytes: 8, signed: false };
                 let ptr = self.lir.new_vreg(ptr_mt);
 
