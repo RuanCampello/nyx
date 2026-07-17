@@ -142,6 +142,7 @@ impl<'src> Lexer<'src> {
             },
 
             '^' => self.single_punct(Punct::Caret),
+            '@' => self.single_punct(Punct::At),
 
             '<' => {
                 self.cursor.advance();
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn punctuation() {
-        let ks = kinds("( ) { } [ ] : ; , . + - * / = == != < > <= >= -> & && ||");
+        let ks = kinds("( ) { } [ ] : ; , . + - * / = == != < > <= >= -> & && || @");
         let expected = [
             Punct::OpenParen,
             Punct::CloseParen,
@@ -325,6 +326,7 @@ mod tests {
             Punct::Ampersand,
             Punct::And,
             Punct::Or,
+            Punct::At,
         ]
         .map(TokenKind::Punct)
         .to_vec();
@@ -532,9 +534,9 @@ mod tests {
 
     #[test]
     fn unexpected_char_error() {
-        let result: Result<Vec<_>, _> = Lexer::new("42 @ 7").collect();
+        let result: Result<Vec<_>, _> = Lexer::new("42 ` 7").collect();
         let err = result.unwrap_err();
-        assert_eq!(err.kind, error::LexErrorKind::UnexpectedChar('@'));
+        assert_eq!(err.kind, error::LexErrorKind::UnexpectedChar('`'));
         assert_eq!(err.span.start.0, 3);
     }
 

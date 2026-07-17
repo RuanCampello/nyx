@@ -109,6 +109,7 @@ pub enum Punct {
     Range,      // ..
     RangeEq,    // ..=
     Arrow,      // ->
+    At,         // @
 }
 
 /// Trait implemented by every sub-tokenizer
@@ -330,6 +331,7 @@ impl Punct {
             Self::Range => "..",
             Self::RangeEq => "..=",
             Self::Arrow => "->",
+            Self::At => "@",
         }
     }
 }
