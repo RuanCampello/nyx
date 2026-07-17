@@ -23,6 +23,49 @@ fn is_north(d: Direction): bool {
     }
 }
 
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+enum Shape {
+    Empty,
+    At(Point),
+}
+
+fn axis_code(p: Point): i32 {
+    match p {
+        Point { x, y: 0 } -> x,
+        Point { x: 0, y } -> y + 100,
+        Point { x, y } -> x + y + 1000,
+    }
+}
+
+fn shape_x(s: Shape): i32 {
+    match s {
+        Shape::Empty -> 0,
+        Shape::At(Point { x, .. }) -> x,
+    }
+}
+
+fn classify(n: i32): i32 {
+    match n {
+        1 | 2 -> 12,
+        3..=5 -> 35,
+        id @ 6..9 -> id * 10,
+        x if x > 100 -> x - 100,
+        _ -> 0 - 1,
+    }
+}
+
+fn letter_class(c: char): i32 {
+    match c {
+        'a'..='j' -> 1,
+        'k'..='z' -> 2,
+        _ -> 3,
+    }
+}
+
 fn main(): i32 {
     let n = Direction::North;
     let s = Direction::South;
@@ -37,6 +80,25 @@ fn main(): i32 {
     panic::assert_eq(is_north(n), true);
     panic::assert_eq(is_north(s), false);
     panic::assert_eq(is_north(e), false);
+
+    panic::assert_eq(axis_code(Point { x: 5, y: 0 }), 5);
+    panic::assert_eq(axis_code(Point { x: 0, y: 7 }), 107);
+    panic::assert_eq(axis_code(Point { x: 2, y: 3 }), 1005);
+
+    panic::assert_eq(shape_x(Shape::Empty), 0);
+    panic::assert_eq(shape_x(Shape::At(Point { x: 9, y: 1 })), 9);
+
+    panic::assert_eq(classify(1), 12);
+    panic::assert_eq(classify(2), 12);
+    panic::assert_eq(classify(4), 35);
+    panic::assert_eq(classify(6), 60);
+    panic::assert_eq(classify(8), 80);
+    panic::assert_eq(classify(9), 0 - 1);
+    panic::assert_eq(classify(150), 50);
+
+    panic::assert_eq(letter_class('c'), 1);
+    panic::assert_eq(letter_class('p'), 2);
+    panic::assert_eq(letter_class('A'), 3);
 
     0
 }
