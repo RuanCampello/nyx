@@ -1302,6 +1302,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.terminate(Terminator::Jump(success_block));
                 Ok(())
             },
+            PatternKind::Bind { local, sub } => {
+                let local_typ = self.local_type(*local);
+                let dest_place = self.place_for_local(*local, local_typ);
+                self.emit(dest_place, Kind::Assign(Operand::Place(place)));
+                self.lower_pattern_match(place, sub, success_block, fail_block)
+            },
             PatternKind::Literal(lit) => {
                 use hir::Literal as L;
                 let place_typ = place.typ;
@@ -1316,6 +1322,67 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     },
                 };
                 self.emit_eq_branch(Operand::Place(place), rhs, success_block, fail_block);
+                Ok(())
+            },
+            PatternKind::Range { start, end, inclusive } => {
+                use hir::Literal as L;
+                let place_typ = place.typ;
+                let as_const = |lit: &L| match lit {
+                    L::Int(n) => Const::Int(*n, place_typ),
+                    L::Char(c) => Const::Int(*c as i64, place_typ),
+                    _ => unreachable!("HIR only lowers integer and char range endpoints"),
+                };
+                let (start, end) = (as_const(start), as_const(end));
+
+                let upper_check = self.new_block();
+                self.emit_cmp_branch(
+                    BinaryOperator::GtEq,
+                    Operand::Place(place),
+                    start,
+                    upper_check,
+                    fail_block,
+                );
+
+                self.switch_to(upper_check);
+                let upper_op = match inclusive {
+                    true => BinaryOperator::LtEq,
+                    false => BinaryOperator::Lt,
+                };
+                self.emit_cmp_branch(
+                    upper_op,
+                    Operand::Place(place),
+                    end,
+                    success_block,
+                    fail_block,
+                );
+                Ok(())
+            },
+            PatternKind::Struct { fields, .. } => {
+                let n = fields.len();
+                if n == 0 {
+                    self.terminate(Terminator::Jump(success_block));
+                    return Ok(());
+                }
+
+                for (i, (field, sub)) in fields.iter().enumerate() {
+                    let layout = hir::struct_field(place.typ, *field, self.structs);
+                    let (offset, typ) = (layout.offset, layout.typ);
+
+                    let field_place = self.fresh_temporary(typ);
+                    self.emit(
+                        field_place,
+                        Kind::FieldLoad { src: Operand::Place(place), offset, typ },
+                    );
+
+                    let next = match i + 1 < n {
+                        true => self.new_block(),
+                        false => success_block,
+                    };
+                    self.lower_pattern_match(field_place, sub, next, fail_block)?;
+                    if i + 1 < n {
+                        self.switch_to(next);
+                    }
+                }
                 Ok(())
             },
             PatternKind::Or(alternatives) => {
@@ -1380,6 +1447,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     /// emit `cond = lhs == rhs`, then branch to `then_block` if `cond` is true,
     /// otherwise to `else_block`
+    #[inline]
     fn emit_eq_branch(
         &mut self,
         lhs: Operand,
@@ -1387,9 +1455,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         then_block: BlockId,
         else_block: BlockId,
     ) {
+        self.emit_cmp_branch(BinaryOperator::Eq, lhs, rhs, then_block, else_block);
+    }
+
+    /// emit `cond = lhs <op> rhs`, then branch to `then_block` if `cond` is true,
+    /// otherwise to `else_block`
+    fn emit_cmp_branch(
+        &mut self,
+        operation: BinaryOperator,
+        lhs: Operand,
+        rhs: Const,
+        then_block: BlockId,
+        else_block: BlockId,
+    ) {
         let cond = self.fresh_temporary(TypeKind::Bool.into());
         let instr = InstructionKind::Binary {
-            operation: BinaryOperator::Eq,
+            operation,
             lhs,
             rhs: Operand::Const(rhs),
             checked: false,
