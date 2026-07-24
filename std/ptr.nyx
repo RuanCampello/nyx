@@ -1,0 +1,27 @@
+use std::panic::{panic};
+
+// TODO: I still need to define the syntax for raw pointers
+// and actual & references and `Ptr` wrapper so on but be it for now
+
+/// Copies `size_of(T) * count` bytes from `src` to `dest`
+/// This make no assertions if the `src` and the `dest` overlap
+pub inline const fn copy<T>(src: *const T, dest: *mut T, count: uptr) {
+    panic("to be implemented")
+}
+
+
+/// Copies `size_of(T) * count` bytes from `src` to `dest`
+/// This is used when it's known that `src` and `dest` **never** overlap
+pub inline const fn copy_non_overlapping<T>(
+    src: *const T,
+    dest: *mut T,
+    count: uptr
+) {
+    panic("to be implemented")
+}
+
+/// Swaps two mutable location's values of the same type, without
+/// deinitialising either
+pub inline const fn swap<T>(x: *mut T, src: *mut T) {
+    panic("to be implemented")
+}

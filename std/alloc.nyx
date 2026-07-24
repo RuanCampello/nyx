@@ -1,0 +1,75 @@
+use std::result::{Result};
+use std::panic::{panic};
+
+pub interface Allocator {
+    fn allocate(&self, layout: Layout): Result<Ptr, AllocError>;
+    fn deallocate(&self, ptr: Ptr, layout: Layout);
+    fn resize(&self, ptr: Ptr, old_layout: Layout, new_layout: Layout): Result<Ptr, AllocError> {
+        // TODO: we need some ptr functions to do those operations
+        // so in order to do it we need to make a new `ptr.nyx` that will probably
+        // need more intrinsics
+        panic("to be implemented")
+    }
+}
+
+/// The layout of a block of memory
+///
+/// Memory layouts are associated with a `size` and a power-of-two
+/// `alignment`
+pub struct Layout {
+    size: uptr,
+    align: uptr,
+}
+
+// TODO: make a way to represent NonNull (a valid pointer)
+// values at compile-time
+pub struct Ptr {
+    pointer: [u8]
+}
+
+pub struct AllocError {}
+pub struct LayoutErr {}
+
+impl Layout {
+    /// Tries to construct a `Layout` from a given `size` and `align`
+    pub const fn from_sized_align(
+        size: uptr,
+        align: uptr
+    ): Result<Layout, LayoutErr> {
+        match Layout::is_sized_align_valid(size, align) {
+            true -> Result::Success(Layout { size: size, align: align }),
+            _ -> Result::Failure(LayoutErr)
+        }
+    }
+
+    /// Constructs a `Layout` able to hold a type `T`
+    pub const fn new<T>(): Layout {
+        // TODO: we should be able to get the layout property of a type
+        // this could be an intrinsic constant of the type or a `Sized` interface
+        // also intrinsic to the type
+        panic("to be implemented")
+    }
+
+    pub const fn size(&self): uptr {
+        self.size
+    }
+
+    pub const fn align(&self): uptr {
+        self.align
+    }
+
+    inline const fn is_sized_align_valid(
+        size: uptr,
+        align: uptr
+    ): bool {
+        if align.is_power_of_two() && size <= max_size_for_align(align) {
+            return true;
+        }
+
+        false
+    }
+}
+
+inline const fn max_size_for_align(align: uptr): uptr {
+    panic("to be implemented")
+}
