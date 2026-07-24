@@ -125,6 +125,10 @@ Nyx uses static monomorphisation. Generic definitions are stored as template rep
 
 ## Integers
 
-An integer literal is lexed as an unsigned 64-bit magnitude; a leading `-` is a separate unary operator, not part of the literal. This mirrors Rust's literal model and keeps the full `u64` range (and `i64::MIN`) representable.
+An integer literal is lexed as an unsigned 64-bit magnitude, a leading `-` is a separate unary operator, not part of the literal. This mirrors Rust's literal model and keeps the full `u64` range (and `i64::MIN`) representable.
 
 Integer `+`, `-` and `*` panic on overflow in `debug` builds and wrap at the `sane`/`max` optimisation levels. The `wrapping_*` methods are intrinsics exempt from the check, so wrap-around algorithms (hashing, PRNGs) behave identically at every level.
+
+## Pattern Matching
+
+Match arms support wildcards, literals, or-patterns, guards, fieldless and payload enum variants, struct destructuring (`Colour { r, g: 0, .. }` with shorthand bindings and a `..` rest), literal range patterns (`1..5`, `1..=5`, `'a'..='z'` over integers and chars), and `@` bindings (`id @ 3..=7`). Patterns are checked entirely at HIR lowering, struct patterns must name the scrutinee's struct and cover every field unless `..` is present, and empty ranges are rejected, then compile to plain comparison and field-load chains in MIR. Range patterns need no runtime range type. Exhaustiveness is not yet checked.
