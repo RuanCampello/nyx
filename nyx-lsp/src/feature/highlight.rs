@@ -54,6 +54,7 @@ pub enum TokenType {
     Boolean,
     Operator,
     EnumMember,
+    Marker,
 }
 
 /// the bracket group immediately containing a token, and whether that group
@@ -195,11 +196,13 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
 
     let enclosers = enclosers(raws);
     let parameters = parameter_uses(raws, &next_code);
+    let markers = marker_uses(raws, &prev_code, &next_code);
     let starts = line_starts(src);
     let mut out = Vec::with_capacity(n);
 
     for (i, raw) in raws.iter().enumerate() {
         let (ty, modifiers) = match raw.kind {
+            _ if markers[i] => (TokenType::Marker, TokenModifiers::default()),
             RawKind::Comment => (TokenType::Comment, TokenModifiers::default()),
             RawKind::Str => (TokenType::String, TokenModifiers::default()),
             RawKind::Number => (TokenType::Number, TokenModifiers::default()),
@@ -221,9 +224,36 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
     out
 }
 
-/// parameter names highlighted at their *uses* inside the function body,
-/// like rust-analyzer does: collect the `name:` words of each `fn`'s
-/// signature, then mark matching words up to the body's closing brace
+fn marker_uses(
+    raws: &[Raw<'_>],
+    prev_code: &[Option<usize>],
+    next_code: &[Option<usize>],
+) -> Vec<bool> {
+    let mut marks = vec![false; raws.len()];
+
+    for i in 0..raws.len() {
+        if raws[i].kind != RawKind::Punct || raws[i].text != "@" {
+            continue;
+        }
+
+        let after_value = prev_code[i].is_some_and(|p| {
+            matches!(raws[p].kind, RawKind::Word | RawKind::Number)
+                || matches!(raws[p].text, ")" | "]")
+        });
+        let Some(name) = next_code[i].filter(|_| !after_value) else {
+            continue;
+        };
+        if raws[name].kind != RawKind::Word {
+            continue;
+        }
+
+        marks[i] = true;
+        marks[name] = true;
+    }
+
+    marks
+}
+
 fn parameter_uses(raws: &[Raw<'_>], next_code: &[Option<usize>]) -> Vec<bool> {
     let mut marks = vec![false; raws.len()];
     let mut i = 0;
@@ -590,6 +620,7 @@ mod tests {
 
     const fn kind_name<'s>(ty: TokenType) -> &'s str {
         match ty {
+            TokenType::Marker => "marker",
             TokenType::Namespace => "namespace",
             TokenType::Type => "type",
             TokenType::Function => "function",
@@ -697,6 +728,28 @@ mod tests {
             keyword use
             namespace std
             namespace panic"#]],
+        );
+    }
+
+    #[test]
+    fn markers_highlight_as_decorators() {
+        check(
+            "@unsafe fn go() {}",
+            expect![[r#"
+                marker @
+                marker unsafe
+                keyword fn
+                function.declaration go"#]],
+        );
+    }
+
+    #[test]
+    fn a_pattern_binding_is_not_a_marker() {
+        check(
+            "id @ 3",
+            expect![[r#"
+                variable id
+                number 3"#]],
         );
     }
 
