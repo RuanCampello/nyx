@@ -1,14 +1,45 @@
 use std::result::{Result};
-use std::panic::{panic};
+use std::mem::{size_of, align_of};
+use std::ptr::{copy_nonoverlapping};
 
 pub interface Allocator {
-    fn allocate(&self, layout: Layout): Result<Ptr, AllocError>;
-    fn deallocate(&self, ptr: Ptr, layout: Layout);
-    fn resize(&self, ptr: Ptr, old_layout: Layout, new_layout: Layout): Result<Ptr, AllocError> {
-        // TODO: we need some ptr functions to do those operations
-        // so in order to do it we need to make a new `ptr.nyx` that will probably
-        // need more intrinsics
-        panic("to be implemented")
+    /// A block matching `layout`, or the request that could not be served
+    ///
+    /// The returned pointer is non-null and owns `layout.size()` bytes
+    @unsafe
+    fn allocate(&self, layout: Layout): Result<*mut u8, AllocError>;
+
+    /// Returns a block to the allocator
+    ///
+    /// `ptr` must have come from `allocate` on this allocator, under `layout`
+    @unsafe
+    fn deallocate(&self, ptr: *mut u8, layout: Layout);
+
+    /// Moves a block to `new_layout`, carrying over the bytes that still fit
+    ///
+    /// The old block is released, so `ptr` must not be used again on success
+    @unsafe
+    fn resize(
+        &self,
+        ptr: *mut u8,
+        old_layout: Layout,
+        new_layout: Layout
+    ): Result<*mut u8, AllocError> {
+        let fresh = self.allocate(new_layout);
+        if fresh.is_failure() {
+            return fresh;
+        }
+
+        let target = fresh.unwrap();
+        let mut carried = old_layout.size();
+        if new_layout.size() < carried {
+            carried = new_layout.size();
+        }
+
+        copy_nonoverlapping(ptr as *u8, target, carried);
+        self.deallocate(ptr, old_layout);
+
+        Result::Success(target)
     }
 }
 
@@ -21,14 +52,14 @@ pub struct Layout {
     align: uptr,
 }
 
-// TODO: make a way to represent NonNull (a valid pointer)
-// values at compile-time
-pub struct Ptr {
-    pointer: [u8]
-}
+/// A request the allocator could not serve
+pub struct AllocError { size: uptr }
 
-pub struct AllocError {}
-pub struct LayoutErr {}
+/// A `size`/`align` pair that cannot describe a valid block
+pub struct LayoutErr {
+    size: uptr,
+    align: uptr,
+}
 
 impl Layout {
     /// Tries to construct a `Layout` from a given `size` and `align`
@@ -38,16 +69,13 @@ impl Layout {
     ): Result<Layout, LayoutErr> {
         match Layout::is_sized_align_valid(size, align) {
             true -> Result::Success(Layout { size: size, align: align }),
-            _ -> Result::Failure(LayoutErr)
+            _ -> Result::Failure(LayoutErr { size: size, align: align })
         }
     }
 
     /// Constructs a `Layout` able to hold a type `T`
     pub const fn new<T>(): Layout {
-        // TODO: we should be able to get the layout property of a type
-        // this could be an intrinsic constant of the type or a `Sized` interface
-        // also intrinsic to the type
-        panic("to be implemented")
+        Layout { size: size_of(T), align: align_of(T) }
     }
 
     pub const fn size(&self): uptr {
@@ -70,6 +98,8 @@ impl Layout {
     }
 }
 
+/// The largest block that can still be rounded up to `align` without the
+/// address space wrapping
 inline const fn max_size_for_align(align: uptr): uptr {
-    panic("to be implemented")
+    (iptr::MAX as uptr) - (align - 1)
 }

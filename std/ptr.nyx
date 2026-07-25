@@ -1,27 +1,115 @@
-use std::panic::{panic};
+use std::mem::{size_of, align_of};
 
-// TODO: I still need to define the syntax for raw pointers
-// and actual & references and `Ptr` wrapper so on but be it for now
-
-/// Copies `size_of(T) * count` bytes from `src` to `dest`
-/// This make no assertions if the `src` and the `dest` overlap
-pub inline const fn copy<T>(src: *const T, dest: *mut T, count: uptr) {
-    panic("to be implemented")
+/// The address `p` points at, discarding the pointee type
+pub inline const fn addr<T>(p: *T): uptr {
+    p as uptr
 }
 
-
-/// Copies `size_of(T) * count` bytes from `src` to `dest`
-/// This is used when it's known that `src` and `dest` **never** overlap
-pub inline const fn copy_non_overlapping<T>(
-    src: *const T,
-    dest: *mut T,
-    count: uptr
-) {
-    panic("to be implemented")
+/// A pointer that addresses nothing
+pub inline const fn null<T>(): *T {
+    0 as *T
 }
 
-/// Swaps two mutable location's values of the same type, without
-/// deinitialising either
-pub inline const fn swap<T>(x: *mut T, src: *mut T) {
-    panic("to be implemented")
+pub inline const fn null_mut<T>(): *mut T {
+    0 as *mut T
+}
+
+pub inline const fn is_null<T>(p: *T): bool {
+    addr(p) == 0
+}
+
+/// A well-aligned pointer that addresses nothing, for allocations of zero bytes
+pub inline const fn dangling<T>(): *mut T {
+    align_of(T) as *mut T
+}
+
+/// Reads the value `src` points at
+///
+/// # Safety
+/// `src` must be non-null, aligned, and point at an initialised `T`
+@unsafe
+pub inline fn read<T>(src: *T): T {
+    *src
+}
+
+/// Overwrites the location `dest` points at, without reading the old value
+///
+/// # Safety
+/// `dest` must be non-null and aligned
+@unsafe
+pub inline fn write<T>(dest: *mut T, src: T) {
+    *dest = src;
+}
+
+/// Overwrites the location `dest` points at, returning what was there
+///
+/// # Safety
+/// `dest` must be non-null, aligned, and point at an initialised `T`
+@unsafe
+pub fn replace<T>(dest: *mut T, src: T): T {
+    let held = read(dest as *T);
+    write(dest, src);
+
+    held
+}
+
+/// `p` advanced by `count` elements
+///
+/// # Safety
+/// The result must stay inside the allocation `p` points into
+@unsafe
+pub inline fn add<T>(p: *T, count: uptr): *T {
+    (addr(p) + count * size_of(T)) as *T
+}
+
+@unsafe
+pub inline fn add_mut<T>(p: *mut T, count: uptr): *mut T {
+    (addr(p as *T) + count * size_of(T)) as *mut T
+}
+
+/// Exchanges the values behind two pointers, without deinitialising either
+///
+/// # Safety
+/// Both pointers must be non-null, aligned, and point at initialised values
+@unsafe
+pub fn swap<T>(x: *mut T, y: *mut T) {
+    let held = read(x as *T);
+    write(x, read(y as *T));
+    write(y, held);
+}
+
+/// Copies `count` elements from `src` to `dest`
+///
+/// # Safety
+/// The two regions must **never** overlap, and both must be valid for `count`
+/// elements
+@unsafe
+pub fn copy_nonoverlapping<T>(src: *T, dest: *mut T, count: uptr) {
+    loop i in 0..count {
+        write(add_mut(dest, i), read(add(src, i)));
+    }
+}
+
+/// Copies `count` elements from `src` to `dest`
+///
+/// The two regions may overlap: when `dest` sits above `src` the copy runs
+/// backwards, so overlapping elements are read before they are overwritten
+///
+/// # Safety
+/// Both regions must be valid for `count` elements
+@unsafe
+pub fn copy<T>(src: *T, dest: *mut T, count: uptr) {
+    if addr(src) >= addr(dest as *T) {
+        copy_nonoverlapping(src, dest, count);
+        return;
+    }
+
+    let mut remaining = count;
+    loop {
+        if remaining == 0 {
+            break;
+        }
+        remaining = remaining - 1;
+        write(add_mut(dest, remaining), read(add(src, remaining)));
+    }
 }
