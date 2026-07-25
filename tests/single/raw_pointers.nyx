@@ -1,0 +1,73 @@
+use std::ptr::{read, write, replace, swap, add, add_mut, addr, is_null, null, copy_nonoverlapping, copy};
+
+@unsafe
+fn sum_through(p: *i32, count: uptr): i32 {
+    let mut total: i32 = 0;
+    loop i in 0..count {
+        total = total + read(add(p, i));
+    }
+
+    total
+}
+
+@unsafe
+fn bump(p: *mut i32) {
+    *p = *p + 1;
+}
+
+fn through_reference(r: &mut i32) {
+    *r = *r * 2;
+}
+
+/// a safe wrapper: the block discharges the obligation the callee declares
+fn first_of(slot: &i32, count: uptr): i32 {
+    @unsafe {
+        sum_through(slot, count)
+    }
+}
+
+@unsafe
+fn main(): i32 {
+    let mut src: [i32; 5] = [1, 2, 3, 4, 5];
+    let mut dst: [i32; 5] = [0, 0, 0, 0, 0];
+
+    let s: *i32 = &src[0];
+    let d: *mut i32 = &mut dst[0];
+
+    copy_nonoverlapping(s, d, 5);
+    if sum_through(d as *i32, 5) != 15 { return 91; }
+
+    let old = replace(d, 100);
+    if old != 1 { return 92; }
+    if read(d as *i32) != 100 { return 93; }
+
+    write(d, 1);
+    bump(d);
+    if read(d as *i32) != 2 { return 94; }
+
+    let mut x: i32 = 7;
+    let mut y: i32 = 9;
+    swap(&mut x, &mut y);
+    if x != 9 { return 95; }
+    if y != 7 { return 96; }
+
+    through_reference(&mut x);
+    if x != 18 { return 97; }
+
+    if !is_null(null::<i32>()) { return 98; }
+    if is_null(s) { return 99; }
+    if addr(s) == 0 { return 100; }
+
+    // overlapping copy shifts the block left by one element
+    copy(add(s, 1), &mut src[0], 4);
+    if src[0] != 2 { return 101; }
+    if src[3] != 5 { return 102; }
+
+    if first_of(&src[0], 1) != 2 { return 104; }
+
+    let second = add_mut(d, 1);
+    write(second, 40);
+    if read(add(d as *i32, 1)) != 40 { return 103; }
+
+    42
+}
