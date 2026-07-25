@@ -204,6 +204,7 @@ pub struct Function<'hir> {
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
+    pub is_unsafe: bool,
     pub typeck: TypeckResults,
     pub body: Block<'hir>,
     /// Declared generic parameter names, indexed by [TypeKind::GenericParam]
@@ -688,6 +689,7 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             name: value.name,
             kind: value.kind,
             is_const: value.is_const,
+            is_unsafe: value.is_unsafe,
             decl_span: value.decl_span,
         }
     }
@@ -2151,6 +2153,77 @@ mod tests {
         };
         assert!(matches!(call.kind, ExpressionKind::Call { .. }));
         assert_eq!(main.typeck.type_dependent_def(call.id), Some(Res::Function(pick.id)));
+    }
+
+    #[test]
+    fn an_unsafe_function_is_only_callable_from_an_unsafe_one() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn danger(): i32 { 1 }
+            fn main(): i32 { danger() }
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::UnsafeCall { name: "nyx::danger", .. }));
+
+        let src = r#"
+            @unsafe fn danger(): i32 { 1 }
+            @unsafe fn main(): i32 { danger() }
+        "#;
+        let arena = bumpalo::Bump::new();
+        super::lower(Parser::new(src).parse().unwrap(), &arena)
+            .expect("an unsafe caller may reach an unsafe callee");
+    }
+
+    #[test]
+    fn a_raw_pointer_is_only_dereferenceable_in_an_unsafe_function() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            fn read(p: *i32): i32 { *p }
+            fn main(): i32 { 0 }
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::UnsafeDeref { .. }));
+
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn read(p: *i32): i32 { *p }
+            fn main(): i32 { 0 }
+        "#;
+        super::lower(Parser::new(src).parse().unwrap(), &arena)
+            .expect("an unsafe function may dereference a raw pointer");
+    }
+
+    #[test]
+    fn a_reference_stands_in_for_a_raw_pointer_but_not_the_reverse() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn main(): i32 {
+                let v: i32 = 7;
+                let p: *i32 = &v;
+                *p
+            }
+        "#;
+        super::lower(Parser::new(src).parse().unwrap(), &arena).expect("&T coerces to *T");
+
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn main(): i32 {
+                let v: i32 = 7;
+                let p: *i32 = &v;
+                let r: &i32 = p;
+                *r
+            }
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::TypeAnnotationMismatch { .. }));
+    }
+
+    #[test]
+    fn an_indirection_cannot_point_at_another_one() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn read(p: **i32): i32 { 0 }";
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::NestedIndirection { .. }));
     }
 
     #[test]

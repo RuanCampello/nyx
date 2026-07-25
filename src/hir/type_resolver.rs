@@ -60,6 +60,11 @@ pub(in crate::hir) fn resolve<'h, R: TypeResolver<'h> + ?Sized>(
             Ok(Type::refer(ref_target(inner, span)?, *mutable))
         },
 
+        statement::Type::Raw(inner, mutable) => {
+            let inner = resolve(resolver, inner, span)?;
+            Ok(Type::raw(ref_target(inner, span)?, *mutable))
+        },
+
         statement::Type::Array(element, len) => {
             let element = resolve(resolver, element, span)?;
             let id = resolver.arrays().intern(element, *len as u32);
@@ -135,7 +140,5 @@ impl<'a> ResolveCtx<'a> {
 
 #[inline(always)]
 fn ref_target<'h>(typ: Type, span: Span) -> Result<RefTarget, HirError<'h>> {
-    RefTarget::try_from(typ).map_err(|_| {
-        hir_error!(span, TypeMismatch { expected: Type::structure(Default::default()), found: typ })
-    })
+    RefTarget::try_from(typ).map_err(|_| hir_error!(span, NestedIndirection { found: typ }))
 }

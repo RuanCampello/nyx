@@ -214,6 +214,16 @@ fn main() {  // error: unexpected end of file — the { is never closed
 Check for unclosed braces, parentheses or brackets.
 "#;
 
+E029 => "unknown marker", r#"
+A `@name` marker ahead of a declaration is not one the compiler knows.
+
+```nyx
+@fast fn work() {}  // error: unknown marker fast
+```
+
+`@unsafe` is the only marker Nyx currently defines.
+"#;
+
 E040 => "module file not found", r#"
 A `use` declaration points at a module whose `.nyx` file does not exist.
 
@@ -748,6 +758,44 @@ report points back at the annotation that fixed the expected type.
 ```nyx
 fn foo(): i32 {
     return true;  // error: type bool does not match the declared type i32
+}
+```
+"#;
+
+E147 => "unsafe function called from a safe one", r#"
+A function marked `@unsafe` carries obligations its caller must uphold, so it
+can only be called from another `@unsafe` function.
+
+```nyx
+@unsafe fn read(p: *i32): i32 { *p }
+
+fn main(): i32 {
+    return read(p);  // error: read is unsafe
+}
+```
+
+Mark the caller `@unsafe` to pass the obligation on, or wrap the call in a safe
+function that guarantees the invariants itself.
+"#;
+
+E149 => "nested indirection", r#"
+A pointer or reference cannot point at another one: Nyx packs a type into a
+single word, which leaves room for exactly one level of indirection.
+
+```nyx
+fn read(pp: **i32) {}  // error: cannot point at *i32
+```
+
+Wrap the inner pointer in a struct when a second level is genuinely needed.
+"#;
+
+E148 => "raw pointer used in a safe function", r#"
+Dereferencing a raw pointer cannot be checked by the compiler, so it is only
+allowed inside a function marked `@unsafe`.
+
+```nyx
+fn read(p: *i32): i32 {
+    return *p;  // error: dereferencing a raw pointer is unsafe
 }
 ```
 "#;

@@ -65,6 +65,12 @@ pub enum TypeKind {
         mutable: bool,
         to: RefTarget,
     },
+    /// A raw pointer `*T` or `*mut T`: may be null, only dereferenceable
+    /// inside an `@unsafe` function
+    Raw {
+        mutable: bool,
+        to: RefTarget,
+    },
     GenericParam(u8),
     Never,
     /// An unresolved integer inference variable, produced by an un-annotated
@@ -131,6 +137,8 @@ const ARRAY: u8 = 24;
 const SLICE: u8 = 25;
 
 const INFER: u8 = 26;
+
+const RAW: u8 = 27;
 
 const MUT_BIT_SHIFT: u32 = 8;
 const REF_TAG_SHIFT: u32 = 9;
@@ -293,6 +301,16 @@ impl Type {
                 let tag_bits = (target_bits & REF_TAG_MASK) << REF_TAG_SHIFT;
                 Self(bits | tag_bits | payload_bits)
             },
+            TypeKind::Raw { mutable, to } => {
+                let mut bits = RAW as u64;
+                if mutable {
+                    bits |= 1 << MUT_BIT_SHIFT;
+                }
+                let target_bits = to.0;
+                let payload_bits = (target_bits & !TAG_MASK) << REF_PAYLOAD_SHIFT;
+                let tag_bits = (target_bits & REF_TAG_MASK) << REF_TAG_SHIFT;
+                Self(bits | tag_bits | payload_bits)
+            },
             TypeKind::GenericParam(idx) => Self((GENERIC_PARAM as u64) | ((idx as u64) << 8)),
             TypeKind::Never => Self(NEVER as u64),
             TypeKind::Infer(vid) => Self((INFER as u64) | ((vid as u64) << 8)),
@@ -363,6 +381,11 @@ impl Type {
     }
 
     #[inline]
+    pub const fn raw(to: RefTarget, mutable: bool) -> Self {
+        Self::new(TypeKind::Raw { mutable, to })
+    }
+
+    #[inline]
     pub fn receiver_ref(receiver: Type, mutable: bool) -> Self {
         let to = RefTarget::try_from(receiver).expect("receiver must be a reference target");
         Self::refer(to, mutable)
@@ -416,6 +439,14 @@ impl Type {
                 );
                 TypeKind::Ref { mutable, to }
             },
+            RAW => {
+                let mutable = ((self.0 >> MUT_BIT_SHIFT) & 1) != 0;
+                let to = RefTarget(
+                    ((self.0 >> REF_PAYLOAD_SHIFT) & !TAG_MASK)
+                        | ((self.0 >> REF_TAG_SHIFT) & REF_TAG_MASK),
+                );
+                TypeKind::Raw { mutable, to }
+            },
             GENERIC_PARAM => TypeKind::GenericParam(((self.0 >> 8) & 0xFF) as u8),
             NEVER => TypeKind::Never,
             INFER => TypeKind::Infer((self.0 >> 8) as u32),
@@ -427,7 +458,7 @@ impl Type {
     #[inline]
     pub(crate) fn strip_reference(self) -> Self {
         match self.kind() {
-            TypeKind::Ref { to, .. } => Self::from(to),
+            TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => Self::from(to),
             _ => self,
         }
     }
@@ -439,6 +470,16 @@ impl Type {
                 TypeKind::GenericParam(i) => match args.get(i as usize).copied() {
                     Some(replacement) => match RefTarget::try_from(replacement) {
                         Ok(to) => Type::refer(to, mutable),
+                        Err(_) => self,
+                    },
+                    None => self,
+                },
+                _ => self,
+            },
+            TypeKind::Raw { mutable, to } => match to.kind() {
+                TypeKind::GenericParam(i) => match args.get(i as usize).copied() {
+                    Some(replacement) => match RefTarget::try_from(replacement) {
+                        Ok(to) => Type::raw(to, mutable),
                         Err(_) => self,
                     },
                     None => self,
@@ -499,6 +540,17 @@ impl Type {
         matches!(self.kind(), TypeKind::Ref { .. })
     }
 
+    #[inline(always)]
+    pub const fn is_raw(&self) -> bool {
+        matches!(self.kind(), TypeKind::Raw { .. })
+    }
+
+    /// Whether values of this type are addresses the backend must load through
+    #[inline(always)]
+    pub const fn is_pointer(&self) -> bool {
+        matches!(self.kind(), TypeKind::Ref { .. } | TypeKind::Raw { .. })
+    }
+
     pub fn from_primitive_ast(t: &statement::Type<'_>) -> Option<Self> {
         use statement::Type as AstType;
 
@@ -526,6 +578,7 @@ impl Type {
             AstType::Never => TypeKind::Never,
             AstType::Named(_)
             | AstType::Ref(_, _)
+            | AstType::Raw(_, _)
             | AstType::Array(_, _)
             | AstType::Slice(_, _)
             | AstType::Generic(_, _) => return None,
@@ -539,8 +592,8 @@ impl RefTarget {
     #[inline]
     pub const fn new(kind: TypeKind) -> Self {
         assert!(
-            !matches!(kind, TypeKind::Ref { .. }),
-            "a reference cannot be a reference target"
+            !matches!(kind, TypeKind::Ref { .. } | TypeKind::Raw { .. }),
+            "an indirection cannot be a reference target"
         );
         Self(Type::new(kind).0)
     }
@@ -576,7 +629,7 @@ impl TryFrom<Type> for RefTarget {
 
     #[inline]
     fn try_from(value: Type) -> Result<Self, Self::Error> {
-        match tag(value.0) == REF {
+        match matches!(tag(value.0), REF | RAW) {
             false => Ok(Self(value.0)),
             true => Err(()),
         }
@@ -642,6 +695,13 @@ impl std::fmt::Display for TypeKind {
                 f.write_str(match mutable {
                     true => "&mut ",
                     _ => "&",
+                })?;
+                to.kind().fmt(f)
+            },
+            Self::Raw { mutable, to } => {
+                f.write_str(match mutable {
+                    true => "*mut ",
+                    _ => "*",
                 })?;
                 to.kind().fmt(f)
             },

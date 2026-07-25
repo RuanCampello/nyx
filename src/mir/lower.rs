@@ -731,6 +731,19 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     return Ok(value);
                 }
 
+                if let ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } = &target.kind
+                {
+                    let pointer = self.lower_expr(expr)?;
+                    let value = self.lower_expr(value_expr)?;
+                    let Operand::Place(dest) = pointer else {
+                        unreachable!("dereferencing a constant");
+                    };
+
+                    self.emit(dest, Kind::FieldStore { value, offset: 0 });
+
+                    return Ok(value);
+                }
+
                 if let ExpressionKind::Local(local) = &target.kind {
                     self.constant_locals[*local] = self.capture_constant_expr(value_expr);
                 }
@@ -1469,12 +1482,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         else_block: BlockId,
     ) {
         let cond = self.fresh_temporary(TypeKind::Bool.into());
-        let instr = InstructionKind::Binary {
-            operation,
-            lhs,
-            rhs: Operand::Const(rhs),
-            checked: false,
-        };
+        let instr =
+            InstructionKind::Binary { operation, lhs, rhs: Operand::Const(rhs), checked: false };
         self.emit(cond, instr);
         self.terminate(Terminator::Branch {
             condition: Operand::Place(cond),
@@ -1901,7 +1910,9 @@ fn has_open_generic(func: &hir::Function<'_>) -> bool {
     fn is_open(t: Type) -> bool {
         match t.kind() {
             TypeKind::GenericParam(_) => true,
-            TypeKind::Ref { to, .. } => matches!(to.kind(), TypeKind::GenericParam(_)),
+            TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => {
+                matches!(to.kind(), TypeKind::GenericParam(_))
+            },
             _ => false,
         }
     }

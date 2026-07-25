@@ -210,6 +210,32 @@ pub enum HirErrorKind<'h> {
     MissingReturn { name: &'h str, expected: Type },
 
     #[diagnostic(
+        code = "E147",
+        message = "Cannot call unsafe function {name!} from a safe one",
+        primary = "{name~} is marked @unsafe",
+        secondary(span_field = "decl", optional, label = "{name^} is declared here"),
+        help = "Mark the caller @unsafe, or wrap the call in a function that upholds the invariants"
+    )]
+    UnsafeCall { name: &'h str, decl: Option<Span> },
+
+    #[diagnostic(
+        code = "E149",
+        message = "Cannot point at {found^}",
+        primary = "{found~} is already an indirection",
+        note = "Nyx types carry a single level of indirection, so `&&T` and `**T` cannot be spelled",
+        help = "Wrap the inner pointer in a struct"
+    )]
+    NestedIndirection { found: Type },
+
+    #[diagnostic(
+        code = "E148",
+        message = "Cannot dereference a raw pointer in a safe function",
+        primary = "{found~} is a raw pointer",
+        help = "Mark the enclosing function @unsafe to take responsibility for the pointer"
+    )]
+    UnsafeDeref { found: Type },
+
+    #[diagnostic(
         code = "E123",
         message = "Cannot mutate immutable binding {name!}",
         primary = "{name~} cannot be mutated",

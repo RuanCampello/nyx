@@ -35,6 +35,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     next_local: u32,
     next_expr_id: u32,
     is_const: bool,
+    is_unsafe: bool,
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
@@ -100,6 +101,7 @@ where
         Self {
             scope,
             is_const: true,
+            is_unsafe: false,
             return_type: TypeKind::Unit.into(),
             return_type_span: None,
             function: None,
@@ -139,6 +141,7 @@ where
         let symbol = signature.name;
         self.return_type = signature.return_type;
         self.return_type_span = function.return_type.as_ref().map(Spanned::span);
+        self.is_unsafe = signature.is_unsafe;
 
         let mut params = Vec::with_capacity(signature.params.len());
 
@@ -184,6 +187,7 @@ where
             is_const: function.is_const,
             is_pub: function.is_pub,
             inline: function.inline,
+            is_unsafe: signature.is_unsafe,
             kind: signature.kind,
             typeck: self.typeck,
             body,
@@ -430,7 +434,8 @@ where
             | TypeKind::Uptr
             | TypeKind::Iptr
             | TypeKind::Char
-            | TypeKind::Ref { .. } => true,
+            | TypeKind::Ref { .. }
+            | TypeKind::Raw { .. } => true,
             _ => self
                 .scope
                 .symbols
@@ -580,6 +585,12 @@ where
                     Err(()) => typ,
                 }
             },
+            TypeKind::Raw { mutable, to } => {
+                match RefTarget::try_from(Self::resolve_deep(infer, arrays, to.into())) {
+                    Ok(target) => Type::raw(target, mutable),
+                    Err(()) => typ,
+                }
+            },
             _ => infer.resolve_or_default(typ),
         }
     }
@@ -683,10 +694,18 @@ where
                 // resolves to an integral type, which is primitive-castable
                 let src = self.infer.resolve_shallow(lowered_expr.typ);
 
-                let src_castable = src.is_primitive_castable()
-                    || src.is_infer()
-                    || matches!(src.kind(), TypeKind::Enum(_));
-                if !src_castable || !target.is_primitive_castable() {
+                let castable = match (src.kind(), target.kind()) {
+                    (TypeKind::Raw { .. } | TypeKind::Ref { .. }, TypeKind::Raw { .. }) => true,
+                    (TypeKind::Raw { .. }, _) => target.is_integer(),
+                    (_, TypeKind::Raw { .. }) => src.is_integer() || src.is_infer(),
+                    _ => {
+                        let src_castable = src.is_primitive_castable()
+                            || src.is_infer()
+                            || matches!(src.kind(), TypeKind::Enum(_));
+                        src_castable && target.is_primitive_castable()
+                    },
+                };
+                if !castable {
                     return Err(hir_error!(*span, InvalidCast { src, target }));
                 }
 
@@ -749,7 +768,7 @@ where
                     UnaryOperator::Not => hint,
                     UnaryOperator::Deref => hint.map(|h| {
                         let to = match h.kind() {
-                            TypeKind::Ref { to, .. } => to,
+                            TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => to,
                             TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
                             _ => RefTarget::new(TypeKind::Char),
                         };
@@ -788,6 +807,10 @@ where
 
                     UnaryOperator::Deref => match expr.typ.kind() {
                         TypeKind::Ref { to, .. } => to.into(),
+                        TypeKind::Raw { to, .. } => {
+                            self.check_raw_deref(expr.typ, expr.span)?;
+                            to.into()
+                        },
                         _ => {
                             return Err(hir_error!(
                                 expr.span,
@@ -873,6 +896,7 @@ where
                                 TypeKind::Bool.into(),
                                 *span,
                             );
+                            self.check_call_safety(function, *span)?;
                             self.typeck
                                 .type_dependent_defs
                                 .insert(lowered.expr.id, Res::Function(function));
@@ -920,17 +944,27 @@ where
             Expr::Assignment { target, value, span } => {
                 let target_lowered = self.lower_expr(target, None)?;
 
-                let through_slice = match &target_lowered.expr.kind {
+                // assigning through an indirection is governed by the mutability the
+                // indirection carries, not by the binding that holds it
+                let behind_pointer = match &target_lowered.expr.kind {
                     ExpressionKind::Index { base, .. } => {
                         match self.typeck.type_of(base.id).kind() {
                             TypeKind::Slice { mutable, .. } => Some(mutable),
                             _ => None,
                         }
                     },
+                    ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => {
+                        match self.typeck.type_of(expr.id).kind() {
+                            TypeKind::Ref { mutable, .. } | TypeKind::Raw { mutable, .. } => {
+                                Some(mutable)
+                            },
+                            _ => None,
+                        }
+                    },
                     _ => None,
                 };
 
-                match through_slice {
+                match behind_pointer {
                     Some(true) => {},
                     Some(false) => return Err(hir_error!(target.span(), AssignBehindSharedRef)),
                     None => {
@@ -1276,6 +1310,7 @@ where
                         return_type,
                         *span,
                     );
+                    self.check_call_safety(function, *span)?;
                     self.typeck
                         .type_dependent_defs
                         .insert(lowered.expr.id, Res::Function(function));
@@ -1340,13 +1375,7 @@ where
                     return Err(hir_error!(*span, UnknownFunction { name }));
                 }
 
-                let ctx = type_resolver::ResolveCtx::root(
-                    &self.scope.symbols,
-                    &self.scope.struct_map,
-                    &self.scope.enum_map,
-                    &self.scope.arrays,
-                );
-                let typ = resolve_annotation(&ctx, &typ.value(), typ.span())?;
+                let typ = self.resolve_type(&typ.value(), typ.span())?;
 
                 Ok(self.alloc(
                     ExpressionKind::TypeIntrinsic { kind: *kind, typ },
@@ -1807,6 +1836,7 @@ where
         let lowered =
             self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
 
+        self.check_call_safety(function_id, span)?;
         self.typeck
             .type_dependent_defs
             .insert(lowered.expr.id, Res::Function(function_id));
@@ -1922,6 +1952,7 @@ where
         let kind = ExpressionKind::MethodCall { name: method_symbol, receiver, args: lowered_args };
         let lowered = self.alloc(kind, return_type, span);
 
+        self.check_call_safety(function_id, span)?;
         self.typeck
             .type_dependent_defs
             .insert(lowered.expr.id, Res::Function(function_id));
@@ -1981,6 +2012,7 @@ where
         let lowered =
             self.alloc(ExpressionKind::Call { callee, args: lowered_args }, return_type, span);
 
+        self.check_call_safety(function_id, span)?;
         self.typeck
             .type_dependent_defs
             .insert(lowered.expr.id, Res::Function(function_id));
@@ -2200,6 +2232,14 @@ where
             };
         }
 
+        if let (TypeKind::Raw { mutable: want_mut, to: want }, TypeKind::Ref { mutable, to }) =
+            (expected.kind(), found.kind())
+            && want == to
+            && (mutable || !want_mut)
+        {
+            return Ok(());
+        }
+
         // two arrays of the same length agree when their elements do; this lets a
         // let-init's twice-lowered literal unify the inference variables behind its
         // distinct interned ids (see `Stmt::Let` lowering and `Expr::Array`)
@@ -2236,6 +2276,26 @@ where
     #[inline(always)]
     fn soft(&mut self, error: HirError<'hir>) -> Result<(), HirError<'hir>> {
         self.scope.soft(error)
+    }
+
+    fn check_raw_deref(&mut self, found: Type, span: Span) -> Result<(), HirError<'hir>> {
+        match self.is_unsafe {
+            true => Ok(()),
+            false => self.soft(hir_error!(span, UnsafeDeref { found })),
+        }
+    }
+
+    /// an `@unsafe` callee may only be reached from another `@unsafe` function
+    fn check_call_safety(&mut self, callee: FunctionId, span: Span) -> Result<(), HirError<'hir>> {
+        let signature = &self.scope.signatures[callee];
+        if self.is_unsafe || !signature.is_unsafe {
+            return Ok(());
+        }
+
+        let decl = crate::hir::collector::source_span(signature.decl_span);
+        let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
+
+        self.soft(hir_error!(span, UnsafeCall { name, decl }))
     }
 
     fn declare_local(
@@ -2525,7 +2585,7 @@ fn infer_type_args(open_params: &[Type], arg_types: &[Type], count: usize) -> Ve
 fn unify_generic(param: Type, actual: Type, bindings: &mut [Option<Type>]) {
     let slot = match param.kind() {
         TypeKind::GenericParam(i) => bindings.get_mut(i as usize).map(|slot| (slot, actual)),
-        TypeKind::Ref { to, .. } => match to.kind() {
+        TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => match to.kind() {
             TypeKind::GenericParam(i) => {
                 bindings.get_mut(i as usize).map(|slot| (slot, actual.strip_reference()))
             },

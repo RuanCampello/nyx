@@ -180,7 +180,7 @@ const fn scalar_layout(typ: Type) -> Option<(u32, u32)> {
         TypeKind::I64 | TypeKind::U64 | TypeKind::Iptr | TypeKind::Uptr | TypeKind::F64 => {
             Some((8, 8))
         },
-        TypeKind::Ref { .. } => Some((8, 8)),
+        TypeKind::Ref { .. } | TypeKind::Raw { .. } => Some((8, 8)),
         TypeKind::Str | TypeKind::Slice { .. } => Some((16, 8)),
         TypeKind::String => Some((24, 8)),
         TypeKind::Unit | TypeKind::Never => Some((0, 1)),
