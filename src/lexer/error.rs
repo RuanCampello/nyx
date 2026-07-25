@@ -12,46 +12,54 @@ pub struct LexError<'src> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Diagnostic)]
 pub(crate) enum LexErrorKind<'src> {
-    #[diagnostic(message = "unexpected character {0~}", primary = "not valid here")]
+    #[diagnostic(code = "E001", message = "Unexpected character {0!}", primary = "not valid here")]
     UnexpectedChar(char),
     #[diagnostic(
-        message = "unterminated string literal",
+        code = "E002",
+        message = "Unterminated string literal",
         primary = "opened here, but never closed",
-        help = "add a closing {`\"`} at the end of the string"
+        help = "Add a closing {`\"`} at the end of the string"
     )]
     UnterminatedString,
     #[diagnostic(
-        message = "unterminated character literal",
+        code = "E003",
+        message = "Unterminated character literal",
         primary = "opened here, but never closed",
-        help = "add a closing {`'`} at the end of the character literal"
+        help = "Add a closing {`'`} at the end of the character literal"
     )]
     UnterminatedChar,
     #[diagnostic(
-        message = "empty character literal",
-        primary = "character literals cannot be empty",
-        help = "provide a character inside the single quotes"
+        code = "E004",
+        message = "Empty character literal",
+        primary = "must contain exactly one character",
+        help = "Write the character between the quotes, e.g. {`'a'`}"
     )]
     EmptyChar,
     #[diagnostic(
-        message = "character literal is too long",
-        primary = "character literals must contain exactly one character",
-        help = "use double quotes for string literals instead"
+        code = "E005",
+        message = "Character literal contains more than one character",
+        primary = "too many characters",
+        help = "Use double quotes for string literals: {`\"…\"`}"
     )]
     OverlongChar,
     #[diagnostic(
-        message = "invalid escape sequence {`\\{0}`}",
-        primary = "{`\\{0}`} is not a recognised escape",
-        help = "valid escapes are: {`\\\\`}, {`\\\"`}, {`\\n`}, {`\\t`}, {`\\r`}, {`\\0`}, {`\\xXX`}, {`\\u{{XXXXXX}}`}"
+        code = "E006",
+        message = "Invalid escape sequence {`\\{0}`}",
+        primary = "not a recognised escape",
+        help = "Valid escapes are {`\\\\`}, {`\\\"`}, {`\\n`}, {`\\t`}, {`\\r`}, {`\\0`}, {`\\xXX`} and {`\\u{{XXXXXX}}`}"
     )]
     InvalidEscape(char),
     #[diagnostic(
-        message = "invalid float literal: `{0}`",
-        primary = "could not parse this as a float"
+        code = "E007",
+        message = "Invalid float literal {0!}",
+        primary = "cannot be parsed as a float"
     )]
     InvalidFloat(&'src str),
     #[diagnostic(
-        message = "invalid integer literal: `{0}`",
-        primary = "could not parse this as an integer"
+        code = "E008",
+        message = "Invalid integer literal {0!}",
+        primary = "cannot be parsed as an integer",
+        note = "Integer literals must fit in 64 bits"
     )]
     InvalidInteger(&'src str),
 }

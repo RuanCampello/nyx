@@ -147,22 +147,29 @@ impl<'src> Tokenize<'src> for CharLiteral {
                 Ok(Token::new(TokenKind::Char(content_char), span))
             },
             _ => {
-                // read until we see a closing quote or newline, so we can report an overlong char literal
-                let mut overlong_span_end = cursor.position();
+                let mut closed = false;
+                let mut span_end = cursor.position();
                 while let Some(ch) = cursor.peek() {
-                    if ch == '\'' {
-                        cursor.advance();
-                        overlong_span_end = cursor.position();
-                        break;
+                    match ch {
+                        '\'' => {
+                            cursor.advance();
+                            span_end = cursor.position();
+                            closed = true;
+                            break;
+                        },
+                        '\n' => break,
+                        _ => {
+                            cursor.advance();
+                            span_end = cursor.position();
+                        },
                     }
-                    if ch == '\n' {
-                        break;
-                    }
-                    cursor.advance();
-                    overlong_span_end = cursor.position();
                 }
-                let span = Span::new(start, overlong_span_end);
-                Err(LexError::new(LexErrorKind::OverlongChar, span))
+                let span = Span::new(start, span_end);
+                let kind = match closed {
+                    true => LexErrorKind::OverlongChar,
+                    false => LexErrorKind::UnterminatedChar,
+                };
+                Err(LexError::new(kind, span))
             },
         }
     }
