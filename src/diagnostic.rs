@@ -1,3 +1,4 @@
+use crate::error_codes;
 use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
@@ -6,7 +7,7 @@ use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
 use crate::source_map::{FileId, SourceMap};
 use crate::{NyxError, hir::error::HirError};
-use ariadne::{Cache, Color, Config, Fmt, Label as AriadneLabel, Report, ReportKind, Source};
+use ariadne::{Cache, Color, Config, Label as AriadneLabel, Report, ReportKind, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -16,12 +17,13 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RichDiagnostic {
     pub severity: Severity,
-    pub code: Option<&'static str>,
+    pub code: Option<crate::error_codes::ErrorCode>,
     pub message: String,
     pub primary: Option<Label>,
     pub secondary: Vec<Label>,
     pub note: Option<String>,
     pub help: Option<String>,
+    pub rendered: Option<String>,
 }
 
 /// A single labelled span within a [`RichDiagnostic`], carrying plain (no ANSI)
@@ -38,10 +40,18 @@ pub struct Diagnostic {
 }
 
 pub struct Builder {
+    code: Option<error_codes::ErrorCode>,
     message: String,
     labels: Vec<(Span, String, Color)>,
     note: Option<String>,
     help: Option<String>,
+}
+
+#[derive(Default)]
+struct TypeNames {
+    structs: Vec<String>,
+    enums: Vec<String>,
+    arrays: Vec<String>,
 }
 
 /// An [`ariadne::Cache`] over the per-thread [`SourceMap`], building one
@@ -64,23 +74,32 @@ pub trait AsDiagnostic {
     fn message(self) -> String;
 }
 
-pub(crate) const PRIMARY: Color = Color::Rgb(243, 139, 168);
-pub(crate) const SECONDARY: Color = Color::Rgb(180, 190, 254);
-pub(crate) const HIGHLIGHT: Color = Color::Rgb(137, 180, 250);
+/// The faulty thing: offending names, found types, primary labels
+pub(crate) const ERROR: Color = Color::Rgb(243, 139, 168);
+/// The expected side and contextual labels
+pub(crate) const CONTEXT: Color = Color::Rgb(249, 226, 175);
+/// Interface and bound names
+pub(crate) const BOUND: Color = Color::Rgb(148, 226, 213);
+/// Suggested code in notes and helps
+pub(crate) const SUGGEST: Color = Color::Rgb(137, 180, 250);
 
 thread_local! {
     static SOURCE_MAP: RefCell<SourceMap> = RefCell::new(SourceMap::default());
+    static TYPE_NAMES: RefCell<TypeNames> = RefCell::new(TypeNames::default());
 }
 
-#[inline(always)]
-pub(crate) fn hi(s: impl std::fmt::Display) -> impl std::fmt::Display {
-    s.fg(HIGHLIGHT)
-}
-
-/// Clear the per-thread source map
+/// Clear the per-thread source map and type-name registry
 /// Call once at the start of a compilation or analysis run before registering files
 pub fn reset() {
     SOURCE_MAP.with_borrow_mut(|map| *map = SourceMap::default());
+    TYPE_NAMES.with_borrow_mut(|names| *names = TypeNames::default());
+}
+
+#[derive(Clone, Copy)]
+enum TypeNameKind {
+    Struct,
+    Enum,
+    Array,
 }
 
 /// Register a file in the per-thread source map and return its id and the base
@@ -95,6 +114,30 @@ pub fn take_source_map() -> SourceMap {
     SOURCE_MAP.with_borrow_mut(std::mem::take)
 }
 
+pub(crate) fn register_struct_name(id: u32, name: &str) {
+    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Struct, id, name));
+}
+
+pub(crate) fn register_enum_name(id: u32, name: &str) {
+    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Enum, id, name));
+}
+
+pub(crate) fn register_array_name(id: u32, rendered: &str) {
+    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Array, id, rendered));
+}
+
+pub(crate) fn write_struct_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
+    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Struct, id))
+}
+
+pub(crate) fn write_enum_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
+    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Enum, id))
+}
+
+pub(crate) fn write_array_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
+    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Array, id))
+}
+
 impl RichDiagnostic {
     pub fn bare(message: impl Into<String>) -> Self {
         Self {
@@ -105,13 +148,30 @@ impl RichDiagnostic {
             secondary: Vec::new(),
             note: None,
             help: None,
+            rendered: None,
         }
     }
+}
+
+/// Render a batch of diagnostics into one displayable [Diagnostic]
+pub fn render_batch(diagnostics: impl IntoIterator<Item = RichDiagnostic>) -> Diagnostic {
+    let rendered = diagnostics
+        .into_iter()
+        .map(|mut d| match d.rendered.take() {
+            Some(rendered) => rendered,
+            None => d.into_diagnostic(Span::default()).rendered,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Diagnostic { rendered }
 }
 
 impl AsDiagnostic for RichDiagnostic {
     fn into_diagnostic(self, _span: Span) -> Diagnostic {
         let mut builder = Builder::new(self.message);
+        if let Some(code) = self.code {
+            builder = builder.code(code);
+        }
         if let Some(primary) = self.primary {
             builder = builder.primary(primary.span, primary.message);
         }
@@ -229,6 +289,7 @@ impl std::fmt::Display for Diagnostic {
 impl Builder {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            code: None,
             message: message.into(),
             labels: Vec::new(),
             note: None,
@@ -236,13 +297,18 @@ impl Builder {
         }
     }
 
+    pub fn code(mut self, code: error_codes::ErrorCode) -> Self {
+        self.code = Some(code);
+        self
+    }
+
     pub fn primary(mut self, span: Span, text: impl Into<String>) -> Self {
-        self.labels.insert(0, (span, text.into(), PRIMARY));
+        self.labels.insert(0, (span, text.into(), ERROR));
         self
     }
 
     pub fn secondary(mut self, span: Span, text: impl Into<String>) -> Self {
-        self.labels.push((span, text.into(), Color::Primary));
+        self.labels.push((span, text.into(), CONTEXT));
         self
     }
 
@@ -265,18 +331,44 @@ impl Builder {
             return Diagnostic { rendered: self.message };
         }
 
-        let (anchor_file, anchor) = map.local_range(self.labels[0].0);
+        // anchor at the earliest label in the primary file so every label in
+        // that file renders inside one snippet rather than split groups
+        let (anchor_file, primary_range) = map.local_range(self.labels[0].0);
+        let anchor = self
+            .labels
+            .iter()
+            .map(|(span, _, _)| map.local_range(*span))
+            .filter(|(file, _)| *file == anchor_file)
+            .map(|(_, range)| range.start)
+            .min()
+            .unwrap_or(primary_range.start);
         let cache = MapCache::new(map, self.labels.iter().map(|(s, _, _)| map.span_data(*s).file));
 
-        let mut builder =
-            Report::build(ReportKind::Error, (anchor_file, anchor.start..anchor.start))
-                .with_config(Config::default().with_compact(false))
-                .with_message(&self.message);
+        let mut builder = Report::build(ReportKind::Error, (anchor_file, anchor..anchor))
+            .with_config(Config::default().with_compact(false))
+            .with_message(&self.message);
 
-        for (span, text, color) in self.labels {
-            let (file, range) = map.local_range(span);
-            builder = builder
-                .with_label(AriadneLabel::new((file, range)).with_message(text).with_color(color));
+        if let Some(code) = self.code {
+            builder = builder.with_code(code);
+        }
+
+        let mut labels: Vec<_> = self
+            .labels
+            .into_iter()
+            .map(|(span, text, color)| {
+                let (file, range) = map.local_range(span);
+                (file, range, text, color)
+            })
+            .collect();
+        labels.sort_by_key(|(file, range, _, _)| (*file != anchor_file, *file, range.start));
+
+        for (order, (file, range, text, color)) in labels.into_iter().enumerate() {
+            builder = builder.with_label(
+                AriadneLabel::new((file, range))
+                    .with_message(text)
+                    .with_order(order as i32)
+                    .with_color(color),
+            );
         }
 
         if let Some(note) = &self.note {
@@ -291,6 +383,33 @@ impl Builder {
         // SAFETY: ariadne only writes valid UTF-8
         let rendered = unsafe { String::from_utf8_unchecked(buf) };
         Diagnostic { rendered }
+    }
+}
+
+impl TypeNames {
+    fn register(&mut self, kind: TypeNameKind, id: u32, name: &str) {
+        let slot = match kind {
+            TypeNameKind::Struct => &mut self.structs,
+            TypeNameKind::Enum => &mut self.enums,
+            TypeNameKind::Array => &mut self.arrays,
+        };
+        let id = id as usize;
+        if slot.len() <= id {
+            slot.resize(id + 1, String::new());
+        }
+        slot[id] = name.to_string();
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>, kind: TypeNameKind, id: u32) -> fmt::Result {
+        let (slot, fallback) = match kind {
+            TypeNameKind::Struct => (&self.structs, "struct"),
+            TypeNameKind::Enum => (&self.enums, "enum"),
+            TypeNameKind::Array => (&self.arrays, "array"),
+        };
+        match slot.get(id as usize) {
+            Some(name) if !name.is_empty() => f.write_str(name),
+            _ => write!(f, "{fallback}#{id}"),
+        }
     }
 }
 
@@ -546,7 +665,7 @@ mod tests {
     #[test]
     fn parse_unexpected_identifier_bad_assignment() {
         let kind = parse_check!("fn main() { (a + b) = 1; }");
-        assert!(matches!(kind, ParseErrorKind::UnexpectedIdentifier), "got {kind:?}");
+        assert!(matches!(kind, ParseErrorKind::InvalidAssignmentTarget), "got {kind:?}");
     }
 
     #[test]
@@ -591,7 +710,10 @@ mod tests {
             "fn foo(): i32 { 1 }
          fn foo(): i32 { 2 }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateFunction { name: "foo" });
+        assert!(
+            matches!(kind, HirErrorKind::DuplicateFunction { name: "foo", .. }),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -601,7 +723,13 @@ mod tests {
          impl Counter { fn get(&self): i32 { self.value } }
          impl Counter { fn get(&self): i32 { self.value } }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "get" });
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "get", .. }
+            ),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -618,8 +746,7 @@ mod tests {
 
     #[test]
     fn hir_range_pattern_type_mismatch() {
-        let kind =
-            hir_check!("fn main(): i32 { let x = 1; match x { 'a'..='z' -> 0, _ -> 1 } }");
+        let kind = hir_check!("fn main(): i32 { let x = 1; match x { 'a'..='z' -> 0, _ -> 1 } }");
         assert!(matches!(kind, HirErrorKind::InvalidRangeType { .. }), "got {kind:?}");
     }
 
@@ -690,7 +817,10 @@ mod tests {
             "struct Foo { x: i32 }
          struct Foo { y: i32 }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateStruct { name: "Foo" });
+        assert!(
+            matches!(kind, HirErrorKind::DuplicateStruct { name: "Foo", .. }),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -721,7 +851,7 @@ mod tests {
     #[test]
     fn hir_invalid_assignment_target() {
         let kind = parse_check!("fn main() { (a + b) = 1; }");
-        assert!(matches!(kind, ParseErrorKind::UnexpectedIdentifier), "got {kind:?}");
+        assert!(matches!(kind, ParseErrorKind::InvalidAssignmentTarget), "got {kind:?}");
     }
 
     #[test]
@@ -757,7 +887,13 @@ mod tests {
             "fn add(a: i32, b: i32): i32 { a + b }
          fn main() { add(1, 2, 3); }"
         );
-        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 });
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3, .. }
+            ),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -766,7 +902,13 @@ mod tests {
             "fn add(a: i32, b: i32): i32 { a + b }
          fn main() { add(1); }"
         );
-        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 1 });
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 1, .. }
+            ),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -776,7 +918,10 @@ mod tests {
          impl Counter { fn add(&mut self, delta: i32) { self.value = self.value + delta; } }
          fn main() { let mut c = Counter { value: 0 }; c.add(1, 2); }"
         );
-        assert_eq!(kind, HirErrorKind::ArityMismatch { name: "add", expected: 1, found: 2 });
+        assert!(
+            matches!(kind, HirErrorKind::ArityMismatch { name: "add", expected: 1, found: 2, .. }),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -787,7 +932,7 @@ mod tests {
              let x: i32 = 2;
          }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateBind { name: "x" });
+        assert!(matches!(kind, HirErrorKind::DuplicateBind { name: "x", .. }), "got {kind:?}");
     }
 
     #[test]
@@ -809,24 +954,26 @@ mod tests {
              let x: i32 = true;
          }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::I32.into(),
-                found: TypeKind::Bool.into()
-            }
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                    if expected.kind() == TypeKind::I32 && found.kind() == TypeKind::Bool
+            ),
+            "got {kind:?}"
         );
     }
 
     #[test]
     fn hir_type_mismatch_return_type() {
         let kind = hir_check!("fn foo(): i32 { true }");
-        assert_eq!(
-            kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::I32.into(),
-                found: TypeKind::Bool.into()
-            }
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                    if expected.kind() == TypeKind::I32 && found.kind() == TypeKind::Bool
+            ),
+            "got {kind:?}"
         );
     }
 
@@ -856,7 +1003,7 @@ mod tests {
              x = 2;
          }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "x" });
+        assert!(matches!(kind, HirErrorKind::ImmutableBind { name: "x", .. }), "got {kind:?}");
     }
 
     #[test]
@@ -865,7 +1012,7 @@ mod tests {
             "struct Counter { value: i32 }
          impl Counter { fn bad(&self) { self.value = 1; } }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "self" });
+        assert!(matches!(kind, HirErrorKind::ImmutableBind { name: "self", .. }), "got {kind:?}");
     }
 
     #[test]
@@ -878,7 +1025,7 @@ mod tests {
              c.inc();
          }"
         );
-        assert_eq!(kind, HirErrorKind::ImmutableBind { name: "c" });
+        assert!(matches!(kind, HirErrorKind::ImmutableBind { name: "c", .. }), "got {kind:?}");
     }
 
     #[test]
@@ -905,7 +1052,10 @@ mod tests {
             "interface Greet { fn hello(&self); }
          interface Greet { fn bye(&self); }"
         );
-        assert_eq!(kind, HirErrorKind::DuplicateInterface { name: "Greet" });
+        assert!(
+            matches!(kind, HirErrorKind::DuplicateInterface { name: "Greet", .. }),
+            "got {kind:?}"
+        );
     }
 
     #[test]
@@ -933,13 +1083,17 @@ mod tests {
          struct Foo { x: i32 }
          impl Foo with Greet { fn hello(&self): i32 { 1 } }"
         );
-        assert_eq!(
-            kind,
-            HirErrorKind::MissingInterfaceMethod {
-                struct_name: "Foo",
-                interface_name: "Greet",
-                method_name: "bye",
-            }
+        assert!(
+            matches!(
+                kind,
+                HirErrorKind::MissingInterfaceMethod {
+                    struct_name: "Foo",
+                    interface_name: "Greet",
+                    method_name: "bye",
+                    ..
+                }
+            ),
+            "got {kind:?}"
         );
     }
 
