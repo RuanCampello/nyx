@@ -43,7 +43,11 @@ pub fn diagnostics_by_url(
         out.entry(url).or_default().push(Diagnostic {
             range,
             severity: Some(severity(error.severity)),
-            code: error.code.map(|c| NumberOrString::String(c.to_string())),
+            code: error
+                .code
+                .map(|c| c.to_string())
+                .or_else(|| error.lint.map(|l| l.to_string()))
+                .map(NumberOrString::String),
             message: error.to_string(),
             source: Some("nyx".into()),
             related_information: related_information(map, error, encoding),

@@ -1,4 +1,3 @@
-use crate::error_codes;
 use crate::hir::module::ModuleError;
 use crate::lexer::HasSpan;
 use crate::lexer::error::LexError;
@@ -7,6 +6,7 @@ use crate::mir::error::{MirError, MirErrorKind};
 use crate::parser::error::ParserError;
 use crate::source_map::{FileId, SourceMap};
 use crate::{NyxError, hir::error::HirError};
+use crate::{error_codes, lints};
 use ariadne::{Cache, Color, Config, Label as AriadneLabel, Report, ReportKind, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,7 +17,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RichDiagnostic {
     pub severity: Severity,
-    pub code: Option<crate::error_codes::ErrorCode>,
+    pub code: Option<error_codes::ErrorCode>,
+    pub lint: Option<lints::Lint>,
     pub message: String,
     pub primary: Option<Label>,
     pub secondary: Vec<Label>,
@@ -40,7 +41,9 @@ pub struct Diagnostic {
 }
 
 pub struct Builder {
+    severity: Severity,
     code: Option<error_codes::ErrorCode>,
+    lint: Option<lints::Lint>,
     message: String,
     labels: Vec<(Span, String, Color)>,
     note: Option<String>,
@@ -143,6 +146,7 @@ impl RichDiagnostic {
         Self {
             severity: Severity::Error,
             code: None,
+            lint: None,
             message: message.into(),
             primary: None,
             secondary: Vec::new(),
@@ -168,9 +172,12 @@ pub fn render_batch(diagnostics: impl IntoIterator<Item = RichDiagnostic>) -> Di
 
 impl AsDiagnostic for RichDiagnostic {
     fn into_diagnostic(self, _span: Span) -> Diagnostic {
-        let mut builder = Builder::new(self.message);
+        let mut builder = Builder::new(self.message).severity(self.severity);
         if let Some(code) = self.code {
             builder = builder.code(code);
+        }
+        if let Some(lint) = self.lint {
+            builder = builder.lint(lint);
         }
         if let Some(primary) = self.primary {
             builder = builder.primary(primary.span, primary.message);
@@ -289,12 +296,25 @@ impl std::fmt::Display for Diagnostic {
 impl Builder {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            severity: Severity::Error,
             code: None,
+            lint: None,
             message: message.into(),
             labels: Vec::new(),
             note: None,
             help: None,
         }
+    }
+
+    pub fn severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    pub fn lint(mut self, lint: lints::Lint) -> Self {
+        self.severity = lint.default_level().severity();
+        self.lint = Some(lint);
+        self
     }
 
     pub fn code(mut self, code: error_codes::ErrorCode) -> Self {
@@ -344,12 +364,19 @@ impl Builder {
             .unwrap_or(primary_range.start);
         let cache = MapCache::new(map, self.labels.iter().map(|(s, _, _)| map.span_data(*s).file));
 
-        let mut builder = Report::build(ReportKind::Error, (anchor_file, anchor..anchor))
+        let kind = match self.severity {
+            Severity::Error => ReportKind::Error,
+            Severity::Warning => ReportKind::Warning,
+        };
+
+        let mut builder = Report::build(kind, (anchor_file, anchor..anchor))
             .with_config(Config::default().with_compact(false))
             .with_message(&self.message);
 
-        if let Some(code) = self.code {
-            builder = builder.with_code(code);
+        match (self.code, self.lint) {
+            (Some(code), _) => builder = builder.with_code(code),
+            (None, Some(lint)) => builder = builder.with_code(lint),
+            (None, None) => {},
         }
 
         let mut labels: Vec<_> = self

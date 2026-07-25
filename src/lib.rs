@@ -8,6 +8,7 @@ pub mod diagnostic;
 pub mod error_codes;
 pub mod hir;
 pub mod lexer;
+pub mod lints;
 pub mod lir;
 pub mod mir;
 pub mod parser;
@@ -91,10 +92,8 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
         return Err(diagnostic::render_batch(rendered).into());
     }
 
-    let hir = hir::lower_collecting(statements, &arena)?;
-    if !hir.diagnostics.is_empty() {
-        return Err(diagnostic::render_batch(hir.diagnostics).into());
-    }
+    let mut hir = hir::lower_collecting(statements, &arena)?;
+    report(std::mem::take(&mut hir.diagnostics))?;
 
     let mir = mir::lower(hir)?;
 
@@ -129,7 +128,7 @@ pub fn compile_project_for(
     let arena = bumpalo::Bump::new();
 
     let loader = module::ModuleLoader::new(name.to_string(), root, &arena).collecting();
-    let hir = match loader.load(entry) {
+    let mut hir = match loader.load(entry) {
         Ok(hir) => hir,
         Err((diagnostics, err)) => {
             let mut rendered = diagnostic::render_batch(diagnostics).display();
@@ -140,9 +139,7 @@ pub fn compile_project_for(
             return Err(Diagnostic { rendered }.into());
         },
     };
-    if !hir.diagnostics.is_empty() {
-        return Err(diagnostic::render_batch(hir.diagnostics).into());
-    }
+    report(std::mem::take(&mut hir.diagnostics))?;
     let mir = mir::lower(hir)?;
 
     let asm = match target {
@@ -201,6 +198,20 @@ pub fn link_for(
     }
 
     Ok(())
+}
+
+fn report(diagnostics: Vec<diagnostic::RichDiagnostic>) -> Result<(), NyxError> {
+    let (errors, warnings): (Vec<_>, Vec<_>) =
+        diagnostics.into_iter().partition(|d| d.severity == diagnostic::Severity::Error);
+
+    if !warnings.is_empty() {
+        eprintln!("{}", diagnostic::render_batch(warnings).display());
+    }
+
+    match errors.is_empty() {
+        true => Ok(()),
+        false => Err(diagnostic::render_batch(errors).into()),
+    }
 }
 
 impl TargetArch {

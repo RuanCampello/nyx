@@ -1421,7 +1421,6 @@ const fn implicit_close<'i>(at: BytePos) -> Token<'i> {
     }
 }
 
-/// Consume the `@name` markers ahead of a declaration
 fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError<'i>> {
     let mut markers = Vec::new();
 

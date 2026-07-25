@@ -10,6 +10,7 @@ use syn::{
 #[derive(Default)]
 struct DiagnosticAttr {
     code: Option<LitStr>,
+    lint: Option<LitStr>,
     message: Option<LitStr>,
     primary: Option<LitStr>,
     note: Option<LitStr>,
@@ -90,6 +91,7 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                     "primary" => attr.primary = Some(s.clone()),
                     "note" => attr.note = Some(s.clone()),
                     "help" => attr.help = Some(s.clone()),
+                    "lint" => attr.lint = Some(s.clone()),
                     other => {
                         return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`")));
                     },
@@ -147,14 +149,54 @@ fn transparent_field(variant: &syn::Variant) -> Result<TokenStream> {
     })
 }
 
+fn kind_tokens(
+    variant: &syn::Variant,
+    attr: &DiagnosticAttr,
+) -> Result<(TokenStream, TokenStream, TokenStream)> {
+    match (&attr.code, &attr.lint) {
+        (Some(_), Some(lint)) => {
+            Err(Error::new_spanned(lint, "a variant has a `code` or a `lint`"))
+        },
+        (None, None) => Err(Error::new_spanned(variant, "missing `code`")),
+        (Some(code), None) => {
+            let code = code_ident(code)?;
+            Ok((
+                quote!(crate::diagnostic::Severity::Error),
+                quote!(::core::option::Option::Some(crate::error_codes::ErrorCode::#code)),
+                quote!(::core::option::Option::None),
+            ))
+        },
+        (None, Some(lint)) => {
+            let lint = lint_ident(lint)?;
+            Ok((
+                quote!(crate::lints::Lint::#lint.default_level().severity()),
+                quote!(::core::option::Option::None),
+                quote!(::core::option::Option::Some(crate::lints::Lint::#lint)),
+            ))
+        },
+    }
+}
+
+fn lint_ident(lint: &LitStr) -> Result<Ident> {
+    let mut camel = String::new();
+    for word in lint.value().split('_') {
+        let mut chars = word.chars();
+        match chars.next() {
+            Some(first) => {
+                camel.extend(first.to_uppercase());
+                camel.push_str(chars.as_str());
+            },
+            None => return Err(Error::new_spanned(lint, "empty segment in lint name")),
+        }
+    }
+
+    Ok(Ident::new(&camel, lint.span()))
+}
+
 fn required_parts<'a>(
     variant: &syn::Variant,
     attr: &'a DiagnosticAttr,
-) -> Result<(&'a LitStr, &'a LitStr, &'a LitStr)> {
-    let code = attr
-        .code
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(variant, "missing `code`"))?;
+) -> Result<(&'a LitStr, &'a LitStr)> {
     let msg = attr
         .message
         .as_ref()
@@ -163,7 +205,7 @@ fn required_parts<'a>(
         .primary
         .as_ref()
         .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
-    Ok((code, msg, prim))
+    Ok((msg, prim))
 }
 
 fn generate_variant_arm(
@@ -183,8 +225,18 @@ fn generate_variant_arm(
         });
     }
 
-    let (code, msg, prim) = required_parts(variant, attr)?;
-    let code = code_ident(code)?;
+    let (msg, prim) = required_parts(variant, attr)?;
+    let kind_stmt = match (&attr.code, &attr.lint) {
+        (_, Some(lint)) => {
+            let lint = lint_ident(lint)?;
+            quote!(__builder = __builder.lint(crate::lints::Lint::#lint);)
+        },
+        (Some(code), None) => {
+            let code = code_ident(code)?;
+            quote!(__builder = __builder.code(crate::error_codes::ErrorCode::#code);)
+        },
+        (None, None) => return Err(Error::new_spanned(variant, "missing `code`")),
+    };
     let msg_ts = parse_template(&msg.value(), msg.span())?;
     let prim_ts = parse_template(&prim.value(), prim.span())?;
 
@@ -222,8 +274,8 @@ fn generate_variant_arm(
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => {
             let mut __builder = crate::diagnostic::Builder::new(#msg_ts)
-                .code(crate::error_codes::ErrorCode::#code)
                 .primary(__span, #prim_ts);
+            #kind_stmt
             #(#sec_stmts)*
             #note_stmt
             #help_stmt
@@ -249,8 +301,8 @@ fn generate_rich_arm(
         });
     }
 
-    let (code, msg, prim) = required_parts(variant, attr)?;
-    let code = code_ident(code)?;
+    let (msg, prim) = required_parts(variant, attr)?;
+    let (severity, code, lint) = kind_tokens(variant, attr)?;
     let msg_ts = parse_template_plain(&msg.value(), msg.span())?;
     let prim_ts = parse_template_plain(&prim.value(), prim.span())?;
 
@@ -296,8 +348,9 @@ fn generate_rich_arm(
             let mut __secondary = ::std::vec::Vec::new();
             #(#sec_stmts)*
             crate::diagnostic::RichDiagnostic {
-                severity: crate::diagnostic::Severity::Error,
-                code: ::core::option::Option::Some(crate::error_codes::ErrorCode::#code),
+                severity: #severity,
+                code: #code,
+                lint: #lint,
                 message: #msg_ts,
                 primary: ::core::option::Option::Some(crate::diagnostic::Label {
                     span: __span,

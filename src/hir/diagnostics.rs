@@ -5,7 +5,7 @@
 //!
 //! It mirrors rustc's `DiagCtxt` + `ErrorGuaranteed`, the only way to mint the proof token is to actually report a diagnostic
 
-use crate::diagnostic::RichDiagnostic;
+use crate::diagnostic::{RichDiagnostic, Severity};
 
 /// A zero-sized proof that a diagnostic has been reported
 ///
@@ -17,6 +17,9 @@ pub(crate) struct ErrorGuaranteed(());
 
 /// Accumulates lowering diagnostics and remembers whether any error was emitted,
 /// so callers can taint results and skip code generation for poisoned items
+///
+/// Warnings live here too: they travel with the batch to the editor and the CLI
+/// but never stop a build, so [Diagnostics::has_errors] filters on severity
 #[derive(Debug, Default)]
 pub(crate) struct Diagnostics {
     errors: Vec<RichDiagnostic>,
@@ -36,9 +39,19 @@ impl Diagnostics {
         ErrorGuaranteed(())
     }
 
+    /// Record a diagnostic that does not stop the build
+    ///
+    /// Takes no [ErrorGuaranteed] out, so a warning can never poison a type
+    pub(crate) fn warn(&mut self, mut diagnostic: RichDiagnostic) {
+        diagnostic.severity = Severity::Warning;
+        if !self.errors.contains(&diagnostic) {
+            self.errors.push(diagnostic);
+        }
+    }
+
     #[inline]
     pub(crate) fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
+        self.errors.iter().any(|d| d.severity == Severity::Error)
     }
 
     pub(crate) fn take_errors(&mut self) -> Vec<RichDiagnostic> {
