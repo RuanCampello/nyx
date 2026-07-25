@@ -515,7 +515,7 @@ where
             unreachable!("indexing a constant aggregate");
         };
         let origin = self.value[base.id];
-        let is_ref = matches!(base.typ.kind(), TypeKind::Ref { .. });
+        let is_ref = base.typ.is_pointer();
         let element = self.element_addr_into(block, None, origin, is_ref, index, bound, stride);
 
         match typ.is_aggregate() {
@@ -543,7 +543,7 @@ where
         value: &Operand,
         stride: u32,
     ) {
-        let is_ref = matches!(dest_typ.kind(), TypeKind::Ref { .. });
+        let is_ref = dest_typ.is_pointer();
         let element = self.element_addr_into(block, None, dest, is_ref, index, bound, stride);
 
         let value_typ = value.typ();
@@ -580,7 +580,7 @@ where
             Operand::Const(_) => unreachable!("indexing a constant aggregate"),
         };
         let origin = self.value[base.id];
-        let is_ref = matches!(base.typ.kind(), TypeKind::Ref { .. });
+        let is_ref = base.typ.is_pointer();
         self.element_addr_into(block, Some(dest), origin, is_ref, index, bound, stride);
     }
 
@@ -592,12 +592,12 @@ where
         offset: u32,
     ) {
         let origin = self.value[src.id];
-        match src.typ.kind() {
-            TypeKind::Ref { .. } => {
+        match src.typ.is_pointer() {
+            true => {
                 let src = T::Operand::from_vreg(origin);
                 self.lir.push_instr(block, T::mov_op(dest, src, 8, false));
             },
-            _ => self.lir.push_instr(block, T::load_stack_addr(dest, origin)),
+            false => self.lir.push_instr(block, T::load_stack_addr(dest, origin)),
         }
 
         if offset != 0 {

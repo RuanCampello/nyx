@@ -277,7 +277,7 @@ impl<'f> Lower<'f, AArch64> {
                         AggregateCopy {
                             src: origin,
                             dest,
-                            src_ref: matches!(src.typ().kind(), TypeKind::Ref { .. }),
+                            src_ref: src.typ().is_pointer(),
                             dest_ref: false,
                             src_base: *offset as i32,
                             dest_base: 0,
@@ -294,7 +294,7 @@ impl<'f> Lower<'f, AArch64> {
                     Operand::Place(place) => {
                         let origin = self.value[place.id];
                         let instruction = AArch64::scalar_load(
-                            matches!(place.typ.kind(), TypeKind::Ref { .. }),
+                            place.typ.is_pointer(),
                             dest,
                             origin,
                             *offset as i32,
@@ -325,8 +325,8 @@ impl<'f> Lower<'f, AArch64> {
                         AggregateCopy {
                             src: src_vreg,
                             dest,
-                            src_ref: matches!(src.typ.kind(), TypeKind::Ref { .. }),
-                            dest_ref: matches!(typ.kind(), TypeKind::Ref { .. }),
+                            src_ref: src.typ.is_pointer(),
+                            dest_ref: typ.is_pointer(),
                             src_base: 0,
                             dest_base: offset,
                             size,
@@ -339,14 +339,8 @@ impl<'f> Lower<'f, AArch64> {
                 let bytes = mt.bytes();
                 let src = self.lower_operand(value, id);
 
-                let instruction = AArch64::scalar_store(
-                    matches!(typ.kind(), TypeKind::Ref { .. }),
-                    dest,
-                    src,
-                    offset,
-                    bytes,
-                    is_float,
-                );
+                let instruction =
+                    AArch64::scalar_store(typ.is_pointer(), dest, src, offset, bytes, is_float);
                 self.lir.push_instr(id, instruction);
             },
 

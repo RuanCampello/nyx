@@ -349,7 +349,7 @@ impl Type {
             TypeKind::I32 => MachineType::Int { bytes: 4, signed: true },
             TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
             TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
-            TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } => {
+            TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } | TypeKind::Raw { .. } => {
                 MachineType::Int { bytes: 8, signed: false }
             },
             TypeKind::Str | TypeKind::Slice { .. } => MachineType::Struct { size: 16, align: 8 },

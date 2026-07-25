@@ -237,7 +237,7 @@ impl<'f> Lower<'f, X86_64> {
                         Operand::Const(_) => unreachable!("struct constant in field access"),
                     };
                     let size = typ.machine_type(self.layouts).stack_size() as u32;
-                    let is_src_ref = matches!(src.typ().kind(), TypeKind::Ref { .. });
+                    let is_src_ref = src.typ().is_pointer();
 
                     return aggregate_copy(
                         &mut self.lir,
@@ -262,7 +262,7 @@ impl<'f> Lower<'f, X86_64> {
                     Operand::Place(place) => {
                         let origin = self.value[place.id];
                         let instruction = X86_64::scalar_load(
-                            matches!(place.typ.kind(), TypeKind::Ref { .. }),
+                            place.typ.is_pointer(),
                             dest,
                             origin,
                             *offset as i32,
@@ -291,7 +291,7 @@ impl<'f> Lower<'f, X86_64> {
                             src: src_vreg,
                             dest,
                             src_ref: false,
-                            dest_ref: matches!(typ.kind(), TypeKind::Ref { .. }),
+                            dest_ref: typ.is_pointer(),
                             src_base: 0,
                             dest_base: *offset as i32,
                             size,
@@ -305,7 +305,7 @@ impl<'f> Lower<'f, X86_64> {
                 let src = self.lower_operand(value, id);
 
                 let instruction = X86_64::scalar_store(
-                    matches!(typ.kind(), TypeKind::Ref { .. }),
+                    typ.is_pointer(),
                     dest,
                     src,
                     *offset as i32,
