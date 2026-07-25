@@ -455,7 +455,7 @@ impl<'i> Expression<'i> {
                         span,
                     }),
 
-                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedIdentifier, left.span())),
+                    _ => Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span())),
                 }
             },
 

@@ -15,48 +15,61 @@ pub enum ParseErrorKind<'i> {
     #[diagnostic(transparent)]
     Lexical(LexError<'i>),
     #[diagnostic(
-        message = "expected {expected^}, found {found~}",
-        primary = "expected {expected^} here",
-        help = "add a {expected^} token here"
+        code = "E020",
+        message = "Expected {expected^}, found {found!}",
+        primary = "expected {expected^} here"
     )]
     Expected { expected: TokenKind<'i>, found: TokenKind<'i> },
     #[diagnostic(
-        message = "expected identifier, found {found~}",
-        primary = "an identifier was expected here"
+        code = "E021",
+        message = "Expected an identifier, found {found!}",
+        primary = "identifier expected here"
     )]
     ExpectedIdentifier { found: TokenKind<'i> },
     #[diagnostic(
-        message = "invalid assignment target",
-        primary = "only identifiers and field paths can be assigned to"
+        code = "E022",
+        message = "Invalid assignment target",
+        primary = "cannot assign to this expression",
+        note = "Only identifiers and field paths can be assigned to"
     )]
-    UnexpectedIdentifier,
+    InvalidAssignmentTarget,
     #[diagnostic(
-        message = "unexpected token {found~} in expression",
-        primary = "this is not a valid binary operator"
+        code = "E023",
+        message = "{found!} is not a binary operator",
+        primary = "not valid between operands"
     )]
     InvalidBinaryOperator { found: TokenKind<'i> },
     #[diagnostic(
-        message = "unexpected token {found~} in expression",
-        primary = "this is not a valid prefix operator"
+        code = "E024",
+        message = "{found!} is not a prefix operator",
+        primary = "not valid before an operand"
     )]
     InvalidUnaryOperator { found: TokenKind<'i> },
     #[diagnostic(
-        message = "expected expression, found {found~}",
-        primary = "an expression was expected here"
+        code = "E025",
+        message = "Expected an expression, found {found!}",
+        primary = "expression expected here"
     )]
     ExpectedExpression { found: TokenKind<'i> },
     #[diagnostic(
-        message = "expected literal, found {found~}",
-        primary = "a literal was expected here",
-        note = "range pattern endpoints must be literals"
+        code = "E026",
+        message = "Expected a literal pattern, found {found!}",
+        primary = "literal expected here",
+        note = "Range pattern endpoints must be literals"
     )]
     ExpectedPatternLiteral { found: TokenKind<'i> },
     #[diagnostic(
-        message = "expected type name, found {found!}",
-        primary = "a type name was expected here"
+        code = "E027",
+        message = "Expected a type name, found {found!}",
+        primary = "type expected here"
     )]
     ExpectedTypeIdentifier { found: String },
-    #[diagnostic(message = "unexpected end of file", primary = "the file ended prematurely")]
+    #[diagnostic(
+        code = "E028",
+        message = "Unexpected end of file",
+        primary = "the file ends here",
+        help = "The source ends in the middle of a construct — check for unclosed braces or parentheses"
+    )]
     UnexpectedEof,
 }
 
