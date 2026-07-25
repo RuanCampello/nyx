@@ -219,6 +219,14 @@ pub enum HirErrorKind<'h> {
     UnsafeCall { name: &'h str, decl: Option<Span> },
 
     #[diagnostic(
+        lint = "unused_unsafe",
+        message = "Unnecessary @unsafe block",
+        primary = "nothing here needs an unsafe context",
+        help = "Remove the block, or narrow it to the operation that needs it"
+    )]
+    UnusedUnsafe,
+
+    #[diagnostic(
         code = "E149",
         message = "Cannot point at {found^}",
         primary = "{found~} is already an indirection",

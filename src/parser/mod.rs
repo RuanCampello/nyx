@@ -146,6 +146,11 @@ impl<'i> Parser<'i> {
         self.recover
     }
 
+    /// Whether the `@name` ahead opens a block rather than annotating a declaration
+    pub(crate) fn at_marked_block(&mut self) -> bool {
+        matches!(self.peek_nth(2), Some(Ok(token)) if token.is_kind(Punct::OpenBrace))
+    }
+
     /// The current stream position, to hand back to [Parser::synchronise_statement]
     #[inline]
     pub(crate) const fn mark(&self) -> usize {
@@ -1191,6 +1196,20 @@ mod tests {
     fn an_unknown_marker_is_rejected() {
         let err = Parser::new("@fast fn go() {}").parse().unwrap_err();
         assert!(matches!(err.kind, ParseErrorKind::UnknownMarker { name: "fast" }));
+    }
+
+    #[test]
+    fn a_marker_followed_by_a_brace_opens_a_block() {
+        let statements = Parser::new("fn go() { @unsafe { let x = 1; } }").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+
+        assert!(!function.is_unsafe(), "the block must not mark the function");
+        assert!(matches!(
+            function.body.statements[0],
+            Statement::Unsafe { ref block, .. } if block.statements.len() == 1
+        ));
     }
 
     #[test]

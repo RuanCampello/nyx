@@ -35,7 +35,11 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     next_local: u32,
     next_expr_id: u32,
     is_const: bool,
-    is_unsafe: bool,
+    /// nesting of enclosing unsafe contexts: an `@unsafe fn` body seeds it at 1,
+    /// each `@unsafe { … }` adds one
+    unsafe_depth: u32,
+    /// operations that needed an unsafe context, to spot a block that needed none
+    unsafe_ops: u32,
     self_type: Option<Type>,
     arena: &'hir bumpalo::Bump,
     typeck: TypeckResults,
@@ -101,7 +105,8 @@ where
         Self {
             scope,
             is_const: true,
-            is_unsafe: false,
+            unsafe_depth: 0,
+            unsafe_ops: 0,
             return_type: TypeKind::Unit.into(),
             return_type_span: None,
             function: None,
@@ -141,7 +146,7 @@ where
         let symbol = signature.name;
         self.return_type = signature.return_type;
         self.return_type_span = function.return_type.as_ref().map(Spanned::span);
-        self.is_unsafe = signature.is_unsafe;
+        self.unsafe_depth = u32::from(signature.is_unsafe);
 
         let mut params = Vec::with_capacity(signature.params.len());
 
@@ -322,6 +327,25 @@ where
             },
             Stmt::Block(block) => {
                 let (block, returns) = self.lower_block(block, is_tail)?;
+                Ok((Statement::Block(block), returns))
+            },
+
+            Stmt::Unsafe { block, marker } => {
+                // a block nested in a context that already allows the operations
+                // grants nothing, so it is redundant however much it contains
+                let redundant = self.unsafe_depth > 0;
+                let before = self.unsafe_ops;
+
+                self.unsafe_depth += 1;
+                let lowered = self.lower_block(block, is_tail);
+                self.unsafe_depth -= 1;
+
+                let (block, returns) = lowered?;
+                if redundant || self.unsafe_ops == before {
+                    let diagnostic = hir_error!(*marker, UnusedUnsafe).into();
+                    self.scope.diagnostics.warn(diagnostic);
+                }
+
                 Ok((Statement::Block(block), returns))
             },
 
@@ -2279,8 +2303,11 @@ where
     }
 
     fn check_raw_deref(&mut self, found: Type, span: Span) -> Result<(), HirError<'hir>> {
-        match self.is_unsafe {
-            true => Ok(()),
+        match self.unsafe_depth > 0 {
+            true => {
+                self.unsafe_ops += 1;
+                Ok(())
+            },
             false => self.soft(hir_error!(span, UnsafeDeref { found })),
         }
     }
@@ -2288,7 +2315,12 @@ where
     /// an `@unsafe` callee may only be reached from another `@unsafe` function
     fn check_call_safety(&mut self, callee: FunctionId, span: Span) -> Result<(), HirError<'hir>> {
         let signature = &self.scope.signatures[callee];
-        if self.is_unsafe || !signature.is_unsafe {
+        if !signature.is_unsafe {
+            return Ok(());
+        }
+
+        if self.unsafe_depth > 0 {
+            self.unsafe_ops += 1;
             return Ok(());
         }
 

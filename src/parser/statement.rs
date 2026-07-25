@@ -33,6 +33,11 @@ pub enum Statement<'i> {
     Continue(Span),
     Expr(Expression<'i>, Span),
     Block(Block<'i>),
+    /// `@unsafe { … }`, a block that permits the operations a marker guards
+    Unsafe {
+        block: Block<'i>,
+        marker: Span,
+    },
     Match(Match<'i>),
     Item(Item<'i>),
 }
@@ -446,6 +451,9 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 }
             },
 
+            TokenKind::Punct(Punct::At) if parser.at_marked_block() => {
+                return parse_unsafe_block(parser);
+            },
             TokenKind::Punct(Punct::At) | TokenKind::Keyword(_) if is_fn_start => {
                 ItemKind::Fn(parser.parse_node()?)
             },
@@ -1421,6 +1429,21 @@ const fn implicit_close<'i>(at: BytePos) -> Token<'i> {
     }
 }
 
+/// Parse `@unsafe { … }`, the only marker that opens a block
+fn parse_unsafe_block<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, ParserError<'i>> {
+    let at = parser.expect_token(Punct::At)?;
+    let (name, span) = parser.expect_identifier()?;
+
+    match Marker::from_name(name) {
+        Some(Marker::Unsafe) => {},
+        None => return Err(ParserError::new(ParseErrorKind::UnknownMarker { name }, span)),
+    }
+
+    let block = Block::parse(parser)?;
+
+    Ok(Statement::Unsafe { block, marker: at.span + span })
+}
+
 fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError<'i>> {
     let mut markers = Vec::new();
 
@@ -1740,6 +1763,7 @@ impl<'s> Statement<'s> {
             Self::Break(span) | Self::Continue(span) => *span,
             Self::Expr(_, span) => *span,
             Self::Block(b) => b.span,
+            Self::Unsafe { block, marker } => Span::new(marker.start, block.span.end),
             Self::Match(m) => m.span,
             Self::Item(item) => item.kind.span(),
         }

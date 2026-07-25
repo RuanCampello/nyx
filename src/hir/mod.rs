@@ -2175,6 +2175,37 @@ mod tests {
     }
 
     #[test]
+    fn an_unsafe_block_lets_safe_code_wrap_an_unsafe_operation() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn danger(): i32 { 1 }
+            fn wrapper(p: *i32): i32 { @unsafe { danger() + *p } }
+            fn main(): i32 { 0 }
+        "#;
+        let hir = super::lower_collecting(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    }
+
+    #[test]
+    fn an_unsafe_block_that_grants_nothing_warns() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @unsafe fn danger(): i32 { 1 }
+            fn pointless(): i32 { @unsafe { 5 } }
+            @unsafe fn redundant(): i32 { @unsafe { danger() } }
+            fn main(): i32 { 0 }
+        "#;
+        let hir = super::lower_collecting(Parser::new(src).parse().unwrap(), &arena).unwrap();
+
+        assert_eq!(hir.diagnostics.len(), 2, "{:?}", hir.diagnostics);
+        for diagnostic in &hir.diagnostics {
+            assert_eq!(diagnostic.severity, crate::diagnostic::Severity::Warning);
+            assert_eq!(diagnostic.lint, Some(crate::lints::Lint::UnusedUnsafe));
+            assert!(diagnostic.code.is_none(), "a lint carries no error code");
+        }
+    }
+
+    #[test]
     fn a_raw_pointer_is_only_dereferenceable_in_an_unsafe_function() {
         let arena = bumpalo::Bump::new();
         let src = r#"

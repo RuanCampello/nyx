@@ -14,6 +14,7 @@ pub trait Visitor<'i>: Sized {
             Statement::Break(_) | Statement::Continue(_) => {},
             Statement::Expr(expr, _) => self.visit_expression(expr),
             Statement::Block(block) => self.visit_block(block),
+            Statement::Unsafe { block, .. } => self.visit_block(block),
             Statement::Match(match_stmt) => self.visit_match(match_stmt),
             Statement::Item(item) => match &item.kind {
                 ItemKind::Fn(func) => self.visit_function(func),
