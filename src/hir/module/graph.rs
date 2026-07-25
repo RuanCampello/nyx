@@ -208,7 +208,10 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             let resolved =
                 self.resolver.resolve_path(&declaration.path.segments, declaration.span)?;
             if self.fs.read(&resolved).is_err() {
-                continue;
+                return Err(ModuleError::FileNotFound {
+                    path: resolved,
+                    span: Some(declaration.span),
+                });
             }
             let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
             let import_idx = self.discover(import.clone(), Some(declaration.span))?;

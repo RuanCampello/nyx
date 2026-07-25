@@ -26,6 +26,8 @@ pub struct ModuleLoader<'hir, F: FileSystem = FS> {
     arena: &'hir bumpalo::Bump,
     /// whether lowering collects diagnostics and recovers instead of failing fast
     recover: bool,
+    /// whether generic template bodies are analysed for editor features
+    analyse_templates: bool,
 }
 
 pub struct FS;
@@ -38,37 +40,43 @@ pub struct OverlayFS {
 #[rustfmt::skip]
 pub enum ModuleError {
     #[diagnostic(
-        message = "module file not found: {path.display()!}",
+        code = "E040",
+        message = "Cannot find the imported module",
         primary = "imported here",
-        help = "make sure the file {path.display()!} exists"
+        help = "Create {path.display()} or fix the import path"
     )]
     FileNotFound { path: PathBuf, span: Option<Span> },
 
     #[diagnostic(
-        message = "circular import: {path.display()!} is already being loaded",
-        primary = "this import creates a cycle",
-        help = "remove the circular dependency between modules"
+        code = "E041",
+        message = "Circular import",
+        primary = "this import completes a cycle",
+        note = "{path.display()^} is already being loaded",
+        help = "Break the dependency cycle between the modules"
     )]
     CircularImport { path: PathBuf, span: Span },
 
     #[diagnostic(
-        message = "empty import path",
-        primary = "this path has no segments",
-        help = "use paths like {`use project::module;`}"
+        code = "E042",
+        message = "Empty import path",
+        primary = "no module named here",
+        help = "Import as {`use project::module;`}"
     )]
     EmptyPath,
 
     #[diagnostic(
-        message = "unknown module root {name!}",
-        primary = "{name!} is not a known module root",
-        help = "the root segment must match your project name"
+        code = "E043",
+        message = "Unknown module root {name!}",
+        primary = "not a known root",
+        note = "The first path segment must be your project name or {`std`}"
     )]
     UnknownRoot { name: String, span: Span },
 
     #[diagnostic(
-        message = "module {path.display()!} has no exported symbol {name!}",
-        primary = "{name!} is not exported from this module",
-        help = "add {`pub`} to {`fn {name}`} to export it"
+        code = "E044",
+        message = "Symbol {name!} is not exported",
+        primary = "not exported by this module",
+        help = "Add {`pub`} to {`fn {name}`} to export it"
     )]
     UnknownExport {
         path: PathBuf,
@@ -77,9 +85,10 @@ pub enum ModuleError {
     },
 
     #[diagnostic(
-        message = "only function declarations are allowed at the top level",
-        primary = "this is not a function declaration",
-        help = "move this into a function body, or wrap it in {`fn main()`}"
+        code = "E045",
+        message = "Statements are not allowed at the top level",
+        primary = "this statement is outside any function",
+        help = "Move it into a function body, or wrap it in {`fn main() {{ … }}`}"
     )]
     TopLevelNonFunction { path: PathBuf, span: Span },
 
@@ -116,11 +125,22 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             symbols: SymbolTable::new(),
             arena,
             recover: false,
+            analyse_templates: false,
         }
     }
 
+    /// full editor mode: recover from errors and analyse generic template bodies
     #[inline]
     pub fn recovering(mut self) -> Self {
+        self.recover = true;
+        self.analyse_templates = true;
+        self
+    }
+
+    /// batch mode: recover so every error is collected, but skip the
+    /// editor-only template analysis whose instances must not reach codegen
+    #[inline]
+    pub fn collecting(mut self) -> Self {
         self.recover = true;
         self
     }
@@ -151,8 +171,15 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
                 .extend(&declarations[idx], arena)
                 .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
         }
-        let functions = demand::lower_reachable(&graph, &declarations, &order, &mut scope, arena)
-            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
+        let functions = demand::lower_reachable(
+            &graph,
+            &declarations,
+            &order,
+            &mut scope,
+            arena,
+            self.analyse_templates,
+        )
+        .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let mut functions = mono::monomorphise(functions, &mut scope, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
 
@@ -161,7 +188,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         // editors need features inside generic template bodies too, lower one
         // identity instance of each and discard the diagnostics, which are
         // noise (bounds cannot be solved without concrete types)
-        if scope.recover {
+        if self.analyse_templates {
             for function in mono::analyse_templates(&mut scope, arena) {
                 functions.push(function);
             }

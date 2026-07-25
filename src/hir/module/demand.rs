@@ -25,31 +25,41 @@ pub(super) fn lower_reachable<'hir, 'src>(
     order: &[usize],
     scope: &mut Scope<'hir>,
     arena: &'hir bumpalo::Bump,
+    keep_all: bool,
 ) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError>
 where
     'src: 'hir,
 {
-    let demand = build_demand(graph, declarations, order, scope)?;
+    let function_map = collect_functions(graph, declarations, order, scope)?;
+    let demand = build_demand(&function_map, scope, keep_all);
     let mut functions = IndexVec::new();
 
     for &idx in order {
         scope.in_std = graph.nodes[idx].in_std;
-        let mut lowered =
-            scope.lower_matching_functions(&declarations[idx], |id| demand.contains(id), arena)?;
+        let lowered = scope.lower_matching_functions(
+            &declarations[idx],
+            |id| {
+                demand.contains(id)
+                    || function_map.get(&id).is_some_and(|&(_, in_project)| in_project)
+            },
+            arena,
+        )?;
 
-        functions.append(&mut lowered);
+        for function in lowered {
+            if demand.contains(function.id) {
+                functions.push(function);
+            }
+        }
     }
 
     Ok(functions)
 }
 
-fn build_demand<'hir, 'src>(
-    graph: &ModuleGraph<'src>,
-    declarations: &[Declarations<'_, 'src>],
-    order: &[usize],
-    scope: &Scope<'hir>,
-) -> Result<DemandSet, ModuleError> {
-    let function_map = collect_functions(graph, declarations, order, scope)?;
+fn build_demand<'src>(
+    function_map: &HashMap<FunctionId, (Function<'src>, bool)>,
+    scope: &Scope<'_>,
+    keep_all: bool,
+) -> DemandSet {
     let main = scope.resolve_function(|m| m.item("main"));
 
     let mut demand = DemandSet::default();
@@ -60,9 +70,9 @@ fn build_demand<'hir, 'src>(
         stack.push(main);
     }
 
-    // an editor analyses every project function, reachable from `main` or not
-    // std stays demand-driven so unused library code is never lowered
-    if scope.recover {
+    // an editor keeps every project function, reachable from `main` or not,
+    // so features work anywhere in the project
+    if keep_all {
         for (&id, &(_, seed)) in function_map.iter() {
             if seed && demand.insert(id) {
                 stack.push(id);
@@ -88,7 +98,7 @@ fn build_demand<'hir, 'src>(
         }
     }
 
-    Ok(demand)
+    demand
 }
 
 /// Collect every declared function keyed by its signature id, paired with
@@ -116,32 +126,9 @@ fn collect_functions<'hir, 'src>(
 }
 
 fn lookup_declaration_id(function: &Function<'_>, scope: &Scope<'_>) -> Option<FunctionId> {
-    match function.impl_type {
-        Some(impl_type) => match find_interface_for_method(function, scope) {
-            Some(interface) => {
-                scope.resolve_function(|m| m.interface_item(impl_type, &interface, function.name))
-            },
-            _ => scope.resolve_function(|m| m.scoped_item(impl_type, function.name)),
-        },
-        _ => scope.resolve_function(|m| m.item(function.name)),
-    }
-}
-
-fn find_interface_for_method(function: &Function<'_>, scope: &Scope<'_>) -> Option<String> {
-    let impl_type = function.impl_type?;
-    let receiver_type = scope.lookup_named_type(impl_type)?;
-    let method_name = scope.symbols.get_id(function.name)?;
-
-    scope.interface_impls.iter().filter(|&&(t, _)| t == receiver_type).find_map(
-        |&(_, interface_sym)| {
-            let interface = scope.interfaces.get(&interface_sym)?;
-            interface
-                .methods
-                .iter()
-                .any(|method| method.name == method_name)
-                .then(|| scope.symbols.get(interface_sym).to_string())
-        },
-    )
+    scope
+        .function_id(function, None, |name| hir::error::HirErrorKind::UnknownFunction { name })
+        .ok()
 }
 
 impl DemandSet {
