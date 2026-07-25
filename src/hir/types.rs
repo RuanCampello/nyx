@@ -1,3 +1,4 @@
+use crate::diagnostic;
 use crate::hir::diagnostics::ErrorGuaranteed;
 use crate::parser::statement;
 
@@ -626,9 +627,9 @@ impl std::fmt::Display for TypeKind {
             Self::SelfType => f.write_str("Self"),
             Self::Never => f.write_str("!"),
             Self::GenericParam(i) => write!(f, "T{i}"),
-            Self::Struct(id) => write!(f, "struct#{}", id.0),
-            Self::Enum(id) => write!(f, "enum#{}", id.0),
-            Self::Array(id) => write!(f, "array#{}", id.0),
+            Self::Struct(id) => diagnostic::write_struct_name(f, id.0),
+            Self::Enum(id) => diagnostic::write_enum_name(f, id.id()),
+            Self::Array(id) => diagnostic::write_array_name(f, id.0),
             Self::Slice { mutable, element } => {
                 f.write_str(match mutable {
                     true => "&mut [",

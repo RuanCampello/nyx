@@ -82,6 +82,7 @@ pub(in crate::hir) struct FunctionSignature {
     pub return_type: Type,
     pub kind: FunctionKind,
     pub is_const: bool,
+    pub decl_span: Span,
 }
 
 #[derive(Debug)]
@@ -91,6 +92,7 @@ pub(in crate::hir) struct InterfaceSignature {
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
     pub generic_params: Vec<SymbolId>,
+    pub decl_span: Span,
 }
 
 #[derive(Debug)]
@@ -100,6 +102,7 @@ pub(in crate::hir) struct InterfaceMethodSignature {
     pub return_type: Type,
     pub(in crate::hir) has_receiver: bool,
     pub(in crate::hir) receiver_mut: bool,
+    pub decl_span: Span,
 }
 
 /// [TypeResolver] over the item table: instantiates generic templates on demand
@@ -315,6 +318,7 @@ impl<'hir> Scope<'hir> {
             })?,
         };
         let id = EnumId::new(self.enums.len() as u32, repr);
+        crate::diagnostic::register_enum_name(id.id(), &display_generic(template.name, args));
 
         self.enum_map.insert(mangled_sym, id);
         self.enums.push(Enum {
@@ -372,6 +376,7 @@ impl<'hir> Scope<'hir> {
         self.check_generic_args(template.name, &template.generics, args, span)?;
 
         let id = StructId(self.structs.len() as u32);
+        crate::diagnostic::register_struct_name(id.0, &display_generic(template.name, args));
         self.struct_map.insert(mangled_sym, id);
         self.structs.push(Struct {
             id,
@@ -410,7 +415,12 @@ impl<'hir> Scope<'hir> {
         if generics.len() != args.len() {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name, expected: generics.len(), found: args.len() }
+                ArityMismatch {
+                    name,
+                    expected: generics.len(),
+                    found: args.len(),
+                    decl: None
+                }
             ));
         }
         for (param, &concrete_type) in generics.iter().zip(args) {
@@ -504,6 +514,7 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind,
                     is_const: method.is_const,
+                    decl_span: method.span,
                 });
 
                 if method.receiver.is_some() {
@@ -661,6 +672,7 @@ impl ArrayTable {
 
         let mut types = self.types.borrow_mut();
         let id = ArrayId(types.len() as u32);
+        crate::diagnostic::register_array_name(id.0, &format!("[{element}; {len}]"));
         types.push(ArrayType { element, len });
         if cacheable {
             self.lookup.borrow_mut().insert((element, len), id);
@@ -789,6 +801,22 @@ pub(in crate::hir) fn is_generic_impl(imp: &statement::Impl<'_>) -> bool {
 
 fn build_substitution(generics: &[statement::GenericBound<'_>], args: &[Type]) -> GenericEnv {
     generics.iter().zip(args).map(|(g, &arg)| (g.name.to_string(), arg)).collect()
+}
+
+/// Human-readable name of a generic instantiation
+fn display_generic(name: &str, args: &[Type]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::from(name);
+    out.push('<');
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        write!(out, "{arg}").expect("writing to a String never fails");
+    }
+    out.push('>');
+    out
 }
 
 /// The declared parameter names of an *identity* instantiation (every argument

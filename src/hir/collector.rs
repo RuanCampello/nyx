@@ -4,7 +4,7 @@
 use crate::{
     hir::{
         self, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic,
-        Layout, Method, StructId, Type, TypeKind, constants,
+        Layout, Method, StructId, SymbolId, Type, TypeKind, constants,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
@@ -16,6 +16,7 @@ use crate::{
         structs,
         symbols::qualified,
     },
+    lexer::token::Span,
     parser::statement,
 };
 use std::{collections::HashSet, str::FromStr};
@@ -98,6 +99,21 @@ impl<'hir> Scope<'hir> {
         Ok(lowered)
     }
 
+    /// declaration span of the nominal type registered under `symbol`, if any
+    fn nominal_decl_span(&self, symbol: SymbolId) -> Option<Span> {
+        self.struct_map
+            .get(&symbol)
+            .and_then(|&id| self.structs.get(id).map(|s| s.decl_span))
+            .or_else(|| {
+                self.enum_map
+                    .get(&symbol)
+                    .and_then(|&id| self.enums.get(id).map(|e| e.decl_span))
+            })
+            .or_else(|| self.generic_structs.get(&symbol).map(|s| s.span))
+            .or_else(|| self.generic_enums.get(&symbol).map(|e| e.span))
+            .and_then(source_span)
+    }
+
     fn declare_structs<'d, 's>(
         &mut self,
         declarations: &Declarations<'d, 's>,
@@ -116,9 +132,10 @@ impl<'hir> Scope<'hir> {
                 || self.generic_enums.contains_key(&symbol);
 
             if already_exists {
+                let previous = self.nominal_decl_span(symbol);
                 self.soft(hir_error!(
                     struct_decl.span,
-                    DuplicateStruct { name: struct_decl.name }
+                    DuplicateStruct { name: struct_decl.name, previous }
                 ))?;
                 continue;
             }
@@ -129,6 +146,7 @@ impl<'hir> Scope<'hir> {
             }
 
             let id = StructId((self.structs.len() + structs.len()) as u32);
+            crate::diagnostic::register_struct_name(id.0, struct_decl.name);
             self.struct_map.insert(symbol, id);
             structs.push(*struct_decl);
         }
@@ -189,7 +207,11 @@ impl<'hir> Scope<'hir> {
                 || self.generic_enums.contains_key(&symbol)
                 || self.generic_structs.contains_key(&symbol)
             {
-                self.soft(hir_error!(enum_decl.span, DuplicateEnum { name: enum_decl.name }))?;
+                let previous = self.nominal_decl_span(symbol);
+                self.soft(hir_error!(
+                    enum_decl.span,
+                    DuplicateEnum { name: enum_decl.name, previous }
+                ))?;
                 continue;
             }
 
@@ -217,6 +239,7 @@ impl<'hir> Scope<'hir> {
                 },
             };
             let id = EnumId::new(self.enums.len() as u32, repr);
+            crate::diagnostic::register_enum_name(id.id(), enum_decl.name);
 
             self.enum_map.insert(symbol, id);
             self.enums.push(Enum {
@@ -288,8 +311,12 @@ impl<'hir> Scope<'hir> {
     {
         for interface in &declarations.interfaces {
             let name = self.symbols.insert(interface.name);
-            if self.interfaces.contains_key(&name) {
-                self.soft(hir_error!(interface.span, DuplicateInterface { name: interface.name }))?;
+            if let Some(existing) = self.interfaces.get(&name) {
+                let previous = source_span(existing.decl_span);
+                self.soft(hir_error!(
+                    interface.span,
+                    DuplicateInterface { name: interface.name, previous }
+                ))?;
                 continue;
             }
 
@@ -333,10 +360,17 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     has_receiver,
                     receiver_mut,
+                    decl_span: method.span,
                 });
             }
 
-            let signature = InterfaceSignature { name, superinterfaces, methods, generic_params };
+            let signature = InterfaceSignature {
+                name,
+                superinterfaces,
+                methods,
+                generic_params,
+                decl_span: interface.span,
+            };
             self.interfaces.insert(name, signature);
         }
 
@@ -366,8 +400,12 @@ impl<'hir> Scope<'hir> {
             }
 
             let symbol = self.symbols.insert(&self.mangler.item(function.name));
-            if self.functions.contains_key(&symbol) {
-                self.soft(hir_error!(function.span, DuplicateFunction { name: function.name }))?;
+            if let Some(&existing) = self.functions.get(&symbol) {
+                let previous = source_span(self.signatures[existing].decl_span);
+                self.soft(hir_error!(
+                    function.span,
+                    DuplicateFunction { name: function.name, previous }
+                ))?;
                 continue;
             }
 
@@ -383,6 +421,7 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind: FunctionKind::Free,
                     is_const: function.is_const,
+                    decl_span: function.span,
                 };
                 let id = self.push_signature(sig);
                 self.functions.insert(symbol, id);
@@ -406,6 +445,7 @@ impl<'hir> Scope<'hir> {
                 return_type,
                 kind,
                 is_const: function.is_const,
+                decl_span: function.span,
             };
             let id = self.push_signature(sig);
             self.functions.insert(symbol, id);
@@ -424,6 +464,7 @@ impl<'hir> Scope<'hir> {
                     return_type: TypeKind::Iptr.into(),
                     kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
                     is_const: false,
+                    decl_span: Span::default(),
                 });
             }
         }
@@ -481,12 +522,14 @@ impl<'hir> Scope<'hir> {
 
                 match method.receiver {
                     Some(receiver) => {
-                        if self.methods.contains_key(&(receiver_type, method_symbol)) {
+                        if let Some(&existing) = self.methods.get(&(receiver_type, method_symbol)) {
+                            let previous = source_span(self.signatures[existing].decl_span);
                             self.soft(hir_error!(
                                 method.span,
                                 DuplicateMethod {
                                     struct_name: implementation.name,
                                     name: method.name,
+                                    previous,
                                 }
                             ))?;
                             continue;
@@ -525,6 +568,7 @@ impl<'hir> Scope<'hir> {
                             return_type,
                             kind,
                             is_const: method.is_const,
+                            decl_span: method.span,
                         });
 
                         if !method.generics.is_empty() && intrinsic.is_none() {
@@ -536,9 +580,13 @@ impl<'hir> Scope<'hir> {
                     },
 
                     None => {
-                        if self.functions.contains_key(&mangled) {
+                        if let Some(&existing) = self.functions.get(&mangled) {
                             let name = qualified(self.arena, implementation.name, method.name);
-                            self.soft(hir_error!(method.span, DuplicateFunction { name }))?;
+                            let previous = source_span(self.signatures[existing].decl_span);
+                            self.soft(hir_error!(
+                                method.span,
+                                DuplicateFunction { name, previous }
+                            ))?;
                             continue;
                         }
 
@@ -559,6 +607,7 @@ impl<'hir> Scope<'hir> {
                             return_type,
                             is_const: method.is_const,
                             kind: FunctionKind::Free,
+                            decl_span: method.span,
                         });
 
                         if !method.generics.is_empty() {
@@ -660,4 +709,9 @@ impl<'hir> Scope<'hir> {
 
         Ok(Some(env))
     }
+}
+
+#[inline]
+pub(in crate::hir) fn source_span(span: Span) -> Option<Span> {
+    (span != Span::default()).then_some(span)
 }

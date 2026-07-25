@@ -29,6 +29,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     locals: IndexVec<LocalId, Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
+    return_type_span: Option<Span>,
     function: Option<&'f statement::Function<'src>>,
     function_id: FunctionId,
     next_local: u32,
@@ -100,6 +101,7 @@ where
             scope,
             is_const: true,
             return_type: TypeKind::Unit.into(),
+            return_type_span: None,
             function: None,
             function_id: FunctionId(0),
             next_local: 0,
@@ -136,6 +138,7 @@ where
         let signature = self.scope.signatures[id].clone();
         let symbol = signature.name;
         self.return_type = signature.return_type;
+        self.return_type_span = function.return_type.as_ref().map(Spanned::span);
 
         let mut params = Vec::with_capacity(signature.params.len());
 
@@ -249,10 +252,11 @@ where
                 let id = self.declare_local(symbol, typ, statement.mutable, statement.name_span)?;
 
                 let mut diverges = false;
+                let annotation = statement.typ.as_ref().map(Spanned::span);
                 let stmt = match statement.value {
                     Some(ref expr) => match self.lower_expr(expr, Some(typ)) {
                         Ok(expr) => {
-                            self.assert_type(typ, expr.typ, expr.span)?;
+                            self.assert_type_at(typ, expr.typ, expr.span, annotation)?;
                             diverges = expr.typ.diverges();
 
                             Statement::LetInit { id, init: expr.expr }
@@ -276,7 +280,12 @@ where
                     .as_ref()
                     .map(|expr| {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
-                        self.assert_type(self.return_type, expr.typ, expr.span)?;
+                        self.assert_type_at(
+                            self.return_type,
+                            expr.typ,
+                            expr.span,
+                            self.return_type_span,
+                        )?;
                         Ok(expr.expr)
                     })
                     .transpose()?;
@@ -445,8 +454,12 @@ where
             .or_else(|e| self.poison(e))?;
 
         let name = self.scope.symbols.insert(constant.name);
-        if self.body_constants.contains_key(&name) {
-            return Err(hir_error!(constant.span, DuplicateConstant { name: constant.name }));
+        if let Some(existing) = self.body_constants.get(&name) {
+            let previous = crate::hir::collector::source_span(existing.decl_span);
+            return Err(hir_error!(
+                constant.span,
+                DuplicateConstant { name: constant.name, previous }
+            ));
         }
 
         let outer_locals = self.scopes.iter().flat_map(|scope| scope.keys().copied()).collect();
@@ -513,7 +526,7 @@ where
     ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         match tail_ret && !expr.typ.diverges() {
             true => {
-                self.assert_type(self.return_type, expr.typ, expr.span)?;
+                self.assert_type_at(self.return_type, expr.typ, expr.span, self.return_type_span)?;
                 Ok((Statement::Return(Some(expr.expr)), true))
             },
             _ => Ok((Statement::Expr(expr.expr), tail_ret || expr.typ.diverges())),
@@ -935,7 +948,8 @@ where
 
                             let name =
                                 self.arena.alloc_str(self.scope.symbols.get(self[local].name));
-                            return Err(hir_error!(*err_span, ImmutableBind { name }));
+                            let decl = crate::hir::collector::source_span(self[local].decl_span);
+                            return Err(hir_error!(*err_span, ImmutableBind { name, decl }));
                         }
                     },
                 }
@@ -1209,8 +1223,10 @@ where
                         let name = base_local.map_or("temporary", |id| {
                             self.arena.alloc_str(self.scope.symbols.get(self[id].name))
                         });
+                        let decl = base_local
+                            .and_then(|id| crate::hir::collector::source_span(self[id].decl_span));
 
-                        return Err(hir_error!(*span, ImmutableBind { name }));
+                        return Err(hir_error!(*span, ImmutableBind { name, decl }));
                     }
 
                     let explicit_params = signature.explicit_params();
@@ -1220,7 +1236,8 @@ where
                             ArityMismatch {
                                 name: method_name,
                                 expected: explicit_params.len(),
-                                found: args.len()
+                                found: args.len(),
+                                decl: crate::hir::collector::source_span(signature.decl_span),
                             }
                         ));
                     }
@@ -1694,7 +1711,12 @@ where
         let [arg] = args else {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name: method_name, expected: 1, found: args.len() }
+                ArityMismatch {
+                    name: method_name,
+                    expected: 1,
+                    found: args.len(),
+                    decl: None
+                }
             ));
         };
 
@@ -1746,7 +1768,12 @@ where
             let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
             return Err(hir_error!(
                 span,
-                ArityMismatch { name, expected: signature.params.len(), found: args.len() }
+                ArityMismatch {
+                    name,
+                    expected: signature.params.len(),
+                    found: args.len(),
+                    decl: crate::hir::collector::source_span(signature.decl_span),
+                }
             ));
         }
 
@@ -1910,9 +1937,14 @@ where
         type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
     ) -> Result<Lowered<'hir>, HirError<'hir>> {
-        let (callee_name, arity, open_return) = {
+        let (callee_name, arity, open_return, callee_decl) = {
             let signature = &self.scope.signatures[function_id];
-            (signature.name, signature.params.len(), signature.return_type)
+            (
+                signature.name,
+                signature.params.len(),
+                signature.return_type,
+                crate::hir::collector::source_span(signature.decl_span),
+            )
         };
         let generic_count = self.scope.generic_fns[&function_id].generics.len();
 
@@ -1920,7 +1952,7 @@ where
             let name = self.arena.alloc_str(self.scope.symbols.get(callee_name));
             return Err(hir_error!(
                 span,
-                ArityMismatch { name, expected: arity, found: args.len() }
+                ArityMismatch { name, expected: arity, found: args.len(), decl: callee_decl }
             ));
         }
 
@@ -1968,13 +2000,16 @@ where
         }
 
         let Some((code_arg, value_args)) = args.split_first() else {
-            return Err(hir_error!(span, ArityMismatch { name: "syscall", expected: 1, found: 0 }));
+            return Err(hir_error!(
+                span,
+                ArityMismatch { name: "syscall", expected: 1, found: 0, decl: None }
+            ));
         };
 
         if value_args.len() > 6 {
             return Err(hir_error!(
                 span,
-                ArityMismatch { name: "syscall", expected: 7, found: args.len() }
+                ArityMismatch { name: "syscall", expected: 7, found: args.len(), decl: None }
             ));
         }
 
@@ -2014,10 +2049,13 @@ where
                 Ok(Some(lowered.expr))
             },
             (None, None) => Ok(None),
-            (Some(_), None) => Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0 })),
-            (None, Some(_)) => {
-                Err(hir_error!(span, ArityMismatch { name, expected: 0, found: args.len() }))
+            (Some(_), None) => {
+                Err(hir_error!(span, ArityMismatch { name, expected: 1, found: 0, decl: None }))
             },
+            (None, Some(_)) => Err(hir_error!(
+                span,
+                ArityMismatch { name, expected: 0, found: args.len(), decl: None }
+            )),
         }
     }
 
@@ -2131,6 +2169,20 @@ where
         found: impl Into<Type>,
         span: Span,
     ) -> Result<(), HirError<'hir>> {
+        self.assert_type_at(expected, found, span, None)
+    }
+
+    /// Like [`assert_type`], but a mismatch points back at the annotation that
+    /// declared the expected type
+    ///
+    /// [`assert_type`]: Self::assert_type
+    fn assert_type_at(
+        &mut self,
+        expected: impl Into<Type>,
+        found: impl Into<Type>,
+        span: Span,
+        annotation: Option<Span>,
+    ) -> Result<(), HirError<'hir>> {
         let (expected, found) = (expected.into(), found.into());
         // a poison type is compatible with everything, so it never cascades
         if expected.is_error() || found.is_error() || expected == found {
@@ -2143,7 +2195,7 @@ where
                 Err(()) => {
                     let expected = self.infer.resolve_or_default(expected);
                     let found = self.infer.resolve_or_default(found);
-                    self.soft(hir_error!(span, TypeMismatch { expected, found }))
+                    self.soft(Self::mismatch(expected, found, span, annotation))
                 },
             };
         }
@@ -2155,11 +2207,25 @@ where
         {
             let (lhs, rhs) = (self.scope.arrays.get(expected), self.scope.arrays.get(found));
             if lhs.len == rhs.len {
-                return self.assert_type(lhs.element, rhs.element, span);
+                return self.assert_type_at(lhs.element, rhs.element, span, annotation);
             }
         }
 
-        self.soft(hir_error!(span, TypeMismatch { expected, found }))
+        self.soft(Self::mismatch(expected, found, span, annotation))
+    }
+
+    fn mismatch(
+        expected: Type,
+        found: Type,
+        span: Span,
+        annotation: Option<Span>,
+    ) -> HirError<'hir> {
+        match annotation {
+            Some(annotation) => {
+                hir_error!(span, TypeAnnotationMismatch { expected, found, annotation })
+            },
+            None => hir_error!(span, TypeMismatch { expected, found }),
+        }
     }
 
     #[inline(always)]
@@ -2181,9 +2247,10 @@ where
     ) -> Result<LocalId, HirError<'hir>> {
         let scope = self.scopes.last_mut().expect("at least one scope is always present");
 
-        if scope.contains_key(&name) {
+        if let Some(&existing) = scope.get(&name) {
+            let previous = crate::hir::collector::source_span(self.locals[existing].decl_span);
             let name = self.arena.alloc_str(self.scope.symbols.get(name));
-            return Err(hir_error!(decl_span, DuplicateBind { name }));
+            return Err(hir_error!(decl_span, DuplicateBind { name, previous }));
         }
 
         let id = LocalId(self.next_local);

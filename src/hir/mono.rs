@@ -248,7 +248,9 @@ fn specialise<'hir>(
     let return_type =
         scope.resolve_return_type(template.return_type.as_ref(), receiver_type, Some(&env))?;
 
-    let id = scope.push_signature(FunctionSignature { name, params, return_type, kind, is_const });
+    let decl_span = template.span;
+    let sig = FunctionSignature { name, params, return_type, kind, is_const, decl_span };
+    let id = scope.push_signature(sig);
     if matches!(kind, FunctionKind::Free) {
         scope.functions.insert(name, id);
     }

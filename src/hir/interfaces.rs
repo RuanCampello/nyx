@@ -9,7 +9,7 @@
 
 use crate::{
     hir::{
-        RefTarget, Type, TypeKind,
+        RefTarget, Type, TypeKind, collector,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         scope::Scope,
@@ -139,6 +139,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         method_name,
+                        decl: collector::source_span(required.decl_span),
                     }
                 ));
                 continue;
@@ -151,6 +152,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         method_name: impl_method.name,
+                        decl: collector::source_span(required.decl_span),
                     }
                 }) {
                     Ok(id) => id,
@@ -202,7 +204,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         method_name,
                         expected: scope.arena.alloc_str(&expected),
                         found: scope.arena.alloc_str(&found),
-                        impl_span: implementation.span,
+                        decl: collector::source_span(required.decl_span),
                     }
                 ));
             }

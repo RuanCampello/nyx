@@ -6,7 +6,7 @@
 
 use crate::{
     hir::{
-        Constant, SymbolId, SymbolTable,
+        Constant, SymbolId, SymbolTable, collector,
         declarations::Declarations,
         error::{HirError, hir_error},
         lower,
@@ -104,8 +104,9 @@ where
 
     for c in &declarations.constants {
         let symbol_id = scope.symbols.insert(&scope.mangler.item(c.name));
-        if decls.contains_key(&symbol_id) {
-            scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name }))?;
+        if let Some(existing) = decls.get(&symbol_id) {
+            let previous = collector::source_span(existing.ast.span);
+            scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name, previous }))?;
             continue;
         }
         decls.insert(symbol_id, ConstDecl { typ: None, ast: c });
@@ -114,9 +115,10 @@ where
     for imp in &declarations.impls {
         for c in &imp.constants {
             let symbol_id = scope.symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
-            if decls.contains_key(&symbol_id) {
+            if let Some(existing) = decls.get(&symbol_id) {
                 let name = qualified(scope.arena, imp.name, c.name);
-                scope.soft(hir_error!(c.span, DuplicateConstant { name }))?;
+                let previous = collector::source_span(existing.ast.span);
+                scope.soft(hir_error!(c.span, DuplicateConstant { name, previous }))?;
                 continue;
             }
 

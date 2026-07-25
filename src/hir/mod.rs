@@ -637,6 +637,7 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             name: value.name,
             kind: value.kind,
             is_const: value.is_const,
+            decl_span: value.decl_span,
         }
     }
 }
@@ -774,7 +775,7 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "x" });
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "x", .. }));
 
         let statements = Parser::new(
             r#"
@@ -945,7 +946,7 @@ mod tests {
 
         let err = super::lower(statements, &arena).unwrap_err();
 
-        assert_eq!(err.kind, HirErrorKind::DuplicateFunction { name: "foo" });
+        assert!(matches!(err.kind, HirErrorKind::DuplicateFunction { name: "foo", .. }));
     }
 
     #[test]
@@ -962,10 +963,10 @@ mod tests {
 
         let err = super::lower(statements, &arena).unwrap_err();
 
-        assert_eq!(
+        assert!(matches!(
             err.kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3 }
-        );
+            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3, .. }
+        ));
     }
 
     #[test]
@@ -994,13 +995,11 @@ mod tests {
         .unwrap();
 
         let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Bool.into(),
-                found: TypeKind::I32.into()
-            }
-        )
+            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                if expected.kind() == TypeKind::Bool && found.kind() == TypeKind::I32
+        ))
     }
 
     #[test]
@@ -1283,13 +1282,11 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Iptr.into(),
-                found: TypeKind::Uptr.into()
-            }
-        );
+            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                if expected.kind() == TypeKind::Iptr && found.kind() == TypeKind::Uptr
+        ));
     }
 
     #[test]
@@ -1338,13 +1335,11 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::U32.into(),
-                found: TypeKind::U8.into()
-            }
-        );
+            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                if expected.kind() == TypeKind::U32 && found.kind() == TypeKind::U8
+        ));
     }
 
     #[test]
@@ -1514,7 +1509,7 @@ mod tests {
         let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1};p.x=2;}";
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "p" });
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "p", .. }));
         let mut map = crate::source_map::SourceMap::default();
         map.add_file("t", src);
         assert_eq!(map.loc(err.span.start).col_utf8, 27);
@@ -1583,10 +1578,10 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.kind,
-            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "value" }
-        );
+            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "value", .. }
+        ));
         let mut map = crate::source_map::SourceMap::default();
         map.add_file("t", src);
         assert_eq!(map.loc(err.span.start).col_utf8, 16);
@@ -1611,7 +1606,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "counter" });
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "counter", .. }));
     }
 
     #[test]
@@ -1628,7 +1623,7 @@ mod tests {
         "#;
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "self" });
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "self", .. }));
     }
 
     #[test]
@@ -1802,7 +1797,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "X" });
+        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "X", .. }));
     }
 
     #[test]
@@ -1817,7 +1812,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE" });
+        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE", .. }));
     }
 
     #[test]
@@ -1952,7 +1947,7 @@ mod tests {
         "#;
         let arena = bumpalo::Bump::new();
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateConstant { name: "N" });
+        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "N", .. }));
     }
 
     #[test]
@@ -2180,7 +2175,7 @@ mod tests {
         let arena = bumpalo::Bump::new();
         let src = "fn main(){let a:[i32;2]=[1,2];a[0]=9;}";
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::ImmutableBind { name: "a" });
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "a", .. }));
         assert_eq!(span_text(src, err.span), "a[0]");
     }
 
