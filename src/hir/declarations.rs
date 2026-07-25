@@ -32,6 +32,18 @@ impl<'d, 'src> Declarations<'d, 'src> {
 
     /// categorise already-injected top-level items by kind, gathering doc comments
     pub fn collect(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
+        let (declarations, errors) = Self::collect_recovering(statements);
+
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(declarations),
+        }
+    }
+
+    /// As [Declarations::collect], but skipping and reporting every statement
+    /// that is not an item instead of stopping at the first one
+    pub fn collect_recovering(statements: &'d [Statement<'src>]) -> (Self, Vec<HirError<'src>>) {
+        let mut errors = Vec::new();
         let mut declarations = Self {
             uses: Vec::new(),
             structs: Vec::new(),
@@ -45,10 +57,11 @@ impl<'d, 'src> Declarations<'d, 'src> {
 
         for statement in statements.iter() {
             let Statement::Item(item) = statement else {
-                return Err(HirError {
+                errors.push(HirError {
                     kind: super::error::HirErrorKind::TopLevelNonFunction,
                     span: statement.span(),
                 });
+                continue;
             };
 
             declarations.docs.push((item.kind.span(), &item.docs));
@@ -73,7 +86,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
             }
         }
 
-        Ok(declarations)
+        (declarations, errors)
     }
 
     pub fn functions(&self) -> impl Iterator<Item = &'d Function<'src>> + '_ {

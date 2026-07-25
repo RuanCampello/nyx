@@ -30,10 +30,9 @@ pub struct SemanticAnalysis {
     pub document_symbols: Vec<DocumentSymbol>,
     /// Resolves the global spans above to concrete files and line/column.
     pub source_map: SourceMap,
-    /// whether the project analysed into hir, recovered diagnostics do not clear it,
-    /// the feature data above stays valid alongside them. when false (a parse or module
-    /// failure) the feature data is empty and an editor should keep its previous
-    /// results rather than blank them
+    /// whether the project analysed into a hir at all: syntax and type errors are
+    /// recovered from and leave this set, with the feature data above still valid
+    /// for whatever resolved
     pub ok: bool,
 }
 
@@ -924,11 +923,105 @@ mod tests {
     }
 
     #[test]
-    fn broken_buffer_is_not_ok_and_yields_no_features() {
-        let a = analyse("broken", "fn main() { let x = ");
-        assert!(!a.ok, "a parse error must leave the analysis incomplete");
-        assert!(a.inlay_hints.is_empty(), "no feature data when analysis fails");
-        assert!(!a.diagnostics.is_empty(), "the error should still be reported");
+    fn broken_buffer_still_reports_and_keeps_features() {
+        let a = analyse("broken", "fn main() { let x = 1; let y = ");
+        assert!(a.ok, "a syntax error is recovered, not fatal");
+        assert!(!a.diagnostics.is_empty(), "the error is still reported");
+        assert!(
+            a.inlay_hints.iter().any(|(_, ty)| ty == "i32"),
+            "the sound binding keeps its hint: {:?}",
+            a.inlay_hints
+        );
+    }
+
+    #[test]
+    fn a_syntax_error_does_not_hide_the_rest_of_the_file() {
+        let a = analyse(
+            "syntax_then_type",
+            r#"
+            struct Point { x: i32, y: i32 }
+            fn broken(: i32 { 1 }
+            fn typed(): i32 { true }
+            fn main() { let p = Point { x: 1, y: 2 }; }
+            "#,
+        );
+
+        assert!(a.ok, "{:#?}", a.diagnostics);
+        let messages: Vec<_> = a.diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("Expected an identifier")),
+            "the syntax error is reported: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("does not match the declared type")),
+            "the type error after it is reported too: {messages:?}"
+        );
+        assert!(
+            a.hover_types.iter().any(|(_, h)| h.ty.contains("struct Point")),
+            "the struct still hovers"
+        );
+        assert!(
+            a.document_symbols.iter().any(|s| s.name == "main"),
+            "the outline still lists main: {:?}",
+            a.document_symbols
+        );
+    }
+
+    #[test]
+    fn an_unterminated_body_keeps_the_following_function_analysable() {
+        let a = analyse(
+            "unterminated",
+            "fn unfinished() { let z = 1; let w =\n\nfn main() { let total = 1 + 2; }",
+        );
+
+        assert!(a.ok, "{:#?}", a.diagnostics);
+        assert!(!a.diagnostics.is_empty(), "the broken binding is reported");
+        assert!(
+            a.document_symbols.iter().any(|s| s.name == "main"),
+            "main is still an item of its own: {:?}",
+            a.document_symbols
+        );
+        assert!(
+            a.inlay_hints.iter().any(|(_, ty)| ty == "i32"),
+            "and its bindings still get hints: {:?}",
+            a.inlay_hints
+        );
+    }
+
+    #[test]
+    fn diagnostics_come_back_in_source_order() {
+        let a = analyse(
+            "ordered",
+            "fn one(): i32 { true }\nfn two(): i32 { true }\nfn three(): i32 { true }",
+        );
+
+        let starts: Vec<_> = a
+            .diagnostics
+            .iter()
+            .filter_map(|d| d.primary.as_ref().map(|label| label.span.start.0))
+            .collect();
+        assert_eq!(starts.len(), 3, "one per function: {:?}", a.diagnostics);
+        assert!(starts.is_sorted(), "reported top to bottom: {starts:?}");
+    }
+
+    #[test]
+    fn a_std_entry_reports_every_error_in_its_own_bodies() {
+        let entry = std::fs::canonicalize("../std/alloc.nyx").expect("std/alloc.nyx must exist");
+        let mut content = std::fs::read_to_string(&entry).expect("readable");
+        content.push_str("\nfn first(): i32 { true }\nfn second() { nope(); }\n");
+
+        let a = Analysis::new(entry.clone()).with_overlay(entry, content).run();
+        let messages: Vec<_> = a.diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+        assert!(a.ok, "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("does not match the declared type")),
+            "a std entry gets its bodies checked: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("Cannot find function")),
+            "and every later error too: {messages:?}"
+        );
     }
 
     #[test]

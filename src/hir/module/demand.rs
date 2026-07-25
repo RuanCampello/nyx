@@ -110,10 +110,9 @@ fn collect_functions<'hir, 'src>(
     scope: &Scope<'hir>,
 ) -> Result<HashMap<FunctionId, (Function<'src>, bool)>, ModuleError> {
     let mut functions = HashMap::new();
-    let entry = order.last().copied();
 
     for &idx in order {
-        let in_project = !graph.nodes[idx].in_std || entry == Some(idx);
+        let in_project = !graph.nodes[idx].in_std || graph.entry == idx;
 
         for function in declarations[idx].functions() {
             if let Some(id) = lookup_declaration_id(function, scope) {

@@ -145,6 +145,11 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         self
     }
 
+    #[inline]
+    const fn stops_after_syntax(&self) -> bool {
+        self.recover && !self.analyse_templates
+    }
+
     pub fn load(
         self,
         entry: impl AsRef<Path>,
@@ -152,25 +157,42 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         crate::diagnostic::reset();
 
         let arena = self.arena;
+        let stops_after_syntax = self.stops_after_syntax();
 
         // parsing and graph construction do not touch the HIR, the lowering
         // scope is only introduced once the graph is in hand
-        let graph = graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena)
-            .map_err(|err| (Vec::new(), err))?;
-
-        let order = graph.all_nodes_order();
-        let declarations = graph.collect_declarations().map_err(|err| (Vec::new(), err))?;
+        let mut graph =
+            graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena, self.recover)
+                .map_err(|err| (Vec::new(), err))?;
 
         let mut scope = Scope::new(arena);
         scope.recover = self.recover;
         scope.symbols = self.symbols;
 
+        for diagnostic in std::mem::take(&mut graph.diagnostics) {
+            scope.diagnostics.emit(diagnostic);
+        }
+
+        let order = graph.all_nodes_order();
+        let (declarations, item_diagnostics) = graph
+            .collect_declarations(self.recover)
+            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
+
+        for diagnostic in item_diagnostics {
+            scope.diagnostics.emit(diagnostic);
+        }
+
+        if stops_after_syntax && scope.diagnostics.has_errors() {
+            return Ok(Hir::broken(scope.diagnostics.take_errors(), scope.symbols));
+        }
+
         for &idx in &order {
             scope.in_std = graph.nodes[idx].in_std;
-            scope
-                .extend(&declarations[idx], arena)
-                .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
+            if let Err(err) = scope.extend(&declarations[idx], arena) {
+                scope.soft(err).map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
+            }
         }
+
         let functions = demand::lower_reachable(
             &graph,
             &declarations,

@@ -1,8 +1,8 @@
 use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
-    diagnostic,
+    diagnostic::{self, AsDiagnostic, RichDiagnostic},
     hir::Declarations,
-    lexer::token::Span,
+    lexer::{HasSpan, token::Span},
     parser::{
         Parser,
         expression::Expression,
@@ -32,6 +32,8 @@ pub(super) struct ModuleGraph<'src> {
     pub(super) nodes: Vec<ModuleNode<'src>>,
     pub(super) edges: Vec<(usize, usize)>,
     pub(super) entry: usize,
+    /// syntax and import failures recovery swallowed while building the graph
+    pub(super) diagnostics: Vec<RichDiagnostic>,
 }
 
 #[derive(Debug)]
@@ -50,6 +52,8 @@ struct GraphBuilder<'a, 'src, F> {
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
     in_flight: HashSet<PathBuf>,
+    recover: bool,
+    diagnostics: Vec<RichDiagnostic>,
 }
 
 struct QualifiedCallCollector<'src> {
@@ -61,6 +65,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     resolver: &ModuleResolver,
     fs: &F,
     arena: &'src bumpalo::Bump,
+    recover: bool,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
     let canonical = fs
         .canonicalise(entry)
@@ -74,6 +79,8 @@ pub(super) fn build_graph<'src, F: FileSystem>(
         by_path: HashMap::new(),
         edges: Vec::new(),
         in_flight: HashSet::new(),
+        recover,
+        diagnostics: Vec::new(),
     };
 
     let entry = builder.discover(canonical, None)?;
@@ -86,7 +93,12 @@ pub(super) fn build_graph<'src, F: FileSystem>(
         inject_default_methods(&mut node.statements, |name| interfaces.get(name));
     }
 
-    Ok(ModuleGraph { nodes: builder.nodes, edges: builder.edges, entry })
+    Ok(ModuleGraph {
+        nodes: builder.nodes,
+        edges: builder.edges,
+        entry,
+        diagnostics: builder.diagnostics,
+    })
 }
 
 impl<'src> ModuleGraph<'src> {
@@ -117,11 +129,25 @@ impl<'src> ModuleGraph<'src> {
     ///
     /// the returned declarations borrow the graph, so all later passes
     /// share a single categorisation instead of re-scanning the ast per pass
-    pub(super) fn collect_declarations(&self) -> Result<Vec<Declarations<'_, 'src>>, ModuleError> {
-        self.nodes
-            .iter()
-            .map(|node| Declarations::collect(&node.statements).map_err(Into::into))
-            .collect()
+    pub(super) fn collect_declarations(
+        &self,
+        recover: bool,
+    ) -> Result<(Vec<Declarations<'_, 'src>>, Vec<RichDiagnostic>), ModuleError> {
+        let mut all = Vec::with_capacity(self.nodes.len());
+        let mut diagnostics = Vec::new();
+
+        for node in &self.nodes {
+            match recover {
+                true => {
+                    let (declarations, errors) = Declarations::collect_recovering(&node.statements);
+                    diagnostics.extend(errors.into_iter().map(|error| error.kind.rich(error.span)));
+                    all.push(declarations);
+                },
+                false => all.push(Declarations::collect(&node.statements)?),
+            }
+        }
+
+        Ok((all, diagnostics))
     }
 
     fn visit(
@@ -150,12 +176,26 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             let Ok(canonical) = self.fs.canonicalise(&path) else {
                 continue;
             };
-            if self.fs.read(&canonical).is_ok() {
-                self.discover(canonical, None)?;
+            if self.fs.read(&canonical).is_ok()
+                && let Err(error) = self.discover(canonical, None)
+            {
+                self.soft(error)?;
             }
         }
 
         Ok(())
+    }
+
+    /// Record `error` and carry on when recovering, otherwise hand it back
+    fn soft(&mut self, error: ModuleError) -> Result<(), ModuleError> {
+        match self.recover {
+            true => {
+                let span = error.span().unwrap_or_default();
+                self.diagnostics.push(error.rich(span));
+                Ok(())
+            },
+            false => Err(error),
+        }
     }
 
     fn discover(
@@ -175,23 +215,43 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         }
 
         self.in_flight.insert(canonical.clone());
-        let source = self.fs.read(&canonical).map_err(|_| ModuleError::FileNotFound {
-            path: canonical.clone(),
+        let discovered = self.discover_module(&canonical, triggered_by);
+        self.in_flight.remove(&canonical);
+
+        discovered
+    }
+
+    fn discover_module(
+        &mut self,
+        canonical: &Path,
+        triggered_by: Option<Span>,
+    ) -> Result<usize, ModuleError> {
+        let source = self.fs.read(canonical).map_err(|_| ModuleError::FileNotFound {
+            path: canonical.into(),
             span: triggered_by,
         })?;
 
         let source = self.arena.alloc_str(&source);
 
-        let (_, base) = diagnostic::add_file(canonical.clone(), source as &str);
-        let statements = Parser::with_base(source, base).parse()?;
+        let (_, base) = diagnostic::add_file(canonical.to_path_buf(), source as &str);
+        let parser = Parser::with_base(source, base);
+        let statements = match self.recover {
+            true => {
+                let (statements, errors) = parser.recovering().parse_recovering();
+                self.diagnostics
+                    .extend(errors.into_iter().map(|error| error.kind.rich(error.span)));
+                statements
+            },
+            false => parser.parse()?,
+        };
 
         let idx = self.nodes.len();
         let in_std = canonical.starts_with(self.resolver.std_root());
         let exports = exports(&statements);
 
-        self.by_path.insert(canonical.clone(), idx);
+        self.by_path.insert(canonical.to_path_buf(), idx);
         self.nodes
-            .push(ModuleNode { path: canonical.clone(), statements, exports, in_std });
+            .push(ModuleNode { path: canonical.to_path_buf(), statements, exports, in_std });
 
         let uses: Vec<_> = self.nodes[idx]
             .statements
@@ -205,28 +265,20 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             .collect();
 
         for declaration in uses {
-            let resolved =
-                self.resolver.resolve_path(&declaration.path.segments, declaration.span)?;
-            if self.fs.read(&resolved).is_err() {
-                return Err(ModuleError::FileNotFound {
-                    path: resolved,
-                    span: Some(declaration.span),
-                });
-            }
-            let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
-            let import_idx = self.discover(import.clone(), Some(declaration.span))?;
-            self.edges.push((idx, import_idx));
+            let Some((import, import_idx)) =
+                self.import(idx, &declaration.path.segments, declaration.span)?
+            else {
+                continue;
+            };
 
             if let UseItems::Named(items) = declaration.items {
-                let module = &self.nodes[import_idx];
-
                 for item in items {
-                    if !module.exports.contains(item.name) {
-                        return Err(ModuleError::UnknownExport {
+                    if !self.nodes[import_idx].exports.contains(item.name) {
+                        self.soft(ModuleError::UnknownExport {
                             path: import.clone(),
                             name: item.name.into(),
                             span: item.span,
-                        });
+                        })?;
                     }
                 }
             }
@@ -237,18 +289,41 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
                 continue;
             }
 
-            let resolved = self.resolver.resolve_path(&path, span)?;
-            let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
-            let import_idx = self.discover(import.clone(), Some(span))?;
-            self.edges.push((idx, import_idx));
+            let Some((import, import_idx)) = self.import(idx, &path, span)? else {
+                continue;
+            };
 
             if !self.nodes[import_idx].exports.contains(name) {
-                return Err(ModuleError::UnknownExport { path: import, name: name.into(), span });
+                self.soft(ModuleError::UnknownExport { path: import, name: name.into(), span })?;
             }
         }
 
-        self.in_flight.remove(&canonical);
         Ok(idx)
+    }
+
+    fn import(
+        &mut self,
+        from: usize,
+        path: &[&str],
+        span: Span,
+    ) -> Result<Option<(PathBuf, usize)>, ModuleError> {
+        let resolved = match self.resolver.resolve_path(path, span) {
+            Ok(resolved) => resolved,
+            Err(error) => return self.soft(error).map(|()| None),
+        };
+        if self.fs.read(&resolved).is_err() {
+            let error = ModuleError::FileNotFound { path: resolved, span: Some(span) };
+            return self.soft(error).map(|()| None);
+        }
+
+        let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
+        match self.discover(import.clone(), Some(span)) {
+            Ok(idx) => {
+                self.edges.push((from, idx));
+                Ok(Some((import, idx)))
+            },
+            Err(error) => self.soft(error).map(|()| None),
+        }
     }
 }
 

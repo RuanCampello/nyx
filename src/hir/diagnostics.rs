@@ -36,7 +36,17 @@ impl Diagnostics {
         ErrorGuaranteed(())
     }
 
+    #[inline]
+    pub(crate) fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
     pub(crate) fn take_errors(&mut self) -> Vec<RichDiagnostic> {
-        std::mem::take(&mut self.errors)
+        let mut errors = std::mem::take(&mut self.errors);
+        errors.sort_by_key(|error| {
+            error.primary.as_ref().map_or(u32::MAX, |label| label.span.start.0)
+        });
+
+        errors
     }
 }

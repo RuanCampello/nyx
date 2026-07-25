@@ -1,4 +1,7 @@
-use crate::{diagnostic::Diagnostic, hir::module};
+use crate::{
+    diagnostic::{AsDiagnostic, Diagnostic},
+    hir::module,
+};
 use std::path::Path;
 
 pub mod diagnostic;
@@ -79,8 +82,20 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     diagnostic::add_file("<source>", src);
 
     let arena = bumpalo::Bump::new();
-    let statements = parser::Parser::new(src).parse()?;
-    let hir = hir::lower(statements, &arena)?;
+    let (statements, errors) = parser::Parser::new(src).recovering().parse_recovering();
+
+    // a dropped item makes every use of it look undeclared: stop before that
+    // cascade buries the syntax errors that caused it
+    if !errors.is_empty() {
+        let rendered = errors.into_iter().map(|error| error.kind.rich(error.span));
+        return Err(diagnostic::render_batch(rendered).into());
+    }
+
+    let hir = hir::lower_collecting(statements, &arena)?;
+    if !hir.diagnostics.is_empty() {
+        return Err(diagnostic::render_batch(hir.diagnostics).into());
+    }
+
     let mir = mir::lower(hir)?;
 
     let asm = match target {

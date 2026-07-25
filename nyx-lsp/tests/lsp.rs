@@ -1,6 +1,6 @@
 mod support;
 use nyx_lsp::fenced_text;
-use support::{CONTENT_MODIFIED, TestClient, position_of, position_of_nth, position_of_utf16};
+use support::{TestClient, position_of, position_of_nth, position_of_utf16};
 use tower_lsp::lsp_types::*;
 
 #[tokio::test]
@@ -395,24 +395,45 @@ async fn features_stay_alive_on_broken_code() {
 
 #[tokio::test]
 async fn parse_error_keeps_last_good_hover_and_reports() {
-    let good = "fn main() { let x = 232; }";
+    let broken = "fn main() { let x = 232; let y = ";
     let mut client = TestClient::start().await;
-    let url = client.open("main.nyx", good).await;
+    let url = client.open("main.nyx", "fn main() { let x = 232; }").await;
     client.wait_diagnostics(&url).await;
 
-    client.change(&url, "fn main() { let x = ").await;
+    client.change(&url, broken).await;
     let diagnostics = client.wait_diagnostics(&url).await;
     assert!(!diagnostics.is_empty(), "the parse error must be reported");
 
-    let text = client.hover_text(&url, position_of(good, "x")).await;
-    assert!(text.contains("i32"), "hover keeps serving the last good analysis: {text}");
+    let text = client.hover_text(&url, position_of(broken, "x")).await;
+    assert!(text.contains("i32"), "recovery still hovers the sound binding: {text}");
 
-    let stale = client.inlay_hints(&url).await;
-    assert_eq!(
-        stale.unwrap_err()["code"],
-        serde_json::json!(CONTENT_MODIFIED),
-        "hints must not be served from a stale analysis"
+    let labels = labels_of(&client.inlay_hints_fresh(&url).await);
+    assert!(
+        labels.contains(&": i32".to_string()),
+        "the sound binding keeps its hint: {labels:?}"
     );
+}
+
+#[tokio::test]
+async fn every_error_in_the_buffer_is_published_at_once() {
+    let mut client = TestClient::start().await;
+    let url = client
+        .open(
+            "main.nyx",
+            "fn one(): i32 { true }\nfn two(: i32 { 1 }\nfn three() { nope(); }\nfn main() {}",
+        )
+        .await;
+
+    let diagnostics = client.wait_diagnostics(&url).await;
+    let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+    assert!(diagnostics.len() >= 3, "every error is published together: {messages:?}");
+    assert!(
+        messages.iter().any(|m| m.contains("does not match the declared type")),
+        "{messages:?}"
+    );
+    assert!(messages.iter().any(|m| m.contains("Expected an identifier")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("Cannot find function")), "{messages:?}");
 }
 
 #[tokio::test]

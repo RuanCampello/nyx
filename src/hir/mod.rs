@@ -430,10 +430,28 @@ pub struct LocalId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExprId(pub u32);
 
-/// Lowers the program AST to a HIR program.
+/// Lowers the program AST to a HIR program, aborting on the first error
 pub fn lower<'hir>(
+    statements: Vec<statement::Statement<'hir>>,
+    arena: &'hir bumpalo::Bump,
+) -> Result<Hir<'hir>, HirError<'hir>> {
+    lower_inner(statements, arena, false)
+}
+
+/// Lowers the program AST to a HIR program, collecting every error it finds
+///
+/// The result is poisoned whenever [Hir::diagnostics] is non-empty
+pub fn lower_collecting<'hir>(
+    statements: Vec<statement::Statement<'hir>>,
+    arena: &'hir bumpalo::Bump,
+) -> Result<Hir<'hir>, HirError<'hir>> {
+    lower_inner(statements, arena, true)
+}
+
+fn lower_inner<'hir>(
     mut statements: Vec<statement::Statement<'hir>>,
     arena: &'hir bumpalo::Bump,
+    recover: bool,
 ) -> Result<Hir<'hir>, HirError<'hir>> {
     let interfaces: std::collections::HashMap<_, _> = statements
         .iter()
@@ -446,10 +464,24 @@ pub fn lower<'hir>(
         })
         .collect();
 
-    let declarations = Declarations::partition(&mut statements, |name| interfaces.get(name))?;
-
     let mut scope = Scope::new(arena);
-    scope.extend(&declarations, arena)?;
+    scope.recover = recover;
+
+    let declarations = match recover {
+        true => {
+            statement::inject_default_methods(&mut statements, |name| interfaces.get(name));
+            let (declarations, errors) = Declarations::collect_recovering(&statements);
+            for error in errors {
+                scope.soft(error)?;
+            }
+            declarations
+        },
+        false => Declarations::partition(&mut statements, |name| interfaces.get(name))?,
+    };
+
+    if let Err(err) = scope.extend(&declarations, arena) {
+        scope.soft(err)?;
+    }
 
     let functions = scope.lower_matching_functions(&declarations, |_| true, arena)?;
     let functions = mono::monomorphise(functions, &mut scope, arena)?;
@@ -598,6 +630,25 @@ impl Idx for ArrayId {
 impl Idx for EnumId {
     fn to_usize(self) -> usize {
         self.id() as usize
+    }
+}
+
+impl<'hir> Hir<'hir> {
+    /// A HIR that carries nothing but the reason it could not be built
+    pub(in crate::hir) fn broken(
+        diagnostics: Vec<diagnostic::RichDiagnostic>,
+        symbols: SymbolTable,
+    ) -> Self {
+        Self {
+            symbols,
+            structs: IndexVec::new(),
+            enums: IndexVec::new(),
+            arrays: IndexVec::new(),
+            functions: IndexVec::new(),
+            constants: Vec::new(),
+            docs: HashMap::new(),
+            diagnostics,
+        }
     }
 }
 
