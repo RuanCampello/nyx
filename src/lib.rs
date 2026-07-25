@@ -2,6 +2,7 @@ use crate::{diagnostic::Diagnostic, hir::module};
 use std::path::Path;
 
 pub mod diagnostic;
+pub mod error_codes;
 pub mod hir;
 pub mod lexer;
 pub mod lir;
@@ -10,6 +11,7 @@ pub mod parser;
 pub mod source_map;
 
 pub use diagnostic::{Label, RichDiagnostic, Severity};
+pub use error_codes::ErrorCode;
 pub use lexer::token::{BytePos, Span};
 pub use lexer::{HasSpan, is_keyword};
 pub use parser::statement::is_primitive;
@@ -103,11 +105,29 @@ pub fn compile_project_for(
     name: &str,
     target: TargetArch,
 ) -> Result<String, NyxError> {
-    let root = entry.parent().unwrap_or(Path::new(".")).canonicalize()?;
+    let root = match entry.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => Path::new("."),
+    }
+    .canonicalize()?;
     let arena = bumpalo::Bump::new();
 
-    let loader = module::ModuleLoader::new(name.to_string(), root, &arena);
-    let hir = loader.load(entry).map_err(|(_, err)| err)?;
+    let loader = module::ModuleLoader::new(name.to_string(), root, &arena).collecting();
+    let hir = match loader.load(entry) {
+        Ok(hir) => hir,
+        Err((diagnostics, err)) => {
+            let mut rendered = diagnostic::render_batch(diagnostics).display();
+            if !rendered.is_empty() {
+                rendered.push('\n');
+            }
+            rendered.push_str(&Diagnostic::from(err).display());
+            return Err(Diagnostic { rendered }.into());
+        },
+    };
+    if !hir.diagnostics.is_empty() {
+        return Err(diagnostic::render_batch(hir.diagnostics).into());
+    }
     let mir = mir::lower(hir)?;
 
     let asm = match target {

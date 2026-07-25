@@ -169,7 +169,7 @@ fn cmd_build(
 
     let emitted = build_emit(entry, &exe, &kinds, project, target)?;
     for path in emitted {
-        println!("Emmitted: {}", path.display());
+        println!("Emitted: {}", path.display());
     }
 
     Ok(0)
