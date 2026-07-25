@@ -9,51 +9,61 @@ use syn::{
 
 #[derive(Default)]
 struct DiagnosticAttr {
+    code: Option<LitStr>,
     message: Option<LitStr>,
     primary: Option<LitStr>,
     note: Option<LitStr>,
     help: Option<LitStr>,
-    secondary: Option<SecondaryAttr>,
+    secondaries: Vec<SecondaryAttr>,
     transparent: bool,
 }
 
 struct SecondaryAttr {
     span_field: Ident,
     label: LitStr,
+    optional: bool,
 }
 
 struct Secondary {
     span_field: Option<LitStr>,
     label: LitStr,
+    optional: bool,
 }
 
 impl Parse for Secondary {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut span_field = None;
         let mut label = None;
+        let mut optional = false;
 
         let items = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
         for item in items {
-            let Meta::NameValue(nv) = item else {
-                return Err(Error::new_spanned(item, "expected key = \"value\""));
-            };
+            match item {
+                Meta::Path(path) if path.is_ident("optional") => optional = true,
+                Meta::NameValue(nv) => {
+                    let key = nv.path.get_ident().map(ToString::to_string).unwrap_or_default();
+                    let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value
+                    else {
+                        return Err(Error::new_spanned(&nv.value, "expected string literal"));
+                    };
 
-            let key = nv.path.get_ident().map(ToString::to_string).unwrap_or_default();
-            let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value else {
-                return Err(Error::new_spanned(&nv.value, "expected string literal"));
-            };
-
-            match key.as_str() {
-                "span_field" => span_field = Some(s.clone()),
-                "label" => label = Some(s.clone()),
-                other => {
-                    return Err(Error::new_spanned(&nv.path, format!("unknown key `{other}`")));
+                    match key.as_str() {
+                        "span_field" => span_field = Some(s.clone()),
+                        "label" => label = Some(s.clone()),
+                        other => {
+                            return Err(Error::new_spanned(
+                                &nv.path,
+                                format!("unknown key `{other}`"),
+                            ));
+                        },
+                    }
                 },
+                other => return Err(Error::new_spanned(other, "expected key = \"value\"")),
             }
         }
 
         let label = label.ok_or_else(|| Error::new(input.span(), "missing `label`"))?;
-        Ok(Self { span_field, label })
+        Ok(Self { span_field, label, optional })
     }
 }
 
@@ -75,6 +85,7 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                 };
 
                 match key.as_str() {
+                    "code" => attr.code = Some(s.clone()),
                     "message" => attr.message = Some(s.clone()),
                     "primary" => attr.primary = Some(s.clone()),
                     "note" => attr.note = Some(s.clone()),
@@ -90,7 +101,9 @@ fn parse_diagnostic_attr(meta: &Meta) -> Result<DiagnosticAttr> {
                     .span_field
                     .map(|lit| Ident::new(&lit.value(), lit.span()))
                     .unwrap_or_else(|| Ident::new("__span", Span::call_site()));
-                attr.secondary = Some(SecondaryAttr { span_field, label: sec.label });
+
+                let sec = SecondaryAttr { span_field, label: sec.label, optional: sec.optional };
+                attr.secondaries.push(sec);
             },
             other => {
                 return Err(Error::new_spanned(other, "unexpected item in #[diagnostic(...)]"));
@@ -115,6 +128,44 @@ fn extract_diagnostic_attr(attrs: &[syn::Attribute]) -> Result<Option<Diagnostic
     Ok(diag_attr)
 }
 
+fn code_ident(code: &LitStr) -> Result<Ident> {
+    let value = code.value();
+    match syn::parse_str::<Ident>(&value) {
+        Ok(ident) => Ok(ident),
+        Err(_) => Err(Error::new(code.span(), format!("`{value}` is not a valid error code"))),
+    }
+}
+
+fn transparent_field(variant: &syn::Variant) -> Result<TokenStream> {
+    match &variant.fields {
+        Fields::Named(n) => n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id)),
+        Fields::Unnamed(_) => Some(quote!(field_0)),
+        Fields::Unit => None,
+    }
+    .ok_or_else(|| {
+        Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
+    })
+}
+
+fn required_parts<'a>(
+    variant: &syn::Variant,
+    attr: &'a DiagnosticAttr,
+) -> Result<(&'a LitStr, &'a LitStr, &'a LitStr)> {
+    let code = attr
+        .code
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `code`"))?;
+    let msg = attr
+        .message
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
+    let prim = attr
+        .primary
+        .as_ref()
+        .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
+    Ok((code, msg, prim))
+}
+
 fn generate_variant_arm(
     enum_name: &Ident,
     variant: &syn::Variant,
@@ -124,17 +175,7 @@ fn generate_variant_arm(
     let field_bindings = field_bindings_pattern(&variant.fields);
 
     if attr.transparent {
-        let first_field = match &variant.fields {
-            Fields::Named(n) => {
-                n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id))
-            },
-            Fields::Unnamed(_) => Some(quote!(field_0)),
-            Fields::Unit => None,
-        }
-        .ok_or_else(|| {
-            Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
-        })?;
-
+        let first_field = transparent_field(variant)?;
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
                 crate::diagnostic::AsDiagnostic::into_diagnostic(#first_field, __span)
@@ -142,50 +183,51 @@ fn generate_variant_arm(
         });
     }
 
-    let msg = attr
-        .message
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
-    let prim = attr
-        .primary
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
-
+    let (code, msg, prim) = required_parts(variant, attr)?;
+    let code = code_ident(code)?;
     let msg_ts = parse_template(&msg.value(), msg.span())?;
     let prim_ts = parse_template(&prim.value(), prim.span())?;
 
-    let note_chain = attr
+    let sec_stmts = attr
+        .secondaries
+        .iter()
+        .map(|sec| {
+            let sf = &sec.span_field;
+            let lbl = parse_template(&sec.label.value(), sec.label.span())?;
+            Ok::<_, Error>(match sec.optional {
+                true => quote! {
+                    if let ::core::option::Option::Some(__sec_span) = #sf {
+                        __builder = __builder.secondary(__sec_span, #lbl);
+                    }
+                },
+                false => quote! { __builder = __builder.secondary(#sf, #lbl); },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let note_stmt = attr
         .note
         .as_ref()
         .map(|n| parse_template(&n.value(), n.span()))
         .transpose()?
-        .map(|ts| quote!(.note(#ts)));
+        .map(|ts| quote!(__builder = __builder.note(#ts);));
 
-    let help_chain = attr
+    let help_stmt = attr
         .help
         .as_ref()
         .map(|h| parse_template(&h.value(), h.span()))
         .transpose()?
-        .map(|ts| quote!(.help(#ts)));
-
-    let sec_chain = attr
-        .secondary
-        .as_ref()
-        .map(|sec| {
-            let sf = &sec.span_field;
-            let lbl = parse_template(&sec.label.value(), sec.label.span())?;
-            Ok::<_, Error>(quote!(.secondary(#sf, #lbl)))
-        })
-        .transpose()?;
+        .map(|ts| quote!(__builder = __builder.help(#ts);));
 
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => {
-            crate::diagnostic::Builder::new(#msg_ts)
-                .primary(__span, #prim_ts)
-                #sec_chain
-                #note_chain
-                #help_chain
-                .build()
+            let mut __builder = crate::diagnostic::Builder::new(#msg_ts)
+                .code(crate::error_codes::ErrorCode::#code)
+                .primary(__span, #prim_ts);
+            #(#sec_stmts)*
+            #note_stmt
+            #help_stmt
+            __builder.build()
         }
     })
 }
@@ -199,17 +241,7 @@ fn generate_rich_arm(
     let field_bindings = field_bindings_pattern(&variant.fields);
 
     if attr.transparent {
-        let first_field = match &variant.fields {
-            Fields::Named(n) => {
-                n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id))
-            },
-            Fields::Unnamed(_) => Some(quote!(field_0)),
-            Fields::Unit => None,
-        }
-        .ok_or_else(|| {
-            Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
-        })?;
-
+        let first_field = transparent_field(variant)?;
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
                 crate::diagnostic::AsDiagnostic::rich(#first_field, __span)
@@ -217,16 +249,8 @@ fn generate_rich_arm(
         });
     }
 
-    let msg = attr
-        .message
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(variant, "missing `message`"))?;
-    let prim = attr
-        .primary
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(variant, "missing `primary`"))?;
-
-    let code = to_kebab_case(&variant_name.to_string());
+    let (code, msg, prim) = required_parts(variant, attr)?;
+    let code = code_ident(code)?;
     let msg_ts = parse_template_plain(&msg.value(), msg.span())?;
     let prim_ts = parse_template_plain(&prim.value(), prim.span())?;
 
@@ -244,28 +268,45 @@ fn generate_rich_arm(
         },
         None => quote!(::core::option::Option::None),
     };
-    let secondary_ts = match &attr.secondary {
-        Some(sec) => {
+
+    let sec_stmts = attr
+        .secondaries
+        .iter()
+        .map(|sec| {
             let sf = &sec.span_field;
             let lbl = parse_template_plain(&sec.label.value(), sec.label.span())?;
-            quote!(::std::vec![crate::diagnostic::Label { span: #sf, message: #lbl }])
-        },
-        None => quote!(::std::vec::Vec::new()),
-    };
+            Ok::<_, Error>(match sec.optional {
+                true => quote! {
+                    if let ::core::option::Option::Some(__sec_span) = #sf {
+                        __secondary.push(crate::diagnostic::Label {
+                            span: __sec_span,
+                            message: #lbl,
+                        });
+                    }
+                },
+                false => quote! {
+                    __secondary.push(crate::diagnostic::Label { span: #sf, message: #lbl });
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => {
+            let mut __secondary = ::std::vec::Vec::new();
+            #(#sec_stmts)*
             crate::diagnostic::RichDiagnostic {
                 severity: crate::diagnostic::Severity::Error,
-                code: ::core::option::Option::Some(#code),
+                code: ::core::option::Option::Some(crate::error_codes::ErrorCode::#code),
                 message: #msg_ts,
                 primary: ::core::option::Option::Some(crate::diagnostic::Label {
                     span: __span,
                     message: #prim_ts,
                 }),
-                secondary: #secondary_ts,
+                secondary: __secondary,
                 note: #note_ts,
                 help: #help_ts,
+                rendered: ::core::option::Option::None,
             }
         }
     })
@@ -280,17 +321,7 @@ fn generate_message_arm(
     let field_bindings = field_bindings_pattern(&variant.fields);
 
     if attr.transparent {
-        let first_field = match &variant.fields {
-            Fields::Named(n) => {
-                n.named.first().and_then(|f| f.ident.as_ref()).map(|id| quote!(#id))
-            },
-            Fields::Unnamed(_) => Some(quote!(field_0)),
-            Fields::Unit => None,
-        }
-        .ok_or_else(|| {
-            Error::new_spanned(variant, "#[diagnostic(transparent)] requires at least one field")
-        })?;
-
+        let first_field = transparent_field(variant)?;
         return Ok(quote! {
             #enum_name::#variant_name #field_bindings => {
                 crate::diagnostic::AsDiagnostic::message(#first_field)
@@ -308,19 +339,6 @@ fn generate_message_arm(
     Ok(quote! {
         #enum_name::#variant_name #field_bindings => { #msg_plain_ts }
     })
-}
-
-#[inline]
-fn to_kebab_case(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 4);
-    for (i, ch) in name.char_indices() {
-        if ch.is_uppercase() && i != 0 {
-            out.push('-');
-        }
-        out.extend(ch.to_lowercase());
-    }
-
-    out
 }
 
 fn field_bindings_pattern(fields: &Fields) -> TokenStream {
@@ -370,8 +388,7 @@ pub fn derive_diagnostic(input: DeriveInput) -> Result<TokenStream> {
         impl #impl_generics crate::diagnostic::AsDiagnostic for #enum_name #ty_generics #where_clause {
             #[allow(unused_variables, unused_assignments)]
             fn into_diagnostic(self, __span: crate::lexer::token::Span) -> crate::diagnostic::Diagnostic {
-                use crate::diagnostic::{Builder, hi, PRIMARY, SECONDARY, HIGHLIGHT};
-                use ariadne::Fmt as _;
+                use crate::diagnostic::{Builder, ERROR, CONTEXT, BOUND, SUGGEST};
 
                 match self {
                     #(#into_arms)*

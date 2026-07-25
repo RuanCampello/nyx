@@ -381,7 +381,7 @@ async fn features_stay_alive_on_broken_code() {
 
     let diagnostics = client.wait_diagnostics(&url).await;
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-    assert!(diagnostics[0].message.contains("unknown type Nonexistent"));
+    assert!(diagnostics[0].message.contains("Cannot find type Nonexistent"));
 
     let hints = client.inlay_hints_fresh(&url).await;
     assert_eq!(labels_of(&hints), vec![": i32"], "hints must survive the broken sibling");
@@ -571,7 +571,7 @@ async fn diagnostics_route_to_the_file_that_owns_them() {
 
     let diagnostics = client.wait_diagnostics(&util_url).await;
     assert_eq!(diagnostics.len(), 1, "the mismatch belongs to util.nyx: {diagnostics:#?}");
-    assert!(diagnostics[0].message.contains("type mismatch"));
+    assert!(diagnostics[0].message.contains("does not match the declared type"));
 
     client.wait_diagnostics(&url).await;
     let hints = client.inlay_hints_fresh(&url).await;

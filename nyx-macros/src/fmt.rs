@@ -17,9 +17,14 @@ enum SnippetPart {
 #[derive(Debug, Clone, Copy)]
 enum FieldColor {
     Plain,
-    Hi,
-    Primary,
-    Secondary,
+    /// `{x!}`: the offending name or found type
+    Error,
+    /// `{x~}`: alias of `!` kept for found-vs-name distinction at the template level
+    Found,
+    /// `{x^}`: the expected side, contextual information
+    Context,
+    /// `{x*}`: interface and bound names
+    Bound,
 }
 
 pub fn parse_template(template: &str, call_site: Span) -> syn::Result<TokenStream> {
@@ -38,9 +43,22 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
     let mut literal = String::new();
 
     while let Some((i, ch)) = chars.next() {
-        if ch != '{' {
-            literal.push(ch);
-            continue;
+        match ch {
+            '{' if chars.peek().is_some_and(|&(_, c)| c == '{') => {
+                chars.next();
+                literal.push('{');
+                continue;
+            },
+            '}' if chars.peek().is_some_and(|&(_, c)| c == '}') => {
+                chars.next();
+                literal.push('}');
+                continue;
+            },
+            c if c != '{' => {
+                literal.push(c);
+                continue;
+            },
+            _ => {},
         }
 
         if !literal.is_empty() {
@@ -82,7 +100,7 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
             continue;
         }
 
-        // Field interpolation: {name}, {name!}, {name~}, {name^}
+        // field interpolation: {name}, {name!}, {name~}, {name^}, {name*}
         let mut name = String::new();
         let mut color = FieldColor::Plain;
         let mut closed = false;
@@ -93,11 +111,12 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
                     closed = true;
                     break;
                 },
-                '!' | '~' | '^' => {
+                '!' | '~' | '^' | '*' => {
                     color = match c {
-                        '!' => FieldColor::Hi,
-                        '~' => FieldColor::Primary,
-                        '^' => FieldColor::Secondary,
+                        '!' => FieldColor::Error,
+                        '~' => FieldColor::Found,
+                        '^' => FieldColor::Context,
+                        '*' => FieldColor::Bound,
                         _ => unreachable!(),
                     };
                     match chars.next() {
@@ -131,7 +150,7 @@ fn parse_segments(input: &str, span: Span) -> syn::Result<Vec<Segment>> {
             return Err(syn::Error::new(span, "empty interpolation `{}`"));
         }
 
-        if !is_valid_identifier(&name) {
+        if !is_valid_field(&name) {
             literal.push_str(&format!("{{{name}}}"));
         } else {
             segments.push(Segment::Field { name, color });
@@ -151,9 +170,22 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     let mut literal = String::new();
 
     while let Some(ch) = chars.next() {
-        if ch != '{' {
-            literal.push(ch);
-            continue;
+        match ch {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                literal.push('{');
+                continue;
+            },
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                literal.push('}');
+                continue;
+            },
+            c if c != '{' => {
+                literal.push(c);
+                continue;
+            },
+            _ => {},
         }
         let mut name = String::new();
         let mut closed = false;
@@ -164,7 +196,7 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
             }
             name.push(c);
         }
-        if closed && !name.is_empty() && is_valid_identifier(&name) {
+        if closed && !name.is_empty() && is_valid_field(&name) {
             if !literal.is_empty() {
                 parts.push(SnippetPart::Literal(std::mem::take(&mut literal)));
             }
@@ -185,6 +217,14 @@ fn parse_snippet_parts(input: &str) -> Vec<SnippetPart> {
     parts
 }
 
+fn field_expr(name: &str) -> syn::Expr {
+    let path = match name.chars().all(|c| c.is_ascii_digit()) {
+        true => format!("field_{name}"),
+        false => name.to_string(),
+    };
+    syn::parse_str(&path).unwrap_or_else(|_| panic!("invalid field expression: {name}"))
+}
+
 fn emit_segments_plain(segments: &[Segment]) -> TokenStream {
     if let [Segment::Literal(s)] = segments {
         return quote! { #s.to_string() };
@@ -193,8 +233,7 @@ fn emit_segments_plain(segments: &[Segment]) -> TokenStream {
     let parts = segments.iter().map(|seg| match seg {
         Segment::Literal(s) => quote! { __buf.push_str(#s); },
         Segment::Field { name, .. } => {
-            let expr: syn::Expr =
-                syn::parse_str(name).unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+            let expr = field_expr(name);
             quote! { __buf.push_str(&format!("{}", #expr)); }
         },
         Segment::CodeSnippet(parts) => emit_snippet_plain(parts),
@@ -229,8 +268,7 @@ fn emit_snippet_plain(parts: &[SnippetPart]) -> TokenStream {
             SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
             SnippetPart::Field(name) => {
                 fmt_str.push_str("{}");
-                let expr: syn::Expr = syn::parse_str(name)
-                    .unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+                let expr = field_expr(name);
                 args.push(quote! { &#expr });
             },
         }
@@ -247,18 +285,17 @@ fn emit_segments(segments: &[Segment]) -> TokenStream {
     let parts = segments.iter().map(|seg| match seg {
         Segment::Literal(s) => quote! { __buf.push_str(#s); },
         Segment::Field { name, color } => {
-            let expr: syn::Expr =
-                syn::parse_str(name).unwrap_or_else(|_| panic!("invalid field expression: {name}"));
-            match color {
-                FieldColor::Plain => quote! { __buf.push_str(&format!("{}", #expr)); },
-                FieldColor::Hi => quote! { __buf.push_str(&format!("{}", hi(&#expr))); },
-                FieldColor::Primary => quote! {
-                    use ariadne::Fmt as _;
-                    __buf.push_str(&format!("{}", (&#expr).fg(PRIMARY)));
-                },
-                FieldColor::Secondary => quote! {
-                    use ariadne::Fmt as _;
-                    __buf.push_str(&format!("{}", (&#expr).fg(SECONDARY)));
+            let expr = field_expr(name);
+            let role = match color {
+                FieldColor::Plain => None,
+                FieldColor::Error | FieldColor::Found => Some(quote!(ERROR)),
+                FieldColor::Context => Some(quote!(CONTEXT)),
+                FieldColor::Bound => Some(quote!(BOUND)),
+            };
+            match role {
+                None => quote! { __buf.push_str(&format!("{}", #expr)); },
+                Some(role) => quote! {
+                    __buf.push_str(&format!("{}", ariadne::Fmt::fg(&#expr, #role)));
                 },
             }
         },
@@ -284,8 +321,7 @@ fn emit_snippet(parts: &[SnippetPart]) -> TokenStream {
             })
             .collect();
         return quote! {
-            use ariadne::Fmt as _;
-            __buf.push_str(&format!("{}", #s.fg(SECONDARY)));
+            __buf.push_str(&format!("{}", ariadne::Fmt::fg(&#s, SUGGEST)));
         };
     }
 
@@ -297,20 +333,22 @@ fn emit_snippet(parts: &[SnippetPart]) -> TokenStream {
             SnippetPart::Literal(s) => fmt_str.push_str(&s.replace('{', "{{").replace('}', "}}")),
             SnippetPart::Field(name) => {
                 fmt_str.push_str("{}");
-                let expr: syn::Expr = syn::parse_str(name)
-                    .unwrap_or_else(|_| panic!("invalid field expression: {name}"));
+                let expr = field_expr(name);
                 args.push(quote! { &#expr });
             },
         }
     }
 
     quote! {
-        use ariadne::Fmt as _;
-        __buf.push_str(&format!("{}", format!(#fmt_str, #(#args),*).fg(SECONDARY)));
+        __buf.push_str(&format!("{}", ariadne::Fmt::fg(&format!(#fmt_str, #(#args),*), SUGGEST)));
     }
 }
 
-fn is_valid_identifier(s: &str) -> bool {
+fn is_valid_field(s: &str) -> bool {
+    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+        return true;
+    }
+
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -343,11 +381,34 @@ mod tests {
     }
 
     #[test]
-    fn hi_field() {
+    fn error_field() {
         let segs = parse("{name!} is unknown");
         assert!(
-            matches!(&segs[0], Segment::Field { name, color: FieldColor::Hi } if name == "name")
+            matches!(&segs[0], Segment::Field { name, color: FieldColor::Error } if name == "name")
         );
+    }
+
+    #[test]
+    fn tuple_field() {
+        let segs = parse("unexpected character {0!}");
+        assert!(
+            matches!(&segs[1], Segment::Field { name, color: FieldColor::Error } if name == "0")
+        );
+    }
+
+    #[test]
+    fn escaped_braces_are_literal() {
+        let segs = parse("a {{literal}} brace");
+        assert!(matches!(&segs[0], Segment::Literal(s) if s == "a {literal} brace"));
+    }
+
+    #[test]
+    fn escaped_braces_inside_snippet() {
+        let segs = parse("add {`impl Foo {{ … }}`}");
+        let Segment::CodeSnippet(parts) = &segs[1] else {
+            panic!("expected CodeSnippet")
+        };
+        assert!(matches!(&parts[0], SnippetPart::Literal(s) if s == "impl Foo { … }"));
     }
 
     #[test]
@@ -378,9 +439,10 @@ mod tests {
     }
 
     #[test]
-    fn primary_and_secondary() {
-        let segs = parse("{a~} vs {b^}");
-        assert!(matches!(&segs[0], Segment::Field { color: FieldColor::Primary, .. }));
-        assert!(matches!(&segs[2], Segment::Field { color: FieldColor::Secondary, .. }));
+    fn found_context_and_bound() {
+        let segs = parse("{a~} vs {b^} for {c*}");
+        assert!(matches!(&segs[0], Segment::Field { color: FieldColor::Found, .. }));
+        assert!(matches!(&segs[2], Segment::Field { color: FieldColor::Context, .. }));
+        assert!(matches!(&segs[4], Segment::Field { color: FieldColor::Bound, .. }));
     }
 }
