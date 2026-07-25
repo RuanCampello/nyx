@@ -82,6 +82,7 @@ pub(in crate::hir) struct FunctionSignature {
     pub return_type: Type,
     pub kind: FunctionKind,
     pub is_const: bool,
+    pub is_unsafe: bool,
     pub decl_span: Span,
 }
 
@@ -514,6 +515,7 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind,
                     is_const: method.is_const,
+                    is_unsafe: method.is_unsafe(),
                     decl_span: method.span,
                 });
 

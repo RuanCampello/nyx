@@ -141,6 +141,7 @@ impl<'src> Token<'src> {
             || self.is_kind(Keyword::Pub)
             || self.is_kind(Keyword::Inline)
             || self.is_kind(Keyword::Const)
+            || self.is_kind(Punct::At)
     }
 }
 

@@ -421,6 +421,7 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     kind: FunctionKind::Free,
                     is_const: function.is_const,
+                    is_unsafe: function.is_unsafe(),
                     decl_span: function.span,
                 };
                 let id = self.push_signature(sig);
@@ -445,6 +446,7 @@ impl<'hir> Scope<'hir> {
                 return_type,
                 kind,
                 is_const: function.is_const,
+                is_unsafe: function.is_unsafe(),
                 decl_span: function.span,
             };
             let id = self.push_signature(sig);
@@ -464,6 +466,7 @@ impl<'hir> Scope<'hir> {
                     return_type: TypeKind::Iptr.into(),
                     kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
                     is_const: false,
+                    is_unsafe: false,
                     decl_span: Span::default(),
                 });
             }
@@ -565,6 +568,7 @@ impl<'hir> Scope<'hir> {
                             return_type,
                             kind,
                             is_const: method.is_const,
+                            is_unsafe: method.is_unsafe(),
                             decl_span: method.span,
                         });
                         self.methods.insert((receiver_type, method_symbol), id);
@@ -601,6 +605,7 @@ impl<'hir> Scope<'hir> {
                             params,
                             return_type,
                             is_const: method.is_const,
+                            is_unsafe: method.is_unsafe(),
                             kind: FunctionKind::Free,
                             decl_span: method.span,
                         });

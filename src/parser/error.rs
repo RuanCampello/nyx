@@ -65,6 +65,13 @@ pub enum ParseErrorKind<'i> {
     )]
     ExpectedTypeIdentifier { found: String },
     #[diagnostic(
+        code = "E029",
+        message = "Unknown marker {name!}",
+        primary = "not a marker the compiler knows",
+        help = "The only marker is `@unsafe`"
+    )]
+    UnknownMarker { name: &'i str },
+    #[diagnostic(
         code = "E028",
         message = "Unexpected end of file",
         primary = "the file ends here",

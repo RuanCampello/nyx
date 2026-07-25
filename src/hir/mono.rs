@@ -222,6 +222,7 @@ fn specialise<'hir>(
     let base = scope.symbols.get(open.name).to_string();
     let kind = open.kind;
     let is_const = open.is_const;
+    let is_unsafe = open.is_unsafe;
 
     let mangled = scope.mangle_generic(&base, args);
     let name = scope.symbols.insert(&mangled);
@@ -249,7 +250,15 @@ fn specialise<'hir>(
         scope.resolve_return_type(template.return_type.as_ref(), receiver_type, Some(&env))?;
 
     let decl_span = template.span;
-    let sig = FunctionSignature { name, params, return_type, kind, is_const, decl_span };
+    let sig = FunctionSignature {
+        name,
+        params,
+        return_type,
+        kind,
+        is_const,
+        is_unsafe,
+        decl_span,
+    };
     let id = scope.push_signature(sig);
     if matches!(kind, FunctionKind::Free) {
         scope.functions.insert(name, id);

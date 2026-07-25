@@ -440,13 +440,14 @@ impl Boundary {
 }
 
 pub(crate) fn opens_item(token: &Token<'_>) -> bool {
-    ITEM_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword))
+    // `@` only reaches a boundary at depth zero, where a pattern binding cannot appear
+    token.is_kind(Punct::At) || ITEM_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        lexer::token::BytePos,
+        lexer::{Spanned, token::BytePos},
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
             statement::{Item, ItemKind, Let, Loop, LoopHeader, Pattern, PatternLit, Return, Type},
@@ -1172,6 +1173,35 @@ mod tests {
 
         assert_eq!(name, "id");
         assert!(matches!(sub.value_ref(), Pattern::Range { inclusive: true, .. }));
+    }
+
+    #[test]
+    fn a_marker_precedes_the_visibility_and_modifier_keywords() {
+        let statements = Parser::new("@unsafe pub inline fn go() {}").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+
+        assert!(function.is_unsafe());
+        assert!(function.is_pub);
+        assert!(function.inline);
+    }
+
+    #[test]
+    fn an_unknown_marker_is_rejected() {
+        let err = Parser::new("@fast fn go() {}").parse().unwrap_err();
+        assert!(matches!(err.kind, ParseErrorKind::UnknownMarker { name: "fast" }));
+    }
+
+    #[test]
+    fn a_raw_pointer_type_mirrors_a_reference() {
+        let mut parser = Parser::new("*mut i32");
+        let typ = parser.parse_node::<Spanned<Type>>().unwrap().value();
+        assert!(matches!(typ, Type::Raw(inner, true) if *inner == Type::I32));
+
+        let mut parser = Parser::new("*i32");
+        let typ = parser.parse_node::<Spanned<Type>>().unwrap().value();
+        assert!(matches!(typ, Type::Raw(inner, false) if *inner == Type::I32));
     }
 
     #[test]

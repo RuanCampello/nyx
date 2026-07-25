@@ -452,11 +452,14 @@ impl<'i> Expression<'i> {
                 match left {
                     Expression::Identifier { .. }
                     | Expression::Field { .. }
-                    | Expression::Index { .. } => Ok(Expression::Assignment {
-                        target: Box::new(left),
-                        value: Box::new(right),
-                        span,
-                    }),
+                    | Expression::Index { .. }
+                    | Expression::Unary { operator: UnaryOperator::Deref, .. } => {
+                        Ok(Expression::Assignment {
+                            target: Box::new(left),
+                            value: Box::new(right),
+                            span,
+                        })
+                    },
 
                     _ => {
                         Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))

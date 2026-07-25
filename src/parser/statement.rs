@@ -180,7 +180,16 @@ pub struct Function<'i> {
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
+    // TODO: make it a bitset instead
+    pub markers: Vec<Marker>,
     pub span: Span,
+}
+
+/// A `@name` annotation ahead of a declaration
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Marker {
+    /// only callable from another `@unsafe` function
+    Unsafe,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -274,6 +283,7 @@ pub struct InterfaceMethod<'i> {
     pub params: Vec<Parameter<'i>>,
     pub return_type: Option<Spanned<Type<'i>>>,
     pub body: Option<Block<'i>>,
+    pub markers: Vec<Marker>,
     pub span: Span,
 }
 
@@ -345,6 +355,8 @@ pub enum Type<'i> {
     SelfType, RefSelf,
     /// a reference `&T` or `&mut T`
     Ref(Box<Type<'i>>, bool),
+    /// a raw pointer `*T` or `*mut T`
+    Raw(Box<Type<'i>>, bool),
     /// fixed-size array `[T; N]`
     Array(Box<Type<'i>>, u64),
     /// borrowed slice `&[T]` or `&mut [T]`, a fat pointer of (ptr, len)
@@ -434,7 +446,9 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 }
             },
 
-            TokenKind::Keyword(_) if is_fn_start => ItemKind::Fn(parser.parse_node()?),
+            TokenKind::Punct(Punct::At) | TokenKind::Keyword(_) if is_fn_start => {
+                ItemKind::Fn(parser.parse_node()?)
+            },
             TokenKind::Eof => {
                 return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
             },
@@ -777,8 +791,25 @@ impl<'i> Parsable<'i> for Spanned<Pattern<'i>> {
     }
 }
 
+impl Function<'_> {
+    #[inline]
+    pub fn is_unsafe(&self) -> bool {
+        self.markers.contains(&Marker::Unsafe)
+    }
+}
+
+impl Marker {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unsafe" => Some(Self::Unsafe),
+            _ => None,
+        }
+    }
+}
+
 impl<'i> Parsable<'i> for Function<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let markers = parse_markers(parser)?;
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let inline = parser.consume_token(Keyword::Inline)?;
         let is_const = parser.consume_token(Keyword::Const)?;
@@ -809,6 +840,7 @@ impl<'i> Parsable<'i> for Function<'i> {
             is_const,
             is_pub,
             inline,
+            markers,
         })
     }
 }
@@ -916,6 +948,7 @@ impl<'i> Impl<'i> {
                     is_const: false,
                     is_pub: false,
                     inline: false,
+                    markers: m.markers.clone(),
                     span: m.span,
                 })
             })
@@ -1065,6 +1098,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
 
 impl<'i> Parsable<'i> for InterfaceMethod<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let markers = parse_markers(parser)?;
         // accept (and ignore) `inline`/`const` modifiers on interface methods
         let _inline = parser.consume_token(Keyword::Inline)?;
         let _is_const = parser.consume_token(Keyword::Const)?;
@@ -1088,7 +1122,16 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             (Some(b), fn_token.span + b_span)
         };
 
-        Ok(Self { span, name, generics, receiver, params, return_type, body })
+        Ok(Self {
+            span,
+            name,
+            generics,
+            receiver,
+            params,
+            return_type,
+            body,
+            markers,
+        })
     }
 }
 
@@ -1303,6 +1346,15 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
 
 impl<'i> Parsable<'i> for Spanned<Type<'i>> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        if parser.consume_token(Punct::Star)? {
+            let start = parser.last_span().unwrap_or_default();
+            let mutable = parser.consume_token(Keyword::Mut)?;
+            let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
+            let span = start + inner.span();
+
+            return Ok(Self::new(Type::Raw(Box::new(inner.value()), mutable), span));
+        }
+
         if parser.consume_token(Punct::Ampersand)? {
             let start = parser.last_span().unwrap_or_default();
             let mutable = parser.consume_token(Keyword::Mut)?;
@@ -1367,6 +1419,23 @@ const fn implicit_close<'i>(at: BytePos) -> Token<'i> {
         kind: TokenKind::Punct(Punct::CloseBrace),
         span: Span::new(at, at),
     }
+}
+
+/// Consume the `@name` markers ahead of a declaration
+fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError<'i>> {
+    let mut markers = Vec::new();
+
+    while parser.consume_token(Punct::At)? {
+        let (name, span) = parser.expect_identifier()?;
+        let marker = Marker::from_name(name)
+            .ok_or_else(|| ParserError::new(ParseErrorKind::UnknownMarker { name }, span))?;
+
+        if !markers.contains(&marker) {
+            markers.push(marker);
+        }
+    }
+
+    Ok(markers)
 }
 
 fn parse_bracketed_type<'i>(
@@ -1716,7 +1785,7 @@ impl<'i> Type<'i> {
     pub fn name(&self) -> Option<&'i str> {
         match self {
             Type::Named(name) | Type::Generic(name, _) => Some(name),
-            Type::Ref(inner, _) => inner.name(),
+            Type::Ref(inner, _) | Type::Raw(inner, _) => inner.name(),
             Type::RefSelf => Some("Self"),
             Type::Unit => Some("unit"),
             Type::Never => Some("!"),
