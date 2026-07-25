@@ -535,9 +535,6 @@ impl<'hir> Scope<'hir> {
                             continue;
                         }
 
-                        let id = FunctionId(self.signatures.len() as u32);
-                        self.methods.insert((receiver_type, method_symbol), id);
-
                         let mut params = Vec::with_capacity(method.params.len() + 1);
                         params.push(Type::receiver_ref(receiver_type, receiver.mutable));
                         params.extend(self.resolve_params(
@@ -562,7 +559,7 @@ impl<'hir> Scope<'hir> {
                                 mutable: receiver.mutable,
                             }),
                         };
-                        self.signatures.push(FunctionSignature {
+                        let id = self.push_signature(FunctionSignature {
                             name: mangled,
                             params,
                             return_type,
@@ -570,6 +567,7 @@ impl<'hir> Scope<'hir> {
                             is_const: method.is_const,
                             decl_span: method.span,
                         });
+                        self.methods.insert((receiver_type, method_symbol), id);
 
                         if !method.generics.is_empty() && intrinsic.is_none() {
                             self.generic_fns.insert(id, method.clone());
@@ -590,9 +588,6 @@ impl<'hir> Scope<'hir> {
                             continue;
                         }
 
-                        let id = FunctionId(self.signatures.len() as u32);
-                        self.functions.insert(mangled, id);
-
                         let params =
                             self.resolve_params(&method.params, Some(receiver_type), impl_env_ref)?;
                         let return_type = self.resolve_return_type(
@@ -601,7 +596,7 @@ impl<'hir> Scope<'hir> {
                             impl_env_ref,
                         )?;
 
-                        self.signatures.push(FunctionSignature {
+                        let id = self.push_signature(FunctionSignature {
                             name: mangled,
                             params,
                             return_type,
@@ -609,6 +604,7 @@ impl<'hir> Scope<'hir> {
                             kind: FunctionKind::Free,
                             decl_span: method.span,
                         });
+                        self.functions.insert(mangled, id);
 
                         if !method.generics.is_empty() {
                             self.generic_fns.insert(id, method.clone());

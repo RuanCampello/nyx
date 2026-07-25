@@ -2154,6 +2154,36 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_instantiating_a_generic_keeps_its_own_id() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            enum Res<S, F> { Ok(S), Bad(F) }
+            impl Res<S, F> {
+                fn first(self): S { self.second() }
+                fn second(self): S { self.first() }
+            }
+
+            struct Layout { size: uptr }
+            struct Failed {}
+            impl Layout {
+                fn make(size: uptr): Res<Layout, Failed> { Res::Ok(Layout { size: size }) }
+            }
+
+            fn main(): i32 { Layout::make(1); 0 }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
+
+        let make = hir
+            .functions
+            .iter()
+            .find(|f| name(f) == "nyx::Layout::make")
+            .expect("Layout::make must keep the id it registered");
+        assert_eq!(make.params.len(), 1, "the size parameter must survive");
+        assert!(matches!(make.return_type.kind(), TypeKind::Enum(_)));
+    }
+
+    #[test]
     fn generic_turbofish_selects_instance() {
         let arena = bumpalo::Bump::new();
         let src = r#"

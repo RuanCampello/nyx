@@ -589,6 +589,9 @@ impl<'hir> Scope<'hir> {
     }
 
     /// push a new function signature and returns its assigned [`FunctionId`]
+    ///
+    /// The id must never be predicted ahead of the push: resolving a signature can
+    /// instantiate a generic type, whose specialised methods take the next slots
     #[inline]
     pub(in crate::hir) fn push_signature(&mut self, signature: FunctionSignature) -> FunctionId {
         let id = FunctionId(self.signatures.len() as u32);
