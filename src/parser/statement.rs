@@ -1,8 +1,8 @@
 use crate::lexer::Spanned;
-use crate::lexer::token::{Keyword, Punct, Span, Token, TokenKind};
+use crate::lexer::token::{BytePos, Keyword, Punct, Span, Token, TokenKind};
 use crate::parser::error::{ParseErrorKind, ParserError};
 use crate::parser::expression::Expression;
-use crate::parser::{Parsable, Parser};
+use crate::parser::{Parsable, Parser, opens_item};
 use std::num::NonZero;
 
 /// A documented declaration
@@ -1096,23 +1096,41 @@ impl<'i> Parsable<'i> for Block<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let open_brace = parser.expect_token(Punct::OpenBrace)?;
         let mut statements = Vec::new();
+        let mut broken = false;
 
         let close_brace = loop {
-            let token = parser
-                .peek()
-                .and_then(|r| r.as_ref().ok())
-                .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, open_brace.span))?;
+            let token = parser.peek().and_then(|result| result.as_ref().ok()).copied();
 
-            if token.is_kind(Punct::CloseBrace) {
-                let close = parser.expect_token(Punct::CloseBrace)?;
-                break close;
+            match token {
+                Some(token) if token.is_kind(Punct::CloseBrace) => {
+                    break parser.expect_token(Punct::CloseBrace)?;
+                },
+                Some(token) if broken && opens_item(&token) => {
+                    break implicit_close(token.span.start);
+                },
+                Some(token) if !token.is_kind(TokenKind::Eof) => {},
+                _ => {
+                    let span = token.map_or(open_brace.span, |token| token.span);
+                    let error = ParserError::new(ParseErrorKind::UnexpectedEof, span);
+                    if !parser.is_recovering() {
+                        return Err(error);
+                    }
+
+                    parser.record(error);
+                    break implicit_close(span.end);
+                },
             }
 
-            if token.is_kind(TokenKind::Eof) {
-                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
+            let mark = parser.mark();
+            match parser.parse_node::<Statement>() {
+                Ok(statement) => statements.push(statement),
+                Err(error) if !parser.is_recovering() => return Err(error),
+                Err(error) => {
+                    parser.record(error);
+                    parser.synchronise_statement(mark);
+                    broken = true;
+                },
             }
-
-            statements.push(parser.parse_node::<Statement>()?);
         };
 
         let span = open_brace.span + close_brace.span;
@@ -1340,6 +1358,14 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
         };
 
         Ok(Self::new(value, type_span))
+    }
+}
+
+#[inline]
+const fn implicit_close<'i>(at: BytePos) -> Token<'i> {
+    Token {
+        kind: TokenKind::Punct(Punct::CloseBrace),
+        span: Span::new(at, at),
     }
 }
 

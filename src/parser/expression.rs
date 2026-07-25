@@ -194,10 +194,13 @@ impl<'i> Expression<'i> {
 
             TokenKind::Punct(Punct::OpenBracket) => Self::parse_array_literal(parser, token.span),
 
-            _ => Err(ParserError::new(
-                ParseErrorKind::ExpectedExpression { found: token.kind },
-                token.span,
-            )),
+            _ => {
+                parser.push_back(token);
+                Err(ParserError::new(
+                    ParseErrorKind::ExpectedExpression { found: token.kind },
+                    token.span,
+                ))
+            },
         }
     }
 
@@ -455,7 +458,9 @@ impl<'i> Expression<'i> {
                         span,
                     }),
 
-                    _ => Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span())),
+                    _ => {
+                        Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))
+                    },
                 }
             },
 

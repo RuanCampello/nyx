@@ -24,11 +24,43 @@ pub struct Parser<'i> {
     buffer: VecDeque<Result<Token<'i>, LexError<'i>>>,
     /// Most recently used consumed token, used to place EOF diagnostics.
     last: Option<Span>,
+    /// When set, a failed item or statement is recorded in [errors] and the
+    /// parser resynchronises instead of abandoning the rest of the file
+    ///
+    /// [errors]: Parser::errors
+    recover: bool,
+    errors: Vec<ParserError<'i>>,
+    /// tokens pulled off the stream so far
+    consumed: usize,
+}
+
+/// Where [Parser::synchronise] stops scanning after an error
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Boundary {
+    /// the next top-level item, a stray closing brace is discarded as garbage
+    Item,
+    /// the next statement inside a block, a closing brace is left for the block
+    Statement,
 }
 
 pub trait Parsable<'i>: Sized {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>>;
 }
+
+/// Keywords that can only open a top-level item
+const ITEM_KEYWORDS: &[Keyword] = &[
+    Keyword::Fn,
+    Keyword::Pub,
+    Keyword::Struct,
+    Keyword::Enum,
+    Keyword::Impl,
+    Keyword::Interface,
+    Keyword::Use,
+];
+
+/// Keywords that open a statement but never a top-level item
+const STATEMENT_KEYWORDS: &[Keyword] =
+    &[Keyword::Let, Keyword::If, Keyword::Match, Keyword::Loop, Keyword::Return];
 
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
@@ -36,6 +68,9 @@ impl<'i> Parser<'i> {
             cursor: Lexer::new(source),
             buffer: VecDeque::with_capacity(4),
             last: None,
+            recover: false,
+            errors: Vec::new(),
+            consumed: 0,
         }
     }
 
@@ -46,22 +81,148 @@ impl<'i> Parser<'i> {
             cursor: Lexer::with_base(source, base),
             buffer: VecDeque::with_capacity(4),
             last: None,
+            recover: false,
+            errors: Vec::new(),
+            consumed: 0,
         }
     }
 
+    /// Collect every error the file contains instead of stopping at the first
+    #[inline]
+    pub fn recovering(mut self) -> Self {
+        self.recover = true;
+        self.cursor = self.cursor.recovering();
+        self
+    }
+
     pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError<'i>> {
+        let statements = self.parse_items();
+
+        match self.errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(statements),
+        }
+    }
+
+    /// Parse every item the file yields along with every error found on the way
+    ///
+    /// Only meaningful on a [recovering](Parser::recovering) parser, a strict one
+    /// returns at most one error and whatever it managed to parse before it
+    pub fn parse_recovering(mut self) -> (Vec<Statement<'i>>, Vec<ParserError<'i>>) {
+        let statements = self.parse_items();
+        (statements, self.errors)
+    }
+
+    fn parse_items(&mut self) -> Vec<Statement<'i>> {
         let mut statements = Vec::new();
 
         loop {
-            match self.peek() {
+            let mark = self.mark();
+            let error = match self.peek() {
                 Some(Ok(token)) if token.is_kind(TokenKind::Eof) => break,
-                Some(Ok(_)) => statements.push(self.parse_node::<Statement>()?),
-                Some(Err(err)) => return Err(ParserError::new((*err).into(), err.span)),
+                Some(Ok(_)) => match self.parse_node::<Statement>() {
+                    Ok(statement) => {
+                        statements.push(statement);
+                        continue;
+                    },
+                    Err(error) => error,
+                },
+                Some(Err(err)) => ParserError::new((*err).into(), err.span),
                 None => break,
+            };
+
+            self.record(error);
+            match self.recover {
+                true => self.synchronise(Boundary::Item, mark),
+                false => break,
             }
         }
 
-        Ok(statements)
+        statements
+    }
+
+    #[inline]
+    pub(crate) const fn is_recovering(&self) -> bool {
+        self.recover
+    }
+
+    /// The current stream position, to hand back to [Parser::synchronise_statement]
+    #[inline]
+    pub(crate) const fn mark(&self) -> usize {
+        self.consumed
+    }
+
+    /// Record an error, unless the identical one is already there: a failure
+    /// surfaces twice when a block reports it and the enclosing item rethrows it
+    pub(crate) fn record(&mut self, error: ParserError<'i>) {
+        if !self.errors.contains(&error) {
+            self.errors.push(error);
+        }
+    }
+
+    /// Skip tokens until the next statement inside the enclosing block
+    pub(crate) fn synchronise_statement(&mut self, mark: usize) {
+        self.synchronise(Boundary::Statement, mark);
+    }
+
+    /// Skip tokens until the next plausible `boundary`
+    fn synchronise(&mut self, boundary: Boundary, mark: usize) {
+        let stalled = self.consumed == mark;
+        let mut depth = 0usize;
+        let mut consumed = 0usize;
+
+        loop {
+            let token = match self.take_token() {
+                Some(Ok(token)) => token,
+                Some(Err(error)) => {
+                    self.record(ParserError::new(error.into(), error.span));
+                    continue;
+                },
+                None => return,
+            };
+            self.last = Some(token.span);
+
+            let settled = !stalled || consumed > 0;
+            match token.kind {
+                TokenKind::Eof => return self.push_back(token),
+                TokenKind::Punct(Punct::OpenBrace) => depth += 1,
+                TokenKind::Punct(Punct::CloseBrace) if depth > 0 => depth -= 1,
+                TokenKind::Punct(Punct::CloseBrace) if boundary == Boundary::Statement => {
+                    return self.push_back(token);
+                },
+                TokenKind::Punct(Punct::Semicolon)
+                    if depth == 0 && boundary == Boundary::Statement =>
+                {
+                    return;
+                },
+                _ if depth == 0 && settled && boundary.starts_at(&token) => {
+                    return self.push_back(token);
+                },
+                _ => {},
+            }
+
+            consumed += 1;
+        }
+    }
+
+    /// Pull the next item off the stream, counting it as consumed
+    #[inline]
+    fn take_token(&mut self) -> Option<Result<Token<'i>, LexError<'i>>> {
+        let token = self.buffer.pop_front().or_else(|| self.cursor.next());
+        if token.is_some() {
+            self.consumed += 1;
+        }
+
+        token
+    }
+
+    /// Return `token` to the front of the stream, undoing its consumption
+    #[inline]
+    pub(crate) fn push_back(&mut self, token: Token<'i>) {
+        assert!(self.consumed > 0, "a token can only be pushed back after it was consumed");
+
+        self.buffer.push_front(Ok(token));
+        self.consumed -= 1;
     }
 
     fn parse_node<N: Parsable<'i>>(&mut self) -> Result<N, ParserError<'i>> {
@@ -70,6 +231,7 @@ impl<'i> Parser<'i> {
 
     #[inline(always)]
     pub fn peek(&mut self) -> Option<&Result<Token<'i>, LexError<'i>>> {
+        self.skip_lexical_errors();
         if self.buffer.is_empty()
             && let Some(t) = self.cursor.next()
         {
@@ -79,8 +241,32 @@ impl<'i> Parser<'i> {
         self.buffer.front()
     }
 
+    /// Record and drop the lexical errors at the head of the stream, so the rest
+    /// of a recovering parse only ever sees real tokens and can keep going
+    fn skip_lexical_errors(&mut self) {
+        if !self.recover {
+            return;
+        }
+
+        loop {
+            if self.buffer.is_empty() {
+                match self.cursor.next() {
+                    Some(token) => self.buffer.push_back(token),
+                    None => return,
+                }
+            }
+
+            let Some(Err(error)) = self.buffer.front().copied() else {
+                return;
+            };
+            self.buffer.pop_front();
+            self.record(ParserError::new(error.into(), error.span));
+        }
+    }
+
     #[inline(always)]
     pub fn peek_nth(&mut self, n: usize) -> Option<Result<Token<'i>, LexError<'i>>> {
+        self.skip_lexical_errors();
         while self.buffer.len() <= n {
             match self.cursor.next() {
                 Some(t) => self.buffer.push_back(t),
@@ -93,7 +279,8 @@ impl<'i> Parser<'i> {
 
     #[inline(always)]
     pub fn next_token(&mut self) -> Result<Option<Token<'i>>, ParserError<'i>> {
-        let token = self.buffer.pop_front().or_else(|| self.cursor.next());
+        self.skip_lexical_errors();
+        let token = self.take_token();
         match token {
             Some(Ok(token)) => {
                 self.last = Some(token.span);
@@ -243,19 +430,132 @@ impl<'i> Parser<'i> {
     }
 }
 
+impl Boundary {
+    fn starts_at(self, token: &Token<'_>) -> bool {
+        opens_item(token)
+            || token.is_fn_start()
+            || (self == Self::Statement
+                && STATEMENT_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword)))
+    }
+}
+
+pub(crate) fn opens_item(token: &Token<'_>) -> bool {
+    ITEM_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
         lexer::token::BytePos,
         parser::{
             expression::{BinaryOperator, Expression, UnaryOperator},
-            statement::{
-                Item, ItemKind, Let, Loop, LoopHeader, Pattern, PatternLit, Return, Type,
-            },
+            statement::{Item, ItemKind, Let, Loop, LoopHeader, Pattern, PatternLit, Return, Type},
         },
     };
 
     use super::*;
+
+    fn recovered(source: &str) -> (Vec<Statement<'_>>, Vec<ParserError<'_>>) {
+        Parser::new(source).recovering().parse_recovering()
+    }
+
+    fn item_names<'i>(statements: &[Statement<'i>]) -> Vec<&'i str> {
+        statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Item(Item { kind: ItemKind::Fn(function), .. }) => Some(function.name),
+                Statement::Item(Item { kind: ItemKind::Struct(declaration), .. }) => {
+                    Some(declaration.name)
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovery_reports_every_broken_item() {
+        let (statements, errors) = recovered(
+            "fn a(): i32 { 1 }
+             fn b(: i32 { 2 }
+             fn c(): i32 { 3 }
+             fn d(] { }
+             fn e(): i32 { 5 }",
+        );
+
+        assert_eq!(errors.len(), 2, "one error per broken item: {errors:?}");
+        assert_eq!(item_names(&statements), ["a", "c", "e"], "the sound items survive");
+    }
+
+    #[test]
+    fn recovery_keeps_sibling_statements_in_a_block() {
+        let (statements, errors) =
+            recovered("fn main() { let a = 1; let b = ; let c = 3; let d = ; let e = 5; }");
+
+        assert_eq!(errors.len(), 2, "both broken bindings are reported: {errors:?}");
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected fn main, got {statements:?}");
+        };
+
+        let names: Vec<_> = function
+            .body
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Let(Let { name, .. }) => Some(*name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["a", "c", "e"], "the sound bindings survive");
+    }
+
+    #[test]
+    fn recovery_surfaces_a_lexical_error_and_carries_on() {
+        let (statements, errors) = recovered("fn a() { let x = 1 % 2; }\nstruct P { x: i32 }");
+
+        assert!(
+            errors.iter().any(|error| matches!(error.kind, ParseErrorKind::Lexical(_))),
+            "the bad character is reported: {errors:?}"
+        );
+        assert!(item_names(&statements).contains(&"P"), "the later struct still parses");
+    }
+
+    #[test]
+    fn recovery_closes_an_unterminated_block() {
+        let (statements, errors) = recovered("fn main() { let x = 1;");
+
+        assert!(
+            errors.iter().any(|error| error.kind == ParseErrorKind::UnexpectedEof),
+            "the missing brace is reported: {errors:?}"
+        );
+        assert_eq!(item_names(&statements), ["main"], "the partial function survives");
+    }
+
+    #[test]
+    fn an_unterminated_block_does_not_swallow_the_next_item() {
+        let (statements, errors) =
+            recovered("fn unfinished() { let z = 1; let w =\n\nfn main() { let ok = 2; }");
+
+        assert!(!errors.is_empty(), "the broken binding is reported");
+        assert_eq!(
+            item_names(&statements),
+            ["unfinished", "main"],
+            "both functions survive as separate items"
+        );
+    }
+
+    #[test]
+    fn recovery_terminates_on_pathological_input() {
+        for source in ["}}}", "fn", "pub pub pub", "{{{{", "fn f(){{{{", "))))", "@@@@"] {
+            let (_, errors) = recovered(source);
+            assert!(!errors.is_empty(), "{source:?} must report something");
+        }
+    }
+
+    #[test]
+    fn strict_parse_still_stops_at_the_first_error() {
+        let err = Parser::new("fn a(: i32 { 2 }\nfn b(] { }").parse().unwrap_err();
+        assert!(matches!(err.kind, ParseErrorKind::ExpectedIdentifier { .. }), "got {err:?}");
+    }
 
     #[test]
     fn missing_semicolon() {
