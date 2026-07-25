@@ -13,278 +13,337 @@ pub struct HirError<'h> {
 #[rustfmt::skip]
 pub enum HirErrorKind<'h> {
     #[diagnostic(
-        message = "only function declarations are allowed at the top level",
-        primary = "this is not a function declaration",
-        help = "move this into a function body, or wrap it in {`fn main()`}"
+        code = "E100",
+        message = "Statements are not allowed at the top level",
+        primary = "this statement is outside any function",
+        help = "Move it into a function body, or wrap it in {`fn main() {{ ... }}`}"
     )]
     TopLevelNonFunction,
 
     #[diagnostic(
-        message = "duplicate function {name!}",
-        primary = "{name!} is defined here again",
-        help = "rename one of the {name!} functions"
+        code = "E101",
+        message = "Function {name!} cannot be declared multiple times",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Rename one of the {name!} functions"
     )]
-    DuplicateFunction { name: &'h str },
+    DuplicateFunction { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "duplicate method {name!} for {struct_name!}",
-        primary = "{name!} is already defined for {struct_name!}",
-        help = "remove or rename one of the {name!} methods"
+        code = "E102",
+        message = "Method {name!} is already defined for {struct_name^}",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Remove or rename one of the {name!} methods"
     )]
-    DuplicateMethod { struct_name: &'h str, name: &'h str },
+    DuplicateMethod { struct_name: &'h str, name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "use of undeclared identifier {name!}",
-        primary = "{name!} is not declared in this scope",
-        help = "declare {name!} with {`let {name} = …`} before using it"
+        code = "E103",
+        message = "Cannot find {name!} in this scope",
+        primary = "not found in this scope",
+        help = "Declare it before use: {`let {name} = ...`}"
     )]
     UndeclaredIdentifier { name: &'h str },
 
     #[diagnostic(
-        message = "call to unknown function {name!}",
-        primary = "{name!} is not a known function",
-        help = "declare {`fn {name}(…)`} before calling it"
+        code = "E104",
+        message = "Cannot find function {name!}",
+        primary = "not a known function",
+        help = "Declare {`fn {name}(…)`} before calling it"
     )]
     UnknownFunction { name: &'h str },
 
-     #[diagnostic(
-        message = "call to unknown method {name!} on {struct_name!}",
-        primary = "{struct_name!} has no method named {name!}",
-        help = "add {`fn {name}(&self)`} to an impl block for {struct_name!}"
+    #[diagnostic(
+        code = "E105",
+        message = "Type {struct_name^} has no method named {name!}",
+        primary = "unknown method",
+        help = "Add {`fn {name}(&self)`} to an {`impl {struct_name}`} block"
     )]
     UnknownMethod { struct_name: &'h str, name: &'h str },
 
-     #[diagnostic(
-        message = "unknown type {name!}",
-        primary = "{name!} is not a known type",
-        help = "declare {`struct {name} { … }`} before using it"
+    #[diagnostic(
+        code = "E106",
+        message = "Cannot find type {name!}",
+        primary = "not a known type",
+        help = "Declare {`struct {name} {{ ... }}`} before using it"
     )]
     UnknownType { name: &'h str },
 
     #[diagnostic(
-        message = "cannot implement methods on {name!}",
-        primary = "{name!} is not a struct declared in this module",
-        help = "methods can only be defined on structs in the same module"
+        code = "E107",
+        message = "Cannot implement methods on {name!}",
+        primary = "{name~} is not declared in this module",
+        note = "Methods can only be defined on types declared in the same module"
     )]
     OrphanImpl { name: &'h str },
 
     #[diagnostic(
-        message = "duplicate struct {name!}",
-        primary = "{name!} is defined here again",
-        help = "rename one of the {name!} structs"
+        code = "E108",
+        message = "Struct {name!} cannot be declared multiple times",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Rename one of the {name!} structs"
     )]
-    DuplicateStruct { name: &'h str },
+    DuplicateStruct { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "duplicate enum {name!}",
-        primary = "{name!} is defined here again",
-        help = "rename one of the {name!} enums"
+        code = "E109",
+        message = "Enum {name!} cannot be declared multiple times",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Rename one of the {name!} enums"
     )]
-    DuplicateEnum { name: &'h str },
+    DuplicateEnum { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "duplicate field {name!}",
-        primary = "{name!} is already declared",
-        note = "struct field names must be unique"
+        code = "E110",
+        message = "Field {name!} is declared twice",
+        primary = "duplicate field",
+        note = "Struct field names must be unique"
     )]
     DuplicateField { name: &'h str },
 
     #[diagnostic(
-        message = "duplicate enum variant {name!}",
-        primary = "{name!} is already declared",
-        note = "enum variant names must be unique"
+        code = "E111",
+        message = "Variant {name!} is declared twice",
+        primary = "duplicate variant",
+        note = "Enum variant names must be unique"
     )]
     DuplicateVariant { name: &'h str },
 
     #[diagnostic(
-        message = "invalid field access",
-        primary = "field access is only supported on local variable bindings"
+        code = "E112",
+        message = "Field access is not supported on this expression",
+        primary = "only local variables and their fields can be accessed",
+        help = "Bind the value first: {`let value = ...;`} then access {`value.field`}"
     )]
     InvalidFieldAccess,
 
     #[diagnostic(
-        message = "invalid assignment target",
-        primary = "the left-hand side must be an identifier or a field path",
-        note = "use {`name = value`} or {`name.field = value`}"
+        code = "E113",
+        message = "Invalid assignment target",
+        primary = "cannot assign to this expression",
+        note = "Only {`name = value`} and {`name.field = value`} are assignable"
     )]
     InvalidAssignmentTarget,
 
     #[diagnostic(
-        message = "unknown field {field!} on {struct_name!}",
-        primary = "{struct_name!} has no field named {field!}"
+        code = "E114",
+        message = "Type {struct_name^} has no field named {field!}",
+        primary = "unknown field"
     )]
     UnknownField { struct_name: &'h str, field: &'h str },
 
     #[diagnostic(
-        message = "missing field {field!} in {struct_name!} literal",
-        primary = "{field!} must be initialised here",
-        help = "all fields of {struct_name!} must be provided in the struct literal"
+        code = "E115",
+        message = "Field {field!} is missing from this {struct_name^} literal",
+        primary = "{field~} must be initialised",
+        note = "Every field of {struct_name^} must be given a value"
     )]
     MissingField { struct_name: &'h str, field: &'h str },
 
     #[diagnostic(
-        message = "circular struct definition involving {name!}",
-        primary = "{name!} is part of a by-value struct cycle",
-        note = "break the cycle; a pointer or box type will be needed for recursive structs",
-        help = "Nyx does not support self-referential or circular structs yet"
+        code = "E116",
+        message = "Struct {name!} contains itself by value",
+        primary = "part of a by-value cycle",
+        note = "A struct stored by value cannot contain itself, a cycle would have infinite size",
+        help = "Nyx does not support recursive structs yet"
     )]
     CircularStruct { name: &'h str },
 
     #[diagnostic(
-        message = "wrong number of arguments to {name!}",
-        primary = "{found} arguments provided, but {name!} expects {expected}"
+        code = "E117",
+        message = "Wrong number of arguments to {name!}",
+        primary = "called with {found~} argument(s), but {name!} expects {expected^}",
+        secondary(span_field = "decl", optional, label = "{name^} is declared here with {expected^} parameter(s)")
     )]
-    ArityMismatch { name: &'h str, expected: usize, found: usize },
+    ArityMismatch { name: &'h str, expected: usize, found: usize, decl: Option<Span> },
 
     #[diagnostic(
-        message = "duplicate binding {name!}",
-        primary = "{name!} is already bound in this scope",
-        note = "re-declaring the same name in the same scope is not allowed",
-        help = "use a different name, or shadow it in a nested block"
+        code = "E118",
+        message = "The name {name!} is already bound in this scope",
+        primary = "rebound here",
+        secondary(span_field = "previous", optional, label = "{name^} first bound here"),
+        help = "Use a different name, or shadow it in a nested block"
     )]
-    DuplicateBind { name: &'h str },
+    DuplicateBind { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "missing initialiser for {name!}",
-        primary = "{name!} has no value and no type annotation",
-        note = "Nyx cannot infer the type without an initial value to check against",
-        help = "add a type annotation {`let {name}: <type>;`} or provide an initial value"
+        code = "E119",
+        message = "Binding {name!} has no type and no value",
+        primary = "cannot infer a type",
+        note = "A binding needs a type annotation or an initial value to infer from",
+        help = "Write {`let {name}: <type>;`} or {`let {name} = <value>;`}"
     )]
     MissingInitialiser { name: &'h str },
 
     #[diagnostic(
-        message = "self receiver outside impl block",
-        primary = "receivers are only valid inside method definitions",
-        help = "move this function into {`impl Type { … }`}"
+        code = "E120",
+        message = "A {`self`} receiver is only valid inside an {`impl`} block",
+        primary = "receiver declared here",
+        help = "Move this function into {`impl Type {{ ... }}`}"
     )]
     ReceiverOutsideImpl,
 
     #[diagnostic(
-        message = "type mismatch: expected {expected!}, found {found!}",
-        primary = "this is of type {found!}",
-        secondary(label = "expected {expected!} here")
+        code = "E121",
+        message = "Type mismatch: expected {expected^}, found {found!}",
+        primary = "this is of type {found~}"
     )]
     TypeMismatch { expected: Type, found: Type },
 
     #[diagnostic(
-        message = "function {name!} must return {expected!}, but its body can complete without returning a value",
-        primary = "{expected!} is declared here",
-        help = "return {expected!} from every path, or end the body with an expression of type {expected!}"
+        code = "E146",
+        message = "Type {found!} does not match the declared type {expected^}",
+        primary = "this is of type {found~}",
+        secondary(span_field = "annotation", label = "{expected^} declared here")
+    )]
+    TypeAnnotationMismatch { expected: Type, found: Type, annotation: Span },
+
+    #[diagnostic(
+        code = "E122",
+        message = "Function {name!} must return {expected^}, but can complete without returning",
+        primary = "{expected^} declared here",
+        help = "Return a value from every path, or end the body with an expression of type {expected^}"
     )]
     MissingReturn { name: &'h str, expected: Type },
 
     #[diagnostic(
-        message = "cannot assign to immutable binding {name!}",
-        primary = "{name!} is immutable and cannot be reassigned",
-        note = "bindings are immutable by default",
-        help = "declare it as mutable: {`let mut {name} = …`}"
+        code = "E123",
+        message = "Cannot mutate immutable binding {name!}",
+        primary = "{name~} cannot be mutated",
+        secondary(span_field = "decl", optional, label = "{name^} is declared immutable here"),
+        note = "Bindings are immutable by default",
+        help = "Declare it mutable: {`let mut {name} = ...`}"
     )]
-    ImmutableBind { name: &'h str },
+    ImmutableBind { name: &'h str, decl: Option<Span> },
 
     #[diagnostic(transparent)]
     ConstFnViolation(ConstFnViolationKind<'h>),
 
     #[diagnostic(
-        message = "invalid cast from {src!} to {target!}",
-        primary = "cannot cast from type {src!} to {target!}",
-        note = "casting is only supported between primitive integer, bool, and char types"
+        code = "E125",
+        message = "Cannot cast {src!} to {target^}",
+        primary = "invalid cast",
+        note = "Casts are only supported between primitive integer, bool, and char types"
     )]
     InvalidCast { src: Type, target: Type },
 
     #[diagnostic(
-        message = "cannot index a value of type {typ!}",
-        primary = "{typ!} cannot be indexed",
-        help = "indexing is only supported on arrays {`[T; N]`} and slices {`&[T]`}"
+        code = "E126",
+        message = "Type {typ!} cannot be indexed",
+        primary = "not an array or slice",
+        help = "Indexing is only supported on arrays {`[T; N]`} and slices {`&[T]`}"
     )]
     NotIndexable { typ: Type },
 
     #[diagnostic(
-        message = "index out of bounds: the length is {len} but the index is {index}",
-        primary = "index {index} is out of bounds for an array of length {len}"
+        code = "E127",
+        message = "Index {index!} is out of bounds for an array of length {len^}",
+        primary = "out of bounds"
     )]
     IndexOutOfBounds { index: u64, len: u32 },
 
     #[diagnostic(
-        message = "range endpoints must be integers",
-        primary = "{typ!} cannot be used as a range endpoint",
-        help = "use an integer type such as {`i32`} or {`uptr`}"
+        code = "E128",
+        message = "Type {typ!} cannot be used as a range endpoint",
+        primary = "not an integer",
+        help = "Use an integer type such as {`i32`} or {`uptr`}"
     )]
     InvalidRangeType { typ: Type },
 
     #[diagnostic(
-        message = "empty range pattern",
-        primary = "this range matches no values",
-        help = "make the lower bound less than or equal to the upper bound"
+        code = "E129",
+        message = "This range matches no values",
+        primary = "empty range",
+        help = "Make the lower bound less than or equal to the upper bound"
     )]
     EmptyRange,
 
 
-    // TODO: this should be more generic, because the loop/range 
+    // TODO: this should be more generic, because the loop/range
     // should just require the copy interface as any other function that requires a generic
     // interface thing, not a special case for loop + copy
     #[diagnostic(
-        message = "loop item type {typ!} does not implement {`Copy`}",
-        primary = "this loop copies each element into its binding",
-        help = "implement {`Copy`} for {typ!}, or iterate by reference when that is supported"
+        code = "E130",
+        message = "Loop item type {typ!} does not implement {`Copy`}",
+        primary = "each element is copied into the loop binding",
+        help = "Implement {`Copy`} for {typ}, or iterate by reference once that is supported"
     )]
     NonCopyLoopItem { typ: Type },
 
     #[diagnostic(
-        message = "cannot iterate over {typ!}",
-        primary = "this value is not an array or slice",
-        help = "loop iteration currently supports fixed arrays and slices"
+        code = "E131",
+        message = "Type {typ!} is not iterable",
+        primary = "not an array or slice",
+        note = "Loops currently iterate over fixed arrays, slices, and integer ranges"
     )]
     NotIterable { typ: Type },
 
     #[diagnostic(
-        message = "{kind!} used outside a loop",
-        primary = "this control-flow statement needs an enclosing loop"
+        code = "E132",
+        message = "{kind!} outside a loop",
+        primary = "no enclosing loop",
+        note = "{`break`} and {`continue`} are only valid inside a loop body"
     )]
     LoopControlOutsideLoop { kind: &'static str },
 
     // TODO: suggest help based on the real user input code
 
     #[diagnostic(
-        message = "cannot infer the element type of an empty array",
+        code = "E133",
+        message = "Cannot infer the element type of an empty array",
         primary = "the element type is unknown here",
-        help = "add a type annotation, e.g. {`let a: [i32; 0] = [];`}"
+        help = "Annotate the binding, e.g. {`let a: [i32; 0] = [];`}"
     )]
     EmptyArrayType,
 
     #[diagnostic(
-        message = "cannot assign to a value behind a shared {`&`} reference",
-        primary = "the referent is read-only through a shared reference",
-        help = "take a mutable reference {`&mut`} to write through it"
+        code = "E134",
+        message = "Cannot assign through a shared {`&`} reference",
+        primary = "the referent is read-only through this reference",
+        help = "Take a mutable {`&mut`} reference to write through it"
     )]
     AssignBehindSharedRef,
 
     #[diagnostic(
-        message = "duplicate interface {name!}",
-        primary = "{name!} is defined here again",
-        help = "rename one of the {name!} interfaces"
+        code = "E135",
+        message = "Interface {name!} cannot be declared multiple times",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Rename one of the {name!} interfaces"
     )]
-    DuplicateInterface { name: &'h str },
+    DuplicateInterface { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "unknown interface {name!}",
-        primary = "{name!} is not a known interface",
-        help = "declare {`interface {name} { … }`} before using it"
+        code = "E136",
+        message = "Cannot find interface {name!}",
+        primary = "not a known interface",
+        help = "Declare {`interface {name} {{ … }}`} before using it"
     )]
     UnknownInterface { name: &'h str },
 
     #[diagnostic(
-        message = "missing method {method_name!} required by interface {interface_name!}",
-        primary = "{struct_name!} does not implement {method_name!}",
-        note = "{interface_name!} requires {`fn {method_name}(…)`}",
-        help = "add {`fn {method_name}(…)`} to {`impl {struct_name} with {interface_name}`}"
+        code = "E137",
+        message = "{struct_name!} is missing {method_name!} required by {interface_name*}",
+        primary = "{method_name~} is not implemented in this block",
+        secondary(span_field = "decl", optional, label = "{interface_name*} requires it here"),
+        help = "Add {`fn {method_name}(…)`} to this {`impl`} block"
     )]
-    MissingInterfaceMethod { struct_name: &'h str, interface_name: &'h str, method_name: &'h str },
+    MissingInterfaceMethod {
+        struct_name: &'h str,
+        interface_name: &'h str,
+        method_name: &'h str,
+        decl: Option<Span>,
+    },
 
     #[diagnostic(
-        message = "missing {superinterface_name!} implementation required by {interface_name!}",
-        primary = "{struct_name!} implements {interface_name!} without {superinterface_name!}",
-        note = "{interface_name!} extends {superinterface_name!}",
-        help = "add {`impl {struct_name} with {superinterface_name} { … }`}"
+        code = "E138",
+        message = "{interface_name*} requires {superinterface_name*}, which {struct_name!} does not implement",
+        primary = "{struct_name~} implements {interface_name} without {superinterface_name}",
+        note = "{interface_name*} extends {superinterface_name*}, so members must implement both",
+        help = "Add {`impl {struct_name} with {superinterface_name} {{ ... }}`}"
     )]
     MissingSuperinterfaceImpl {
         struct_name: &'h str,
@@ -293,11 +352,11 @@ pub enum HirErrorKind<'h> {
     },
 
     #[diagnostic(
-        message = "method {method_name!} does not match interface {interface_name!}",
-        primary = "found: {found~}",
-        secondary(span_field = "impl_span", label = "{interface_name!} requires: {expected^}"),
-        note = "expected: {expected^}\n  found: {found~}",
-        help = "update {method_name!} in {`impl {struct_name} with {interface_name}`} to match the interface"
+        code = "E139",
+        message = "Method {method_name!} does not match its declaration in {interface_name*}",
+        primary = "found {found~}",
+        secondary(span_field = "decl", optional, label = "{interface_name*} declares {expected^}"),
+        help = "Update {method_name!} in {`impl {struct_name} with {interface_name}`} to match"
     )]
     InterfaceSignatureMismatch {
         struct_name: &'h str,
@@ -305,47 +364,55 @@ pub enum HirErrorKind<'h> {
         method_name: &'h str,
         expected: &'h str,
         found: &'h str,
-        impl_span: Span,
+        decl: Option<Span>,
     },
 
     #[diagnostic(
-        message = "circular dependency in constant {name!}",
-        primary = "constant {name!} depends on itself"
+        code = "E140",
+        message = "Constant {name!} depends on itself",
+        primary = "cyclic definition"
     )]
     CircularConstant { name: &'h str },
 
     #[diagnostic(
-        message = "duplicate constant {name!}",
-        primary = "{name!} is defined here again",
-        help = "rename one of the {name!} constants"
+        code = "E141",
+        message = "Constant {name!} cannot be declared multiple times",
+        primary = "conflicting declaration",
+        secondary(span_field = "previous", optional, label = "previous declaration of {name^}"),
+        help = "Rename one of the {name!} constants"
     )]
-    DuplicateConstant { name: &'h str },
+    DuplicateConstant { name: &'h str, previous: Option<Span> },
 
     #[diagnostic(
-        message = "type {type_name!} does not satisfy bound {bound_name!}",
-        primary = "{type_name!} is used here as {bound_name!}",
-        help = "add {`impl {type_name} with {bound_name} {{ … }}`}"
+        code = "E142",
+        message = "Type {type_name!} does not satisfy the bound {bound_name*}",
+        primary = "{type_name~} is used here as {bound_name*}",
+        help = "Add {`impl {type_name} with {bound_name} {{ ... }}`}"
     )]
     UnsatisfiedBound { type_name: Type, bound_name: &'h str },
 
     #[diagnostic(
-        message = "operator `{op!}` requires `{interface_name!}`",
-        primary = "`{type_name!}` does not implement `{interface_name!}`",
-        help = "add {`impl {type_name} with {interface_name} {{ … }}`}"
+        code = "E143",
+        message = "Operator {op!} requires {interface_name*}",
+        primary = "{type_name~} does not implement {interface_name*}",
+        help = "Add {`impl {type_name} with {interface_name} {{ ... }}`}"
     )]
     OperatorRequiresInterface { op: &'h str, type_name: &'h str, interface_name: CmpInterface },
 
     #[diagnostic(
+        code = "E144",
         message = "{kind!} declarations are not allowed inside a function body",
-        primary = "move this {kind!} out to the module level",
-        help = "only {`const`} declarations may appear inside a function body"
+        primary = "declared inside a function",
+        help = "Move this {kind} to the module level; only {`const`} may be declared in a body"
     )]
     NestedItem { kind: &'h str },
 
     #[diagnostic(
-        message = "attempt to use a non-constant value in a constant",
-        primary = "cannot refer to the local {name!} from a constant",
-        help = "a constant is evaluated independently of the function; use a literal or another {`const`}"
+        code = "E145",
+        message = "Constants cannot refer to runtime values",
+        primary = "{name!} is a local variable",
+        note = "A constant is evaluated independently of the function it appears in",
+        help = "Use a literal or another {`const`}"
     )]
     NonConstValue { name: &'h str },
 }
@@ -353,9 +420,10 @@ pub enum HirErrorKind<'h> {
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]
 pub enum ConstFnViolationKind<'h> {
     #[diagnostic(
-        message = "cannot call non-const function {name!} from a const fn",
-        primary = "{name!} is not a const function",
-        help = "add {`const`} to {`fn {name}`}"
+        code = "E124",
+        message = "Cannot call non-const function {name!} from a {`const fn`}",
+        primary = "{name~} is not a const function",
+        help = "Add {`const`} to {`fn {name}`}"
     )]
     NonConstCall { name: &'h str },
 }
@@ -377,7 +445,11 @@ impl<'h> From<HirError<'h>> for diagnostic::RichDiagnostic {
     fn from(value: HirError<'h>) -> Self {
         use diagnostic::AsDiagnostic;
 
-        value.kind.rich(value.span)
+        // capture the full-colour CLI rendering while the borrowed error data
+        // is still alive, the structured fields stay plain for the editor
+        let mut rich = value.kind.rich(value.span);
+        rich.rendered = Some(value.kind.into_diagnostic(value.span).display());
+        rich
     }
 }
 
