@@ -207,6 +207,38 @@ impl TestClient {
         }
     }
 
+    pub async fn completion(&mut self, url: &Url, position: Position) -> Vec<CompletionItem> {
+        let response = self
+            .request::<request::Completion>(CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: url.clone() },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .unwrap();
+
+        match response {
+            Some(CompletionResponse::Array(items)) => items,
+            Some(CompletionResponse::List(list)) => list.items,
+            None => Vec::new(),
+        }
+    }
+
+    pub async fn completion_labels(&mut self, url: &Url, position: Position) -> Vec<String> {
+        let mut labels: Vec<_> = self
+            .completion(url, position)
+            .await
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        labels.sort();
+        labels
+    }
+
     pub async fn inlay_hints(&mut self, url: &Url) -> Result<Vec<InlayHint>, Value> {
         self.request::<request::InlayHintRequest>(InlayHintParams {
             text_document: TextDocumentIdentifier { uri: url.clone() },

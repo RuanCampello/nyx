@@ -599,6 +599,52 @@ async fn diagnostics_route_to_the_file_that_owns_them() {
     assert_eq!(labels_of(&hints), vec![": i32"], "main.nyx features survive util's error");
 }
 
+#[tokio::test]
+async fn completion_answers_over_the_wire() {
+    let src = "struct Point { x: i32, y: i32 }
+impl Point {
+    fn origin(): Point { Point { x: 0, y: 0 } }
+    fn sum(&self): i32 { self.x + self.y }
+}
+fn main() {
+    let p = Point::origin();
+    let total = p.
+}
+";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    // the line holding `let total = p.`, cursor just past the dot
+    let dot = Position::new(7, 18);
+    let members = client.completion_labels(&url, dot).await;
+    assert!(members.contains(&"x".to_owned()), "fields after a dot: {members:?}");
+    assert!(members.contains(&"sum".to_owned()), "methods after a dot: {members:?}");
+    assert!(!members.contains(&"origin".to_owned()), "no associated fn: {members:?}");
+
+    let open = client.completion_labels(&url, Position::new(6, 4)).await;
+    assert!(open.contains(&"Point".to_owned()), "types unqualified: {open:?}");
+    assert!(open.contains(&"let".to_owned()), "keywords unqualified: {open:?}");
+}
+
+#[tokio::test]
+async fn completion_offers_a_modules_exports_after_a_path() {
+    let src = "use project::util::{helper};
+fn main() { let x = helper(); }
+";
+    let mut client = TestClient::start().await;
+    client
+        .open("util.nyx", "pub fn helper(): i32 { 1 }\npub fn other(): i32 { 2 }")
+        .await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    // inside the brace list of the `use`
+    let inside = client.completion_labels(&url, Position::new(0, 20)).await;
+    assert!(inside.contains(&"helper".to_owned()), "{inside:?}");
+    assert!(inside.contains(&"other".to_owned()), "an unimported export too: {inside:?}");
+}
+
 fn label(hint: &InlayHint) -> String {
     match &hint.label {
         InlayHintLabel::String(label) => label.clone(),
