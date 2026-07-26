@@ -140,7 +140,7 @@ async fn hover_truncates_long_field_lists() {
     let text = client.hover_text(&url, position_of(src, "Wide")).await;
     assert!(text.contains("e: i32"), "the first five fields are shown: {text}");
     assert!(!text.contains("f: i32"), "fields past the fifth are elided: {text}");
-    assert!(text.contains("/* … */"), "the elision marker is shown: {text}");
+    assert!(text.contains("// …"), "the elision marker is shown: {text}");
 }
 
 #[tokio::test]
@@ -480,6 +480,155 @@ async fn goto_definition_resolves_a_local() {
     };
     assert_eq!(location.uri, url);
     assert_eq!(location.range.start, position_of(src, "value"), "must point at the declaration");
+}
+
+#[tokio::test]
+async fn a_qualified_path_resolves_segment_by_segment() {
+    let src = r#"
+        /// A colour in the RGB manner
+        struct Colour { r: u8 }
+        impl Colour {
+            /// Creates a new colour
+            fn new(): Colour { Colour { r: 0 } }
+        }
+        fn main() { let c = Colour::new(); }
+    "#;
+
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    assert!(client.wait_diagnostics(&url).await.is_empty());
+
+    let qualifier = position_of_nth(src, "Colour::new", 0);
+    let name = Position::new(qualifier.line, qualifier.character + "Colour::".len() as u32);
+
+    let hover = client.hover_text(&url, qualifier).await;
+    assert!(hover.contains("struct Colour"), "the qualifier hovers as the type: {hover}");
+
+    let on_type = definition(&mut client, &url, qualifier).await;
+    assert_eq!(
+        on_type.range.start,
+        position_of(src, "Colour { r: u8 }"),
+        "the qualifier lands on the struct, not on the method"
+    );
+
+    let hover = client.hover_text(&url, name).await;
+    assert!(hover.contains("fn new()"), "the trailing segment hovers as the function: {hover}");
+
+    let on_method = definition(&mut client, &url, name).await;
+    assert_eq!(
+        on_method.range.start,
+        position_of(src, "new(): Colour"),
+        "only the trailing segment lands on the method"
+    );
+}
+
+#[tokio::test]
+async fn an_intrinsic_declaration_hovers() {
+    let src = "fn main() { let s = \"nyx\"; let n = s.len(); }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client.completion_labels(&url, position_of(src, "len()")).await;
+    assert!(labels.contains(&"len".to_owned()), "a compiler-implemented method: {labels:?}");
+}
+
+#[tokio::test]
+async fn a_path_qualifier_completes_submodules_and_their_items() {
+    let src = "fn main() { }\n";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let typed = "use std::";
+    client.change(&url, &format!("{typed}\n{src}")).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client
+        .completion_labels(&url, Position::new(0, typed.len() as u32))
+        .await;
+    assert!(labels.contains(&"io".to_owned()), "an unimported std module: {labels:?}");
+    assert!(labels.contains(&"mem".to_owned()), "{labels:?}");
+
+    let typed = "use std::io::{";
+    client.change(&url, &format!("{typed}\n{src}")).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client
+        .completion_labels(&url, Position::new(0, typed.len() as u32))
+        .await;
+    assert!(labels.contains(&"println".to_owned()), "its exports: {labels:?}");
+}
+
+#[tokio::test]
+async fn prose_is_not_completed() {
+    let src = "/// a note about Colour\nfn main() { }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client.completion_labels(&url, Position::new(0, 23)).await;
+    assert!(labels.is_empty(), "a doc comment offers nothing: {labels:?}");
+}
+
+#[tokio::test]
+async fn a_completion_carries_a_highlighted_signature() {
+    let src = "/// Adds two numbers.\nfn add(a: i32, b: i32): i32 { a + b }\nfn main() { ad }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let items = client.completion(&url, position_of(src, "ad }")).await;
+    let item = items.iter().find(|item| item.label == "add").expect("add is offered");
+
+    let Some(Documentation::MarkupContent(markup)) = &item.documentation else {
+        panic!("expected markdown documentation, got {:?}", item.documentation);
+    };
+    assert_eq!(markup.kind, MarkupKind::Markdown);
+    assert!(
+        markup.value.contains(&fenced_text("fn add(a: i32, b: i32): i32")),
+        "the signature is fenced so the client highlights it: {}",
+        markup.value
+    );
+    assert!(markup.value.contains("Adds two numbers."), "{}", markup.value);
+    assert!(item.detail.is_none(), "an unfenced duplicate would render unhighlighted");
+}
+
+#[tokio::test]
+async fn an_enum_variant_hover_reports_its_layout() {
+    let src = r#"
+        struct Payload { a: i32, b: i32 }
+        enum Msg { Quit, Change(Payload) }
+        fn main() { }
+    "#;
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    assert!(client.wait_diagnostics(&url).await.is_empty());
+
+    let empty = client.hover_text(&url, position_of(src, "Quit")).await;
+    assert!(empty.contains("size = 0"), "a fieldless variant carries nothing: {empty}");
+
+    let payload = client.hover_text(&url, position_of(src, "Change")).await;
+    assert!(payload.contains("size = 8"), "a payload variant reports it: {payload}");
+}
+
+async fn definition(client: &mut TestClient, url: &Url, position: Position) -> Location {
+    let response = client
+        .request::<request::GotoDefinition>(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: url.clone() },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    match response {
+        Some(GotoDefinitionResponse::Scalar(location)) => location,
+        other => panic!("expected a single definition, got {other:?}"),
+    }
 }
 
 #[tokio::test]
