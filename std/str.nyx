@@ -2,6 +2,7 @@ impl str {
     /// Returns the length of `self`
     ///
     /// This length is measured in bytes, not `char`s or graphemes
+    @intrinsic
     pub const fn len(&self): uptr {}
 
     /// Returns `true` if `self` has a length of zero bytes

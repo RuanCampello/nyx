@@ -47,7 +47,7 @@ pub struct Scope<'hir> {
     /// The type every named type annotation resolved to, keyed by the span of
     /// the annotation
     ///
-    /// Only filled when [index_refs] is set: a batch compile never reads it
+    /// Only filled in [index_refs] mode: a batch compile never reads it
     ///
     /// [index_refs]: Scope::index_refs
     pub type_refs: HashMap<Span, Type>,
@@ -70,8 +70,9 @@ pub struct Scope<'hir> {
     ///
     /// [diagnostics]: Scope::diagnostics
     pub(in crate::hir) recover: bool,
-    /// Whether to record the navigation side-tables editors need, which no
-    /// batch compilation ever reads
+    /// Whether this is an editor session: navigation side-tables are recorded
+    /// and declarations no batch compilation would ever lower are kept, so
+    /// features work over items codegen never reaches
     pub(in crate::hir) index_refs: bool,
     pub(in crate::hir) diagnostics: Diagnostics,
 }
@@ -90,12 +91,16 @@ pub struct ArrayTable {
 #[derive(Debug, Clone)]
 pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
+    /// The receiver, when declared, is [params][Self::params]`[0]`
     pub params: Vec<Type>,
     pub return_type: Type,
     pub kind: FunctionKind,
     pub owner: Owner,
     pub is_const: bool,
     pub is_unsafe: bool,
+    /// Declared with a `self` receiver, which [FunctionKind] cannot answer:
+    /// an intrinsic method has one without being a [FunctionKind::Method]
+    pub has_receiver: bool,
     pub decl_span: Span,
 }
 
@@ -545,7 +550,7 @@ impl<'hir> Scope<'hir> {
                     Some(&method_env),
                 )?;
 
-                let intrinsic = intrinsic_method(false, implementation.name, method.name);
+                let intrinsic = self.declared_intrinsic(method, Some(implementation.name))?;
                 let kind = match (intrinsic, method.receiver) {
                     (Some(i), _) => FunctionKind::Intrinsic(i),
                     (None, Some(r)) => FunctionKind::Method(Method {
@@ -564,6 +569,7 @@ impl<'hir> Scope<'hir> {
                     owner,
                     is_const: method.is_const,
                     is_unsafe: method.is_unsafe(),
+                    has_receiver: method.receiver.is_some(),
                     decl_span: method.span,
                 });
 
@@ -756,13 +762,8 @@ impl ArrayTable {
 
 impl FunctionSignature {
     #[inline]
-    pub(in crate::hir) fn has_receiver(&self) -> bool {
-        matches!(self.kind, FunctionKind::Method(_))
-    }
-
-    #[inline]
     pub(in crate::hir) fn receiver_type(&self) -> Option<Type> {
-        self.has_receiver().then(|| self.params[0])
+        self.has_receiver.then(|| self.params[0])
     }
 
     #[inline]
@@ -773,7 +774,7 @@ impl FunctionSignature {
 
     #[inline]
     pub(in crate::hir) fn explicit_params(&self) -> &[Type] {
-        &self.params[self.has_receiver() as usize..]
+        &self.params[self.has_receiver as usize..]
     }
 }
 
@@ -931,17 +932,14 @@ fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) 
         .collect()
 }
 
+/// The compiler implementation behind a method marked `@intrinsic`
 #[inline(always)]
-pub(in crate::hir) fn intrinsic_method(
-    in_std: bool,
-    receiver: &str,
-    method: &str,
-) -> Option<Intrinsic> {
-    match (in_std, receiver, method) {
-        (true, "str", "len") | (_, SLICE_IMPL_NAME, "len") => Some(Intrinsic::Len),
-        (true, _, "wrapping_add") => Some(Intrinsic::WrappingAdd),
-        (true, _, "wrapping_sub") => Some(Intrinsic::WrappingSub),
-        (true, _, "wrapping_mul") => Some(Intrinsic::WrappingMul),
+pub(in crate::hir) fn intrinsic_method(receiver: &str, method: &str) -> Option<Intrinsic> {
+    match (receiver, method) {
+        ("str", "len") | (SLICE_IMPL_NAME, "len") => Some(Intrinsic::Len),
+        (_, "wrapping_add") => Some(Intrinsic::WrappingAdd),
+        (_, "wrapping_sub") => Some(Intrinsic::WrappingSub),
+        (_, "wrapping_mul") => Some(Intrinsic::WrappingMul),
         _ => None,
     }
 }

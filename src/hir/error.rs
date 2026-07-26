@@ -219,6 +219,14 @@ pub enum HirErrorKind<'h> {
     UnsafeCall { name: &'h str, decl: Option<Span> },
 
     #[diagnostic(
+        code = "E150",
+        message = "No compiler implementation for intrinsic {name!}",
+        primary = "marked @intrinsic, but the compiler implements nothing under this name",
+        help = "Remove the marker and give {name~} a body, or implement it in the compiler"
+    )]
+    UnknownIntrinsic { name: &'h str },
+
+    #[diagnostic(
         lint = "unused_unsafe",
         message = "Unnecessary @unsafe block",
         primary = "nothing here needs an unsafe context",

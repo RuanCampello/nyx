@@ -14,8 +14,11 @@ impl i8 {
         ((*self > 0) as i8) - ((*self < 0) as i8)
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: i8): i8 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: i8): i8 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: i8): i8 {}
 }
 
@@ -28,8 +31,11 @@ impl u8 {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: u8): u8 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: u8): u8 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: u8): u8 {}
 }
 
@@ -47,8 +53,11 @@ impl i16 {
         ((*self > 0) as i16) - ((*self < 0) as i16)
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: i16): i16 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: i16): i16 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: i16): i16 {}
 }
 
@@ -61,8 +70,11 @@ impl u16 {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: u16): u16 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: u16): u16 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: u16): u16 {}
 }
 
@@ -80,8 +92,11 @@ impl i32 {
         ((*self > 0) as i32) - ((*self < 0) as i32)
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: i32): i32 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: i32): i32 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: i32): i32 {}
 }
 
@@ -94,8 +109,11 @@ impl u32 {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: u32): u32 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: u32): u32 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: u32): u32 {}
 }
 
@@ -113,8 +131,11 @@ impl i64 {
         ((*self > 0) as i64) - ((*self < 0) as i64)
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: i64): i64 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: i64): i64 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: i64): i64 {}
 }
 
@@ -127,8 +148,11 @@ impl u64 {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: u64): u64 {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: u64): u64 {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: u64): u64 {}
 }
 
@@ -146,8 +170,11 @@ impl iptr {
         ((*self > 0) as iptr) - ((*self < 0) as iptr)
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: iptr): iptr {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: iptr): iptr {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: iptr): iptr {}
 }
 
@@ -160,7 +187,10 @@ impl uptr {
         *self != 0 && ((*self) & (*self - 1)) == 0
     }
 
+    @intrinsic
     pub inline const fn wrapping_add(&self, rhs: uptr): uptr {}
+    @intrinsic
     pub inline const fn wrapping_sub(&self, rhs: uptr): uptr {}
+    @intrinsic
     pub inline const fn wrapping_mul(&self, rhs: uptr): uptr {}
 }

@@ -1,2 +1,4 @@
+@intrinsic
 pub fn println() {}
+@intrinsic
 pub fn print() {}

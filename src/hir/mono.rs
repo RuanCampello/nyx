@@ -243,6 +243,7 @@ fn specialise<'hir>(
     };
     let mut params =
         Vec::with_capacity(template.params.len() + usize::from(receiver_type.is_some()));
+    let has_receiver = template.receiver.is_some() && receiver_type.is_some();
     if let (Some(receiver), Some(receiver_type)) = (template.receiver, receiver_type) {
         params.push(receiver_param_type(receiver_type, receiver.mutable));
     }
@@ -259,6 +260,7 @@ fn specialise<'hir>(
         owner,
         is_const,
         is_unsafe,
+        has_receiver,
         decl_span,
     };
     let id = scope.push_signature(sig);

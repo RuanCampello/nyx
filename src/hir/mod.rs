@@ -735,6 +735,7 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             owner: value.owner,
             is_const: value.is_const,
             is_unsafe: value.is_unsafe,
+            has_receiver: matches!(value.kind, FunctionKind::Method(_)),
             decl_span: value.decl_span,
         }
     }
@@ -2292,6 +2293,37 @@ mod tests {
         "#;
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert!(matches!(err.kind, HirErrorKind::TypeAnnotationMismatch { .. }));
+    }
+
+    #[test]
+    fn an_intrinsic_the_compiler_does_not_implement_is_rejected() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            @intrinsic
+            fn reversed(): i32 {}
+            fn main() { }
+        "#;
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::UnknownIntrinsic { name: "reversed" }));
+    }
+
+    #[test]
+    fn an_intrinsic_body_is_empty_by_design() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            struct Counter { n: i32 }
+            impl Counter {
+                @intrinsic
+                pub const fn wrapping_add(&self, rhs: i32): i32 {}
+            }
+            fn main() { }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena)
+            .expect("an empty @intrinsic body needs no return");
+        assert!(
+            !hir.functions.iter().any(|f| matches!(f.kind, FunctionKind::Intrinsic(_))),
+            "a batch compile lowers no body for an intrinsic"
+        );
     }
 
     #[test]

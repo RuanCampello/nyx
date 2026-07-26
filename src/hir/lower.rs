@@ -173,7 +173,9 @@ where
 
         let (body, returns) = self.lower_block(&function.body, true)?;
 
-        if !returns && signature.return_type.kind() != TypeKind::Unit {
+        // an @intrinsic body is empty on purpose: the value comes from the
+        // compiler, not from anything written here
+        if !returns && !function.is_intrinsic() && signature.return_type.kind() != TypeKind::Unit {
             let name = self.arena.alloc_str(self.scope.symbols.get(symbol));
             let span = function.return_type.as_ref().map_or(function.span, Spanned::span);
             self.soft(hir_error!(span, MissingReturn { name, expected: signature.return_type }))?;
