@@ -56,6 +56,7 @@ pub struct Let<'i> {
 pub struct Const<'i> {
     pub is_pub: bool,
     pub name: &'i str,
+    pub name_span: Span,
     pub typ: Spanned<Type<'i>>,
     pub value: Expression<'i>,
     pub span: Span,
@@ -176,6 +177,8 @@ pub struct GenericBound<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function<'i> {
     pub name: &'i str,
+    /// the declared name alone, where goto-definition lands
+    pub name_span: Span,
     pub generics: Vec<GenericBound<'i>>,
     pub impl_type: Option<&'i str>,
     pub receiver: Option<Receiver>,
@@ -207,9 +210,11 @@ pub struct Receiver {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Struct<'i> {
     pub name: &'i str,
+    pub name_span: Span,
     pub generics: Vec<GenericBound<'i>>,
     pub fields: Vec<StructField<'i>>,
     pub repr: StructRepr,
+    pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -232,6 +237,7 @@ pub enum StructReprKind {
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructField<'i> {
     pub name: &'i str,
+    pub name_span: Span,
     pub typ: Spanned<Type<'i>>,
     pub span: Span,
 }
@@ -239,9 +245,11 @@ pub struct StructField<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Enum<'i> {
     pub name: &'i str,
+    pub name_span: Span,
     pub generics: Vec<GenericBound<'i>>,
     pub variants: Vec<EnumVariant<'i>>,
     pub repr: Option<Spanned<Type<'i>>>,
+    pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -249,6 +257,7 @@ pub struct Enum<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumVariant<'i> {
     pub name: &'i str,
+    pub name_span: Span,
     pub payload: Option<Spanned<Type<'i>>>,
     pub value: Option<i64>,
     pub span: Span,
@@ -272,6 +281,7 @@ pub struct Impl<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Interface<'i> {
     pub name: &'i str,
+    pub name_span: Span,
     pub generics: Vec<GenericBound<'i>>,
     pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
@@ -283,6 +293,8 @@ pub struct Interface<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct InterfaceMethod<'i> {
     pub name: &'i str,
+    /// the declared name alone, where goto-definition lands
+    pub name_span: Span,
     pub generics: Vec<GenericBound<'i>>,
     pub receiver: Option<Receiver>,
     pub params: Vec<Parameter<'i>>,
@@ -510,7 +522,7 @@ impl<'i> Parsable<'i> for Const<'i> {
 
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let _const_token = parser.expect_token(Keyword::Const)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Colon)?;
         let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
         parser.expect_token(Punct::Eq)?;
@@ -518,7 +530,7 @@ impl<'i> Parsable<'i> for Const<'i> {
         let semi = parser.expect_token(Punct::Semicolon)?;
         let span = start_span + semi.span;
 
-        Ok(Const { is_pub, name, typ, value, span })
+        Ok(Const { is_pub, name, name_span, typ, value, span })
     }
 }
 
@@ -823,7 +835,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         let is_const = parser.consume_token(Keyword::Const)?;
 
         let fn_token = parser.expect_token(Keyword::Fn)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
 
         let mut generics = parse_generics::<GenericBound>(parser)?;
 
@@ -838,6 +850,7 @@ impl<'i> Parsable<'i> for Function<'i> {
 
         Ok(Function {
             name,
+            name_span,
             generics,
             impl_type: None,
             receiver,
@@ -947,6 +960,7 @@ impl<'i> Impl<'i> {
             .filter_map(|m| {
                 m.body.as_ref().map(|body| Function {
                     name: m.name,
+                    name_span: m.name_span,
                     generics: Vec::new(),
                     impl_type: Some(self.name),
                     receiver: m.receiver,
@@ -970,25 +984,37 @@ impl<'i> Parsable<'i> for Struct<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let struct_token = parser.expect_token(Keyword::Struct)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
 
         let generics = parse_generics::<GenericBound>(parser)?;
 
         parser.expect_token(Punct::OpenBrace)?;
 
+        let mut member_docs = Vec::new();
         let (fields, close_span) = parse_comma_separated(parser, Punct::CloseBrace, |parser| {
+            let docs = parser.parse_outer_docs();
             let (field_name, field_span) = parser.expect_identifier()?;
             parser.expect_token(Punct::Colon)?;
             let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
             let span = field_span + typ.span();
+            push_member_docs(&mut member_docs, field_span, docs);
 
-            Ok(StructField { name: field_name, typ, span })
+            Ok(StructField { name: field_name, name_span: field_span, typ, span })
         })?;
 
         let repr = parser.parse_node()?;
         let span = struct_token.span + parser.last_span().unwrap_or(close_span);
 
-        Ok(Self { name, generics, fields, repr, is_pub, span })
+        Ok(Self {
+            name,
+            name_span,
+            generics,
+            fields,
+            repr,
+            member_docs,
+            is_pub,
+            span,
+        })
     }
 }
 
@@ -996,11 +1022,13 @@ impl<'i> Parsable<'i> for Enum<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let enum_token = parser.expect_token(Keyword::Enum)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
         let generics = parse_generics::<GenericBound>(parser)?;
         parser.expect_token(Punct::OpenBrace)?;
 
+        let mut member_docs = Vec::new();
         let (variants, _) = parse_comma_separated(parser, Punct::CloseBrace, |parser| {
+            let docs = parser.parse_outer_docs();
             let (variant_name, variant_span) = parser.expect_identifier()?;
 
             let mut payload = None;
@@ -1034,7 +1062,15 @@ impl<'i> Parsable<'i> for Enum<'i> {
                 (None, variant_span)
             };
 
-            Ok(EnumVariant { name: variant_name, payload, value, span })
+            push_member_docs(&mut member_docs, variant_span, docs);
+
+            Ok(EnumVariant {
+                name: variant_name,
+                name_span: variant_span,
+                payload,
+                value,
+                span,
+            })
         })?;
 
         let repr = parser.consume_token(Keyword::As)?.then(|| parser.parse_node()).transpose()?;
@@ -1043,7 +1079,16 @@ impl<'i> Parsable<'i> for Enum<'i> {
         let end = parser.last_span().unwrap_or(enum_token.span);
         let span = enum_token.span + end;
 
-        Ok(Self { name, generics, variants, repr, is_pub, span })
+        Ok(Self {
+            name,
+            name_span,
+            generics,
+            variants,
+            repr,
+            member_docs,
+            is_pub,
+            span,
+        })
     }
 }
 
@@ -1051,7 +1096,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let interface_token = parser.expect_token(Keyword::Interface)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
 
         let generics = parse_generics::<GenericBound>(parser)?;
 
@@ -1094,6 +1139,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
 
         Ok(Self {
             name,
+            name_span,
             generics,
             superinterfaces,
             span: interface_token.span + close.span,
@@ -1111,7 +1157,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let _inline = parser.consume_token(Keyword::Inline)?;
         let _is_const = parser.consume_token(Keyword::Const)?;
         let fn_token = parser.expect_token(Keyword::Fn)?;
-        let (name, _) = parser.expect_identifier()?;
+        let (name, name_span) = parser.expect_identifier()?;
 
         let mut generics = parse_generics::<GenericBound>(parser)?;
 
@@ -1133,6 +1179,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         Ok(Self {
             span,
             name,
+            name_span,
             generics,
             receiver,
             params,

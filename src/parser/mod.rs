@@ -1238,4 +1238,63 @@ mod tests {
             Pattern::Struct { name: "Colour", fields, rest: false } if fields.len() == 3
         ));
     }
+
+    #[test]
+    fn enum_variants_and_struct_fields_carry_docs() {
+        let source = r#"
+            enum Msg {
+                /// nothing to say
+                Quiet,
+                Loud(i32),
+            }
+            struct Point {
+                /// the horizontal coordinate
+                x: i32,
+                y: i32,
+            }
+        "#;
+        let (statements, errors) = recovered(source);
+        assert!(errors.is_empty(), "a documented member parses: {errors:?}");
+
+        let mut members = statements.iter().filter_map(|statement| match statement {
+            Statement::Item(Item { kind: ItemKind::Enum(e), .. }) => {
+                Some((e.member_docs.clone(), e.variants[0].name_span))
+            },
+            Statement::Item(Item { kind: ItemKind::Struct(s), .. }) => {
+                Some((s.member_docs.clone(), s.fields[0].name_span))
+            },
+            _ => None,
+        });
+
+        let (docs, quiet) = members.next().expect("the enum");
+        assert_eq!(docs.len(), 1, "only the documented variant is filed: {docs:?}");
+        assert_eq!(docs[0], (quiet, Box::from([" nothing to say"])));
+
+        let (docs, x) = members.next().expect("the struct");
+        assert_eq!(docs.len(), 1, "only the documented field is filed: {docs:?}");
+        assert_eq!(docs[0], (x, Box::from([" the horizontal coordinate"])));
+    }
+
+    #[test]
+    fn declarations_span_their_name_alone() {
+        let source = "fn add(): i32 { 1 }\nstruct Point { x: i32 }\nenum Msg { Quiet }";
+        let (statements, errors) = recovered(source);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let named: Vec<_> = statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Item(Item { kind, .. }) => match kind {
+                    ItemKind::Fn(f) => Some(f.name_span),
+                    ItemKind::Struct(s) => Some(s.name_span),
+                    ItemKind::Enum(e) => Some(e.name_span),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .map(|span| &source[span.start.0 as usize..span.end.0 as usize])
+            .collect();
+
+        assert_eq!(named, ["add", "Point", "Msg"], "the name alone, not the keyword");
+    }
 }
