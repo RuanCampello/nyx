@@ -16,6 +16,9 @@ use std::{
 };
 
 /// **std** modules loaded eagerly so their inherent methods and interface are always in scope without an explicit `use`
+///
+/// An editor session loads every `std` module instead, so features answer for the
+/// whole library and not only the part this program happens to reach
 const PRELUDE: &[&str] = &[
     "int.nyx",
     "float.nyx",
@@ -53,6 +56,7 @@ struct GraphBuilder<'a, 'src, F> {
     edges: Vec<(usize, usize)>,
     in_flight: HashSet<PathBuf>,
     recover: bool,
+    editor: bool,
     diagnostics: Vec<RichDiagnostic>,
 }
 
@@ -66,6 +70,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     fs: &F,
     arena: &'src bumpalo::Bump,
     recover: bool,
+    editor: bool,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
     let canonical = fs
         .canonicalise(entry)
@@ -80,11 +85,12 @@ pub(super) fn build_graph<'src, F: FileSystem>(
         edges: Vec::new(),
         in_flight: HashSet::new(),
         recover,
+        editor,
         diagnostics: Vec::new(),
     };
 
     let entry = builder.discover(canonical, None)?;
-    builder.discover_prelude()?;
+    builder.discover_std()?;
 
     // interface default methods are injected once here, up front, so every
     // later pass reads the same already-completed AST without re-injecting
@@ -170,9 +176,14 @@ impl<'src> ModuleGraph<'src> {
 }
 
 impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
-    fn discover_prelude(&mut self) -> Result<(), ModuleError> {
-        for name in PRELUDE {
-            let path = self.resolver.std_root().join(name);
+    fn discover_std(&mut self) -> Result<(), ModuleError> {
+        let root = self.resolver.std_root();
+        let modules = match self.editor {
+            true => self.fs.modules_in(root),
+            false => PRELUDE.iter().map(|name| root.join(name)).collect(),
+        };
+
+        for path in modules {
             let Ok(canonical) = self.fs.canonicalise(&path) else {
                 continue;
             };

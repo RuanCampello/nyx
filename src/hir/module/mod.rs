@@ -101,6 +101,22 @@ pub enum ModuleError {
 pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, std::io::Error>;
     fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
+
+    /// every `.nyx` module sitting directly in `dir`, in a stable order
+    fn modules_in(&self, dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+
+        let mut modules: Vec<_> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "nyx"))
+            .collect();
+        modules.sort_unstable();
+
+        modules
+    }
 }
 
 impl<'hir> ModuleLoader<'hir, FS> {
@@ -161,9 +177,15 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         // parsing and graph construction do not touch the HIR, the lowering
         // scope is only introduced once the graph is in hand
-        let mut graph =
-            graph::build_graph(entry.as_ref(), &self.resolver, &self.fs, arena, self.recover)
-                .map_err(|err| (Vec::new(), err))?;
+        let mut graph = graph::build_graph(
+            entry.as_ref(),
+            &self.resolver,
+            &self.fs,
+            arena,
+            self.recover,
+            self.analyse_templates,
+        )
+        .map_err(|err| (Vec::new(), err))?;
 
         let mut scope = Scope::new(arena);
         scope.recover = self.recover;
@@ -189,7 +211,13 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         for &idx in &order {
             scope.in_std = graph.nodes[idx].in_std;
-            if let Err(err) = scope.extend(&declarations[idx], arena) {
+            if let Err(err) = scope.extend_types(&declarations[idx]) {
+                scope.soft(err).map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
+            }
+        }
+        for &idx in &order {
+            scope.in_std = graph.nodes[idx].in_std;
+            if let Err(err) = scope.extend_items(&declarations[idx], arena) {
                 scope.soft(err).map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
             }
         }

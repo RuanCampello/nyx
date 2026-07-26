@@ -70,11 +70,11 @@ fn build_demand<'src>(
         stack.push(main);
     }
 
-    // an editor keeps every project function, reachable from `main` or not,
-    // so features work anywhere in the project
+    // an editor keeps every declared function, reachable from `main` or not, so
+    // features answer over the whole project and the whole of std
     if keep_all {
-        for (&id, &(_, seed)) in function_map.iter() {
-            if seed && demand.insert(id) {
+        for &id in function_map.keys() {
+            if demand.insert(id) {
                 stack.push(id);
             }
         }
