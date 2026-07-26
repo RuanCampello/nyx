@@ -108,26 +108,6 @@ fn scan(src: &str) -> Vec<Raw<'_>> {
                 raws.push(Raw { start, end: i, kind, text: &src[start..i] });
             },
 
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                let start = i;
-                i += 2;
-                let mut depth = 1;
-                while i < len && depth > 0 {
-                    match (bytes[i], bytes.get(i + 1)) {
-                        (b'/', Some(&b'*')) => {
-                            depth += 1;
-                            i += 2;
-                        },
-                        (b'*', Some(&b'/')) => {
-                            depth -= 1;
-                            i += 2;
-                        },
-                        _ => i += 1,
-                    }
-                }
-                raws.push(Raw { start, end: i, kind: RawKind::Comment, text: &src[start..i] });
-            },
-
             b'"' | b'\'' => {
                 let start = i;
                 i += 1;
@@ -945,16 +925,6 @@ mod tests {
                 comment //// divider
                 keyword fn
                 function.declaration go"#]],
-        );
-    }
-
-    #[test]
-    fn block_comment_splits_per_line() {
-        check(
-            "/* a\nb */",
-            expect![[r#"
-            comment /* a
-            comment b */"#]],
         );
     }
 }

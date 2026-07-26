@@ -56,9 +56,7 @@ hi def link nyxField Identifier
 
 " Comments
 syn match nyxLineComment "\/\/.*$"
-syn region nyxBlockComment start="/\*" end="\*/"
 hi def link nyxLineComment Comment
-hi def link nyxBlockComment Comment
 
 " Strings and Interpolation
 syn match nyxInterpolation "{[a-zA-Z_][a-zA-Z0-9_]*}" contained

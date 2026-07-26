@@ -13,10 +13,26 @@ pub enum Context<'s> {
     Path { qualifier: String },
     /// anywhere else, offering everything nameable
     Open,
+    /// inside a comment or a literal, where prose is not code and nothing is
+    /// nameable
+    Inert,
+}
+
+/// What the text before the cursor is still inside of
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Code,
+    Comment,
+    Str,
+    Char,
 }
 
 pub fn context_at(text: &str, offset: usize) -> Context<'_> {
     let before = &text[..offset.min(text.len())];
+    if mode_at(before) != Mode::Code {
+        return Context::Inert;
+    }
+
     let before = before.trim_end_matches(is_name_char);
 
     if let Some(head) = before.strip_suffix('.') {
@@ -61,6 +77,7 @@ pub fn candidates<'a>(
             .iter()
             .collect(),
         Context::Open => scope.unwrap_or_default().iter().chain(index.globals.iter()).collect(),
+        Context::Inert => Vec::new(),
     }
 }
 
@@ -75,6 +92,31 @@ pub fn scope_at(analysis: &SemanticAnalysis, position: nyx::BytePos) -> Option<&
         .filter(|(body, _)| body.start <= position && position < body.end)
         .min_by_key(|(body, _)| body.end.0 - body.start.0)
         .map(|(_, locals)| locals.as_slice())
+}
+
+/// replay the cursor's own line to see what it is still inside of
+fn mode_at(before: &str) -> Mode {
+    let line = before.rsplit('\n').next().unwrap_or(before);
+    let mut mode = Mode::Code;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        mode = match (mode, c) {
+            (Mode::Code, '/') if chars.peek() == Some(&'/') => Mode::Comment,
+            (Mode::Code, '"') => Mode::Str,
+            (Mode::Code, '\'') => Mode::Char,
+            (Mode::Code, _) => Mode::Code,
+            (Mode::Comment, _) => Mode::Comment,
+            (Mode::Str | Mode::Char, '\\') => {
+                chars.next();
+                mode
+            },
+            (Mode::Str, '"') | (Mode::Char, '\'') => Mode::Code,
+            (Mode::Str | Mode::Char, _) => mode,
+        };
+    }
+
+    mode
 }
 
 fn receiver_type(
@@ -176,5 +218,25 @@ mod tests {
     #[test]
     fn a_chained_call_has_no_plain_receiver() {
         assert_eq!(context("f().|"), Context::Open);
+    }
+
+    #[test]
+    fn prose_is_never_completed() {
+        assert_eq!(context("/// Creates a new col|"), Context::Inert);
+        assert_eq!(context("let x = 1; // to|"), Context::Inert);
+        assert_eq!(context("println(\"self.|"), Context::Inert);
+        assert_eq!(context("let c = '\\'|"), Context::Inert);
+    }
+
+    #[test]
+    fn prose_ends_with_its_line() {
+        assert_eq!(context("// a note\nlet x = |"), Context::Open);
+        assert_eq!(context("/// docs\nPoint::|"), Context::Path { qualifier: "Point".into() });
+        assert_eq!(context("println(\"hi\"); p.|"), Context::Member { receiver: "p" });
+        assert_eq!(
+            context("let s = \"unterminated\nlet p = Point::|"),
+            Context::Path { qualifier: "Point".into() },
+            "an unterminated literal is confined to its line"
+        );
     }
 }

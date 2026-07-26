@@ -91,14 +91,14 @@ pub struct ArrayTable {
 #[derive(Debug, Clone)]
 pub(in crate::hir) struct FunctionSignature {
     pub name: SymbolId,
-    /// The receiver, when declared, is [params][Self::params]`[0]`
+    /// the receiver, when declared, is [params][Self::params]`[0]`
     pub params: Vec<Type>,
     pub return_type: Type,
     pub kind: FunctionKind,
     pub owner: Owner,
     pub is_const: bool,
     pub is_unsafe: bool,
-    /// Declared with a `self` receiver, which [FunctionKind] cannot answer:
+    /// declared with a `self` receiver, which [FunctionKind] cannot answer:
     /// an intrinsic method has one without being a [FunctionKind::Method]
     pub has_receiver: bool,
     pub decl_span: Span,
@@ -932,7 +932,7 @@ fn build_impl_substitution(implementation: &statement::Impl<'_>, args: &[Type]) 
         .collect()
 }
 
-/// The compiler implementation behind a method marked `@intrinsic`
+/// the compiler implementation behind a method marked `@intrinsic`
 #[inline(always)]
 pub(in crate::hir) fn intrinsic_method(receiver: &str, method: &str) -> Option<Intrinsic> {
     match (receiver, method) {

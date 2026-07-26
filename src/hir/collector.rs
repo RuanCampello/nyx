@@ -38,11 +38,7 @@ impl<'hir> Scope<'hir> {
         self.extend_items(declarations, arena)
     }
 
-    /// Register the nominal types a module introduces
-    ///
-    /// Split from [Scope::extend_items] so a multi-module compilation can name
-    /// every type before anything resolves one: two modules may reference each
-    /// other's types, which no ordering of the graph can satisfy
+    /// register the nominal types a module introduces
     pub fn extend_types<'d, 's>(
         &mut self,
         declarations: &Declarations<'d, 's>,
@@ -58,7 +54,7 @@ impl<'hir> Scope<'hir> {
         self.lower_enums(&enums)
     }
 
-    /// Extend the namespace with everything that can name a nominal type
+    /// extend the namespace with everything that can name a nominal type
     pub fn extend_items<'d, 's>(
         &mut self,
         declarations: &Declarations<'d, 's>,
@@ -428,10 +424,7 @@ impl<'hir> Scope<'hir> {
         Ok(())
     }
 
-    /// The compiler implementation a declaration marked `@intrinsic` claims
-    ///
-    /// A claim the compiler cannot honour is reported and the declaration falls
-    /// back to an ordinary function, whose empty body then fails on its own
+    /// the compiler implementation a declaration marked `@intrinsic` claims
     pub(in crate::hir) fn declared_intrinsic<'h>(
         &mut self,
         function: &statement::Function<'h>,

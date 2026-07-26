@@ -143,6 +143,9 @@ struct Walker<'a, 'h> {
     typeck: &'a TypeckResults,
     locals: &'a IndexVec<LocalId, Local>,
     index: &'a Index,
+    /// resolves a path span back to its text, the only place segment boundaries
+    /// survive: the hir keeps one span for the whole path
+    map: &'a SourceMap,
     /// position of the function being walked within [Index::functions]
     function: u32,
     /// resolves a callee by its signature id, [Function::id] is not the
@@ -176,6 +179,7 @@ enum Importable {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionKind {
+    Module,
     Function,
     Method,
     Field,
@@ -237,7 +241,7 @@ pub enum Binding {
     Pattern,
 }
 
-/// How many fields/variants a hover shows before truncating with `/* … */`
+/// How many fields/variants a hover shows before truncating with `// …`
 const MAX_HOVER_ITEMS: usize = 5;
 
 /// A single compile-time error in structured form so consumers can render it as richly as the CLI
@@ -404,6 +408,15 @@ impl FnInfo {
     fn implementor(&self, index: &Index) -> Option<String> {
         implementor_of(self.owner, index, &self.generics)
     }
+
+    /// the type a `.` call reaches this through, `none` for an associated function
+    ///
+    /// [FunctionKind] cannot answer this: an intrinsic method takes a receiver
+    /// without being a [FunctionKind::Method]
+    fn receiver(&self, index: &Index) -> Option<Type> {
+        let first = self.params.first()?;
+        (index.symbols.get(self.locals[first.id].name) == "self").then_some(first.typ)
+    }
 }
 
 impl ConstInfo {
@@ -421,6 +434,26 @@ impl ConstInfo {
 }
 
 impl<'a, 'h> Walker<'a, 'h> {
+    fn qualified(&mut self, path: Span, callee: HoverTarget, name_span: Span, owner: Type) {
+        let Some((qualifier, name)) = split_path(self.map, path) else {
+            return;
+        };
+
+        self.hover.push((name, callee));
+        if name_span != Span::default() {
+            self.defs.insert(name, name_span);
+        }
+
+        self.hover
+            .push((qualifier, HoverTarget::Nominal { typ: owner, function: None }));
+        match nominal_name_span(owner, self.index) {
+            Some(target) if target != Span::default() => {
+                self.defs.insert(qualifier, target);
+            },
+            _ => {},
+        }
+    }
+
     fn block(&mut self, block: &Block<'h>) {
         for stmt in block.statements {
             self.stmt(stmt);
@@ -517,10 +550,14 @@ impl<'a, 'h> Walker<'a, 'h> {
             _ => None,
         };
 
-        if let Some((.., name_span)) = variant
-            && name_span != Span::default()
-        {
-            self.defs.insert(expr.span, name_span);
+        if let Some((enumeration, index, name_span)) = variant {
+            if name_span != Span::default() {
+                self.defs.insert(expr.span, name_span);
+            }
+            if let ExpressionKind::Call { callee, .. } = &expr.kind {
+                let target = HoverTarget::Variant { enumeration, variant: index };
+                self.qualified(callee.span, target, name_span, Type::enumerable(enumeration));
+            }
         }
 
         let resolved = match &expr.kind {
@@ -593,8 +630,12 @@ impl<'a, 'h> Walker<'a, 'h> {
                 self.defs.insert(expr.span, constant.name_span);
             },
             ExpressionKind::Call { callee, args } => {
-                if let Some((_, target)) = resolved {
+                if let Some((position, target)) = resolved {
                     self.defs.insert(callee.span, target.name_span);
+                    if let Owner::Inherent(typ) | Owner::Interface { on: typ, .. } = target.owner {
+                        let hover = HoverTarget::Function(position);
+                        self.qualified(callee.span, hover, target.name_span, typ);
+                    }
                 }
                 for arg in *args {
                     self.expr(arg);
@@ -744,6 +785,7 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
             typeck: &func.typeck,
             locals: &func.locals,
             index: &index,
+            map,
             function: at,
             functions: &by_id,
             constants: &by_name,
@@ -958,10 +1000,12 @@ fn module_paths(
 ) -> HashMap<FileId, String> {
     map.files()
         .map(|file| {
-            let module = match file.name.strip_prefix(root) {
-                Ok(relative) => module_path(project, relative),
-                Err(_) => match file.name.strip_prefix(std_root) {
-                    Ok(relative) => module_path("std", relative),
+            // std answers for its own files first: a project whose root
+            // contains them (nyx itself) would otherwise claim them
+            let module = match file.name.strip_prefix(std_root) {
+                Ok(relative) => module_path("std", relative),
+                Err(_) => match file.name.strip_prefix(root) {
+                    Ok(relative) => module_path(project, relative),
                     Err(_) => file
                         .name
                         .file_stem()
@@ -1052,6 +1096,7 @@ fn type_key(typ: Type, hir: &Index) -> Option<String> {
 /// collect every name completion can offer, keyed by how it is reached
 fn completions(hir: &Index, map: &SourceMap) -> Completions {
     let mut out = Completions::default();
+    register_modules(&mut out, hir);
 
     for (idx, structure) in hir.structs.iter().enumerate() {
         let name = base_name(hir.symbols.get(structure.name));
@@ -1070,7 +1115,7 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
         }
 
         if structure.decl_span != Span::default() {
-            out.globals.push(Completion {
+            let candidate = Completion {
                 label: name,
                 kind: CompletionKind::Struct,
                 detail: format!(
@@ -1079,7 +1124,8 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
                 ),
                 docs: hir.docs(structure.decl_span),
                 type_key: None,
-            });
+            };
+            export(&mut out, hir, map, structure.decl_span, candidate);
         }
     }
 
@@ -1100,7 +1146,7 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
         }
 
         if enumeration.decl_span != Span::default() {
-            out.globals.push(Completion {
+            let candidate = Completion {
                 label: name,
                 kind: CompletionKind::Enum,
                 detail: format!(
@@ -1109,7 +1155,8 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
                 ),
                 docs: hir.docs(enumeration.decl_span),
                 type_key: None,
-            });
+            };
+            export(&mut out, hir, map, enumeration.decl_span, candidate);
         }
     }
 
@@ -1126,7 +1173,7 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
             });
         }
 
-        out.globals.push(Completion {
+        let candidate = Completion {
             label: name,
             kind: CompletionKind::Interface,
             detail: format!(
@@ -1135,31 +1182,33 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
             ),
             docs: hir.docs(interface.decl_span),
             type_key: None,
-        });
+        };
+        export(&mut out, hir, map, interface.decl_span, candidate);
     }
 
     for func in &hir.functions {
         let qualified = hir.symbols.get(func.name);
+        let receiver = func.receiver(hir);
         let candidate = Completion {
             label: base_name(qualified),
-            kind: match func.kind {
-                FunctionKind::Method(_) => CompletionKind::Method,
-                _ => CompletionKind::Function,
+            kind: match receiver {
+                Some(_) => CompletionKind::Method,
+                None => CompletionKind::Function,
             },
             detail: signature(func, hir),
             docs: hir.docs(func.decl_span),
             type_key: type_key(func.return_type, hir),
         };
 
-        match (&func.kind, implementor_of(func.owner, hir, &[])) {
-            (FunctionKind::Method(method), _) => {
-                let key = base_name(&format_type(through_reference(method.receiver), hir, &[]));
+        match (receiver, implementor_of(func.owner, hir, &[])) {
+            (Some(receiver), _) => {
+                let key = base_name(&format_type(through_reference(receiver), hir, &[]));
                 out.members.entry(key).or_default().push(candidate);
             },
-            (_, Some(implementor)) => {
+            (None, Some(implementor)) => {
                 out.associated.entry(base_name(&implementor)).or_default().push(candidate);
             },
-            (_, None) => {
+            (None, None) => {
                 if let Some(module) = hir.module_of(map, func.decl_span) {
                     out.associated.entry(module).or_default().push(candidate.clone());
                 }
@@ -1199,6 +1248,46 @@ fn completions(hir: &Index, map: &SourceMap) -> Completions {
     out
 }
 
+fn export(
+    out: &mut Completions,
+    hir: &Index,
+    map: &SourceMap,
+    decl_span: Span,
+    candidate: Completion,
+) {
+    if let Some(module) = hir.module_of(map, decl_span) {
+        out.associated.entry(module).or_default().push(candidate.clone());
+    }
+    out.globals.push(candidate);
+}
+
+fn register_modules(out: &mut Completions, hir: &Index) {
+    for path in hir.modules.values() {
+        let mut prefix = String::new();
+
+        for segment in path.split("::") {
+            let full = match prefix.is_empty() {
+                true => segment.to_owned(),
+                false => format!("{prefix}::{segment}"),
+            };
+            let candidate = Completion {
+                label: segment.to_owned(),
+                kind: CompletionKind::Module,
+                detail: format!("mod {full}"),
+                docs: None,
+                type_key: None,
+            };
+
+            match prefix.is_empty() {
+                true => out.globals.push(candidate),
+                false => out.associated.entry(prefix.clone()).or_default().push(candidate),
+            }
+
+            prefix = full;
+        }
+    }
+}
+
 /// drop repeats a monomorphised template leaves behind, keeping source order
 fn dedup_by_label(list: &mut Vec<Completion>) {
     let mut seen = std::collections::HashSet::new();
@@ -1215,6 +1304,19 @@ fn through_reference(typ: Type) -> Type {
         TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => Type::new(to.kind()),
         _ => typ,
     }
+}
+
+/// Split a `Qualifier::name` span into the qualifier and the trailing name,
+/// `none` when the path has no qualifier
+fn split_path(map: &SourceMap, path: Span) -> Option<(Span, Span)> {
+    let (file, range) = map.local_range(path);
+    let at = map.source(file).get(range)?.rfind("::")?;
+
+    let start = path.start.0;
+    let qualifier = Span::new(path.start, nyx::BytePos(start + at as u32));
+    let name = Span::new(nyx::BytePos(start + at as u32 + 2), path.end);
+
+    Some((qualifier, name))
 }
 
 #[inline]
@@ -1263,7 +1365,15 @@ impl Index {
             None => format!("{owner}::{name} = {}", variant.value),
         };
 
-        HoverInfo { path, ty, layout: None, docs: self.docs(variant.name_span) }
+        // the variant's own layout, not the enum's: a fieldless one carries
+        // nothing, so it is zero-sized like an empty struct
+        let layout = match variant.payload {
+            Some(payload) if is_open(payload, self) => None,
+            Some(payload) => layout_of(self, payload),
+            None => Some((0, 1)),
+        };
+
+        HoverInfo { path, ty, layout, docs: self.docs(variant.name_span) }
     }
 
     fn interface_hover(&self, at: usize, map: &SourceMap) -> HoverInfo {
@@ -1521,13 +1631,16 @@ fn signature(func: &FnInfo, hir: &Index) -> String {
     if func.is_unsafe {
         out.push_str("@unsafe\n");
     }
+    if matches!(func.kind, FunctionKind::Intrinsic(_)) {
+        out.push_str("@intrinsic\n");
+    }
 
     let flags = [(func.is_pub, "pub "), (func.inline, "inline "), (func.is_const, "const ")];
 
     out.extend(flags.into_iter().filter_map(|(flag, word)| flag.then_some(word)));
 
     out.push_str("fn ");
-    out.push_str(&short_name(hir.symbols.get(func.name)));
+    out.push_str(&function_name(func, hir));
 
     let params: Vec<_> = func
         .params
@@ -1590,11 +1703,11 @@ fn enum_def(enumeration: &Enum, hir: &Index) -> String {
     format!("enum {name} {{\n{}\n}}", truncated(variants, enumeration.variants.len()))
 }
 
-/// join the first [`MAX_HOVER_ITEMS`] lines, eliding the rest with `/* … */`
+/// join the first [`MAX_HOVER_ITEMS`] lines, eliding the rest with `// …`
 fn truncated(lines: impl Iterator<Item = String>, total: usize) -> String {
     let mut lines: Vec<_> = lines.take(MAX_HOVER_ITEMS).collect();
     if total > MAX_HOVER_ITEMS {
-        lines.push("    /* … */".to_owned());
+        lines.push("    // …".to_owned());
     }
 
     lines.join("\n")
@@ -1617,6 +1730,13 @@ fn format_type(typ: Type, hir: &Index, generics: &[SymbolId]) -> String {
                 _ => format!("&{typ}"),
             }
         },
+        TypeKind::Raw { mutable, to } => {
+            let typ = format_type(Type::new(to.kind()), hir, generics);
+            match mutable {
+                true => format!("*mut {typ}"),
+                _ => format!("*{typ}"),
+            }
+        },
         TypeKind::Array(id) => {
             let array = hir.arrays[id];
             format!("[{}; {}]", format_type(array.element, hir, generics), array.len)
@@ -1629,6 +1749,17 @@ fn format_type(typ: Type, hir: &Index, generics: &[SymbolId]) -> String {
             }
         },
         kind => kind.to_string(),
+    }
+}
+
+fn function_name(func: &FnInfo, hir: &Index) -> String {
+    let qualified = hir.symbols.get(func.name);
+    let tail = qualified.rsplit("::").next().unwrap_or(qualified);
+    let named = !func.generics.is_empty() && tail.matches('$').count() == func.generics.len();
+
+    match named {
+        true => nominal_name(func.name, &func.generics, hir),
+        false => short_name(qualified),
     }
 }
 
@@ -2249,6 +2380,69 @@ fn main() {
         let offered = offered(&a, RICH, "use std::mem::");
 
         assert!(offered.contains(&"size_of".to_owned()), "{offered:?}");
+    }
+
+    #[test]
+    fn a_root_offers_its_submodules() {
+        let a = analyse("complete_submodule", RICH);
+
+        let under_std = offered(&a, RICH, "use std::");
+        assert!(under_std.contains(&"io".to_owned()), "an unimported module: {under_std:?}");
+        assert!(under_std.contains(&"mem".to_owned()), "{under_std:?}");
+
+        let roots = offered(&a, RICH, "    let size = ");
+        assert!(roots.contains(&"std".to_owned()), "the root itself is nameable: {roots:?}");
+    }
+
+    #[test]
+    fn a_module_path_offers_the_types_it_exports() {
+        let a = analyse("complete_module_type", RICH);
+        let exports: Vec<_> = a.completions.associated["std::optional"]
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+
+        assert!(
+            exports.contains(&"Optional"),
+            "a type is reachable through its module: {exports:?}"
+        );
+    }
+
+    #[test]
+    fn an_intrinsic_method_completes_and_hovers() {
+        let source = "fn main() { let s = \"nyx\"; let n = s.len(); }";
+        let a = analyse("intrinsic", source);
+        assert!(a.ok, "{:?}", a.diagnostics);
+
+        let offered = offered(&a, source, "let n = s.");
+        assert!(offered.contains(&"len".to_owned()), "len is offered on a str: {offered:?}");
+
+        let signature = a
+            .completions
+            .members
+            .get("str")
+            .and_then(|items| items.iter().find(|item| item.label == "len"))
+            .map(|item| item.detail.clone())
+            .expect("str::len is indexed");
+        assert!(signature.starts_with("@intrinsic\n"), "the marker is shown: {signature}");
+        assert!(signature.contains("fn len(&self): uptr"), "{signature}");
+    }
+
+    #[test]
+    fn a_generic_signature_names_its_parameters_as_declared() {
+        let a = analyse("generic_render", "use std::ptr;\nfn main() { }");
+        let rendered = a
+            .completions
+            .globals
+            .iter()
+            .find(|item| item.label == "add_mut")
+            .map(|item| item.detail.clone())
+            .expect("std::ptr::add_mut is indexed");
+
+        assert!(
+            rendered.contains("fn add_mut<T>(p: *mut T, count: uptr): *mut T"),
+            "generics read back as written, not as the mangler numbered them: {rendered}"
+        );
     }
 
     #[test]

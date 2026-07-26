@@ -39,6 +39,10 @@ struct State {
 /// still perceptible as "loading … done" rather than an invisible flash
 const MIN_PROGRESS: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How long a client gets to answer a request whose answer the server does not
+/// need, so one that never replies costs a timeout rather than the session
+const CLIENT_ACK: std::time::Duration = std::time::Duration::from_secs(3);
+
 static PROGRESS_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl Lsp {
@@ -79,17 +83,15 @@ impl Lsp {
             };
 
             let started = std::time::Instant::now();
-            let progress = match state.progress.load(Ordering::Relaxed)
-                && state.analyses.read().await.get(&url).is_none()
-            {
-                true => progress_begin(&client, "nyx: analysing project").await,
+            let analysis = tokio::task::spawn_blocking(move || diagnostics::run(entry, overlays));
+
+            let cold = state.analyses.read().await.get(&url).is_none();
+            let progress = match state.progress.load(Ordering::Relaxed) && cold {
+                true => progress_begin(&client, "nyx: loading project and std").await,
                 false => None,
             };
 
-            let analysis =
-                tokio::task::spawn_blocking(move || diagnostics::run(entry, overlays)).await;
-
-            if let Ok(analysis) = analysis
+            if let Ok(analysis) = analysis.await
                 && state.generation(&url) == generation
             {
                 let ok = analysis.ok;
@@ -97,7 +99,7 @@ impl Lsp {
 
                 if ok {
                     state.mark_analysed(&url, generation);
-                    client.inlay_hint_refresh().await.ok();
+                    let _ = tokio::time::timeout(CLIENT_ACK, client.inlay_hint_refresh()).await;
                 }
             }
 
@@ -172,6 +174,9 @@ impl LanguageServer for Lsp {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".into(), ":".into()]),
+                    completion_item: Some(CompletionOptionsCompletionItem {
+                        label_details_support: Some(true),
+                    }),
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -281,9 +286,15 @@ impl LanguageServer for Lsp {
             return Ok(None);
         };
 
-        let hit = analysis.goto_definitions.iter().find(|(use_span, _)| {
-            map.span_data(**use_span).file == file && use_span.start <= pos && pos < use_span.end
-        });
+        let hit = analysis
+            .goto_definitions
+            .iter()
+            .filter(|(use_span, _)| {
+                map.span_data(**use_span).file == file
+                    && use_span.start <= pos
+                    && pos < use_span.end
+            })
+            .min_by_key(|(use_span, _)| use_span.end.0 - use_span.start.0);
 
         Ok(hit.and_then(|(_, def)| {
             let def_file = map.span_data(*def).file;
@@ -589,17 +600,25 @@ fn already_annotated(map: &nyx::SourceMap, span: nyx::Span) -> bool {
     map.source_after(span.end).trim_start().starts_with(':')
 }
 
+/// a candidate rendered the way [Lsp::hover] renders a declaration, so the two popups read alike
 fn completion_item(candidate: &Completion) -> CompletionItem {
+    let mut value = fenced_text(&candidate.detail);
+    if let Some(docs) = &candidate.docs {
+        value.push_str("\n\n---\n\n");
+        value.push_str(docs);
+    }
+
     CompletionItem {
         label: candidate.label.clone(),
-        kind: Some(completion_kind(candidate.kind)),
-        detail: Some(candidate.detail.clone()),
-        documentation: candidate.docs.as_ref().map(|docs| {
-            Documentation::MarkupContent(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: docs.clone(),
-            })
+        label_details: Some(CompletionItemLabelDetails {
+            detail: candidate.detail.lines().next_back().map(str::to_owned),
+            description: None,
         }),
+        kind: Some(completion_kind(candidate.kind)),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        })),
         ..Default::default()
     }
 }
@@ -607,6 +626,7 @@ fn completion_item(candidate: &Completion) -> CompletionItem {
 #[inline(always)]
 const fn completion_kind(kind: CompletionKind) -> CompletionItemKind {
     match kind {
+        CompletionKind::Module => CompletionItemKind::MODULE,
         CompletionKind::Function => CompletionItemKind::FUNCTION,
         CompletionKind::Method => CompletionItemKind::METHOD,
         CompletionKind::Field => CompletionItemKind::FIELD,
@@ -650,17 +670,16 @@ fn content_modified() -> tower_lsp::jsonrpc::Error {
 /// open a work-done progress (the editor's load spinner), returning the token to
 /// close it with via [progress_end]
 ///
-/// `none` if the client declined to create it
+/// `none` if the client declined to create it, or was too slow to say
 async fn progress_begin(client: &Client, title: &str) -> Option<ProgressToken> {
     let token = format!("nyx/{}", PROGRESS_SEQ.fetch_add(1, Ordering::Relaxed));
     let token = ProgressToken::String(token);
 
-    client
-        .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+    let created =
+        client.send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
             token: token.clone(),
-        })
-        .await
-        .ok()?;
+        });
+    tokio::time::timeout(CLIENT_ACK, created).await.ok()?.ok()?;
 
     client
         .send_notification::<notification::Progress>(ProgressParams {
