@@ -595,6 +595,29 @@ async fn a_completion_carries_a_highlighted_signature() {
 }
 
 #[tokio::test]
+async fn a_field_is_labelled_by_its_name_alone() {
+    let src = "struct Colour { r: u8, g: u8, b: u8 }\n\
+               fn main() { let c = Colour { r: 0, g: 0, b: 0 }; let a = c.r; }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    assert!(client.wait_diagnostics(&url).await.is_empty());
+
+    let receiver = position_of(src, "c.r");
+    let after_dot = Position::new(receiver.line, receiver.character + 2);
+
+    let items = client.completion(&url, after_dot).await;
+    let item = items.iter().find(|item| item.label == "r").expect("the field is offered");
+    let details = item.label_details.as_ref().expect("a field shows its type");
+
+    assert_eq!(item.label, "r");
+    assert_eq!(
+        details.detail, None,
+        "`detail` is rendered hard against the label, so a type there reads `ru8`"
+    );
+    assert_eq!(details.description.as_deref(), Some("u8"), "the type is a column of its own");
+}
+
+#[tokio::test]
 async fn an_enum_variant_hover_reports_its_layout() {
     let src = r#"
         struct Payload { a: i32, b: i32 }

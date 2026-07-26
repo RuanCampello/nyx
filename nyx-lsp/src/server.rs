@@ -611,8 +611,8 @@ fn completion_item(candidate: &Completion) -> CompletionItem {
     CompletionItem {
         label: candidate.label.clone(),
         label_details: Some(CompletionItemLabelDetails {
-            detail: candidate.detail.lines().next_back().map(str::to_owned),
-            description: None,
+            detail: None,
+            description: candidate.detail.lines().next_back().map(str::to_owned),
         }),
         kind: Some(completion_kind(candidate.kind)),
         documentation: Some(Documentation::MarkupContent(MarkupContent {
