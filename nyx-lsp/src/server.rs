@@ -1,11 +1,11 @@
 //! The Nyx language server: state, request handlers, and the debounced,
 //! cancellable analysis pipeline
 
-use crate::analysis::{SemanticAnalysis, SymbolKind};
+use crate::analysis::{Completion, CompletionKind, SemanticAnalysis, SymbolKind};
 use crate::convert::{self, Encoding};
 use crate::document::{self, Documents};
 use crate::feature::diagnostics::{self, DEBOUNCE};
-use crate::feature::{highlight, tokens};
+use crate::feature::{completion, highlight, tokens};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -170,6 +170,10 @@ impl LanguageServer for Lsp {
                     TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".into(), ":".into()]),
+                    ..Default::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
@@ -234,7 +238,8 @@ impl LanguageServer for Lsp {
             })
             .min_by_key(|(span, _)| span.end.0 - span.start.0);
 
-        Ok(hit.map(|(span, info)| {
+        Ok(hit.and_then(|(span, target)| {
+            let info = analysis.index.hover(*target, map)?;
             let mut value = String::new();
             if let Some(path) = &info.path {
                 value.push_str(&format!("{}\n\n", fenced_text(path)));
@@ -254,10 +259,10 @@ impl LanguageServer for Lsp {
             let contents =
                 HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value });
 
-            Hover {
+            Some(Hover {
                 contents,
                 range: Some(convert::span_to_range(map, *span, encoding)),
-            }
+            })
         }))
     }
 
@@ -311,12 +316,17 @@ impl LanguageServer for Lsp {
         let hints = analysis
             .inlay_hints
             .iter()
-            .filter(|(span, _)| map.span_data(*span).file == file && !already_annotated(map, *span))
-            .filter_map(|(span, ty)| {
-                let position = convert::span_to_range(map, *span, encoding).end;
+            .filter(|(span, ..)| {
+                map.span_data(*span).file == file && !already_annotated(map, *span)
+            })
+            .filter_map(|&(span, typ, function)| {
+                let position = convert::span_to_range(map, span, encoding).end;
                 (position >= range.start && position <= range.end).then(|| InlayHint {
                     position,
-                    label: InlayHintLabel::String(format!(": {ty}")),
+                    label: InlayHintLabel::String(format!(
+                        ": {}",
+                        analysis.index.hint(typ, function)
+                    )),
                     kind: Some(InlayHintKind::TYPE),
                     text_edits: None,
                     tooltip: None,
@@ -370,13 +380,44 @@ impl LanguageServer for Lsp {
         Ok(Some(DocumentSymbolResponse::Flat(symbols)))
     }
 
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let url = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let Some(text) = self.state.documents.read().await.text(url) else {
+            return Ok(None);
+        };
+        let Some((analysis, encoding)) = self.state.get_analysis_and_encoding(url).await else {
+            return Ok(None);
+        };
+
+        let offset = convert::position_to_offset(&text, position, encoding);
+        let context = completion::context_at(&text, offset);
+
+        let scope = match self.locate(&analysis.source_map, url, position).await {
+            Some((_, pos)) => completion::scope_at(&analysis, pos),
+            None => None,
+        };
+
+        let mut items: Vec<_> = completion::candidates(&analysis, &context, scope)
+            .into_iter()
+            .map(completion_item)
+            .collect();
+
+        if context == completion::Context::Open {
+            items.extend(completion::keywords().map(|keyword| CompletionItem {
+                label: keyword.to_owned(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                ..Default::default()
+            }));
+        }
+
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
     // clients (and their plugins) routinely request these even when we do not
     // advertise them. answering with an empty result avoids the json-rpc
     // "method not found" (-32601) replies that surface as editor error popups
-
-    async fn completion(&self, _: CompletionParams) -> Result<Option<CompletionResponse>> {
-        Ok(None)
-    }
 
     async fn signature_help(&self, _: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         Ok(None)
@@ -548,6 +589,36 @@ fn already_annotated(map: &nyx::SourceMap, span: nyx::Span) -> bool {
     map.source_after(span.end).trim_start().starts_with(':')
 }
 
+fn completion_item(candidate: &Completion) -> CompletionItem {
+    CompletionItem {
+        label: candidate.label.clone(),
+        kind: Some(completion_kind(candidate.kind)),
+        detail: Some(candidate.detail.clone()),
+        documentation: candidate.docs.as_ref().map(|docs| {
+            Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: docs.clone(),
+            })
+        }),
+        ..Default::default()
+    }
+}
+
+#[inline(always)]
+const fn completion_kind(kind: CompletionKind) -> CompletionItemKind {
+    match kind {
+        CompletionKind::Function => CompletionItemKind::FUNCTION,
+        CompletionKind::Method => CompletionItemKind::METHOD,
+        CompletionKind::Field => CompletionItemKind::FIELD,
+        CompletionKind::Variant => CompletionItemKind::ENUM_MEMBER,
+        CompletionKind::Struct => CompletionItemKind::STRUCT,
+        CompletionKind::Enum => CompletionItemKind::ENUM,
+        CompletionKind::Interface => CompletionItemKind::INTERFACE,
+        CompletionKind::Constant => CompletionItemKind::CONSTANT,
+        CompletionKind::Variable => CompletionItemKind::VARIABLE,
+    }
+}
+
 #[inline(always)]
 const fn symbol_kind(kind: SymbolKind) -> lsp_types::SymbolKind {
     match kind {
@@ -638,7 +709,9 @@ mod tests {
     fn analysis(ok: bool, hints: usize) -> SemanticAnalysis {
         SemanticAnalysis {
             ok,
-            inlay_hints: (0..hints).map(|_| (nyx::Span::default(), "i32".to_string())).collect(),
+            inlay_hints: (0..hints)
+                .map(|_| (nyx::Span::default(), nyx::hir::Type::default(), 0))
+                .collect(),
             ..Default::default()
         }
     }
