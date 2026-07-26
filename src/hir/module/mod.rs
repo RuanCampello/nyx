@@ -167,6 +167,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
 
         let mut scope = Scope::new(arena);
         scope.recover = self.recover;
+        scope.index_refs = self.analyse_templates;
         scope.symbols = self.symbols;
 
         for diagnostic in std::mem::take(&mut graph.diagnostics) {
@@ -226,7 +227,10 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             enums: scope.enums,
             arrays,
             constants: scope.constants.into_values().cloned().collect(),
+            interfaces: scope.interfaces.into_values().collect(),
             docs: scope.docs,
+            imports: scope.imports,
+            type_refs: scope.type_refs,
             symbols: scope.symbols,
             diagnostics,
         })

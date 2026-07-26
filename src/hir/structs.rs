@@ -254,7 +254,12 @@ impl<'a, 'h> Lowering<'a, 'h> {
                 }
             }
 
-            fields.push(StructField { name: field_symbol, typ, offset: 0 });
+            fields.push(StructField {
+                name: field_symbol,
+                typ,
+                offset: 0,
+                name_span: field.name_span,
+            });
         }
 
         let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
@@ -263,6 +268,7 @@ impl<'a, 'h> Lowering<'a, 'h> {
             id: self.map[&name],
             name,
             decl_span,
+            name_span: declaration.name_span,
             fields,
             repr,
             layout: Layout::default(),

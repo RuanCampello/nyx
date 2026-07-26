@@ -6,7 +6,7 @@
 
 use crate::{
     hir::{
-        Constant, SymbolId, SymbolTable, collector,
+        Constant, Owner, SymbolId, SymbolTable, collector,
         declarations::Declarations,
         error::{HirError, hir_error},
         lower,
@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 struct ConstDecl<'d, 's> {
     typ: Option<&'d str>,
+    owner: Owner,
     ast: &'d statement::Const<'s>,
 }
 
@@ -82,10 +83,12 @@ where
         let constant = arena.alloc(Constant {
             name: symbol_id,
             typ: expected_type,
+            owner: decl.owner,
             typeck,
             value,
             is_pub: decl.ast.is_pub,
             decl_span: decl.ast.span,
+            name_span: decl.ast.name_span,
         });
         scope.constants.insert(symbol_id, constant);
     }
@@ -109,7 +112,7 @@ where
             scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name, previous }))?;
             continue;
         }
-        decls.insert(symbol_id, ConstDecl { typ: None, ast: c });
+        decls.insert(symbol_id, ConstDecl { typ: None, owner: Owner::Free, ast: c });
     }
 
     for imp in &declarations.impls {
@@ -122,7 +125,15 @@ where
                 continue;
             }
 
-            decls.insert(symbol_id, ConstDecl { typ: Some(imp.name), ast: c });
+            let owner = match (scope.lookup_named_type(imp.name), imp.interface) {
+                (Some(on), Some(interface)) => {
+                    Owner::Interface { on, interface: scope.symbols.insert(interface) }
+                },
+                (Some(on), None) => Owner::Inherent(on),
+                (None, _) => Owner::Free,
+            };
+
+            decls.insert(symbol_id, ConstDecl { typ: Some(imp.name), owner, ast: c });
         }
     }
 

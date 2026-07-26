@@ -4,7 +4,7 @@
 use crate::{
     hir::{
         self, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic,
-        Layout, Method, StructId, SymbolId, Type, TypeKind, constants,
+        Layout, Method, Owner, StructId, SymbolId, Type, TypeKind, constants,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
@@ -35,6 +35,7 @@ impl<'hir> Scope<'hir> {
         's: 'hir,
     {
         self.collect_docs(declarations);
+        self.collect_imports(declarations);
         let structs = self.declare_structs(declarations)?;
         let enums = self.declare_enums(declarations)?;
         self.lower_structs(&structs)?;
@@ -51,6 +52,20 @@ impl<'hir> Scope<'hir> {
         for (span, lines) in &declarations.docs {
             if let Some(joined) = hir::join_docs(lines) {
                 self.docs.insert(*span, joined);
+            }
+        }
+    }
+
+    /// record where each `use` names an item, so editors can navigate from an
+    /// import to the declaration it brings into scope
+    fn collect_imports(&mut self, declarations: &Declarations<'_, '_>) {
+        for declaration in &declarations.uses {
+            let statement::UseItems::Named(items) = &declaration.items else {
+                continue;
+            };
+            for item in items {
+                let name = self.symbols.insert(item.name);
+                self.imports.push((item.span, name));
             }
         }
     }
@@ -246,6 +261,7 @@ impl<'hir> Scope<'hir> {
                 id,
                 name: symbol,
                 decl_span: enum_decl.span,
+                name_span: enum_decl.name_span,
                 variants: Vec::new(),
                 repr,
                 layout: Layout::default(),
@@ -293,7 +309,12 @@ impl<'hir> Scope<'hir> {
                 };
 
                 self.enum_variants.insert((symbol, variant_symbol), (id, value));
-                variants.push(EnumVariant { name: variant_symbol, value, payload });
+                variants.push(EnumVariant {
+                    name: variant_symbol,
+                    value,
+                    payload,
+                    name_span: variant.name_span,
+                });
             }
 
             self.enums[id].variants = variants;
@@ -361,6 +382,7 @@ impl<'hir> Scope<'hir> {
                     has_receiver,
                     receiver_mut,
                     decl_span: method.span,
+                    name_span: method.name_span,
                 });
             }
 
@@ -370,6 +392,7 @@ impl<'hir> Scope<'hir> {
                 methods,
                 generic_params,
                 decl_span: interface.span,
+                name_span: interface.name_span,
             };
             self.interfaces.insert(name, signature);
         }
@@ -420,6 +443,7 @@ impl<'hir> Scope<'hir> {
                     params,
                     return_type,
                     kind: FunctionKind::Free,
+                    owner: Owner::Free,
                     is_const: function.is_const,
                     is_unsafe: function.is_unsafe(),
                     decl_span: function.span,
@@ -445,6 +469,7 @@ impl<'hir> Scope<'hir> {
                 params,
                 return_type,
                 kind,
+                owner: Owner::Free,
                 is_const: function.is_const,
                 is_unsafe: function.is_unsafe(),
                 decl_span: function.span,
@@ -465,6 +490,7 @@ impl<'hir> Scope<'hir> {
                     params: vec![],
                     return_type: TypeKind::Iptr.into(),
                     kind: FunctionKind::Intrinsic(Intrinsic::Syscall),
+                    owner: Owner::Free,
                     is_const: false,
                     is_unsafe: false,
                     decl_span: Span::default(),
@@ -499,6 +525,13 @@ impl<'hir> Scope<'hir> {
             };
 
             let impl_param_env = self.build_impl_param_env(implementation, receiver_type)?;
+            let owner = match implementation.interface {
+                Some(interface) => Owner::Interface {
+                    on: receiver_type,
+                    interface: self.symbols.insert(interface),
+                },
+                None => Owner::Inherent(receiver_type),
+            };
 
             for method in &implementation.methods {
                 let mut method_env = None;
@@ -567,6 +600,7 @@ impl<'hir> Scope<'hir> {
                             params,
                             return_type,
                             kind,
+                            owner,
                             is_const: method.is_const,
                             is_unsafe: method.is_unsafe(),
                             decl_span: method.span,
@@ -607,6 +641,7 @@ impl<'hir> Scope<'hir> {
                             is_const: method.is_const,
                             is_unsafe: method.is_unsafe(),
                             kind: FunctionKind::Free,
+                            owner,
                             decl_span: method.span,
                         });
                         self.functions.insert(mangled, id);

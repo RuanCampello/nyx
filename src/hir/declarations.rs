@@ -74,8 +74,18 @@ impl<'d, 'src> Declarations<'d, 'src> {
                     declarations.interfaces.push(i);
                 },
                 ItemKind::Use(u) => declarations.uses.push(u),
-                ItemKind::Struct(s) => declarations.structs.push(s),
-                ItemKind::Enum(e) => declarations.enums.push(e),
+                ItemKind::Struct(s) => {
+                    for (span, lines) in &s.member_docs {
+                        declarations.docs.push((*span, lines));
+                    }
+                    declarations.structs.push(s);
+                },
+                ItemKind::Enum(e) => {
+                    for (span, lines) in &e.member_docs {
+                        declarations.docs.push((*span, lines));
+                    }
+                    declarations.enums.push(e);
+                },
                 ItemKind::Impl(i) => {
                     for (span, lines) in &i.member_docs {
                         declarations.docs.push((*span, lines));

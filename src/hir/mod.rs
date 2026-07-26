@@ -22,6 +22,7 @@ use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
 pub(crate) use scope::SLICE_IMPL_NAME;
+pub use scope::{InterfaceMethodSignature, InterfaceSignature};
 pub(crate) use structs::struct_field;
 pub use structs::type_layout;
 pub use symbols::SymbolTable;
@@ -53,8 +54,17 @@ pub struct Hir<'hir> {
     pub arrays: IndexVec<ArrayId, ArrayType>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
+    pub interfaces: Vec<InterfaceSignature>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
     pub docs: HashMap<Span, Box<str>>,
+    /// `(span, item name)` for every item named in a `use` declaration, so an
+    /// import can be resolved back to the declaration it names
+    pub imports: Vec<(Span, SymbolId)>,
+    /// The type every named type annotation resolved to, keyed by the span of
+    /// the annotation
+    ///
+    /// Empty outside editor mode
+    pub type_refs: HashMap<Span, Type>,
     /// Recoverable lowering diagnostics
     /// Empty unless recovery mode was on
     pub diagnostics: Vec<diagnostic::RichDiagnostic>,
@@ -65,6 +75,8 @@ pub struct Struct {
     id: StructId,
     pub name: SymbolId,
     pub decl_span: Span,
+    /// The declared name alone, where goto-definition lands
+    pub name_span: Span,
     /// Fields in source declaration order
     pub fields: Vec<StructField>,
     pub(in crate::hir) repr: StructRepr,
@@ -81,6 +93,8 @@ pub struct StructField {
     pub typ: Type,
     /// byte offset within the owning struct, filled by layout computation
     pub offset: u32,
+    /// the declared name alone, also the key its docs are filed under
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +102,8 @@ pub struct Enum {
     pub id: EnumId,
     pub name: SymbolId,
     pub decl_span: Span,
+    /// The declared name alone, where goto-definition lands
+    pub name_span: Span,
     pub variants: Vec<EnumVariant>,
     pub repr: EnumRepr,
     /// cached byte layout, filled once every nominal type is collected
@@ -102,6 +118,8 @@ pub struct EnumVariant {
     pub name: SymbolId,
     pub value: i64,
     pub payload: Option<Type>,
+    /// the declared name alone, also the key its docs are filed under
+    pub name_span: Span,
 }
 
 /// A fixed-size array type `[element; len]`, interned in the [Hir] array table
@@ -197,7 +215,10 @@ pub struct Function<'hir> {
     pub id: FunctionId,
     pub name: SymbolId,
     pub decl_span: Span,
+    /// The declared name alone, where goto-definition lands
+    pub name_span: Span,
     pub kind: FunctionKind,
+    pub owner: Owner,
     pub params: Vec<Parameter>,
     pub locals: IndexVec<LocalId, Local>,
     pub return_type: Type,
@@ -216,10 +237,12 @@ pub struct Function<'hir> {
 pub struct Constant<'hir> {
     pub name: SymbolId,
     pub typ: Type,
+    pub owner: Owner,
     pub value: &'hir Expression<'hir>,
     pub typeck: TypeckResults,
     pub is_pub: bool,
     pub decl_span: Span,
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +266,7 @@ pub struct Local {
     pub name: SymbolId,
     pub typ: Type,
     pub decl_span: Span,
-    mutable: bool,
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -401,6 +424,21 @@ pub enum FunctionKind {
     Intrinsic(Intrinsic),
 }
 
+/// The block an item was declared in
+///
+/// Mangling flattens this into the name (`nyx::Point::Shape::area`), which is
+/// lossy to read back: keep the structure so no consumer has to re-split it
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// declared at module level
+    #[default]
+    Free,
+    /// declared in `impl T`
+    Inherent(Type),
+    /// declared in `impl T with I`
+    Interface { on: Type, interface: SymbolId },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
     PrintLn,
@@ -497,7 +535,10 @@ fn lower_inner<'hir>(
         arrays,
         functions,
         constants: scope.constants.into_values().cloned().collect(),
+        interfaces: scope.interfaces.into_values().collect(),
         docs: scope.docs,
+        imports: scope.imports,
+        type_refs: scope.type_refs,
         diagnostics: scope.diagnostics.take_errors(),
     })
 }
@@ -647,7 +688,10 @@ impl<'hir> Hir<'hir> {
             arrays: IndexVec::new(),
             functions: IndexVec::new(),
             constants: Vec::new(),
+            interfaces: Vec::new(),
             docs: HashMap::new(),
+            imports: Vec::new(),
+            type_refs: HashMap::new(),
             diagnostics,
         }
     }
@@ -688,6 +732,7 @@ impl<'hir> From<&Function<'hir>> for FunctionSignature {
             return_type: value.return_type,
             name: value.name,
             kind: value.kind,
+            owner: value.owner,
             is_const: value.is_const,
             is_unsafe: value.is_unsafe,
             decl_span: value.decl_span,

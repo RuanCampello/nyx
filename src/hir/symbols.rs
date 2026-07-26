@@ -3,7 +3,7 @@ use lasso::Rodeo;
 
 /// Interns all identifiers strings encountered during compilation and maps them
 /// to stable numeric [`SymbolId`]s
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SymbolTable {
     interner: Rodeo,
 }
@@ -19,8 +19,9 @@ pub(in crate::hir) struct Mangler<'m> {
 }
 
 impl SymbolTable {
+    #[inline]
     pub fn new() -> Self {
-        Self { interner: Rodeo::new() }
+        Self::default()
     }
 
     #[inline(always)]

@@ -221,6 +221,7 @@ fn specialise<'hir>(
 
     let base = scope.symbols.get(open.name).to_string();
     let kind = open.kind;
+    let owner = open.owner;
     let is_const = open.is_const;
     let is_unsafe = open.is_unsafe;
 
@@ -255,6 +256,7 @@ fn specialise<'hir>(
         params,
         return_type,
         kind,
+        owner,
         is_const,
         is_unsafe,
         decl_span,

@@ -1,7 +1,7 @@
 use crate::{
     hir::{
         ArrayId, ArrayType, Constant, Enum, EnumId, EnumRepr, EnumVariant, FunctionId,
-        FunctionKind, Intrinsic, Layout, Method, Struct, StructField, StructId, SymbolId,
+        FunctionKind, Intrinsic, Layout, Method, Owner, Struct, StructField, StructId, SymbolId,
         SymbolTable, Type, TypeKind,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
@@ -42,6 +42,15 @@ pub struct Scope<'hir> {
     pub constants: HashMap<SymbolId, &'hir Constant<'hir>>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
     pub docs: HashMap<Span, Box<str>>,
+    /// `(span, item name)` for every item named in a `use` declaration
+    pub imports: Vec<(Span, SymbolId)>,
+    /// The type every named type annotation resolved to, keyed by the span of
+    /// the annotation
+    ///
+    /// Only filled when [index_refs] is set: a batch compile never reads it
+    ///
+    /// [index_refs]: Scope::index_refs
+    pub type_refs: HashMap<Span, Type>,
 
     pub generic_structs: HashMap<SymbolId, statement::Struct<'hir>>,
     pub generic_enums: HashMap<SymbolId, statement::Enum<'hir>>,
@@ -61,6 +70,9 @@ pub struct Scope<'hir> {
     ///
     /// [diagnostics]: Scope::diagnostics
     pub(in crate::hir) recover: bool,
+    /// Whether to record the navigation side-tables editors need, which no
+    /// batch compilation ever reads
+    pub(in crate::hir) index_refs: bool,
     pub(in crate::hir) diagnostics: Diagnostics,
 }
 
@@ -81,29 +93,33 @@ pub(in crate::hir) struct FunctionSignature {
     pub params: Vec<Type>,
     pub return_type: Type,
     pub kind: FunctionKind,
+    pub owner: Owner,
     pub is_const: bool,
     pub is_unsafe: bool,
     pub decl_span: Span,
 }
 
-#[derive(Debug)]
-pub(in crate::hir) struct InterfaceSignature {
-    #[allow(unused)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceSignature {
     pub name: SymbolId,
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
     pub generic_params: Vec<SymbolId>,
     pub decl_span: Span,
+    /// the declared name alone, where goto-definition lands
+    pub name_span: Span,
 }
 
-#[derive(Debug)]
-pub(in crate::hir) struct InterfaceMethodSignature {
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceMethodSignature {
     pub name: SymbolId,
     pub params: Vec<Type>,
     pub return_type: Type,
-    pub(in crate::hir) has_receiver: bool,
-    pub(in crate::hir) receiver_mut: bool,
+    pub has_receiver: bool,
+    pub receiver_mut: bool,
     pub decl_span: Span,
+    /// the declared name alone, where goto-definition lands
+    pub name_span: Span,
 }
 
 /// [TypeResolver] over the item table: instantiates generic templates on demand
@@ -149,6 +165,8 @@ impl<'hir> Scope<'hir> {
             interface_impls: HashSet::new(),
             constants: HashMap::new(),
             docs: HashMap::new(),
+            imports: Vec::new(),
+            type_refs: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_enums: HashMap::new(),
             generic_fns: HashMap::new(),
@@ -157,6 +175,7 @@ impl<'hir> Scope<'hir> {
             specialized_slices: HashSet::new(),
             in_std: false,
             recover: false,
+            index_refs: false,
             diagnostics: Diagnostics::default(),
         }
     }
@@ -175,6 +194,14 @@ impl<'hir> Scope<'hir> {
             .then(|| self.diagnostics.emit(error.into()))
             .ok_or(error)
             .map(|_| ())
+    }
+
+    /// note that `span` names `typ`, for editor navigation
+    #[inline]
+    pub(in crate::hir) fn record_type_ref(&mut self, span: Span, typ: Type) {
+        if self.index_refs {
+            self.type_refs.entry(span).or_insert(typ);
+        }
     }
 
     pub(in crate::hir) fn function_id<'s>(
@@ -326,6 +353,7 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
+            name_span: template.name_span,
             variants: Vec::new(),
             repr,
             layout: Layout::default(),
@@ -356,7 +384,12 @@ impl<'hir> Scope<'hir> {
             };
 
             self.enum_variants.insert((mangled_sym, variant_symbol), (id, value));
-            variants.push(EnumVariant { name: variant_symbol, value, payload });
+            variants.push(EnumVariant {
+                name: variant_symbol,
+                value,
+                payload,
+                name_span: variant.name_span,
+            });
         }
 
         self.enums[id].variants = variants;
@@ -383,6 +416,7 @@ impl<'hir> Scope<'hir> {
             id,
             name: mangled_sym,
             decl_span: Span::default(),
+            name_span: template.name_span,
             fields: Vec::new(),
             repr: template.repr,
             layout: Layout::default(),
@@ -395,7 +429,12 @@ impl<'hir> Scope<'hir> {
             let typ = self
                 .resolve_type(field.typ.value_ref(), field.typ.span(), None, Some(&env))
                 .or_else(|error| self.poison(error))?;
-            fields.push(StructField { name: self.symbols.insert(field.name), typ, offset: 0 });
+            fields.push(StructField {
+                name: self.symbols.insert(field.name),
+                typ,
+                offset: 0,
+                name_span: field.name_span,
+            });
         }
         self.structs[id].fields = fields;
 
@@ -466,6 +505,14 @@ impl<'hir> Scope<'hir> {
                     .insert((receiver_type, self.symbols.insert(interface_name)));
             }
 
+            let owner = match implementation.interface {
+                Some(interface) => Owner::Interface {
+                    on: receiver_type,
+                    interface: self.symbols.insert(interface),
+                },
+                None => Owner::Inherent(receiver_type),
+            };
+
             for method in &implementation.methods {
                 let method_symbol = self.symbols.insert(method.name);
                 let receiver_name = self.symbols.get(mangled_sym);
@@ -514,6 +561,7 @@ impl<'hir> Scope<'hir> {
                     params,
                     return_type,
                     kind,
+                    owner,
                     is_const: method.is_const,
                     is_unsafe: method.is_unsafe(),
                     decl_span: method.span,
@@ -751,11 +799,15 @@ impl<'a, 'hir> TypeResolver<'hir> for ScopeResolver<'a, 'hir> {
             return Ok(t);
         }
 
-        self.scope
+        let typ = self
+            .scope
             .symbols
             .get_id(name)
             .and_then(|symbol| self.scope.nominal_type(symbol))
-            .ok_or_else(|| hir_error!(span, UnknownType { name }))
+            .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
+        self.scope.record_type_ref(span, typ);
+
+        Ok(typ)
     }
 
     fn generic(
@@ -764,7 +816,10 @@ impl<'a, 'hir> TypeResolver<'hir> for ScopeResolver<'a, 'hir> {
         args: &[Type],
         span: Span,
     ) -> Result<Type, HirError<'hir>> {
-        self.scope.instantiate_generic(name, args, span)
+        let typ = self.scope.instantiate_generic(name, args, span)?;
+        self.scope.record_type_ref(span, typ);
+
+        Ok(typ)
     }
 
     fn self_type(&mut self, _span: Span) -> Result<Type, HirError<'hir>> {

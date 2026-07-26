@@ -1,9 +1,9 @@
 use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
-        Intrinsic, Literal, Local, LocalId, LoopKind, Parameter, Pattern, PatternKind, RefTarget,
-        Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type, TypeKind,
-        TypeckResults,
+        Intrinsic, Literal, Local, LocalId, LoopKind, Owner, Parameter, Pattern, PatternKind,
+        RefTarget, Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
+        TypeKind, TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         infer::InferTable,
@@ -186,6 +186,7 @@ where
             id,
             name: symbol,
             decl_span: function.span,
+            name_span: function.name_span,
             params,
             locals: self.locals,
             return_type: signature.return_type,
@@ -194,6 +195,7 @@ where
             inline: function.inline,
             is_unsafe: signature.is_unsafe,
             kind: signature.kind,
+            owner: signature.owner,
             typeck: self.typeck,
             body,
             generics,
@@ -507,9 +509,16 @@ where
         };
 
         let decl_span = constant.span;
-        let constant =
-            self.arena
-                .alloc(Constant { name, typ, value, typeck, is_pub: false, decl_span });
+        let constant = self.arena.alloc(Constant {
+            name,
+            typ,
+            owner: Owner::Free,
+            value,
+            typeck,
+            is_pub: false,
+            decl_span,
+            name_span: constant.name_span,
+        });
         self.body_constants.insert(name, constant);
 
         Ok(())
