@@ -198,6 +198,9 @@ pub struct Function<'i> {
 pub enum Marker {
     /// only callable from another `@unsafe` function
     Unsafe,
+    /// implemented by the compiler itself, the declared body is empty and no
+    /// code is ever lowered from it
+    Intrinsic,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -816,12 +819,26 @@ impl Function<'_> {
     pub fn is_unsafe(&self) -> bool {
         self.markers.contains(&Marker::Unsafe)
     }
+
+    #[inline]
+    pub fn is_intrinsic(&self) -> bool {
+        self.markers.contains(&Marker::Intrinsic)
+    }
 }
 
 impl Marker {
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsafe => "unsafe",
+            Self::Intrinsic => "intrinsic",
+        }
+    }
+
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "unsafe" => Some(Self::Unsafe),
+            "intrinsic" => Some(Self::Intrinsic),
             _ => None,
         }
     }
@@ -1483,6 +1500,10 @@ fn parse_unsafe_block<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, Pars
 
     match Marker::from_name(name) {
         Some(Marker::Unsafe) => {},
+        Some(marker) => {
+            let kind = ParseErrorKind::MarkerIsNotABlock { name: marker.as_str() };
+            return Err(ParserError::new(kind, span));
+        },
         None => return Err(ParserError::new(ParseErrorKind::UnknownMarker { name }, span)),
     }
 

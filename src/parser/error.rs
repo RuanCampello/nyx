@@ -68,9 +68,16 @@ pub enum ParseErrorKind<'i> {
         code = "E029",
         message = "Unknown marker {name!}",
         primary = "not a marker the compiler knows",
-        help = "The only marker is `@unsafe`"
+        help = "The markers are `@unsafe` and `@intrinsic`"
     )]
     UnknownMarker { name: &'i str },
+    #[diagnostic(
+        code = "E030",
+        message = "Marker {name!} does not open a block",
+        primary = "expected a declaration after this marker",
+        help = "Only `@unsafe { … }` opens a block"
+    )]
+    MarkerIsNotABlock { name: &'static str },
     #[diagnostic(
         code = "E028",
         message = "Unexpected end of file",

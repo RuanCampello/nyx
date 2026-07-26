@@ -221,7 +221,20 @@ A `@name` marker ahead of a declaration is not one the compiler knows.
 @fast fn work() {}  // error: unknown marker fast
 ```
 
-`@unsafe` is the only marker Nyx currently defines.
+The markers Nyx defines are `@unsafe` and `@intrinsic`.
+"#;
+
+E030 => "marker does not open a block", r#"
+A marker that only annotates declarations was written ahead of a block.
+
+```nyx
+fn main() {
+    @intrinsic { }  // error: marker intrinsic does not open a block
+}
+```
+
+`@unsafe { … }` is the only marker that opens a block. `@intrinsic` sits above
+a declaration whose body the compiler supplies.
 "#;
 
 E040 => "module file not found", r#"
@@ -787,6 +800,22 @@ fn read(pp: **i32) {}  // error: cannot point at *i32
 ```
 
 Wrap the inner pointer in a struct when a second level is genuinely needed.
+"#;
+
+E150 => "unknown intrinsic", r#"
+A declaration marked `@intrinsic` claims the compiler supplies its body, but no
+implementation is registered under that name.
+
+```nyx
+impl str {
+    @intrinsic
+    pub const fn reversed(&self): str {}  // error: no compiler implementation
+}
+```
+
+`@intrinsic` is reserved for the handful of operations the compiler emits
+directly, such as `len` and the `wrapping_*` arithmetic. Anything else needs a
+body written in Nyx.
 "#;
 
 E148 => "raw pointer used in a safe function", r#"

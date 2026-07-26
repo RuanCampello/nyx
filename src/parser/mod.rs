@@ -1199,6 +1199,24 @@ mod tests {
     }
 
     #[test]
+    fn markers_stack_on_one_declaration() {
+        let statements = Parser::new("@intrinsic @unsafe pub const fn go(): i32 {}").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+
+        assert!(function.is_intrinsic());
+        assert!(function.is_unsafe());
+        assert!(function.is_const);
+    }
+
+    #[test]
+    fn only_unsafe_opens_a_block() {
+        let err = Parser::new("fn go() { @intrinsic { let x = 1; } }").parse().unwrap_err();
+        assert!(matches!(err.kind, ParseErrorKind::MarkerIsNotABlock { name: "intrinsic" }));
+    }
+
+    #[test]
     fn a_marker_followed_by_a_brace_opens_a_block() {
         let statements = Parser::new("fn go() { @unsafe { let x = 1; } }").parse().unwrap();
         let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
