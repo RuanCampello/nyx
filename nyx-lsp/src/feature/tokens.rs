@@ -34,6 +34,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenModifier::DECLARATION,
             SemanticTokenModifier::READONLY,
             SemanticTokenModifier::new("mutable"),
+            SemanticTokenModifier::DOCUMENTATION,
         ],
     }
 }
@@ -94,4 +95,5 @@ const fn modifier_bits(modifiers: TokenModifiers) -> u32 {
     (modifiers.declaration as u32)
         | (modifiers.readonly as u32) << 1
         | (modifiers.mutable as u32) << 2
+        | (modifiers.documentation as u32) << 3
 }

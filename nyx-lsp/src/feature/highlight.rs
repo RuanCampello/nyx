@@ -27,6 +27,7 @@ pub struct TokenModifiers {
     pub declaration: bool,
     pub readonly: bool,
     pub mutable: bool,
+    pub documentation: bool,
 }
 
 /// a raw lexical span before semantic classification
@@ -57,17 +58,20 @@ pub enum TokenType {
     Marker,
 }
 
-/// the bracket group immediately containing a token, and whether that group
-/// is an `enum` body (whose words are variants)
+/// the bracket group immediately containing a token, and what kind of body it
+/// is: an `enum` body holds variants, a `use` body holds imported items
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Encloser {
     bracket: char,
     enum_body: bool,
+    use_body: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RawKind {
     Comment,
+    /// a `///` line, an ordinary comment that also documents the item below it
+    Doc,
     Str,
     Number,
     Word,
@@ -93,10 +97,15 @@ fn scan(src: &str) -> Vec<Raw<'_>> {
             b'/' if bytes.get(i + 1) == Some(&b'/') => {
                 let start = i;
                 i += 2;
+                let doc = bytes.get(i) == Some(&b'/') && bytes.get(i + 1) != Some(&b'/');
                 while i < len && bytes[i] != b'\n' {
                     i += 1;
                 }
-                raws.push(Raw { start, end: i, kind: RawKind::Comment, text: &src[start..i] });
+                let kind = match doc {
+                    true => RawKind::Doc,
+                    false => RawKind::Comment,
+                };
+                raws.push(Raw { start, end: i, kind, text: &src[start..i] });
             },
 
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
@@ -182,14 +191,14 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
     let mut last = None;
     for i in 0..n {
         prev_code[i] = last;
-        if raws[i].kind != RawKind::Comment {
+        if !raws[i].kind.is_comment() {
             last = Some(i);
         }
     }
     let mut next = None;
     for i in (0..n).rev() {
         next_code[i] = next;
-        if raws[i].kind != RawKind::Comment {
+        if !raws[i].kind.is_comment() {
             next = Some(i);
         }
     }
@@ -204,6 +213,7 @@ fn classify(src: &str, raws: &[Raw<'_>]) -> Vec<HighlightToken> {
         let (ty, modifiers) = match raw.kind {
             _ if markers[i] => (TokenType::Marker, TokenModifiers::default()),
             RawKind::Comment => (TokenType::Comment, TokenModifiers::default()),
+            RawKind::Doc => (TokenType::Comment, TokenModifiers::DOCUMENTATION),
             RawKind::Str => (TokenType::String, TokenModifiers::default()),
             RawKind::Number => (TokenType::Number, TokenModifiers::default()),
             RawKind::Punct => match is_operator(raw.text) {
@@ -350,10 +360,15 @@ fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<Encloser>> {
     let mut out = vec![None; raws.len()];
     let mut stack: Vec<Encloser> = Vec::new();
     let mut pending_enum = false;
+    let mut pending_use = false;
 
     for (i, raw) in raws.iter().enumerate() {
-        if raw.kind == RawKind::Word && raw.text == "enum" {
-            pending_enum = true;
+        if raw.kind == RawKind::Word {
+            match raw.text {
+                "enum" => pending_enum = true,
+                "use" => pending_use = true,
+                _ => {},
+            }
         }
 
         let bracket =
@@ -364,6 +379,7 @@ fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<Encloser>> {
                 stack.push(Encloser {
                     bracket: open,
                     enum_body: open == '{' && std::mem::take(&mut pending_enum),
+                    use_body: open == '{' && pending_use,
                 });
             },
             Some(')' | '}' | ']') => {
@@ -372,6 +388,7 @@ fn enclosers(raws: &[Raw<'_>]) -> Vec<Option<Encloser>> {
             },
             Some(';') => {
                 pending_enum = false;
+                pending_use = false;
                 out[i] = stack.last().copied();
             },
             _ => out[i] = stack.last().copied(),
@@ -398,6 +415,18 @@ fn classify_word(
     // (payload types sit one group deeper, inside their `(…)`)
     if enclosers[i].is_some_and(|e| e.enum_body) {
         return (TokenType::EnumMember, TokenModifiers::DECLARATION);
+    }
+
+    // an imported item resolves to a declaration this scanner cannot see, so
+    // its role is read off the naming convention it was declared under
+    if enclosers[i].is_some_and(|e| e.use_body) {
+        return match text {
+            _ if is_screaming_case(text) => (TokenType::Variable, TokenModifiers::READONLY),
+            _ if text.chars().next().is_some_and(char::is_uppercase) => {
+                (TokenType::Type, TokenModifiers::default())
+            },
+            _ => (TokenType::Function, TokenModifiers::default()),
+        };
     }
 
     let prev = prev_code[i].map(|j| raws[j].text);
@@ -574,11 +603,25 @@ fn is_operator(text: &str) -> bool {
     )
 }
 
+impl RawKind {
+    #[inline]
+    const fn is_comment(self) -> bool {
+        matches!(self, Self::Comment | Self::Doc)
+    }
+}
+
 impl TokenModifiers {
-    const DECLARATION: Self = Self { declaration: true, readonly: false, mutable: false };
-    const READONLY: Self = Self { declaration: false, readonly: true, mutable: false };
-    const READONLY_DECL: Self = Self { declaration: true, readonly: true, mutable: false };
-    const MUTABLE_DECL: Self = Self { declaration: true, readonly: false, mutable: true };
+    const DECLARATION: Self = Self { declaration: true, ..Self::NONE };
+    const READONLY: Self = Self { readonly: true, ..Self::NONE };
+    const READONLY_DECL: Self = Self { declaration: true, readonly: true, ..Self::NONE };
+    const MUTABLE_DECL: Self = Self { declaration: true, mutable: true, ..Self::NONE };
+    const DOCUMENTATION: Self = Self { documentation: true, ..Self::NONE };
+    const NONE: Self = Self {
+        declaration: false,
+        readonly: false,
+        mutable: false,
+        documentation: false,
+    };
 }
 
 #[cfg(test)]
@@ -605,6 +648,7 @@ mod tests {
                     (token.modifiers.declaration, "declaration"),
                     (token.modifiers.readonly, "readonly"),
                     (token.modifiers.mutable, "mutable"),
+                    (token.modifiers.documentation, "documentation"),
                 ] {
                     if flag {
                         kind.push('.');
@@ -852,6 +896,55 @@ mod tests {
             operator =
             string "// not a comment"
             comment // real"#]],
+        );
+    }
+
+    #[test]
+    fn imported_items_are_named_by_convention() {
+        check(
+            "use std::mem::{size_of, align_of};\nuse std::result::{Result, MAX};",
+            expect![[r#"
+                keyword use
+                namespace std
+                namespace mem
+                function size_of
+                function align_of
+                keyword use
+                namespace std
+                namespace result
+                type Result
+                variable.readonly MAX"#]],
+        );
+    }
+
+    #[test]
+    fn a_brace_outside_a_use_is_unaffected() {
+        check(
+            "use std::mem::{size_of};\nfn go() { let size_of = 1; }",
+            expect![[r#"
+                keyword use
+                namespace std
+                namespace mem
+                function size_of
+                keyword fn
+                function.declaration go
+                keyword let
+                variable.declaration size_of
+                operator =
+                number 1"#]],
+        );
+    }
+
+    #[test]
+    fn doc_comments_are_marked_as_documentation() {
+        check(
+            "/// docs\n// plain\n//// divider\nfn go() {}",
+            expect![[r#"
+                comment.documentation /// docs
+                comment // plain
+                comment //// divider
+                keyword fn
+                function.declaration go"#]],
         );
     }
 
