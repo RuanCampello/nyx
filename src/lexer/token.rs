@@ -228,6 +228,32 @@ impl fmt::Display for TokenKind<'_> {
 }
 
 impl Keyword {
+    pub const ALL: &'static [Keyword] = &[
+        Self::Fn,
+        Self::Let,
+        Self::Mut,
+        Self::If,
+        Self::Else,
+        Self::Return,
+        Self::Loop,
+        Self::Break,
+        Self::Continue,
+        Self::In,
+        Self::For,
+        Self::Struct,
+        Self::Enum,
+        Self::Impl,
+        Self::Inline,
+        Self::Const,
+        Self::Pub,
+        Self::Use,
+        Self::Interface,
+        Self::With,
+        Self::As,
+        Self::Where,
+        Self::Match,
+    ];
+
     pub const fn as_str<'s>(self) -> &'s str {
         match self {
             Self::Fn => "fn",
@@ -340,5 +366,24 @@ impl Punct {
 impl fmt::Display for Punct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn every_keyword_is_listed_once() {
+        let mut seen: Vec<&str> = Keyword::ALL.iter().map(|kw| kw.as_str()).collect();
+        seen.sort_unstable();
+        let total = seen.len();
+        seen.dedup();
+
+        assert_eq!(seen.len(), total, "ALL lists a keyword twice");
+        for &keyword in Keyword::ALL {
+            assert_eq!(Keyword::from_str(keyword.as_str()), Ok(keyword));
+        }
     }
 }
