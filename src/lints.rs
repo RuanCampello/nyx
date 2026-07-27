@@ -62,6 +62,10 @@ macro_rules! lints {
 lints! {
     UnusedUnsafe => "unused_unsafe", Level::Warn,
         "an `@unsafe` block whose contents need no unsafe context";
+    ArithmeticOverflow => "arithmetic_overflow", Level::Warn,
+        "an arithmetic operation whose result cannot fit the type it is computed in";
+    UnconditionalPanic => "unconditional_panic", Level::Warn,
+        "an operation that can only ever panic at runtime";
 }
 
 impl Level {

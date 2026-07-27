@@ -33,34 +33,37 @@ pub enum NyxError {
 }
 
 pub mod optimisation {
-    use std::sync::OnceLock;
+    use std::cell::Cell;
 
-    #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, clap::ValueEnum)]
+    /// Levels are ordered: every level enables everything the level below it does.
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, clap::ValueEnum)]
     pub enum Level {
         /// No optimisations, all runtime safety checks enabled
         #[default]
-        Debug,
+        Debug = 0,
         /// Sensible production optimisations
         ///
         /// - Overflow checks removed
-        /// - Dead code elimination
+        /// - Dead Code Elimination
         /// - Constant folding and propagation
         /// - Common subexpression elimination
-        Sane,
+        Sane = 1,
         /// Aggressive optimisations
         ///
-        /// - Loop unrolling
-        Max,
+        /// - Loop Unrolling
+        Max = 2,
     }
 
-    static LEVEL: OnceLock<Level> = OnceLock::new();
+    thread_local! {
+        static LEVEL: Cell<Level> = const { Cell::new(Level::Debug) };
+    }
 
     pub fn set(level: Level) {
-        LEVEL.set(level).expect("optimisation level set should never fail");
+        LEVEL.with(|slot| slot.set(level));
     }
 
     pub fn get() -> Level {
-        *LEVEL.get().unwrap_or(&Level::Debug)
+        LEVEL.with(Cell::get)
     }
 }
 
@@ -95,7 +98,9 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     let mut hir = hir::lower_collecting(statements, &arena)?;
     report(std::mem::take(&mut hir.diagnostics))?;
 
-    let mir = mir::lower(hir)?;
+    let mut mir = mir::lower(hir)?;
+    report(mir::known_panics(&mir))?;
+    mir::optimise(&mut mir);
 
     let asm = match target {
         TargetArch::X86_64 => lir::emit::<lir::target::X86_64>(&mir),
@@ -140,7 +145,9 @@ pub fn compile_project_for(
         },
     };
     report(std::mem::take(&mut hir.diagnostics))?;
-    let mir = mir::lower(hir)?;
+    let mut mir = mir::lower(hir)?;
+    report(mir::known_panics(&mir))?;
+    mir::optimise(&mut mir);
 
     let asm = match target {
         TargetArch::X86_64 => lir::emit::<lir::target::X86_64>(&mir),
