@@ -2563,7 +2563,7 @@ where
 
 impl BinaryOperator {
     #[inline(always)]
-    const fn overload_method<'op>(&self) -> Option<&'op str> {
+    pub(in crate::hir) const fn overload_method<'op>(&self) -> Option<&'op str> {
         Some(match self {
             BinaryOperator::Eq => "eq",
             BinaryOperator::Ne => "ne",

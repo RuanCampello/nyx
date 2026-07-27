@@ -1,11 +1,7 @@
 use super::{ModuleError, graph::ModuleGraph};
 use crate::{
     hir::{self, Declarations, FunctionId, index_vec::IndexVec, scope::Scope},
-    parser::{
-        expression::{BinaryOperator, Expression},
-        statement::Function,
-        visitor,
-    },
+    parser::{expression::Expression, statement::Function, visitor},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -124,6 +120,20 @@ fn collect_functions<'hir, 'src>(
     Ok(functions)
 }
 
+fn methods_named(scope: &Scope<'_>, name: &str, found: &mut Vec<FunctionId>) {
+    let Some(symbol) = scope.symbols.get_id(name) else {
+        return;
+    };
+
+    found.extend(
+        scope
+            .methods
+            .iter()
+            .filter(|((_, method), _)| *method == symbol)
+            .map(|(_, id)| *id),
+    );
+}
+
 fn lookup_declaration_id(function: &Function<'_>, scope: &Scope<'_>) -> Option<FunctionId> {
     scope
         .function_id(function, None, |name| hir::error::HirErrorKind::UnknownFunction { name })
@@ -150,9 +160,7 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                             self.found.push(id);
                         }
                     },
-                    Expression::Field { .. } => {
-                        self.found.extend(self.scope.methods.values().copied())
-                    },
+                    Expression::Field { field, .. } => methods_named(self.scope, field, self.found),
                     _ => self.visit_expression(callee),
                 }
                 for arg in args {
@@ -178,16 +186,8 @@ impl<'a, 'i, 'hir> visitor::Visitor<'i> for ReachabilityVisitor<'a, 'hir> {
                 }
             },
             Expression::Binary { operator, left, right, .. } => {
-                match operator {
-                    BinaryOperator::Eq
-                    | BinaryOperator::Ne
-                    | BinaryOperator::Lt
-                    | BinaryOperator::LtEq
-                    | BinaryOperator::Gt
-                    | BinaryOperator::GtEq => {
-                        self.found.extend(self.scope.methods.values().copied());
-                    },
-                    _ => {},
+                if let Some(name) = operator.overload_method() {
+                    methods_named(self.scope, name, self.found);
                 }
                 self.visit_expression(left);
                 self.visit_expression(right);
