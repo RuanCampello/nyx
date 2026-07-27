@@ -1,3 +1,4 @@
+use nyx::optimisation::Level;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -27,6 +28,11 @@ const CASES: &[Case] = &[
         name: "collatz",
         file: "tests/single/collatz.nyx",
         exit_code: Some(111),
+    },
+    Case {
+        name: "const_eval",
+        file: "tests/single/const_eval.nyx",
+        exit_code: Some(42),
     },
     Case {
         name: "factorial",
@@ -261,11 +267,20 @@ const CASES: &[Case] = &[
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
+    compile_and_assemble_at(path, Level::Debug)
+}
+
+fn compile_and_assemble_at(path: &Path, level: Level) -> Result<PathBuf, String> {
     let project = path.file_stem().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
-    let asm = nyx::compile_project(path, &project).map_err(|e| e.to_string())?;
+
+    nyx::optimisation::set(level);
+    let compiled = nyx::compile_project(path, &project);
+    nyx::optimisation::set(Level::Debug);
+
+    let asm = compiled.map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();
-    let test_name = path.file_stem().unwrap().to_string_lossy().to_string();
+    let test_name = format!("{}-{level:?}", path.file_stem().unwrap().to_string_lossy());
 
     let asm_path = temp_dir.join(format!("{test_name}.s"));
     let obj_path = temp_dir.join(format!("{test_name}.o"));
@@ -287,8 +302,12 @@ fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn compile_and_run(path: &Path) -> Result<i32, String> {
-    let obj_path = compile_and_assemble(path)?;
-    let test_name = path.file_stem().unwrap().to_string_lossy().to_string();
+    compile_and_run_at(path, Level::Debug)
+}
+
+fn compile_and_run_at(path: &Path, level: Level) -> Result<i32, String> {
+    let obj_path = compile_and_assemble_at(path, level)?;
+    let test_name = format!("{}-{level:?}", path.file_stem().unwrap().to_string_lossy());
     let temp_dir = std::env::temp_dir();
     let exe_path = temp_dir.join(format!("{test_name}.test"));
 
@@ -469,4 +488,39 @@ fn run_aarch64_integration_tests() {
     if !errors.is_empty() {
         panic!("\nAArch64 Integration test failures:\n{}", errors.join("\n"));
     }
+}
+
+/// Fixtures whose result legitimately depends on the optimisation level, with what they
+/// are expected to produce above `debug`
+const LEVEL_DEPENDENT: &[(&str, i32)] = &[("overflow", 0)];
+
+#[test]
+fn optimisation_levels_agree_with_debug() {
+    let mut errors = Vec::new();
+    let mut checked = 0;
+
+    for test in CASES {
+        let Some(baseline) = test.exit_code else {
+            continue;
+        };
+
+        let expected = LEVEL_DEPENDENT
+            .iter()
+            .find(|(name, _)| *name == test.name)
+            .map_or(baseline, |(_, code)| *code);
+
+        for level in [Level::Sane, Level::Max] {
+            match compile_and_run_at(&PathBuf::from(test.file), level) {
+                Ok(code) if code == expected => checked += 1,
+                Ok(code) => errors.push(format!(
+                    "{} at {level:?}: expected exit code {expected}, got {code}",
+                    test.name
+                )),
+                Err(err) => errors.push(format!("{} at {level:?}: {err}", test.name)),
+            }
+        }
+    }
+
+    println!("\noptimisation levels: {checked} runs agreed with debug");
+    assert!(errors.is_empty(), "\noptimised runs diverged:\n{}", errors.join("\n"));
 }
