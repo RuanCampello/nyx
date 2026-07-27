@@ -1,6 +1,7 @@
 //! HIR -> MIR lowering
 
 use crate::{
+    Span,
     hir::{
         self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, RefTarget, Statement,
         SymbolId, SymbolTable, Type, TypeKind, index_vec::IndexVec,
@@ -33,6 +34,7 @@ struct FunctionLower<'a, 'hir> {
     runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
     inlined_return_target: Option<(BlockId, Option<Place>)>,
     loop_targets: Vec<LoopTargets>,
+    span: Span,
 }
 
 struct InlineContext<'a> {
@@ -182,6 +184,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             runtime_uses_map,
             inlined_return_target: None,
             loop_targets: Vec::new(),
+            span: function.decl_span,
         };
 
         builder.new_block();
@@ -196,6 +199,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         Ok(Function {
             id,
             intrinsic,
+            is_const: function.is_const,
             blocks,
             return_type,
             params,
@@ -554,10 +558,21 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline]
     fn emit_binary(&mut self, dest: Place, operation: BinaryOperator, lhs: Operand, rhs: Operand) {
-        self.emit(dest, InstructionKind::Binary { operation, lhs, rhs, checked: false });
+        self.emit(
+            dest,
+            InstructionKind::Binary { operation, lhs, rhs, checked: false, wrapping: false },
+        );
     }
 
     fn lower_expr(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
+        let outer = std::mem::replace(&mut self.span, expr.span);
+        let lowered = self.lower_expr_inner(expr);
+        self.span = outer;
+
+        lowered
+    }
+
+    fn lower_expr_inner(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
         use InstructionKind as Kind;
 
         let typ = self.typeck.type_of(expr.id);
@@ -619,6 +634,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     let dest = self.fresh_temporary(typ);
                     self.emit(dest, Kind::ElementAddr { base, index, bound, stride });
                     return Ok(Operand::Place(dest));
+                }
+
+                if let (UnaryOperator::Neg, ExpressionKind::Literal(hir::Literal::Int(value))) =
+                    (operator, &inner.kind)
+                {
+                    return Ok(Operand::Const(Const::Int(value.wrapping_neg(), typ)));
                 }
 
                 let rhs = self.lower_expr(inner)?;
@@ -707,7 +728,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let is_on_debug = optimisation::Level::Debug == optimisation::get();
                 let checked = is_integer && is_arithmetic && is_on_debug;
 
-                self.emit(dest, Kind::Binary { operation: *operator, lhs, rhs, checked });
+                self.emit(
+                    dest,
+                    Kind::Binary { operation: *operator, lhs, rhs, checked, wrapping: false },
+                );
 
                 Ok(Operand::Place(dest))
             },
@@ -864,10 +888,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         let rhs = self.lower_expr(args[1])?;
 
                         let dest = self.fresh_temporary(typ);
-                        self.emit(
-                            dest,
-                            InstructionKind::Binary { operation, lhs, rhs, checked: false },
-                        );
+                        let (checked, wrapping) = (false, true);
+                        let op = InstructionKind::Binary { operation, lhs, rhs, checked, wrapping };
+                        self.emit(dest, op);
                         Ok(Operand::Place(dest))
                     },
                 }
@@ -1482,8 +1505,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         else_block: BlockId,
     ) {
         let cond = self.fresh_temporary(TypeKind::Bool.into());
-        let instr =
-            InstructionKind::Binary { operation, lhs, rhs: Operand::Const(rhs), checked: false };
+        let (checked, wrapping) = (false, false);
+        let rhs = Operand::Const(rhs);
+        let instr = InstructionKind::Binary { operation, lhs, rhs, checked, wrapping };
+
         self.emit(cond, instr);
         self.terminate(Terminator::Branch {
             condition: Operand::Place(cond),
@@ -1494,7 +1519,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn emit(&mut self, dest: Place, kind: InstructionKind) {
-        self.blocks[self.current].instructions.push(Instruction { dest, kind });
+        let span = self.span;
+        self.blocks[self.current].instructions.push(Instruction { dest, kind, span });
     }
 
     fn emit_write_string(&mut self, text: String) {

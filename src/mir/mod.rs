@@ -19,15 +19,19 @@
 //!
 
 use crate::{
+    Span,
     hir::{FunctionId, Intrinsic, SymbolId, SymbolTable, SyscallCode, Type, TypeKind},
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
 pub use crate::hir::Layout;
 pub use lower::lower;
+pub(crate) use opt::known_panics;
+pub use opt::optimise;
 
 pub mod error;
 mod lower;
+mod opt;
 
 /// Complete MIR program.
 /// That's a flat list of functions.
@@ -50,12 +54,14 @@ pub struct Mir {
 pub struct Instruction {
     pub(crate) dest: Place,
     pub(crate) kind: InstructionKind,
+    pub(crate) span: Span,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Function {
     pub(crate) id: FunctionId,
     pub(crate) intrinsic: Option<Intrinsic>,
+    pub(crate) is_const: bool,
     /// key into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: SymbolId,
     pub(crate) return_type: Type,
@@ -95,7 +101,15 @@ pub enum InstructionKind {
         operation: BinaryOperator,
         rhs: Operand,
         lhs: Operand,
+        /// emit a runtime overflow check: set by the optimisation level, read by the
+        /// backends. It says nothing about intent — below `sane` *every* arithmetic
+        /// instruction is unchecked
         checked: bool,
+        /// the program asked for modular arithmetic, via one of the `wrapping_*`
+        /// intrinsics. Kept apart from `checked` because that flag varies with the
+        /// optimisation level and this one must not: it is what lets the known-panics
+        /// lint stay silent about an overflow that was deliberate
+        wrapping: bool,
     },
 
     /// load `typ` bytes from an aggregate place at byte `offset`
