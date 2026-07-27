@@ -120,7 +120,7 @@ impl Panic {
         }
     }
 
-    const fn headline<'s>(self) -> &'static str {
+    const fn headline<'s>(self) -> &'s str {
         match self {
             Self::Overflow | Self::ShiftOutOfRange => "this arithmetic operation will overflow",
             Self::DivisionByZero | Self::DivisionOverflow => "this operation will panic at runtime",

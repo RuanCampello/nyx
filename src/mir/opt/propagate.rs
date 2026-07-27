@@ -85,6 +85,36 @@ pub(super) fn walk(
     }
 }
 
+/// the environment each block leaves behind, `None` where the block is unreachable
+pub(super) fn exit_states(
+    program: &Program<'_>,
+    index: usize,
+    level: Level,
+) -> Vec<Option<Vec<Lattice>>> {
+    let function = program.at(index);
+    if function.blocks.is_empty() || function.locals.len() > VALUE_LIMIT {
+        return Vec::new();
+    }
+
+    let mut solver = Solver::new(program, function, level);
+    solver.solve();
+
+    function
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(id, block)| {
+            solver.reachable[id].then(|| {
+                let mut state = solver.entry[id].clone();
+                for instruction in &block.instructions {
+                    solver.step(instruction, &mut state);
+                }
+                state
+            })
+        })
+        .collect()
+}
+
 impl<'a> Solver<'a> {
     fn new(program: &'a Program<'a>, function: &'a Function, level: Level) -> Self {
         let values = function.locals.len();

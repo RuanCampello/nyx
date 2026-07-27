@@ -78,8 +78,13 @@ pub fn optimise(mir: &mut Mir) {
         }
 
         if level >= Level::Max {
-            for function in &mut mir.functions {
-                changed |= unroll::run(function);
+            for index in 0..mir.functions.len() {
+                let exits = {
+                    let program = Program::new(mir, &cache);
+                    propagate::exit_states(&program, index, level)
+                };
+
+                changed |= unroll::run(&mut mir.functions[index], &exits);
             }
         }
 
