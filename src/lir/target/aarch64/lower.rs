@@ -118,7 +118,7 @@ impl<'f> Lower<'f, AArch64> {
                 }
             },
 
-            InstructionKind::Binary { operation, rhs, lhs, checked } => {
+            InstructionKind::Binary { operation, rhs, lhs, checked, wrapping: _ } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();

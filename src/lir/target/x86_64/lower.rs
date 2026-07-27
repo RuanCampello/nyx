@@ -133,6 +133,7 @@ impl<'f> Lower<'f, X86_64> {
                 rhs,
                 lhs,
                 checked,
+                wrapping: _,
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
