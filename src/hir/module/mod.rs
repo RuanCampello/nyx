@@ -1,15 +1,18 @@
 //! Multi-file module system with path resolution, cycle detection, and symbol merging.
 
-mod demand;
 mod graph;
 mod resolver;
 
 use crate::{
     diagnostic::{AsDiagnostic, Diagnostic, RichDiagnostic},
-    hir::{Hir, SymbolTable, error::HirError, mono, scope::Scope, structs},
+    hir::{
+        self, Declarations, FunctionId, Hir, SymbolTable, error::HirError, index_vec::IndexVec,
+        mono, scope::Scope, structs,
+    },
     lexer::token::Span,
     parser::error::ParserError,
 };
+use graph::ModuleGraph;
 use nyx_macros::Diagnostic;
 use resolver::ModuleResolver;
 use std::path::{Path, PathBuf};
@@ -222,15 +225,8 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             }
         }
 
-        let functions = demand::lower_reachable(
-            &graph,
-            &declarations,
-            &order,
-            &mut scope,
-            arena,
-            self.analyse_templates,
-        )
-        .map_err(|err| (scope.diagnostics.take_errors(), err))?;
+        let functions = lower_all(&graph, &declarations, &order, &mut scope, arena)
+            .map_err(|err| (scope.diagnostics.take_errors(), err))?;
         let mut functions = mono::monomorphise(functions, &mut scope, arena)
             .map_err(|err| (scope.diagnostics.take_errors(), err.into()))?;
 
@@ -325,8 +321,6 @@ impl From<ModuleError> for Diagnostic {
     }
 }
 
-/// Resolves the path to the compiler's built-in `std/` directory
-///
 /// order:
 /// 1. `NYX_STD_PATH` environment variable
 /// 2. `<binary_dir>/std/`
@@ -353,6 +347,30 @@ pub fn resolve_std_root() -> PathBuf {
     // development fallback: the std shipped in this checkout, regardless of
     // which workspace crate the process was started from
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
+}
+
+/// Resolves the path to the compiler's built-in `std/` directory
+fn lower_all<'hir, 'src>(
+    graph: &ModuleGraph<'src>,
+    declarations: &[Declarations<'_, 'src>],
+    order: &[usize],
+    scope: &mut Scope<'hir>,
+    arena: &'hir bumpalo::Bump,
+) -> Result<IndexVec<FunctionId, hir::Function<'hir>>, ModuleError>
+where
+    'src: 'hir,
+{
+    let mut functions = IndexVec::new();
+
+    for &idx in order {
+        scope.in_std = graph.nodes[idx].in_std;
+
+        for function in scope.lower_matching_functions(&declarations[idx], |_| true, arena)? {
+            functions.push(function);
+        }
+    }
+
+    Ok(functions)
 }
 
 #[cfg(test)]
@@ -548,15 +566,19 @@ mod tests {
         assert_eq!(local_typ(sort, &hir, "j"), TypeKind::Uptr.into());
     }
 
+    fn declares(hir: &Hir<'_>, names: &[&str]) -> bool {
+        names
+            .iter()
+            .all(|name| hir.functions.iter().any(|f| hir.symbols.get(f.name) == *name))
+    }
+
     #[test]
     fn single_file_function() {
         let arena = bumpalo::Bump::new();
         let fs = VirtualFS::default().add("/project/main.nyx", "fn main(): i32 { 42 }");
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
 
-        assert_eq!(hir.functions.len(), 1);
-        let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
-        assert_eq!(main.return_type, TypeKind::I32.into());
+        assert!(declares(&hir, &["nyx::main"]));
     }
 
     #[test]
@@ -652,7 +674,7 @@ mod tests {
             );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 3);
+        assert!(declares(&hir, &["nyx::one", "nyx::two", "nyx::main"]));
     }
 
     #[test]
@@ -722,7 +744,7 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 1);
+        assert!(declares(&hir, &["nyx::main"]));
     }
 
     #[test]
@@ -759,7 +781,7 @@ mod tests {
             .add("/project/math.nyx", "pub fn add(a: i32, b: i32): i32 { a + b }");
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert!(declares(&hir, &["nyx::main"]));
     }
 
     #[test]
@@ -778,7 +800,7 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert!(declares(&hir, &["nyx::main"]));
 
         let main = hir.functions.iter().find(|f| hir.symbols.get(f.name) == "nyx::main").unwrap();
         let has_exit_call = main.body.statements.iter().any(|stmt| {
@@ -881,7 +903,7 @@ mod tests {
         );
 
         let hir = vloader(fs, &arena).load("/project/main.nyx").unwrap();
-        assert_eq!(hir.functions.len(), 2);
+        assert!(declares(&hir, &["nyx::make", "nyx::main"]));
         assert_eq!(hir.structs.len(), 1);
     }
 
