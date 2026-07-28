@@ -100,7 +100,8 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
 
     let mut mir = mir::lower(hir)?;
     report(mir::known_panics(&mir))?;
-    mir::optimise(&mut mir);
+    mir::optimise(&mut mir, target);
+    mir::eliminate_dead(&mut mir);
 
     let asm = match target {
         TargetArch::X86_64 => lir::emit::<lir::target::X86_64>(&mir),
@@ -147,7 +148,8 @@ pub fn compile_project_for(
     report(std::mem::take(&mut hir.diagnostics))?;
     let mut mir = mir::lower(hir)?;
     report(mir::known_panics(&mir))?;
-    mir::optimise(&mut mir);
+    mir::optimise(&mut mir, target);
+    mir::eliminate_dead(&mut mir);
 
     let asm = match target {
         TargetArch::X86_64 => lir::emit::<lir::target::X86_64>(&mir),
