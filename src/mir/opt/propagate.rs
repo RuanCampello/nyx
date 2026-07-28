@@ -43,7 +43,7 @@ pub(super) enum Lattice {
 /// ceiling on the values tracked in one function
 ///
 /// without SSA the environment is dense, so the analysis costs
-/// `blocks * values` per round, rustc's equivalent pass caps the same product.
+/// `blocks * values` per round, rustc's equivalent pass caps the same product
 const VALUE_LIMIT: usize = 4096;
 
 pub(super) fn analyse(program: &Program<'_>, index: usize, level: Level) -> Vec<Edit> {
@@ -179,20 +179,19 @@ impl<'a> Solver<'a> {
     }
 
     fn evaluate(&self, kind: &InstructionKind, state: &[Lattice]) -> Lattice {
+        use InstructionKind::*;
         match kind {
-            InstructionKind::Assign(operand) => self.resolve(*operand, state),
-            InstructionKind::Unary { operation, rhs } => {
+            Assign(operand) => self.resolve(*operand, state),
+            Unary { operation, rhs } => {
                 lift1(self.resolve(*rhs, state), |value| fold::unary(*operation, value))
             },
-            InstructionKind::Binary { operation, lhs, rhs, .. } => {
+            Binary { operation, lhs, rhs, .. } => {
                 lift2(self.resolve(*lhs, state), self.resolve(*rhs, state), |lhs, rhs| {
                     fold::binary(*operation, lhs, rhs)
                 })
             },
-            InstructionKind::Cast { src, typ } => {
-                lift1(self.resolve(*src, state), |value| fold::cast(value, *typ))
-            },
-            InstructionKind::Call { callee, args } => self.call(*callee, args, state),
+            Cast { src, typ } => lift1(self.resolve(*src, state), |value| fold::cast(value, *typ)),
+            Call { callee, args } => self.call(*callee, args, state),
             _ => Lattice::Bottom,
         }
     }
@@ -283,6 +282,8 @@ impl<'a> Solver<'a> {
     }
 
     fn substituted(&self, kind: &InstructionKind, state: &[Lattice]) -> Option<InstructionKind> {
+        use InstructionKind::*;
+
         let mut changed = false;
         let mut operand = |operand: Operand| match self.resolve(operand, state) {
             Lattice::Const(value) if matches!(operand, Operand::Place(_)) => {
@@ -293,55 +294,48 @@ impl<'a> Solver<'a> {
         };
 
         let rewritten = match kind {
-            InstructionKind::Assign(source) => InstructionKind::Assign(operand(*source)),
-            InstructionKind::Unary { operation, rhs } => {
-                InstructionKind::Unary { operation: *operation, rhs: operand(*rhs) }
+            Assign(source) => Assign(operand(*source)),
+            Unary { operation, rhs } => Unary { operation: *operation, rhs: operand(*rhs) },
+            Binary { operation, lhs, rhs, checked, wrapping } => Binary {
+                operation: *operation,
+                lhs: operand(*lhs),
+                rhs: operand(*rhs),
+                checked: *checked,
+                wrapping: *wrapping,
             },
-            InstructionKind::Binary { operation, lhs, rhs, checked, wrapping } => {
-                InstructionKind::Binary {
-                    operation: *operation,
-                    lhs: operand(*lhs),
-                    rhs: operand(*rhs),
-                    checked: *checked,
-                    wrapping: *wrapping,
-                }
-            },
-            InstructionKind::Cast { src, typ } => {
-                InstructionKind::Cast { src: operand(*src), typ: *typ }
-            },
-            InstructionKind::Call { callee, args } => InstructionKind::Call {
+            Cast { src, typ } => Cast { src: operand(*src), typ: *typ },
+            Call { callee, args } => Call {
                 callee: *callee,
                 args: args.iter().map(|&arg| operand(arg)).collect(),
             },
-            InstructionKind::Syscall { code, args, returns } => InstructionKind::Syscall {
+            Syscall { code, args, returns } => Syscall {
                 code: *code,
                 args: args.iter().map(|&arg| operand(arg)).collect(),
                 returns: *returns,
             },
-            InstructionKind::FieldStore { value, offset } => {
-                InstructionKind::FieldStore { value: operand(*value), offset: *offset }
+            FieldStore { value, offset } => FieldStore { value: operand(*value), offset: *offset },
+            FieldLoad { src, offset, typ } => {
+                FieldLoad { src: operand(*src), offset: *offset, typ: *typ }
             },
-            InstructionKind::FieldLoad { src, offset, typ } => {
-                InstructionKind::FieldLoad { src: operand(*src), offset: *offset, typ: *typ }
+            ElementLoad { base, index, bound, stride, typ } => ElementLoad {
+                base: operand(*base),
+                index: operand(*index),
+                bound: *bound,
+                stride: *stride,
+                typ: *typ,
             },
-            InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
-                InstructionKind::ElementLoad {
-                    base: operand(*base),
-                    index: operand(*index),
-                    bound: *bound,
-                    stride: *stride,
-                    typ: *typ,
-                }
+            ElementStore { index, bound, value, stride } => ElementStore {
+                index: operand(*index),
+                bound: *bound,
+                value: operand(*value),
+                stride: *stride,
             },
-            InstructionKind::ElementStore { index, bound, value, stride } => {
-                InstructionKind::ElementStore {
-                    index: operand(*index),
-                    bound: *bound,
-                    value: operand(*value),
-                    stride: *stride,
-                }
+            Select { condition, then_value, else_value } => Select {
+                condition: operand(*condition),
+                then_value: operand(*then_value),
+                else_value: operand(*else_value),
             },
-            InstructionKind::ElementAddr { .. } | InstructionKind::AddressOf { .. } => return None,
+            ElementAddr { .. } | AddressOf { .. } => return None,
         };
 
         changed.then_some(rewritten)

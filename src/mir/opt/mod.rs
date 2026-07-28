@@ -8,6 +8,7 @@
 //! loops, then propagation again over the now straight-line code.
 
 use crate::{
+    TargetArch,
     hir::FunctionId,
     mir::{Const, Function, InstructionKind, Mir, Terminator},
     optimisation::{self, Level},
@@ -17,6 +18,14 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
 };
+
+mod fold;
+mod interpret;
+mod panics;
+mod propagate;
+mod unroll;
+
+pub(crate) use panics::known_panics;
 
 /// The whole program, with `FunctionId` lookup resolved once.
 pub(crate) struct Program<'a> {
@@ -49,15 +58,7 @@ const MAX_ROUNDS: u32 = 4;
 /// models it as a memoised query rather than a fresh interpretation each time.
 type Cache = RefCell<HashMap<Key, Option<Const>>>;
 
-mod fold;
-mod interpret;
-mod panics;
-mod propagate;
-mod unroll;
-
-pub(crate) use panics::known_panics;
-
-pub fn optimise(mir: &mut Mir) {
+pub fn optimise(mir: &mut Mir, target: TargetArch) {
     let level = optimisation::get();
     if level < Level::Sane {
         return;
@@ -114,6 +115,7 @@ fn apply(function: &mut Function, edits: Vec<Edit>) -> bool {
 /// bit-level identity, unlike `PartialEq`, which inherits `f64`'s, so a lattice built on it would never settle and
 /// a cache keyed on it would never hit
 /// Both need a reflexive comparison
+#[inline(always)]
 fn identical(a: Const, b: Const) -> bool {
     match (a, b) {
         (Const::Float(a, x), Const::Float(b, y)) => a.to_bits() == b.to_bits() && x == y,
