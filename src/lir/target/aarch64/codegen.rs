@@ -420,13 +420,34 @@ impl Function<AArch64> {
                 emit!(out, "cset    {dest}, {}", cond.as_str());
             },
 
+            #[rustfmt::skip]
+            A64Instr::Csel { dest, lhs, rhs, cond, bytes } => {
+                let destination = alloc.location(dest, bytes);
+                let lhs = alloc.location(lhs, bytes);
+                let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, false, A64Reg::X16, A64Reg::D16);
+                let rhs = alloc.location(rhs, bytes);
+                let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, false, A64Reg::X17, A64Reg::D17);
+
+                let cond = cond.as_str();
+
+                match is_mem(&destination) {
+                    true => {
+                        let scratch = A64Reg::X16.name(*bytes);
+                        emit!(out, "csel    {scratch}, {lhs}, {rhs}, {}", cond);
+                        emit_store(out, scratch, &destination, *bytes);
+                    },
+                    false => emit!(out, "csel    {destination}, {lhs}, {rhs}, {}", cond),
+                }
+            },
+
             A64Instr::BoundsCheck { index, bound } => {
-                let index = alloc.location(index, &8);
+                let b = 8;
+                let index = alloc.location(index, &b);
                 let index =
-                    load_src_if_mem_with_scratch(out, &index, 8, false, A64Reg::X16, A64Reg::D16);
-                let bound = self.operand(alloc, bound, &8);
+                    load_src_if_mem_with_scratch(out, &index, b, false, A64Reg::X16, A64Reg::D16);
+                let bound = self.operand(alloc, bound, &b);
                 let bound =
-                    load_src_if_mem_with_scratch(out, &bound, 8, false, A64Reg::X17, A64Reg::D17);
+                    load_src_if_mem_with_scratch(out, &bound, b, false, A64Reg::X17, A64Reg::D17);
                 let symbol = Panic::IndexOutOfBounds.require();
 
                 emit!(out, "cmp     {index}, {bound}");

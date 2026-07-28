@@ -360,6 +360,25 @@ impl<'f> Lower<'f, AArch64> {
                 self.lower_address_of(id, dest, src, *offset)
             },
 
+            InstructionKind::Select { condition, then_value, else_value } => {
+                let lhs = self.operand(then_value, id);
+                let rhs = self.operand(else_value, id);
+                let condition_bytes = condition.typ().machine_type(self.layouts).bytes();
+                let condition = self.operand(condition, id);
+
+                // nothing may separate the NZCV write from its reader
+                self.lir.push_instr(
+                    id,
+                    A64Instr::Cmp {
+                        lhs: condition,
+                        rhs: A64Operand::Imm(0),
+                        bytes: condition_bytes,
+                    },
+                );
+                self.lir
+                    .push_instr(id, A64Instr::Csel { dest, lhs, rhs, cond: A64Cond::Ne, bytes });
+            },
+
             InstructionKind::Cast { src, typ } => {
                 use std::cmp::Ordering;
 

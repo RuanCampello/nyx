@@ -60,6 +60,8 @@ pub enum A64Instr {
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
     Cset { dest: VReg, cond: A64Cond },
+    /// `dest = cond ? lhs : rhs`
+    Csel { dest: VReg, lhs: VReg, rhs: VReg, cond: A64Cond, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: A64Operand },
 
@@ -463,13 +465,13 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Or { dest, .. } | Self::Eor { dest, .. }
             | Self::Lsl { dest, .. } | Self::Lsr { dest, .. }
             | Self::Asr { dest, .. } | Self::Cset { dest, .. }
+            | Self::Csel { dest, .. } | Self::Adr { dest, .. }
             | Self::FMov { dest, .. } | Self::FLiteral { dest, .. }
             | Self::FAdd { dest, .. } | Self::FSub { dest, .. }
             | Self::FMul { dest, .. } | Self::FDiv { dest, .. }
             | Self::FNeg { dest, .. } | Self::FieldLoad { dest, .. }
             | Self::StackAddr { dest, .. } | Self::PtrLoad { dest, .. }
-            | Self::Extend { dest, .. }
-            | Self::Adr { dest, .. } => std::slice::from_ref(dest),
+            | Self::Extend { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::FCmp { .. }
             | Self::BoundsCheck { .. } => &[],
@@ -520,7 +522,7 @@ impl Instruction<AArch64> for A64Instr {
                 }
             },
 
-            Self::FCmp { lhs, rhs, .. } => {
+            Self::FCmp { lhs, rhs, .. } | Self::Csel { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 uses.push(*rhs);
             },
