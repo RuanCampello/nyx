@@ -1,0 +1,90 @@
+// if-conversion
+// exit code: 3 + 7 + 9 + 31 + 13 + 4 - 1 + 9 = 75
+
+// a diamond: both arms assign the same local
+// the shape the pass exists for
+fn pick(c: bool, a: i32, b: i32): i32 {
+    let mut r: i32 = 0;
+    if c {
+        r = a;
+    } else {
+        r = b;
+    }
+    r
+}
+
+// a triangle: the else arm is empty, so the select reads the incoming value back
+fn clamp_low(x: i32): i32 {
+    let mut r: i32 = x;
+    if x < 0 {
+        r = 0;
+    }
+    r
+}
+
+// four instructions per arm: speculatable, but over every
+// target's size budget, the branch stays
+fn offset(c: bool, x: i32): i32 {
+    let mut a: i32 = 0;
+    let mut b: i32 = 0;
+    if c {
+        a = x + 1;
+        b = x - 1;
+    } else {
+        a = x - 1;
+        b = x + 1;
+    }
+    a * 10 + b
+}
+
+// a call is not speculatable: this must keep its branch on every target
+fn side_effecting(c: bool, x: i32): i32 {
+    let mut r: i32 = 0;
+    if c {
+        r = pick(true, x, 0);
+    } else {
+        r = 0;
+    }
+    r
+}
+
+// a division can trap, so neither arm may be hoisted. only ever called with a divisor of
+// zero: reaching the end of this program at all is the proof that the divide stayed inside
+// the branch
+fn guarded_div(d: i32): i32 {
+    let mut r: i32 = -1;
+    if d != 0 {
+        r = 100 / d;
+    }
+    r
+}
+
+// loop-carried: the select would feed the next iteration
+// x86-64 refuses this one, aarch64
+// takes it, and both must produce the same answer
+fn largest(n: i32): i32 {
+    let mut best: i32 = 0;
+    let mut i: i32 = 1;
+    loop {
+        if i > n { break; }
+        let v = (i - 3) * (i - 3);
+        if v > best {
+            best = v;
+        }
+        i = i + 1;
+    }
+    best
+}
+
+fn main(): i32 {
+    let a = pick(true, 3, 99);
+    let b = pick(false, 99, 7);
+    let c = clamp_low(9) + clamp_low(-4);
+    let d = offset(true, 2);
+    let e = offset(false, 2);
+    let f = side_effecting(true, 4);
+    let g = guarded_div(0);
+    let h = largest(6);
+
+    a + b + c + d + e + f + g + h
+}

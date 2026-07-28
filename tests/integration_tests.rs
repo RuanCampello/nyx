@@ -65,6 +65,11 @@ const CASES: &[Case] = &[
         exit_code: Some(232),
     },
     Case {
+        name: "if_conversion",
+        file: "tests/single/if_conversion.nyx",
+        exit_code: Some(75),
+    },
+    Case {
         name: "binary_search",
         file: "tests/single/binary_search.nyx",
         exit_code: Some(11),
