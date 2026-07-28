@@ -512,7 +512,10 @@ async fn a_qualified_path_resolves_segment_by_segment() {
     );
 
     let hover = client.hover_text(&url, name).await;
-    assert!(hover.contains("fn new()"), "the trailing segment hovers as the function: {hover}");
+    assert!(
+        hover.contains("fn new()"),
+        "the trailing segment hovers as the function: {hover}"
+    );
 
     let on_method = definition(&mut client, &url, name).await;
     assert_eq!(
@@ -544,9 +547,7 @@ async fn a_path_qualifier_completes_submodules_and_their_items() {
     client.change(&url, &format!("{typed}\n{src}")).await;
     client.wait_diagnostics(&url).await;
 
-    let labels = client
-        .completion_labels(&url, Position::new(0, typed.len() as u32))
-        .await;
+    let labels = client.completion_labels(&url, Position::new(0, typed.len() as u32)).await;
     assert!(labels.contains(&"io".to_owned()), "an unimported std module: {labels:?}");
     assert!(labels.contains(&"mem".to_owned()), "{labels:?}");
 
@@ -554,9 +555,7 @@ async fn a_path_qualifier_completes_submodules_and_their_items() {
     client.change(&url, &format!("{typed}\n{src}")).await;
     client.wait_diagnostics(&url).await;
 
-    let labels = client
-        .completion_labels(&url, Position::new(0, typed.len() as u32))
-        .await;
+    let labels = client.completion_labels(&url, Position::new(0, typed.len() as u32)).await;
     assert!(labels.contains(&"println".to_owned()), "its exports: {labels:?}");
 }
 
