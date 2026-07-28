@@ -357,6 +357,21 @@ impl<'f> Lower<'f, X86_64> {
                 );
             },
 
+            InstructionKind::Select { condition, then_value, else_value } => {
+                let src = self.lower_operand(else_value, id);
+                self.lir.push_instr(id, X86Instr::Mov { dest, src, bytes });
+
+                let then_reg = self.operand(then_value, id);
+                let condition_bytes = condition.typ().machine_type(self.layouts).bytes();
+                let lhs = self.operand(condition, id);
+
+                let instr = X86Instr::Cmp { lhs, rhs: X86Operand::Imm(0), bytes: condition_bytes };
+                self.lir.push_instr(id, instr);
+
+                let instr = X86Instr::Cmov { dest, src: then_reg, condition: Condition::Ne, bytes };
+                self.lir.push_instr(id, instr);
+            },
+
             InstructionKind::Cast { src, typ } => {
                 let src_mt = src.typ().machine_type(self.layouts);
                 let src_bytes = src_mt.bytes();

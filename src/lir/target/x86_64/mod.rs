@@ -75,6 +75,8 @@ pub enum X86Instr {
     /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8 },
     Setcc { dest: VReg, condition: Condition },
+    /// `dest = condition ? src : dest`, so `dest` is read as well as written
+    Cmov { dest: VReg, src: VReg, condition: Condition, bytes: u8 },
 
     // logical operations
     And { dest: VReg, src: X86Operand, bytes: u8 },
@@ -393,7 +395,8 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Sub { dest, .. } | Self::Imul { dest, .. }
             | Self::Neg { dest, .. } | Self::And { dest, .. }
             | Self::Or { dest, .. } | Self::Xor { dest, .. }
-            | Self::Setcc { dest, .. } | Self::AddFloat { dest, .. }
+            | Self::Setcc { dest, .. } | Self::Cmov { dest, .. }
+            | Self::AddFloat { dest, .. }
             | Self::SubFloat { dest, .. } | Self::MulFloat { dest, .. }
             | Self::DivFloat { dest, .. } | Self::FieldLoad { dest, .. }
             | Self::PtrLoad { dest, .. } | Self::XorFloat { dest, .. }
@@ -457,7 +460,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Shr { dest, .. }
             | Self::Sar { dest, .. } => uses.push(*dest),
 
-            Self::FieldStore {origin, src: X86Operand::VReg(vreg), ..} => {
+            Self::FieldStore { origin, src: X86Operand::VReg(vreg), .. } => {
                 uses.push(*origin);
                 uses.push(*vreg);
             },
@@ -472,6 +475,11 @@ impl Instruction<X86_64> for X86Instr {
             Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
             Self::Neg { dest, .. } | Self::Not { dest, .. } => uses.push(*dest),
+
+            Self::Cmov { dest, src, .. } => {
+                uses.push(*dest);
+                uses.push(*src);
+            },
 
             Self::Cmp { lhs, rhs, .. }
             | Self::Ucomis { lhs, rhs, .. } => {

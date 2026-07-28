@@ -495,6 +495,25 @@ impl Function<X86_64> {
                 emit!(out, "set{}  {dest}", condition.as_str())
             },
 
+            Inst::Cmov { dest, src, condition, bytes } => {
+                let suffix = suffix(bytes);
+                let dest = alloc.location(dest, bytes);
+                let src = alloc.location(src, bytes);
+                let condition = condition.as_str();
+
+                // `cmovcc` cannot write to memory, so a spilled destination is staged in
+                // the scratch register
+                match dest.contains("(%rbp)") {
+                    true => {
+                        let scratch = scratch_gpr(suffix);
+                        emit!(out, "mov{suffix}    {dest}, {scratch}");
+                        emit!(out, "cmov{condition}{suffix}   {src}, {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {dest}");
+                    },
+                    false => emit!(out, "cmov{condition}{suffix}   {src}, {dest}"),
+                }
+            },
+
             Inst::Cmp { lhs, rhs, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
