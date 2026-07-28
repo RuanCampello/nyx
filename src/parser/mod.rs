@@ -1200,7 +1200,8 @@ mod tests {
 
     #[test]
     fn markers_stack_on_one_declaration() {
-        let statements = Parser::new("@intrinsic @unsafe pub const fn go(): i32 {}").parse().unwrap();
+        let statements =
+            Parser::new("@intrinsic @unsafe pub const fn go(): i32 {}").parse().unwrap();
         let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
             panic!("expected a function item");
         };
