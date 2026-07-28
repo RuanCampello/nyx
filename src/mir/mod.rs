@@ -25,10 +25,12 @@ use crate::{
 };
 
 pub use crate::hir::Layout;
+pub(crate) use dce::eliminate_dead;
 pub use lower::lower;
 pub(crate) use opt::known_panics;
 pub use opt::optimise;
 
+mod dce;
 pub mod error;
 mod lower;
 mod opt;
@@ -148,6 +150,9 @@ pub enum InstructionKind {
     },
 
     Cast { src: Operand, typ: Type },
+
+    /// `dest = condition ? then_value : else_value`, with both values already computed
+    Select { condition: Operand, then_value: Operand, else_value: Operand },
 }
 
 /// This is a *input* of a instruction.
