@@ -20,6 +20,7 @@ use std::{
 };
 
 mod fold;
+mod if_convert;
 mod interpret;
 mod panics;
 mod propagate;
@@ -93,6 +94,8 @@ pub fn optimise(mir: &mut Mir, target: TargetArch) {
             break;
         }
     }
+
+    if_convert::run(mir, target, level);
 }
 
 fn apply(function: &mut Function, edits: Vec<Edit>) -> bool {
