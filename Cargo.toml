@@ -12,7 +12,7 @@ path = "src/main.rs"
 bench = false
 
 [workspace]
-members = ["nyx-macros", "nyx-lsp"]
+members = ["nyx-macros", "nyx-lsp", "fmt"]
 resolver = "2"
 
 [dependencies]
