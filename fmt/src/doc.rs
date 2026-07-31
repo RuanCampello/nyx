@@ -1,5 +1,8 @@
+//! Layout-independent documents used by the Nyx formatter
+
 use std::borrow::Cow;
 
+/// A source fragment with flat and broken layout alternatives
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Doc<'src> {
     Empty,
@@ -19,6 +22,7 @@ pub enum Doc<'src> {
     },
 }
 
+/// A line boundary whose layout may be chosen by an enclosing [Doc::Group]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line {
     /// Always a new line
@@ -58,7 +62,7 @@ impl<'src> Doc<'src> {
         match flat.len() {
             0 => Self::Empty,
             1 => flat.pop().expect("one document remains after normalisation"),
-            _ => Self::concat(flat),
+            _ => Self::Concat(flat),
         }
     }
 
