@@ -7,9 +7,9 @@ pub enum Doc<'src> {
     Concat(Vec<Self>),
     Line(Line),
     /// Applies after a broken line
-    Ident {
+    Indent {
         width: u8,
-        context: Box<Self>,
+        content: Box<Self>,
     },
     /// selects flat or broken layout
     Group(Box<Self>),
@@ -26,4 +26,54 @@ pub enum Line {
     /// Space when a [group](Doc::Group) fits,
     /// newline when it breaks
     Soft,
+}
+
+impl<'src> Doc<'src> {
+    pub fn text(text: impl Into<Cow<'src, str>>) -> Self {
+        match text.into() {
+            text if text.is_empty() => Self::Empty,
+            text => Self::Text(text),
+        }
+    }
+
+    pub const fn hard_line() -> Self {
+        Self::Line(Line::Hard)
+    }
+
+    pub const fn soft_line() -> Self {
+        Self::Line(Line::Soft)
+    }
+
+    pub fn concat(parts: impl IntoIterator<Item = Self>) -> Self {
+        let mut flat = Vec::new();
+
+        for part in parts {
+            match part {
+                Self::Empty => {},
+                Self::Concat(parts) => flat.extend(parts),
+                part => flat.push(part),
+            }
+        }
+
+        match flat.len() {
+            0 => Self::Empty,
+            1 => flat.pop().expect("one document remains after normalisation"),
+            _ => Self::concat(flat),
+        }
+    }
+
+    pub fn indent(width: u8, content: Self) -> Self {
+        match width {
+            0 => content,
+            _ => Self::Indent { width, content: Box::new(content) },
+        }
+    }
+
+    pub fn group(content: Self) -> Self {
+        Self::Group(Box::new(content))
+    }
+
+    pub fn if_break(broken: Self, flat: Self) -> Self {
+        Self::IfBreak { broken: Box::new(broken), flat: Box::new(flat) }
+    }
 }
