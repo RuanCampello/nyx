@@ -26,6 +26,8 @@ enum Mode {
     Break,
 }
 
+const MAX_FIT_STEPS: usize = 1 << 16;
+
 impl Default for RenderOptions {
     fn default() -> Self {
         Self { print_width: 80 }
@@ -79,7 +81,14 @@ pub fn render(doc: &Doc<'_>, options: RenderOptions) -> String {
 }
 
 fn fits<'doc, 'src>(mut remaining: usize, mut commands: Vec<Command<'doc, 'src>>) -> bool {
+    let mut steps = 0;
+
     while let Some(command) = commands.pop() {
+        steps += 1;
+        if steps > MAX_FIT_STEPS {
+            return false;
+        }
+
         match command.doc {
             Doc::Empty => {},
             Doc::Text(text) => match remaining.checked_sub(text.chars().count()) {
