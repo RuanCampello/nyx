@@ -1,10 +1,12 @@
 use serde::Deserialize;
+use std::num::NonZero;
 
 /// Layout options shared by every source-formatting entry point
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FormatOptions {
     layout: LayoutOptions,
+    field: FieldOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -14,6 +16,68 @@ pub struct LayoutOptions {
     line_width: usize,
     /// The whitespace unit written at the start of each indented line
     indentation: Indentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FieldOptions {
+    /// Whether use initialise field shorthand if possible
+    ///
+    /// **default: false**
+    /// ```rust
+    /// struct Foo {
+    ///     x: u32,
+    ///     y: u32,
+    ///     y: u32,
+    /// }
+    ///
+    /// fn main() {
+    ///     let x = 1;
+    ///     let y = 2;
+    ///     let z = 3;
+    ///     let a = Foo { x, y, z };
+    ///     let b = Foo { x: x, y: y, z: z };
+    /// }
+    ///
+    ///```
+    /// **true**
+    /// ```rust
+    ///struct Foo {
+    ///    x: u32,
+    ///    y: u32,
+    ///    z: u32,
+    ///}
+    ///
+    ///fn main() {
+    ///    let x = 1;
+    ///    let y = 2;
+    ///    let z = 3;
+    ///    let a = Foo { x, y, z };
+    ///    let b = Foo { x, y, z };
+    ///}
+    ///```
+    initialise_short_hand: bool,
+    /// The maximum diff between struct fields to be aligned
+    /// with each other
+    ///
+    /// **default: 0**
+    /// ```rust
+    /// struct Foo {
+    ///     x: u32,
+    ///     yy: u32,
+    ///     zzz: u32
+    /// }
+    /// ```
+    ///
+    /// **20**:
+    /// ```rust
+    /// struct Foo {
+    ///     x:   u32,
+    ///     yy: u32,
+    ///     zzz: u32,
+    /// }
+    /// ```
+    struct_align: Option<NonZero<u8>>,
 }
 
 /// Whitespace used for one indentation level
@@ -44,9 +108,18 @@ impl Default for LayoutOptions {
     }
 }
 
+impl Default for FieldOptions {
+    fn default() -> Self {
+        Self { initialise_short_hand: true, struct_align: None }
+    }
+}
+
 impl Default for FormatOptions {
     fn default() -> Self {
-        Self { layout: LayoutOptions::default() }
+        Self {
+            layout: LayoutOptions::default(),
+            field: FieldOptions::default(),
+        }
     }
 }
 
@@ -83,6 +156,7 @@ mod tests {
                 line_width: 120,
                 indentation: Indentation::Spaces { width: 2 },
             },
+            ..Default::default()
         };
 
         assert_eq!(FormatOptions::from_str(config).unwrap(), expected)
@@ -100,6 +174,7 @@ mod tests {
                 indentation: Indentation::Spaces { width: 6 },
                 line_width: 80,
             },
+            ..Default::default()
         };
 
         assert_eq!(FormatOptions::from_str(config).unwrap(), expected)
