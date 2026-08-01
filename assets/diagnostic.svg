@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="510" viewBox="0 0 1050 510" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="408" viewBox="0 0 1050 510" role="img" aria-labelledby="title description">
   <title id="title">Nyx immutable binding diagnostic</title>
   <desc id="description">Compiler error E123 connects the immutable declaration and attempted mutation with a continuous source gutter, then suggests adding mut.</desc>
 
