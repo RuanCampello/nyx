@@ -4,3 +4,5 @@ version = "0.2.1"
 edition = "2024"
 
 
+[dev-dependencies]
+indoc = "2"
