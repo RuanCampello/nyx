@@ -1,5 +1,8 @@
+mod progress;
+
 use backend::{NyxError, TargetArch, optimisation};
 use clap::{Parser, Subcommand, ValueEnum};
+use progress::BuildProgress;
 use std::{
     collections::HashSet,
     fs,
@@ -200,10 +203,14 @@ fn build_emit(
     project: &str,
     target: TargetArch,
 ) -> Result<Vec<PathBuf>, NyxError> {
+    let total_phases = 3 + usize::from(kinds.contains(&Emit::Link));
+    let mut progress = BuildProgress::new(project, total_phases);
+
+    progress.phase("Compiling");
     let asm = backend::compile_project_for(source, project, target)?;
     let mut emitted = Vec::new();
 
-    // write assembly to a temp `.s` file
+    progress.phase("Emitting assembly");
     let asm_path = stem.with_extension("s");
     let keep_asm = kinds.contains(&Emit::Asm);
 
@@ -216,6 +223,7 @@ fn build_emit(
     let obj_path = stem.with_extension("o");
     let keep_obj = kinds.contains(&Emit::Obj);
 
+    progress.phase("Assembling");
     let assemble_result = backend::assemble_for(&asm_path, &obj_path, target);
     if !keep_asm {
         fs::remove_file(&asm_path).ok();
@@ -227,15 +235,19 @@ fn build_emit(
     }
 
     if !kinds.contains(&Emit::Link) {
+        progress.finish();
         return Ok(emitted);
     }
 
+    progress.phase("Linking");
     let exe_path = stem.with_extension("");
     let link_result = backend::link_for(&obj_path, stem, &[], target);
     fs::remove_file(&obj_path).ok();
     link_result?;
 
     emitted.push(exe_path);
+    progress.finish();
+
     Ok(emitted)
 }
 
