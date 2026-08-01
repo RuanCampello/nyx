@@ -298,6 +298,13 @@ let x: i32 = 1;  // error: statements are not allowed at the top level
 ```
 "#;
 
+E046 => "project contains no modules", r#"
+The directory passed to the compiler does not contain any `.nyx` source files.
+
+Add at least one source module directly inside the directory, or pass a `.nyx`
+file explicitly.
+"#;
+
 E100 => "statement at top level", r#"
 Only declarations may appear at a module's top level, see E045.
 "#;

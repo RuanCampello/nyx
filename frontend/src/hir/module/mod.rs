@@ -95,6 +95,15 @@ pub enum ModuleError {
     )]
     TopLevelNonFunction { path: PathBuf, span: Span },
 
+    #[diagnostic(
+        code = "E046",
+        message = "Project contains no Nyx modules",
+        primary = "no source modules were found",
+        note = "No {`.nyx`} files were found directly inside {path.display()}",
+        help = "Add a {`.nyx`} source file or pass one explicitly"
+    )]
+    NoModules { path: PathBuf },
+
     // boxed so the `Err` variant stays small: every loader function returns
     // `Result<_, ModuleError>` and pays for the variant size on the happy path
     #[diagnostic(transparent)]
@@ -109,7 +118,7 @@ impl ModuleError {
             | Self::UnknownRoot { span, .. }
             | Self::UnknownExport { span, .. }
             | Self::TopLevelNonFunction { span, .. } => Some(*span),
-            Self::EmptyPath | Self::Check(_) => None,
+            Self::EmptyPath | Self::NoModules { .. } | Self::Check(_) => None,
         }
     }
 }
@@ -186,6 +195,26 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         self,
         entry: impl AsRef<Path>,
     ) -> Result<Hir<'hir>, (Vec<RichDiagnostic>, ModuleError)> {
+        self.load_entries(vec![entry.as_ref().to_path_buf()])
+    }
+
+    pub fn load_directory(
+        self,
+        directory: impl AsRef<Path>,
+    ) -> Result<Hir<'hir>, (Vec<RichDiagnostic>, ModuleError)> {
+        let directory = directory.as_ref();
+        let entries = self.fs.modules_in(directory);
+        if entries.is_empty() {
+            return Err((Vec::new(), ModuleError::NoModules { path: directory.into() }));
+        }
+
+        self.load_entries(entries)
+    }
+
+    fn load_entries(
+        self,
+        entries: Vec<PathBuf>,
+    ) -> Result<Hir<'hir>, (Vec<RichDiagnostic>, ModuleError)> {
         crate::diagnostic::reset();
 
         let arena = self.arena;
@@ -194,7 +223,7 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         // parsing and graph construction do not touch the HIR, the lowering
         // scope is only introduced once the graph is in hand
         let mut graph = graph::build_graph(
-            entry.as_ref(),
+            &entries,
             &self.resolver,
             &self.fs,
             arena,
@@ -325,7 +354,7 @@ impl From<ModuleError> for Diagnostic {
                     | ModuleError::UnknownRoot { span, .. }
                     | ModuleError::UnknownExport { span, .. }
                     | ModuleError::TopLevelNonFunction { span, .. } => *span,
-                    ModuleError::EmptyPath => Span::default(),
+                    ModuleError::EmptyPath | ModuleError::NoModules { .. } => Span::default(),
                     ModuleError::Check(_) => unsafe { std::hint::unreachable_unchecked() },
                 };
                 AsDiagnostic::into_diagnostic(other, span)
@@ -434,6 +463,20 @@ mod tests {
 
             Err(io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
         }
+
+        fn modules_in(&self, dir: &Path) -> Vec<PathBuf> {
+            let mut modules: Vec<_> = self
+                .files
+                .keys()
+                .filter(|path| {
+                    path.parent() == Some(dir)
+                        && path.extension().is_some_and(|extension| extension == "nyx")
+                })
+                .cloned()
+                .collect();
+            modules.sort_unstable();
+            modules
+        }
     }
 
     impl VirtualFS {
@@ -466,6 +509,28 @@ mod tests {
         let path = loader.resolve_path(&[APP, "math"], Span::default()).unwrap();
 
         assert_eq!(path, PathBuf::from("/project/math.nyx"));
+    }
+
+    #[test]
+    fn directory_loads_every_module_without_main() {
+        let arena = bumpalo::Bump::new();
+        let fs = VirtualFS::default()
+            .add("/project/one.nyx", "pub fn one(): i32 { 1 }")
+            .add("/project/two.nyx", "pub fn two(): i32 { 2 }");
+        let hir = vloader(fs, &arena).load_directory(PROJECT).unwrap();
+        let names: Vec<_> =
+            hir.functions.iter().map(|function| hir.symbols.get(function.name)).collect();
+
+        assert!(names.iter().any(|name| name.ends_with("::one")));
+        assert!(names.iter().any(|name| name.ends_with("::two")));
+    }
+
+    #[test]
+    fn empty_directory_reports_no_modules() {
+        let arena = bumpalo::Bump::new();
+        let (_, error) = vloader(VirtualFS::default(), &arena).load_directory(PROJECT).unwrap_err();
+
+        assert!(matches!(error, ModuleError::NoModules { .. }));
     }
 
     #[test]

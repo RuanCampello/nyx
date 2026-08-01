@@ -34,7 +34,7 @@ const PRELUDE: &[&str] = &[
 pub(super) struct ModuleGraph<'src> {
     pub(super) nodes: Vec<ModuleNode<'src>>,
     pub(super) edges: Vec<(usize, usize)>,
-    pub(super) entry: usize,
+    pub(super) roots: Vec<usize>,
     /// syntax and import failures recovery swallowed while building the graph
     pub(super) diagnostics: Vec<RichDiagnostic>,
 }
@@ -65,17 +65,13 @@ struct QualifiedCallCollector<'src> {
 }
 
 pub(super) fn build_graph<'src, F: FileSystem>(
-    entry: &Path,
+    entries: &[PathBuf],
     resolver: &ModuleResolver,
     fs: &F,
     arena: &'src bumpalo::Bump,
     recover: bool,
     editor: bool,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
-    let canonical = fs
-        .canonicalise(entry)
-        .map_err(|_| ModuleError::FileNotFound { path: entry.into(), span: None })?;
-
     let mut builder = GraphBuilder {
         resolver,
         fs,
@@ -89,7 +85,13 @@ pub(super) fn build_graph<'src, F: FileSystem>(
         diagnostics: Vec::new(),
     };
 
-    let entry = builder.discover(canonical, None)?;
+    let mut roots = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let canonical = fs
+            .canonicalise(entry)
+            .map_err(|_| ModuleError::FileNotFound { path: entry.into(), span: None })?;
+        roots.push(builder.discover(canonical, None)?);
+    }
     builder.discover_std()?;
 
     // interface default methods are injected once here, up front, so every
@@ -102,7 +104,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
     Ok(ModuleGraph {
         nodes: builder.nodes,
         edges: builder.edges,
-        entry,
+        roots,
         diagnostics: builder.diagnostics,
     })
 }
@@ -119,7 +121,9 @@ impl<'src> ModuleGraph<'src> {
 
         let mut visited = HashSet::new();
         let mut order = Vec::new();
-        self.visit(self.entry, &adjacency, &mut visited, &mut order);
+        for &root in &self.roots {
+            self.visit(root, &adjacency, &mut visited, &mut order);
+        }
 
         let mut detached: Vec<_> =
             (0..self.nodes.len()).filter(|idx| !visited.contains(idx)).collect();
