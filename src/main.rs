@@ -25,21 +25,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Compile a nyx source file or project to a native executable
+    /// Compile a nyx source file or project
     ///
-    /// When no file is given, looks for `main.nyx` in the current directory
-    /// and compiles the whole project
+    /// Directory projects prefer `main.nyx` when present, otherwise every
+    /// `.nyx` module in the directory is compiled without an entry point.
     Build {
         /// Path to the `.nyx` source file or the module entry point
         ///
         /// - Single file:  `nyx build file.nyx`
-        /// - Project dir:  `nyx build ./my_project/`  (looks for `main.nyx` inside)
-        /// - Omitted:      builds the current directory (looks for `main.nyx` here)
+        /// - Project dir:  `nyx build ./my_project/`
+        /// - Omitted:      builds the current directory
         path: Option<PathBuf>,
 
         /// Override the default entry filename inside a project directory.
         ///
-        /// Defaults to `main.nyx`. Ignored when `path` is a `.nyx` file.
+        /// Defaults to `main.nyx` when that file exists. Ignored when `path` is
+        /// a `.nyx` file. Without that file, all modules are compiled.
         #[arg(long, value_name = "FILE", default_value = "main.nyx")]
         entry: String,
 
@@ -78,18 +79,19 @@ enum Commands {
 
     /// Compile a nyx source file or project and immediately run it
     ///
-    /// When no file is given, looks for `main.nyx` in the current directory.
+    /// A project without a `main` function is compiled but not launched.
     Run {
         /// Path to a `.nyx` source file or a project directory.
         ///
         /// - Single file:  `nyx run file.nyx`
         /// - Project dir:  `nyx run ./my_project/`
-        /// - Omitted:      runs the current directory        
+        /// - Omitted:      runs the current directory
         path: Option<PathBuf>,
 
         /// Override the default entry filename inside a project directory.
         ///
-        /// Defaults to `main.nyx`. Ignored when `path` is a `.nyx` file.
+        /// Defaults to `main.nyx` when that file exists. Ignored when `path` is
+        /// a `.nyx` file. Without that file, all modules are compiled.
         #[arg(long, value_name = "FILE", default_value = "main.nyx")]
         entry: String,
 
@@ -123,6 +125,11 @@ enum OptimisationLevel {
     Sane,
     /// Aggressive optimisations
     Max,
+}
+
+struct BuildOutput {
+    emitted: Vec<PathBuf>,
+    linked: bool,
 }
 
 fn main() -> Result<(), NyxError> {
@@ -170,9 +177,12 @@ fn cmd_build(
         _ => emit.iter().copied().collect(),
     };
 
-    let emitted = build_emit(entry, &exe, &kinds, project, target)?;
-    for path in emitted {
+    let output = build_emit(entry, &exe, &kinds, project, target)?;
+    for path in output.emitted {
         println!("Emitted: {}", path.display());
+    }
+    if kinds.contains(&Emit::Link) && !output.linked {
+        println!("No main function, linking skipped");
     }
 
     Ok(0)
@@ -183,7 +193,10 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
     let target = TargetArch::host();
 
     let result = (|| -> Result<i32, NyxError> {
-        build_emit(entry, &exe, &HashSet::from([Emit::Link]), project, target)?;
+        let output = build_emit(entry, &exe, &HashSet::from([Emit::Link]), project, target)?;
+        if !output.linked {
+            return Ok(0);
+        }
 
         let status =
             Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
@@ -202,12 +215,18 @@ fn build_emit(
     kinds: &HashSet<Emit>,
     project: &str,
     target: TargetArch,
-) -> Result<Vec<PathBuf>, NyxError> {
-    let total_phases = 3 + usize::from(kinds.contains(&Emit::Link));
+) -> Result<BuildOutput, NyxError> {
+    let requested_link = kinds.contains(&Emit::Link);
+    let requested_object = kinds.contains(&Emit::Obj);
+    let total_phases =
+        2 + usize::from(requested_object || requested_link) + usize::from(requested_link);
     let mut progress = BuildProgress::new(project, total_phases);
 
     progress.phase("Compiling");
     let asm = backend::compile_project_for(source, project, target)?;
+    let link = requested_link && has_entry_point(&asm);
+    let needs_object = requested_object || link;
+    progress.set_total(2 + usize::from(needs_object) + usize::from(link));
     let mut emitted = Vec::new();
 
     progress.phase("Emitting assembly");
@@ -218,6 +237,14 @@ fn build_emit(
 
     if keep_asm {
         emitted.push(asm_path.clone());
+    }
+
+    if !needs_object {
+        if !keep_asm {
+            fs::remove_file(&asm_path).ok();
+        }
+        progress.finish();
+        return Ok(BuildOutput { emitted, linked: false });
     }
 
     let obj_path = stem.with_extension("o");
@@ -234,9 +261,9 @@ fn build_emit(
         emitted.push(obj_path.clone());
     }
 
-    if !kinds.contains(&Emit::Link) {
+    if !link {
         progress.finish();
-        return Ok(emitted);
+        return Ok(BuildOutput { emitted, linked: false });
     }
 
     progress.phase("Linking");
@@ -248,7 +275,12 @@ fn build_emit(
     emitted.push(exe_path);
     progress.finish();
 
-    Ok(emitted)
+    Ok(BuildOutput { emitted, linked: true })
+}
+
+#[inline]
+fn has_entry_point(assembly: &str) -> bool {
+    assembly.lines().any(|line| line == "_start:")
 }
 
 #[inline(always)]
@@ -270,25 +302,28 @@ fn resolve_entry(path: Option<PathBuf>, entry_filename: &str) -> Result<PathBuf,
     }
 
     let entry = root.join(entry_filename);
-    if entry.exists() {
+    if entry.is_file() {
         return Ok(entry);
     }
 
-    Err(NyxError::Io(Error::new(
-        ErrorKind::NotFound,
-        format!("entry file `{}` not found in `{}`", entry_filename, root.display()),
-    )))
+    match root.is_dir() {
+        true => Ok(root),
+        false => Err(NyxError::Io(Error::new(
+            ErrorKind::NotFound,
+            format!("project path not found: {}", root.display()),
+        ))),
+    }
 }
 
 #[inline(always)]
 fn resolve_project_name(entry: &Path, override_name: Option<String>) -> String {
     override_name.unwrap_or_else(|| {
-        entry
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string()
+        let root = match entry.is_dir() {
+            true => entry,
+            false => entry.parent().unwrap_or(entry),
+        };
+
+        root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string()
     })
 }
 
@@ -311,4 +346,23 @@ fn temp_exe_path(source: &Path) -> PathBuf {
     let stem = source.file_stem().unwrap_or(source.as_os_str()).to_string_lossy();
 
     source.parent().unwrap_or(Path::new(".")).join(format!("{stem}.run.tmp"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_without_main_is_a_compilation_source() {
+        let source = resolve_entry(Some(PathBuf::from("std")), "main.nyx").unwrap();
+
+        assert_eq!(source, PathBuf::from("std"));
+        assert_eq!(resolve_project_name(&source, None), "std");
+    }
+
+    #[test]
+    fn generated_assembly_reports_whether_it_can_be_executed() {
+        assert!(has_entry_point(".text\n.globl _start\n_start:\n"));
+        assert!(!has_entry_point(".text\nnyx.library_function:\n"));
+    }
 }

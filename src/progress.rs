@@ -48,6 +48,11 @@ impl BuildProgress {
         self.current += 1;
     }
 
+    pub fn set_total(&mut self, total: usize) {
+        assert!(total >= self.current, "build progress cannot discard completed phases");
+        self.total = total;
+    }
+
     pub fn finish(mut self) {
         self.render("✓", "Finished", self.total);
         self.finished = true;
