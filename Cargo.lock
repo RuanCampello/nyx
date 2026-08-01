@@ -396,7 +396,7 @@ dependencies = [
  "ariadne",
  "bumpalo",
  "lasso",
- "nyx_macros",
+ "macros",
 ]
 
 [[package]]
@@ -725,6 +725,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsp"
+version = "0.2.1"
+dependencies = [
+ "bumpalo",
+ "expect-test",
+ "frontend",
+ "serde_json",
+ "tokio",
+ "tower-lsp",
+]
+
+[[package]]
 name = "lsp-types"
 version = "0.94.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -735,6 +747,15 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "url",
+]
+
+[[package]]
+name = "macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -773,27 +794,6 @@ dependencies = [
  "criterion",
  "frontend",
  "libloading",
-]
-
-[[package]]
-name = "nyx-lsp"
-version = "0.2.1"
-dependencies = [
- "bumpalo",
- "expect-test",
- "frontend",
- "serde_json",
- "tokio",
- "tower-lsp",
-]
-
-[[package]]
-name = "nyx_macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

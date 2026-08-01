@@ -1,7 +1,7 @@
 use crate::diagnostic;
 use crate::hir::Type;
 use crate::lexer::token::Span;
-use nyx_macros::Diagnostic;
+use macros::Diagnostic;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct HirError<'h> {

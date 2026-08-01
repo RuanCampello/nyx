@@ -1,0 +1,18 @@
+[package]
+name = "lsp"
+version = "0.2.1"
+edition = "2024"
+
+[[bin]]
+name = "lsp"
+path = "src/main.rs"
+
+[dependencies]
+frontend = { path = "../frontend" }
+bumpalo = "3"
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+expect-test = "1.5"
+serde_json = "1"

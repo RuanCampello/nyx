@@ -2,7 +2,7 @@ use crate::lexer::{
     error::LexError,
     token::{Span, TokenKind},
 };
-use nyx_macros::Diagnostic;
+use macros::Diagnostic;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParserError<'i> {

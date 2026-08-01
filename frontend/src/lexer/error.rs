@@ -2,7 +2,7 @@
 //! Produces human-readable diagnostics with source spans and help hints.
 
 use crate::lexer::token::{BytePos, Span};
-use nyx_macros::Diagnostic;
+use macros::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LexError<'src> {

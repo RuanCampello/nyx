@@ -31,7 +31,7 @@ Added the standard library hashing API (`std/hash.nyx`), `Hash`/`Hasher` interfa
 
 Added fixed-size arrays (`[T; N]`) and borrowed slices (`&[T]` / `&mut [T]`) with bounds-checked indexing, element assignment, and array→slice coercion threaded from the parser through `x86_64`/`aarch64` codegen, alongside function-scoped `const` declarations evaluated at compile time.
 
-### Language Server (`nyx-lsp` 0.2.1)
+### Language Server (`lsp` 0.2.1)
 
 - Hover and inlay hints now render array and slice types ([!10])
 - Corrected inlay-hint placement for array bindings ([!10])
@@ -60,9 +60,9 @@ Added fixed-size arrays (`[T; N]`) and borrowed slices (`&[T]` / `&mut [T]`) wit
 
 ## [0.4.1] - 2026-06-14
 
-Added `///` documentation comments across the language, removing the old `/* ... */` block-comment syntax, and surfaced them through `nyx-lsp` hover. Alongside that, enums now pick the smallest tag representation that fits their variants, and a HIR/LIR rearchitecture drops the duplicate MIR layout engine and unifies `aarch64`/`x86_64` target lowering.
+Added `///` documentation comments across the language, removing the old `/* ... */` block-comment syntax, and surfaced them through `lsp` hover. Alongside that, enums now pick the smallest tag representation that fits their variants, and a HIR/LIR rearchitecture drops the duplicate MIR layout engine and unifies `aarch64`/`x86_64` target lowering.
 
-### Language Server (`nyx-lsp` 0.2.0)
+### Language Server (`lsp` 0.2.0)
 
 - Doc comments rendered in hover for functions, `struct`s, `enum`s, interfaces and their members, with integration tests covering the new output ([`918a0b9`])
 
@@ -92,9 +92,9 @@ Added `///` documentation comments across the language, removing the old `/* ...
 
 ## [0.4.0] - 2026-06-13
 
-Shipped the first release of `nyx-lsp`, a dedicated language server, on top of a diagnostics rearchitecture that swaps per-file offsets for a global `SourceMap`, renders rich multi-file reports, and makes the frontend recoverable so a single pass surfaces several errors instead of bailing on the first.
+Shipped the first release of `lsp`, a dedicated language server, on top of a diagnostics rearchitecture that swaps per-file offsets for a global `SourceMap`, renders rich multi-file reports, and makes the frontend recoverable so a single pass surfaces several errors instead of bailing on the first.
 
-### Language Server (`nyx-lsp` 0.1.0)
+### Language Server (`lsp` 0.1.0)
 
 - First release of the Nyx language server as its own crate, with debounced analysis, a spinner while the project and `std` load and diagnostics surfaced live to the editor ([`d763e04`])
 - **Hover** information for `struct`s, `enum`s and functions, including fields, variants and full signatures with highlighting ([`b58cee7`]), the size and alignment of local variables ([`e38f6c6`]), and evaluation of `const`s resolved through generics ([`f779f1e`])
@@ -113,7 +113,7 @@ Shipped the first release of `nyx-lsp`, a dedicated language server, on top of a
 
 - **Spans & `SourceMap`**:
   - Introduced a `SourceMap` and a compact 8-byte global `Span` ([`e7b3988`]), threading global byte offsets through the lexer and HIR and registering every file in the map ([`565e6f2`])
-  - Reworked the `nyx_macros` crate with formatting helpers and an expanded `#[derive(Diagnostic)]` ([`5e96502`], [`8979c8e`])
+  - Reworked the `macros` crate with formatting helpers and an expanded `#[derive(Diagnostic)]` ([`5e96502`], [`8979c8e`])
 - **Symbol Tables & Cleanup**:
   - Removed the dumped `symbols` vector across the HIR, MIR and LIR in favour of direct `SymbolTable` usage ([`64115c2`], [`6db2774`], [`763d4e8`]), and added a `Deref` impl for `IndexVec` ([`6cfb600`])
   - Richer parser error information with an optional `HasSpan` ([`ff2880d`])
@@ -155,7 +155,7 @@ Added tagged-union `enum`s with pattern matching, generic types and functions wi
 - **Type System** ([!8]):
   - Removed `RefTargetKind`, folding it onto `TypeKind` via the shared layout, and collapsed every type-name printer (`Display`, mangling, parser keywords) onto a single source of truth
 - **Diagnostics** ([!6], [!8]):
-  - Added the `nyx_macros` crate with a `#[derive(Diagnostic)]` procedural macro, replacing manual diagnostic implementations across the lexer, parser, HIR, and module system ([!6])
+  - Added the `macros` crate with a `#[derive(Diagnostic)]` procedural macro, replacing manual diagnostic implementations across the lexer, parser, HIR, and module system ([!6])
   - `HirError` now borrows `&str` and derives `Copy`, dropping owned `String`s and the `into_other` shuffling ([!8])
 - **Module System & Reachability** ([!5]):
   - Split `src/hir/module.rs` into focused submodules and added demand-driven loading so unreachable (and dead standard-library) functions are no longer lowered

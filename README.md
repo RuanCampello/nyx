@@ -55,9 +55,9 @@ For a detailed breakdown of completed features and active development goals, ple
 
 ## Language Server
 
-Nyx ships an LSP server (`nyx-lsp`) that brings diagnostics, hover types, inlay hints, semantic-token highlighting and document symbols to your editor.
+Nyx ships an LSP server (`lsp`) that brings diagnostics, hover types, inlay hints, semantic-token highlighting and document symbols to your editor.
 
-See [`nyx-lsp/README.md`](nyx-lsp/README.md) for build and editor setup, currently documented for **Neovim** and **Vim**.
+See [`lsp/README.md`](lsp/README.md) for build and editor setup, currently documented for **Neovim** and **Vim**.
 
 > [!NOTE]
 > For a simplier highlighting, check the [vim](nyx.vim) syntax rules.

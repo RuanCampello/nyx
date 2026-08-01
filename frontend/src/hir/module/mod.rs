@@ -13,7 +13,7 @@ use crate::{
     parser::error::ParserError,
 };
 use graph::ModuleGraph;
-use nyx_macros::Diagnostic;
+use macros::Diagnostic;
 use resolver::ModuleResolver;
 use std::path::{Path, PathBuf};
 
