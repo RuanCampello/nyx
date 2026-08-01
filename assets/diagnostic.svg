@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="510" viewBox="0 0 1050 510" role="img" aria-labelledby="title description">
+  <title id="title">Nyx immutable binding diagnostic</title>
+  <desc id="description">Compiler error E123 connects the immutable declaration and attempted mutation with a continuous source gutter, then suggests adding mut.</desc>
+
+  <rect width="1050" height="510" rx="14" fill="#181825"/>
+  <circle cx="26" cy="25" r="6" fill="#f38ba8"/>
+  <circle cx="47" cy="25" r="6" fill="#f9e2af"/>
+  <circle cx="68" cy="25" r="6" fill="#a6e3a1"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="18" xml:space="preserve">
+    <text x="26" y="62" fill="#89b4fa">$ <tspan fill="#cdd6f4">nyx build example.nyx</tspan></text>
+
+    <text x="26" y="108" fill="#f38ba8" font-weight="700">[E123] Error:<tspan fill="#cdd6f4" font-weight="400"> Cannot mutate immutable binding </tspan><tspan fill="#f38ba8" font-weight="600">answer</tspan></text>
+
+    <path d="M68 162 Q68 148 82 148 H92 M68 162 V476 Q68 488 56 488 H26" fill="none" stroke="#9399b2" stroke-width="2" stroke-linecap="round"/>
+    <path d="M60 198 H76 M60 296 H76" fill="none" stroke="#9399b2" stroke-width="2"/>
+    <text x="91" y="154" fill="#9399b2">[ <tspan fill="#cdd6f4">example.nyx:2:9</tspan> ]</text>
+
+    <text x="27" y="204" fill="#7f849c">2</text>
+    <text x="92" y="204" fill="#cdd6f4">    let <tspan fill="#f9e2af" font-weight="600">answer</tspan> = 41;</text>
+    <path d="M178 218 H243 M210 218 V232 Q210 244 222 244 H253" fill="none" stroke="#f9e2af" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="263" y="250" fill="#f9e2af" font-weight="600">answer<tspan fill="#cdd6f4" font-weight="400"> is declared immutable here</tspan></text>
+
+    <text x="27" y="302" fill="#7f849c">3</text>
+    <text x="92" y="302" fill="#cdd6f4">    <tspan fill="#f38ba8" font-weight="600">answer = 42</tspan>;</text>
+    <path d="M135 316 H242 M188 316 V330 Q188 342 200 342 H247" fill="none" stroke="#f38ba8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="257" y="348" fill="#f38ba8" font-weight="600">answer<tspan fill="#cdd6f4" font-weight="400"> cannot be mutated</tspan></text>
+
+    <text x="88" y="404" fill="#a6e3a1" font-weight="600">Help:<tspan fill="#cdd6f4" font-weight="400"> Declare it mutable: </tspan><tspan fill="#89b4fa" font-weight="500">let mut answer = ...</tspan></text>
+    <text x="88" y="454" fill="#a6e3a1" font-weight="600">Note:<tspan fill="#cdd6f4" font-weight="400"> Bindings are immutable by default</tspan></text>
+  </g>
+</svg>

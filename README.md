@@ -135,6 +135,20 @@ fn main(): i32 {
 
 </details>
 
+## Diagnostics
+
+Nyx diagnostics are *beautiful* and use stable error codes, precise source spans. For example, bindings are immutable unless declared with `mut`:
+
+```rust
+fn main(): i32 {
+    let answer = 41;
+    answer = 42;
+    answer
+}
+```
+
+![Nyx E123 diagnostic showing an attempted mutation of an immutable binding](assets/diagnostic.svg)
+
 ## Design Goals and Non-Goals
 
 The goal is to keep Nyx focused. It should feel like a language you can understand end-to-end, not a sprawling ecosystem that grew beyond its own ambitions.
