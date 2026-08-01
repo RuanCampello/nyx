@@ -102,30 +102,37 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     Ok(asm)
 }
 
-/// Compile a multi-file `Nyx` project rooted at `entry`.
+/// Compile a multi-file `Nyx` project rooted at `source`.
 ///
-/// The entry file is typically `main.nyx`. All `use` imports reachable from it
-/// are discovered, type-checked, and merged into a single assembly output.
-pub fn compile_project(entry: &Path, name: &str) -> Result<String, NyxError> {
-    compile_project_for(entry, name, TargetArch::host())
+/// A source file loads all modules reachable from it. A directory loads every
+/// `.nyx` module directly inside it, so library projects do not need `main.nyx`.
+pub fn compile_project(source: &Path, name: &str) -> Result<String, NyxError> {
+    compile_project_for(source, name, TargetArch::host())
 }
 
 /// Compile a multi-file `Nyx` project for a specific target
 pub fn compile_project_for(
-    entry: &Path,
+    source: &Path,
     name: &str,
     target: TargetArch,
 ) -> Result<String, NyxError> {
-    let root = match entry.parent() {
-        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
-        Some(parent) => parent,
-        None => Path::new("."),
+    let root = match source.is_dir() {
+        true => source,
+        false => match source.parent() {
+            Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+            Some(parent) => parent,
+            None => Path::new("."),
+        },
     }
     .canonicalize()?;
     let arena = bumpalo::Bump::new();
 
     let loader = module::ModuleLoader::new(name.to_string(), root, &arena).collecting();
-    let mut hir = match loader.load(entry) {
+    let loaded = match source.is_dir() {
+        true => loader.load_directory(source),
+        false => loader.load(source),
+    };
+    let mut hir = match loaded {
         Ok(hir) => hir,
         Err((diagnostics, err)) => {
             let mut rendered = diagnostic::render_batch(diagnostics).display();

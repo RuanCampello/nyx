@@ -52,10 +52,9 @@ pub(crate) fn eliminate_dead(mir: &mut Mir) {
 }
 
 impl Program for Functions {
-    /// drop every function unreachable from `main`
+    /// drop every function unreachable from `main`, retaining library modules
     fn sweep(&self, mir: &mut Mir) {
         let Some(entry) = entry(mir) else {
-            mir.functions.clear();
             return;
         };
 
@@ -407,6 +406,15 @@ mod tests {
 
         assert!(!emitted.iter().any(|f| f == "nyx.unused"), "{emitted:?}");
         assert!(emitted.iter().any(|f| f == "nyx.main"), "{emitted:?}");
+    }
+
+    #[test]
+    fn functions_without_main_are_retained_for_library_output() {
+        let source = "fn first(): i32 { 1 } fn second(): i32 { first() + 1 }";
+        let emitted = emitted(source);
+
+        assert!(emitted.iter().any(|function| function == "nyx.first"), "{emitted:?}");
+        assert!(emitted.iter().any(|function| function == "nyx.second"), "{emitted:?}");
     }
 
     #[test]
