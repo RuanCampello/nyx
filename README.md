@@ -11,23 +11,129 @@ Nyx is an imperative, statically-typed, compiled language designed for performan
 
 ## The Nyx Look
 
+Tagged unions and pattern matching make data-oriented code concise without hiding its control flow.
+
 ```rust
-fn factorial(n: i32): i32 {
-    let mut result = 1;
-    let mut i = 2;
+struct Point {
+    x: i32,
+    y: i32,
+}
 
-    while i <= n {
-        result = result * i;
-        i = i + 1;
+enum Shape {
+    Empty,
+    At(Point),
+}
+
+fn score(shape: Shape): i32 {
+    match shape {
+        Shape::Empty -> 0,
+        Shape::At(Point { x, y: 0 }) -> x,
+        Shape::At(Point { x, y }) -> x * x + y * y,
     }
-
-    result
 }
 
 fn main(): i32 {
-    factorial(5)  // returns 120
+    score(Shape::At(Point { x: 3, y: 4 })) // 25
 }
 ```
+
+<details>
+<summary>Interfaces and generic static dispatch</summary>
+
+```rust
+interface Sink {
+    fn push(&mut self, value: i32);
+    fn total(&self): i32;
+}
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter with Sink {
+    fn push(&mut self, value: i32) {
+        self.value = self.value + value;
+    }
+
+    fn total(&self): i32 {
+        self.value
+    }
+}
+
+fn collect<S: Sink>(sink: &mut S): i32 {
+    loop value in 1..=4 {
+        sink.push(value);
+    }
+    sink.total()
+}
+
+fn main(): i32 {
+    let mut counter = Counter { value: 0 };
+    collect(&mut counter) // returns 10
+}
+```
+
+</details>
+
+<details>
+<summary>Fixed arrays, slices, and range loops</summary>
+
+```rust
+fn sum(values: &[i32]): i32 {
+    let mut total = 0;
+
+    loop value in values {
+        total = total + value;
+    }
+
+    total
+}
+
+fn main(): i32 {
+    let values: [i32; 5] = [1, 2, 3, 4, 5];
+    sum(&values) // arrays coerce to slices
+}
+```
+
+</details>
+
+<details>
+<summary>Compile-time functions</summary>
+
+```rust
+const fn fibonacci(n: i32): i32 {
+    if n < 2 return n;
+    else return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+fn main(): i32 {
+    fibonacci(10) // evaluated at compile time
+}
+```
+
+</details>
+
+<details>
+<summary>Raw pointers and explicit unsafe boundaries</summary>
+
+```rust
+@unsafe
+fn increment(value: *mut i32) {
+    *value = *value + 1;
+}
+
+fn main(): i32 {
+    let mut value: i32 = 41;
+
+    @unsafe {
+        increment(&mut value);
+    }
+
+    value // returns 42
+}
+```
+
+</details>
 
 ## Design Goals and Non-Goals
 

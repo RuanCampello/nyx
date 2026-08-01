@@ -12,14 +12,14 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 ## Compiler Optimisations
 
-- [x] Optimisations flags (**requires** definition of each optimisation level scope)
-- [ ] If-conversion
-- [ ] Constant Folding & Propagation
-- [ ] Dead Code Elimination (DCE)
+- [x] Optimisation levels (`debug`, `sane`, `max`)
+- [x] If-conversion (`csel` on AArch64 and `cmov` on x86_64)
+- [x] Constant folding and sparse conditional constant propagation
+- [x] Dead code elimination (functions, blocks, instructions, and string data)
 - [x] Function Inlining
   - [ ] Heuristics to or not-to inline a function
 - [ ] Common Subexpression Elimination (CSE)
-- [ ] Loop Unrolling
+- [x] Compile-time evaluation of constant-trip loops
 - [ ] Scalar evolution
 - [ ] Peephole Optimisations
 
@@ -37,11 +37,14 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] `char`
   - [x] `&str`
   - [ ] `String` (**requires** memory allocator implementation)
-- [ ] Fixed-size arrays (`[T; N]`)
-  - [ ] Compiler-time bound checking
-- [ ] Pointers (**requires** _unsafe_ blocks implementation)
-  - [ ] Raw pointer
-  - [ ] Raw pointer dereference
+- [x] Fixed-size arrays (`[T; N]`)
+  - [x] Compile-time bounds checking for constant indices
+  - [x] Runtime bounds checking for dynamic indices
+- [x] Slices (`[T]`, `&[T]`, `&mut [T]`)
+  - [x] Array-to-slice coercion
+- [x] Raw pointers (`*T`, `*mut T`)
+  - [x] Raw pointer dereference
+  - [x] Explicit `@unsafe` functions and blocks
 - [x] References
   - [x] Reference (`&`)
   - [x] Mutable References (`&mut`)
@@ -55,7 +58,9 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Interface composition
   - [ ] Composite data declaration (`struct`)
     - [x] Field access and instantiation
-    - [ ] Compatibility with `C` memory layout representation (extern, packed, align)
+    - [ ] Compatibility with `C` memory layout representation
+      - [x] `packed` and explicit `align`
+      - [ ] `extern` layout
     - [x] Methods
       - [x] Reference (`&self`)
       - [x] Mutable reference (`&mut self`)
@@ -86,6 +91,11 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] `if` / `else` statements
   - [x] Inline return (`if this return that;`)
 - [x] `while` loops
+- [x] `loop`
+  - [x] Infinite loops
+  - [x] Integer ranges (`start..end`, `start..=end`)
+  - [x] Array and slice iteration
+  - [x] `break` and `continue`
 - [ ] `for` loops
 - [x] Pattern matching
 
@@ -108,6 +118,11 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Constant constraint (`const`)
     - [x] Inlining (`inline`)
 - [x] Return statements (`return`)
+
+### Compiler CLI
+
+- [x] Build and run single files or directory projects
+- [x] Interactive build progress
 
 ### Language Server (LSP)
 
@@ -142,11 +157,11 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Raw error message extraction
   - [x] Structured diagnostics across the crate boundary (`RichDiagnostic`, plain + ANSI)
   - [x] Per-error diagnostic `code` (kebab-case error kind, shown as `nyx (kind)`)
-  - [ ] Uniform error code numeration (stable `Exxxx` numbers + `code_description` docs URLs)
+  - [x] Uniform error code numeration (stable `Exxxx` numbers)
+    - [x] Generated documentation
   - [ ] Multi-error accumulation (report every error in a pass)
     - [x] LSP analysis (body, signature, and item level)
     - [x] Whole-project analysis (uncalled functions included)
-    - [ ] CLI `compile`/`compile_project`
   - [ ] Frontend error recovery
     - [x] `TypeKind::Error` poison + `ErrorGuaranteed` + diagnostics sink
     - [x] Opt-in recovery across lowering and collection
@@ -159,9 +174,11 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Module system
   - [x] Imports resolver
   - [x] Project (_dir_) compilation
+  - [x] Library projects without a required entry module
 - [ ] Standard Library
   - [ ] I/O
-    - [ ] Console formatting & printing (`print`/`println`)
+    - [x] Basic console printing (`print`/`println`)
+    - [ ] Console formatting
       - [ ] Better formatting (padding, alignment)
       - [ ] Interpolation of non-immediate values
     - [ ] Keyboard input reading
