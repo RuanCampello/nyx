@@ -103,6 +103,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Definition (`fn`)
   - [x] Mutable parameters
   - [ ] Default parameter values (**requires** definition of _default_ interface)
+  - [ ] Single expression functions
   - [ ] Modifiers
     - [x] Constant constraint (`const`)
     - [x] Inlining (`inline`)
@@ -110,7 +111,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 ### Language Server (LSP)
 
-- [ ] Hover type information
+- [x] Hover type information
   - [x] Module path & truncated declaration
   - [x] Size & alignment for `struct`/`enum`
   - [x] Method signatures with implementor
