@@ -4,5 +4,9 @@ version = "0.2.1"
 edition = "2024"
 
 
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+
 [dev-dependencies]
 indoc = "2"

@@ -8,5 +8,5 @@ mod format;
 mod render;
 
 pub use doc::{Doc, Line};
-pub use format::{FormatError, FormatOptions, format};
+pub use format::{FormatError, FormatOptions, Indentation, format};
 pub use render::{RenderOptions, render};
