@@ -3,7 +3,7 @@
 //! All line/column work goes through the [`SourceMap`] so positions are correct
 //! for multi-byte text and in whichever encoding the client negotiated
 
-use nyx::{BytePos, FileId, SourceMap, Span};
+use frontend::{BytePos, FileId, SourceMap, Span};
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 /// The position encoding negotiated with the client
@@ -68,7 +68,7 @@ pub fn url_for_file(map: &SourceMap, file: FileId) -> Option<Url> {
 }
 
 #[inline]
-fn to_position(loc: nyx::Loc, encoding: Encoding) -> Position {
+fn to_position(loc: frontend::Loc, encoding: Encoding) -> Position {
     Position {
         line: loc.line,
         character: match encoding {

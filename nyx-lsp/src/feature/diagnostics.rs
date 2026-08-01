@@ -2,7 +2,7 @@
 
 use crate::analysis::{Analysis, SemanticAnalysis};
 use crate::convert::{Encoding, span_to_range, url_for_file};
-use nyx::{RichDiagnostic, Severity, SourceMap};
+use frontend::{RichDiagnostic, Severity, SourceMap};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;

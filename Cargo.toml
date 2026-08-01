@@ -3,28 +3,25 @@ name = "nyx"
 version = "0.6.0"
 edition = "2024"
 
-[lib]
-bench = false
-
 [[bin]]
 name = "nyx"
 path = "src/main.rs"
 bench = false
 
 [workspace]
-members = ["nyx-macros", "nyx-lsp", "fmt"]
+members = ["backend", "frontend", "fmt", "nyx-lsp", "nyx-macros"]
 resolver = "2"
 
 [dependencies]
-lasso = "0.7.3"
-bumpalo = "3"
-ariadne = { version = "0.6.0" }
 clap = { version = "4", features = ["derive"] }
-nyx_macros = { path = "./nyx-macros" }
+backend = { path = "./backend" }
 
 [dev-dependencies]
 criterion = "0.5"
 libloading = "0.8"
+backend = { path = "./backend" }
+frontend = { path = "./frontend" }
+bumpalo = "3"
 
 [[bench]]
 name = "basic"

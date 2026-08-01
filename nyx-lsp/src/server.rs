@@ -117,10 +117,10 @@ impl Lsp {
     /// resolve a document position to its file and global byte offset
     async fn locate(
         &self,
-        map: &nyx::SourceMap,
+        map: &frontend::SourceMap,
         uri: &Url,
         position: Position,
-    ) -> Option<(nyx::FileId, nyx::BytePos)> {
+    ) -> Option<(frontend::FileId, frontend::BytePos)> {
         let path = document::canonical(uri)?;
         let file = map.file_by_path(&path)?;
         let encoding = *self.state.encoding.read().await;
@@ -596,7 +596,7 @@ fn negotiate_encoding(capabilities: &ClientCapabilities) -> Encoding {
 }
 
 #[inline(always)]
-fn already_annotated(map: &nyx::SourceMap, span: nyx::Span) -> bool {
+fn already_annotated(map: &frontend::SourceMap, span: frontend::Span) -> bool {
     map.source_after(span.end).trim_start().starts_with(':')
 }
 
@@ -729,7 +729,7 @@ mod tests {
         SemanticAnalysis {
             ok,
             inlay_hints: (0..hints)
-                .map(|_| (nyx::Span::default(), nyx::hir::Type::default(), 0))
+                .map(|_| (frontend::Span::default(), frontend::hir::Type::default(), 0))
                 .collect(),
             ..Default::default()
         }

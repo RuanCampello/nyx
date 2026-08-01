@@ -1,25 +1,16 @@
-use crate::{
-    diagnostic::{AsDiagnostic, Diagnostic},
-    hir::module,
+pub use frontend::error_codes::ErrorCode;
+pub use frontend::parser::statement::is_primitive;
+pub use frontend::{
+    BytePos, FileId, HasSpan, Label, Loc, RichDiagnostic, Severity, SourceMap, Span, SpanData,
+    diagnostic, error_codes, hir, is_keyword, lexer, lints, parser, source_map,
 };
+
+use diagnostic::{AsDiagnostic, Diagnostic};
+use hir::module;
 use std::path::Path;
 
-pub mod diagnostic;
-pub mod error_codes;
-pub mod hir;
-pub mod lexer;
-pub mod lints;
 pub mod lir;
 pub mod mir;
-pub mod parser;
-pub mod source_map;
-
-pub use diagnostic::{Label, RichDiagnostic, Severity};
-pub use error_codes::ErrorCode;
-pub use lexer::token::{BytePos, Span};
-pub use lexer::{HasSpan, is_keyword};
-pub use parser::statement::is_primitive;
-pub use source_map::{FileId, Loc, SourceMap, SpanData};
 
 #[derive(Debug)]
 pub enum NyxError {
@@ -91,7 +82,7 @@ pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     // a dropped item makes every use of it look undeclared: stop before that
     // cascade buries the syntax errors that caused it
     if !errors.is_empty() {
-        let rendered = errors.into_iter().map(|error| error.kind.rich(error.span));
+        let rendered = errors.into_iter().map(|error| error.rich(Span::default()));
         return Err(diagnostic::render_batch(rendered).into());
     }
 
@@ -142,7 +133,7 @@ pub fn compile_project_for(
                 rendered.push('\n');
             }
             rendered.push_str(&Diagnostic::from(err).display());
-            return Err(Diagnostic { rendered }.into());
+            return Err(Diagnostic::from_rendered(rendered).into());
         },
     };
     report(std::mem::take(&mut hir.diagnostics))?;
@@ -280,3 +271,61 @@ impl TargetArch {
         }
     }
 }
+
+impl From<Diagnostic> for NyxError {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self::Compile(diagnostic)
+    }
+}
+
+impl From<mir::error::MirError> for Diagnostic {
+    fn from(error: mir::error::MirError) -> Self {
+        match error.kind {
+            mir::error::MirErrorKind::Hir(diagnostic) => diagnostic,
+        }
+    }
+}
+
+impl From<mir::error::MirError> for NyxError {
+    fn from(error: mir::error::MirError) -> Self {
+        Self::Compile(error.into())
+    }
+}
+
+impl<'h> From<hir::error::HirError<'h>> for NyxError {
+    fn from(error: hir::error::HirError<'h>) -> Self {
+        Self::Compile(error.into())
+    }
+}
+
+impl<'i> From<parser::error::ParserError<'i>> for NyxError {
+    fn from(error: parser::error::ParserError<'i>) -> Self {
+        Self::Compile(error.into())
+    }
+}
+
+impl From<std::io::Error> for NyxError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<hir::module::ModuleError> for NyxError {
+    fn from(error: hir::module::ModuleError) -> Self {
+        Self::Compile(error.into())
+    }
+}
+
+impl std::fmt::Display for NyxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compile(diagnostic) => diagnostic.fmt(f),
+            Self::Io(error) => error.fmt(f),
+            Self::Assembler(code) => write!(f, "assembler exited with status {code}"),
+            Self::Linker(code) => write!(f, "linker exited with status {code}"),
+            Self::ToolNotFound(tool) => write!(f, "required tool not found: {tool}"),
+        }
+    }
+}
+
+impl std::error::Error for NyxError {}

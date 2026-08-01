@@ -101,6 +101,19 @@ pub enum ModuleError {
     Check(Box<RichDiagnostic>),
 }
 
+impl ModuleError {
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Self::FileNotFound { span, .. } => *span,
+            Self::CircularImport { span, .. }
+            | Self::UnknownRoot { span, .. }
+            | Self::UnknownExport { span, .. }
+            | Self::TopLevelNonFunction { span, .. } => Some(*span),
+            Self::EmptyPath | Self::Check(_) => None,
+        }
+    }
+}
+
 pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, std::io::Error>;
     fn canonicalise(&self, path: &Path) -> Result<PathBuf, std::io::Error>;
@@ -346,7 +359,7 @@ pub fn resolve_std_root() -> PathBuf {
 
     // development fallback: the std shipped in this checkout, regardless of
     // which workspace crate the process was started from
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../std"))
 }
 
 /// Resolves the path to the compiler's built-in `std/` directory

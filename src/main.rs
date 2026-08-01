@@ -1,5 +1,5 @@
+use backend::{NyxError, TargetArch, optimisation};
 use clap::{Parser, Subcommand, ValueEnum};
-use nyx::{NyxError, TargetArch, optimisation};
 use std::{
     collections::HashSet,
     fs,
@@ -200,7 +200,7 @@ fn build_emit(
     project: &str,
     target: TargetArch,
 ) -> Result<Vec<PathBuf>, NyxError> {
-    let asm = nyx::compile_project_for(source, project, target)?;
+    let asm = backend::compile_project_for(source, project, target)?;
     let mut emitted = Vec::new();
 
     // write assembly to a temp `.s` file
@@ -216,7 +216,7 @@ fn build_emit(
     let obj_path = stem.with_extension("o");
     let keep_obj = kinds.contains(&Emit::Obj);
 
-    let assemble_result = nyx::assemble_for(&asm_path, &obj_path, target);
+    let assemble_result = backend::assemble_for(&asm_path, &obj_path, target);
     if !keep_asm {
         fs::remove_file(&asm_path).ok();
     }
@@ -231,7 +231,7 @@ fn build_emit(
     }
 
     let exe_path = stem.with_extension("");
-    let link_result = nyx::link_for(&obj_path, stem, &[], target);
+    let link_result = backend::link_for(&obj_path, stem, &[], target);
     fs::remove_file(&obj_path).ok();
     link_result?;
 

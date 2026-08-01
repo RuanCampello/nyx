@@ -1,0 +1,12 @@
+[package]
+name = "backend"
+version = "0.6.0"
+edition = "2024"
+
+[lib]
+bench = false
+
+[dependencies]
+bumpalo = "3"
+clap = { version = "4", features = ["derive"] }
+frontend = { path = "../frontend" }

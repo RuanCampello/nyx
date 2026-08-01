@@ -25,8 +25,8 @@ fn build(name: &str, asm: &str) -> PathBuf {
 
     fs::write(&asm_path, asm).unwrap_or_else(|e| panic!("Failed to write asm for {name}: {e}"));
 
-    nyx::assemble(&asm_path, &obj_path).expect("`as` failed to execute");
-    nyx::link(&obj_path, &lib_path, &["-shared", "-z", "noexecstack"]).expect("linking failed");
+    backend::assemble(&asm_path, &obj_path).expect("`as` failed to execute");
+    backend::link(&obj_path, &lib_path, &["-shared", "-z", "noexecstack"]).expect("linking failed");
 
     fs::remove_file(&asm_path).ok();
     fs::remove_file(&obj_path).ok();
@@ -41,7 +41,7 @@ fn compilation(c: &mut Criterion) {
     for (name, src) in PROGRAMS {
         group.bench_function(*name, |b| {
             b.iter(|| {
-                let asm = nyx::compile(src).expect("program must be compilable");
+                let asm = backend::compile(src).expect("program must be compilable");
                 black_box(asm);
             })
         });
@@ -57,7 +57,7 @@ fn execution(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(4));
 
     for (name, src) in PROGRAMS {
-        let asm = nyx::compile(src).expect("program must be compilable");
+        let asm = backend::compile(src).expect("program must be compilable");
         let symbol = format!("{}\0", main_symbol(&asm));
         let path = build(name, &asm);
         let lib = unsafe { Library::new(&path).expect("couldn't load library") };

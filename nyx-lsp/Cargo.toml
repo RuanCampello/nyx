@@ -8,7 +8,7 @@ name = "nyx-lsp"
 path = "src/main.rs"
 
 [dependencies]
-nyx = { path = ".." }
+frontend = { path = "../frontend" }
 bumpalo = "3"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }

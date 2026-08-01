@@ -326,9 +326,14 @@ pub struct Layouts<'a> {
     pub arrays: &'a [Layout],
 }
 
-impl Type {
+pub trait TypeExt {
+    fn is_aggregate_lir(self, layouts: Layouts) -> bool;
+    fn machine_type(&self, layouts: Layouts) -> MachineType;
+}
+
+impl TypeExt for Type {
     #[inline(always)]
-    pub(in crate::lir) fn is_aggregate_lir(self, layouts: Layouts) -> bool {
+    fn is_aggregate_lir(self, layouts: Layouts) -> bool {
         if self.is_aggregate() {
             return true;
         }
@@ -340,7 +345,7 @@ impl Type {
     }
 
     #[inline(always)]
-    pub(in crate::lir) fn machine_type(&self, layouts: Layouts) -> MachineType {
+    fn machine_type(&self, layouts: Layouts) -> MachineType {
         match self.kind() {
             TypeKind::I8 => MachineType::Int { bytes: 1, signed: true },
             TypeKind::U8 | TypeKind::Bool => MachineType::Int { bytes: 1, signed: false },
@@ -374,8 +379,8 @@ impl Type {
                     id.repr().typ().machine_type(layouts)
                 }
             },
-            TypeKind::Unit => unreachable!("unit doesn't have a machine type"),
-            TypeKind::SelfType => unreachable!("Self type doesn't have a machine type"),
+            TypeKind::Unit => unreachable!("unit does not have a machine type"),
+            TypeKind::SelfType => unreachable!("Self type does not have a machine type"),
             TypeKind::GenericParam(_) => {
                 unreachable!("GenericParam must be resolved before LIR lowering")
             },

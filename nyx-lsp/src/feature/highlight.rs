@@ -5,7 +5,7 @@
 //! not parse yet. Identifier roles are inferred syntactically from neighbouring
 //! tokens (declarations, calls, types, fields, paths)
 
-use nyx::{is_keyword, is_primitive};
+use frontend::{is_keyword, is_primitive};
 
 /// A classified, single-line highlight span
 ///

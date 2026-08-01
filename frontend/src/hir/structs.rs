@@ -150,7 +150,7 @@ pub fn type_layout(
 }
 
 /// the field named `field` of `origin`, following a single reference
-pub(crate) fn struct_field(
+pub fn struct_field(
     origin: Type,
     field: SymbolId,
     structs: &IndexVec<StructId, Struct>,

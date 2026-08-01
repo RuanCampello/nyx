@@ -2,7 +2,7 @@ use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
     diagnostic::{self, AsDiagnostic, RichDiagnostic},
     hir::Declarations,
-    lexer::{HasSpan, token::Span},
+    lexer::token::Span,
     parser::{
         Parser,
         expression::Expression,

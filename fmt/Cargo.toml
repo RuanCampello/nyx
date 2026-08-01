@@ -5,6 +5,7 @@ edition = "2024"
 
 
 [dependencies]
+frontend = { path = "../frontend" }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 

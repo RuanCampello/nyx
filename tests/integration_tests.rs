@@ -1,4 +1,4 @@
-use nyx::optimisation::Level;
+use backend::optimisation::Level;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -278,9 +278,9 @@ fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
 fn compile_and_assemble_at(path: &Path, level: Level) -> Result<PathBuf, String> {
     let project = path.file_stem().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
 
-    nyx::optimisation::set(level);
-    let compiled = nyx::compile_project(path, &project);
-    nyx::optimisation::set(Level::Debug);
+    backend::optimisation::set(level);
+    let compiled = backend::compile_project(path, &project);
+    backend::optimisation::set(Level::Debug);
 
     let asm = compiled.map_err(|e| e.to_string())?;
 
@@ -418,7 +418,7 @@ fn run_aarch64_integration_tests() {
         let project = src.file_stem().unwrap().to_string_lossy().to_string();
 
         let compile_res = (|| -> Result<i32, String> {
-            let asm = nyx::compile_project_for(&src, &project, nyx::TargetArch::AArch64)
+            let asm = backend::compile_project_for(&src, &project, backend::TargetArch::AArch64)
                 .map_err(|e| e.to_string())?;
 
             let temp_dir = std::env::temp_dir();

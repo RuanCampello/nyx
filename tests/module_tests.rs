@@ -25,7 +25,7 @@ const CASES: &[Case] = &[
 ];
 
 fn compile_and_run(entry: &Path, project_name: &str) -> Result<i32, String> {
-    let asm = nyx::compile_project(entry, project_name).map_err(|e| e.to_string())?;
+    let asm = backend::compile_project(entry, project_name).map_err(|e| e.to_string())?;
 
     let temp_dir = std::env::temp_dir();
     let test_name = project_name.replace("-", "_");
@@ -36,11 +36,11 @@ fn compile_and_run(entry: &Path, project_name: &str) -> Result<i32, String> {
 
     fs::write(&asm_path, &asm).map_err(|e| format!("failed to write assembly: {e}"))?;
 
-    let assemble = nyx::assemble(&asm_path, &obj_path).map_err(|e| e.to_string());
+    let assemble = backend::assemble(&asm_path, &obj_path).map_err(|e| e.to_string());
     fs::remove_file(&asm_path).ok();
     assemble?;
 
-    let link = nyx::link(&obj_path, &exe_path, &[]).map_err(|e| e.to_string());
+    let link = backend::link(&obj_path, &exe_path, &[]).map_err(|e| e.to_string());
     fs::remove_file(&obj_path).ok();
     link?;
 

@@ -149,7 +149,7 @@ const REF_TAG_MASK: u64 = 0x7F;
 
 impl EnumRepr {
     #[inline]
-    pub(crate) const fn typ(self) -> Type {
+    pub const fn typ(self) -> Type {
         match self {
             Self::I8 => Type::new(TypeKind::I8),
             Self::U8 => Type::new(TypeKind::U8),
@@ -165,7 +165,7 @@ impl EnumRepr {
     }
 
     #[inline]
-    pub(crate) const fn layout(self) -> (u32, u32) {
+    pub const fn layout(self) -> (u32, u32) {
         match self {
             Self::I8 | Self::U8 => (1, 1),
             Self::I16 | Self::U16 => (2, 2),

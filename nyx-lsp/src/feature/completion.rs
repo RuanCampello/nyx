@@ -2,7 +2,7 @@
 //! index [crate::analysis] built while the HIR was alive
 
 use crate::analysis::{Completion, Completions, SemanticAnalysis};
-use nyx::lexer::token::Keyword;
+use frontend::lexer::token::Keyword;
 
 /// What qualifies the position being completed
 #[derive(Debug, PartialEq, Eq)]
@@ -85,7 +85,7 @@ pub fn keywords() -> impl Iterator<Item = &'static str> {
     Keyword::ALL.iter().map(|keyword| keyword.as_str())
 }
 
-pub fn scope_at(analysis: &SemanticAnalysis, position: nyx::BytePos) -> Option<&[Completion]> {
+pub fn scope_at(analysis: &SemanticAnalysis, position: frontend::BytePos) -> Option<&[Completion]> {
     analysis
         .scopes
         .iter()

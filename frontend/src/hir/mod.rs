@@ -23,7 +23,7 @@ use std::{collections::HashMap, ops::Index};
 
 pub(crate) use scope::SLICE_IMPL_NAME;
 pub use scope::{InterfaceMethodSignature, InterfaceSignature};
-pub(crate) use structs::struct_field;
+pub use structs::struct_field;
 pub use structs::type_layout;
 pub use symbols::SymbolTable;
 pub use types::*;
@@ -560,7 +560,7 @@ pub fn join_docs(lines: &[&str]) -> Option<Box<str>> {
 }
 
 /// Walk a place expression (`Local`/`Field`) to its base local, if any
-pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
+pub fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
     match &expr.kind {
         ExpressionKind::Local(local) => Some(*local),
         ExpressionKind::Field { base, .. } => place_base_local(base),
@@ -570,11 +570,11 @@ pub(crate) fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
 }
 
 impl Layout {
-    pub(crate) const fn new(size: u32, align: u32, contains_float: bool) -> Self {
+    pub const fn new(size: u32, align: u32, contains_float: bool) -> Self {
         Self { size, align, contains_float }
     }
 
-    pub(crate) const fn contains_float(self) -> bool {
+    pub const fn contains_float(self) -> bool {
         self.contains_float
     }
 }

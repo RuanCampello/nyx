@@ -1,13 +1,13 @@
-use nyx::hir::module;
-use nyx::hir::{
+use frontend::hir::module;
+use frontend::hir::{
     self, ArrayId, ArrayType, Block, Constant, Enum, EnumId, ExpressionKind, Function, FunctionId,
     FunctionKind, Hir, InterfaceMethodSignature, InterfaceSignature, Literal, Local, LocalId,
     Owner, Parameter, Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
     TypeckResults, index_vec::IndexVec,
 };
-use nyx::{
+use frontend::{
     diagnostic::AsDiagnostic,
-    lexer::{HasSpan, token::Span},
+    lexer::token::Span,
     source_map::{FileId, SourceMap},
 };
 use std::collections::HashMap;
@@ -245,7 +245,7 @@ pub enum Binding {
 const MAX_HOVER_ITEMS: usize = 5;
 
 /// A single compile-time error in structured form so consumers can render it as richly as the CLI
-type CheckError = nyx::diagnostic::RichDiagnostic;
+type CheckError = frontend::diagnostic::RichDiagnostic;
 
 impl Analysis {
     /// Create a new analysis builder starting at the given entry path.
@@ -293,7 +293,7 @@ impl Analysis {
         .recovering();
 
         let result = loader.load(&self.entry);
-        let source_map = nyx::diagnostic::take_source_map();
+        let source_map = frontend::diagnostic::take_source_map();
 
         let mut analysis = match result {
             // recovery keeps a (partial) HIR even with errors: surface every
@@ -1297,7 +1297,7 @@ fn dedup_by_label(list: &mut Vec<Completion>) {
 
 /// the type a field access reaches through, references being transparent
 ///
-/// [RefTarget](nyx::hir::RefTarget) forbids nesting, so one hop always suffices
+/// [RefTarget](frontend::hir::RefTarget) forbids nesting, so one hop always suffices
 #[inline]
 fn through_reference(typ: Type) -> Type {
     match typ.kind() {
@@ -1313,8 +1313,8 @@ fn split_path(map: &SourceMap, path: Span) -> Option<(Span, Span)> {
     let at = map.source(file).get(range)?.rfind("::")?;
 
     let start = path.start.0;
-    let qualifier = Span::new(path.start, nyx::BytePos(start + at as u32));
-    let name = Span::new(nyx::BytePos(start + at as u32 + 2), path.end);
+    let qualifier = Span::new(path.start, frontend::BytePos(start + at as u32));
+    let name = Span::new(frontend::BytePos(start + at as u32 + 2), path.end);
 
     Some((qualifier, name))
 }
@@ -1507,7 +1507,7 @@ impl Index {
 // in the future instead of ad-hoc resolution here
 
 fn const_value(constant: &Constant<'_>, hir: &Index) -> Option<String> {
-    use nyx::parser::expression::UnaryOperator;
+    use frontend::parser::expression::UnaryOperator;
 
     match &constant.value.kind {
         ExpressionKind::Literal(Literal::Float(value)) => Some(value.to_string()),
@@ -1532,7 +1532,7 @@ fn const_value(constant: &Constant<'_>, hir: &Index) -> Option<String> {
 }
 
 fn eval_const_int(expr: &hir::Expression<'_>, hir: &Index) -> Option<i128> {
-    use nyx::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
+    use frontend::parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator};
 
     match &expr.kind {
         ExpressionKind::Literal(Literal::Int(value)) => Some(*value as i128),
@@ -2342,7 +2342,7 @@ fn main() {
 
         let offset = source.find(cursor).expect("the cursor marker") + cursor.len();
         let context = completion::context_at(source, offset);
-        let position = nyx::BytePos(entry_origin(a, source) + offset as u32);
+        let position = frontend::BytePos(entry_origin(a, source) + offset as u32);
 
         completion::candidates(a, &context, completion::scope_at(a, position))
             .into_iter()
