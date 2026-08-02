@@ -1,0 +1,18 @@
+struct Celsius {}
+struct Kelvin {}
+
+impl Celsius {
+    const ABSOLUTE_ZERO: f64 = -273.15;
+}
+
+impl Kelvin {
+    /// value used to convert between celsius and kelvin scale
+    const CELSIUS_OFFSET: f64 = -273.15;
+}
+
+const KELVIN_ABSOLUTE_ZERO: f64 = 0.0;
+
+fn main() {
+  assert_eq(KELVIN_ABSOLUTE_ZERO, Celsius::ABSOLUTE_ZERO - Kelvin::CELSIUS_OFFSET);
+  assert_eq(Celsius::ABSOLUTE_ZERO, Kelvin::CELSIUS_OFFSET);
+}

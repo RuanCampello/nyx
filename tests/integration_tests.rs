@@ -15,6 +15,11 @@ struct Case<'c> {
 const CASES: &[Case] = &[
     Case { name: "add", file: "tests/single/add.nyx", exit_code: None },
     Case {
+        name: "associative_const",
+        file: "tests/single/associative_const.nyx",
+        exit_code: None,
+    },
+    Case {
         name: "inference",
         file: "tests/single/inference.nyx",
         exit_code: None,
