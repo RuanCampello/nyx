@@ -791,6 +791,108 @@ mod tests {
     }
 
     #[test]
+    fn expression_body_becomes_a_tail_expression() {
+        let statements = Parser::new("fn is_even(n: i32): bool = n & 1 == 0;").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+
+        assert!(matches!(function.return_type.as_ref().map(Spanned::value), Some(Type::Bool)));
+        assert!(matches!(
+            function.body.statements.as_slice(),
+            [Statement::Expr(Expression::Binary { operator: BinaryOperator::Eq, .. }, _)]
+        ));
+    }
+
+    #[test]
+    fn expression_body_requires_a_return_type() {
+        let error = Parser::new("fn double(value: i32) = value * 2;").parse().unwrap_err();
+
+        assert_eq!(error.kind, ParseErrorKind::ExpressionBodyNeedsReturnType);
+        assert_eq!(error.span, Span::new(BytePos(22), BytePos(23)));
+    }
+
+    #[test]
+    fn expression_body_requires_a_semicolon() {
+        let error = Parser::new("fn answer(): i32 = 42").parse().unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            ParseErrorKind::Expected {
+                expected: TokenKind::Punct(Punct::Semicolon),
+                found: TokenKind::Eof,
+            }
+        );
+    }
+
+    #[test]
+    fn methods_and_interface_defaults_accept_expression_bodies() {
+        let statements = Parser::new(
+            r#"
+            interface Named {
+                fn value(&self): i32 = 40;
+            }
+
+            struct Number { value: i32 }
+
+            impl Number {
+                fn doubled(&self): i32 = self.value * 2;
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected an interface item");
+        };
+        assert!(interface.methods[0].body.is_some());
+
+        let Statement::Item(Item { kind: ItemKind::Impl(implementation), .. }) = &statements[2]
+        else {
+            panic!("expected an impl item");
+        };
+        assert_eq!(implementation.methods[0].body.statements.len(), 1);
+    }
+
+    #[test]
+    fn expression_body_can_follow_a_trailing_where_bound() {
+        let statements = Parser::new("fn identity<T>(value: T): T where T: Copy, = value;")
+            .parse()
+            .unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+
+        assert_eq!(function.generics.len(), 1);
+        assert_eq!(function.generics[0].bounds.len(), 1);
+        assert_eq!(function.body.statements.len(), 1);
+    }
+
+    #[test]
+    fn branching_expressions_can_be_function_bodies() {
+        let statements = Parser::new(
+            r#"
+            fn absolute(value: i32): i32 = if value < 0 { -value } else { value };
+            fn classify(value: i32): i32 = match value { 0 -> 1, _ -> value, };
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Fn(absolute), .. }) = &statements[0] else {
+            panic!("expected a function item");
+        };
+        assert!(matches!(absolute.body.statements.as_slice(), [Statement::If(_)]));
+
+        let Statement::Item(Item { kind: ItemKind::Fn(classify), .. }) = &statements[1] else {
+            panic!("expected a function item");
+        };
+        assert!(matches!(classify.body.statements.as_slice(), [Statement::Match(_)]));
+    }
+
+    #[test]
     fn parse_inference_file() {
         let source = include_str!("../../../tests/single/inference.nyx");
         let statements = Parser::new(source).parse().unwrap();

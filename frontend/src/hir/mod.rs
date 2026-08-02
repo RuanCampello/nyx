@@ -860,6 +860,34 @@ mod tests {
     }
 
     #[test]
+    fn expression_body_is_checked_against_the_declared_return_type() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn answer(): bool = 42;").parse().unwrap();
+        let error = super::lower(statements, &arena).unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                if expected.kind() == TypeKind::Bool && found.kind() == TypeKind::I32
+        ));
+    }
+
+    #[test]
+    fn branching_expression_bodies_return_on_every_path() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new(
+            r#"
+            fn absolute(value: i32): i32 = if value < 0 { -value } else { value };
+            fn classify(value: i32): i32 = match value { 0 -> 1, _ -> value, };
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        assert!(super::lower(statements, &arena).is_ok());
+    }
+
+    #[test]
     fn mutability() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new(

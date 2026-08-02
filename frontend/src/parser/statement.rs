@@ -862,7 +862,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         let return_type =
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
-        let body = Block::parse(parser)?;
+        let body = parse_function_body(parser, return_type.is_some())?;
         let span = fn_token.span + body.span;
 
         Ok(Function {
@@ -1188,7 +1188,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let (body, span) = if parser.consume_token(Punct::Semicolon)? {
             (None, fn_token.span + parser.last_span().unwrap_or_default())
         } else {
-            let b = parser.parse_node::<Block>()?;
+            let b = parse_function_body(parser, return_type.is_some())?;
             let b_span = b.span;
             (Some(b), fn_token.span + b_span)
         };
@@ -1528,6 +1528,33 @@ fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError
     Ok(markers)
 }
 
+fn parse_function_body<'i>(
+    parser: &mut Parser<'i>,
+    has_return_type: bool,
+) -> Result<Block<'i>, ParserError<'i>> {
+    if !parser.consume_token(Punct::Eq)? {
+        return Block::parse(parser);
+    }
+
+    let equals = parser.last_span().unwrap_or_default();
+    if !has_return_type {
+        return Err(ParserError::new(ParseErrorKind::ExpressionBodyNeedsReturnType, equals));
+    }
+
+    let statement = match parser.peek() {
+        Some(Ok(token)) if token.is_kind(Keyword::If) => Statement::If(parser.parse_node()?),
+        Some(Ok(token)) if token.is_kind(Keyword::Match) => Statement::Match(parser.parse_node()?),
+        _ => {
+            let expression = parser.parse_node::<Expression>()?;
+            let span = expression.span();
+            Statement::Expr(expression, span)
+        },
+    };
+    let semicolon = parser.expect_token(Punct::Semicolon)?;
+
+    Ok(Block { statements: vec![statement], span: equals + semicolon.span })
+}
+
 fn parse_bracketed_type<'i>(
     parser: &mut Parser<'i>,
 ) -> Result<(Type<'i>, Option<u64>), ParserError<'i>> {
@@ -1623,9 +1650,9 @@ fn parse_where_clause<'i>(
             break;
         }
 
-        // accept a trailing comma before the body's `{`
+        // accept a trailing comma before either body form
         match parser.peek() {
-            Some(Ok(t)) if t.is_kind(Punct::OpenBrace) => break,
+            Some(Ok(t)) if t.is_kind(Punct::OpenBrace) | t.is_kind(Punct::Eq) => break,
             _ => {},
         }
     }

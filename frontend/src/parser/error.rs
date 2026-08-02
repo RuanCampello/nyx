@@ -79,6 +79,13 @@ pub enum ParseErrorKind<'i> {
     )]
     MarkerIsNotABlock { name: &'static str },
     #[diagnostic(
+        code = "E031",
+        message = "Expression-bodied function must declare its return type",
+        primary = "return type required before this expression body",
+        help = "Write `fn name(...): Type = expression;`"
+    )]
+    ExpressionBodyNeedsReturnType,
+    #[diagnostic(
         code = "E028",
         message = "Unexpected end of file",
         primary = "the file ends here",

@@ -237,6 +237,23 @@ fn main() {
 a declaration whose body the compiler supplies.
 "#;
 
+E031 => "expression-bodied function needs a return type", r#"
+An expression-bodied function must declare the type produced by its expression.
+
+```nyx
+fn double(value: i32) = value * 2;  // error: return type required
+```
+
+Add the return type between the parameter list and `=`:
+
+```nyx
+fn double(value: i32): i32 = value * 2;
+```
+
+Nyx resolves function signatures before checking their bodies, so return types
+on expression-bodied functions remain explicit.
+"#;
+
 E040 => "module file not found", r#"
 A `use` declaration points at a module whose `.nyx` file does not exist.
 

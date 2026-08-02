@@ -194,6 +194,23 @@ fn main() {
 `@unsafe { … }` is the only marker that opens a block. `@intrinsic` sits above
 a declaration whose body the compiler supplies.
 
+### E031: expression-bodied function needs a return type
+
+An expression-bodied function must declare the type produced by its expression.
+
+```rust
+fn double(value: i32) = value * 2;  // error: return type required
+```
+
+Add the return type between the parameter list and `=`:
+
+```rust
+fn double(value: i32): i32 = value * 2;
+```
+
+Nyx resolves function signatures before checking their bodies, so return types
+on expression-bodied functions remain explicit.
+
 ## Modules
 
 ### E040: module file not found
