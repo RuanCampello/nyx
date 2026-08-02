@@ -10,7 +10,7 @@ use frontend::{
     lexer::token::Span,
     source_map::{FileId, SourceMap},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct Analysis {
@@ -159,6 +159,13 @@ struct Walker<'a, 'h> {
     /// how each name in this body was declared, so a use hovers as its
     /// declaration rather than as a bare type
     forms: HashMap<LocalId, Binding>,
+}
+
+struct CompletionCollector<'a> {
+    hir: &'a Index,
+    map: &'a SourceMap,
+    imported_names: &'a HashSet<String>,
+    out: Completions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -698,6 +705,207 @@ impl<'a, 'h> Walker<'a, 'h> {
     }
 }
 
+impl<'a> CompletionCollector<'a> {
+    fn new(hir: &'a Index, map: &'a SourceMap, imported_names: &'a HashSet<String>) -> Self {
+        Self { hir, map, imported_names, out: Completions::default() }
+    }
+
+    fn collect(mut self) -> Completions {
+        let hir = self.hir;
+        self.register_modules();
+
+        for (idx, structure) in hir.structs.iter().enumerate() {
+            let name = base_name(hir.symbols.get(structure.name));
+            let typ = Type::structure(StructId(idx as u32));
+            let key = base_name(&format_type(typ, hir, &[]));
+
+            let fields = self.out.members.entry(key).or_default();
+            for field in &structure.fields {
+                fields.push(Completion {
+                    label: hir.symbols.get(field.name).to_owned(),
+                    kind: CompletionKind::Field,
+                    detail: format_type(field.typ, hir, &structure.generics),
+                    docs: hir.docs(field.name_span),
+                    type_key: type_key(field.typ, hir),
+                });
+            }
+
+            if structure.decl_span != Span::default() {
+                let nominal = nominal_name(structure.name, &structure.generics, hir);
+                let candidate = Completion {
+                    label: name,
+                    kind: CompletionKind::Struct,
+                    detail: format!("struct {nominal}"),
+                    docs: hir.docs(structure.decl_span),
+                    type_key: None,
+                };
+                self.export(structure.decl_span, candidate);
+            }
+        }
+
+        for enumeration in hir.enums.iter() {
+            let name = base_name(hir.symbols.get(enumeration.name));
+            let variants = self.out.associated.entry(name.clone()).or_default();
+            for variant in &enumeration.variants {
+                variants.push(Completion {
+                    label: hir.symbols.get(variant.name).to_owned(),
+                    kind: CompletionKind::Variant,
+                    detail: match variant.payload {
+                        Some(payload) => format_type(payload, hir, &enumeration.generics),
+                        None => variant.value.to_string(),
+                    },
+                    docs: hir.docs(variant.name_span),
+                    type_key: None,
+                });
+            }
+
+            if enumeration.decl_span != Span::default() {
+                let nominal = nominal_name(enumeration.name, &enumeration.generics, hir);
+                let candidate = Completion {
+                    label: name,
+                    kind: CompletionKind::Enum,
+                    detail: format!("enum {nominal}"),
+                    docs: hir.docs(enumeration.decl_span),
+                    type_key: None,
+                };
+                self.export(enumeration.decl_span, candidate);
+            }
+        }
+
+        for interface in &hir.interfaces {
+            let name = base_name(hir.symbols.get(interface.name));
+            let methods = self.out.associated.entry(name.clone()).or_default();
+            for method in &interface.methods {
+                methods.push(Completion {
+                    label: base_name(hir.symbols.get(method.name)),
+                    kind: CompletionKind::Method,
+                    detail: interface_signature(method, interface, hir),
+                    docs: hir.docs(method.decl_span),
+                    type_key: None,
+                });
+            }
+            let nominal = nominal_name(interface.name, &interface.generic_params, hir);
+
+            let candidate = Completion {
+                label: name,
+                kind: CompletionKind::Interface,
+                detail: format!("interface {nominal}"),
+                docs: hir.docs(interface.decl_span),
+                type_key: None,
+            };
+            self.export(interface.decl_span, candidate);
+        }
+
+        for func in &hir.functions {
+            let qualified = hir.symbols.get(func.name);
+            let receiver = func.receiver(hir);
+            let candidate = Completion {
+                label: base_name(qualified),
+                kind: match receiver {
+                    Some(_) => CompletionKind::Method,
+                    None => CompletionKind::Function,
+                },
+                detail: signature(func, hir),
+                docs: hir.docs(func.decl_span),
+                type_key: type_key(func.return_type, hir),
+            };
+
+            match (receiver, implementor_of(func.owner, hir, &[])) {
+                (Some(receiver), _) => {
+                    let key = base_name(&format_type(through_reference(receiver), hir, &[]));
+                    self.out.members.entry(key).or_default().push(candidate);
+                },
+                (None, Some(implementor)) => {
+                    self.out.associated.entry(base_name(&implementor)).or_default().push(candidate);
+                },
+                (None, None) => {
+                    if let Some(module) = hir.module_of(self.map, func.decl_span) {
+                        self.out.associated.entry(module).or_default().push(candidate.clone());
+                    }
+                    if self.is_open_name(func.decl_span, &candidate.label) {
+                        self.out.globals.push(candidate);
+                    }
+                },
+            }
+        }
+
+        for constant in &hir.constants {
+            let qualified = hir.symbols.get(constant.name);
+            let candidate = Completion {
+                label: base_name(qualified),
+                kind: CompletionKind::Constant,
+                detail: format_type(constant.typ, hir, &[]),
+                docs: hir.docs(constant.decl_span),
+                type_key: type_key(constant.typ, hir),
+            };
+
+            match implementor_of(constant.owner, hir, &[]) {
+                Some(implementor) => {
+                    self.out.associated.entry(base_name(&implementor)).or_default().push(candidate);
+                },
+                None => {
+                    if let Some(module) = hir.module_of(self.map, constant.decl_span) {
+                        self.out.associated.entry(module).or_default().push(candidate.clone());
+                    }
+                    if self.is_open_name(constant.decl_span, &candidate.label) {
+                        self.out.globals.push(candidate);
+                    }
+                },
+            }
+        }
+
+        for list in self.out.members.values_mut().chain(self.out.associated.values_mut()) {
+            dedup_by_label(list);
+        }
+        dedup_by_label(&mut self.out.globals);
+
+        self.out
+    }
+
+    fn export(&mut self, decl_span: Span, candidate: Completion) {
+        if let Some(module) = self.hir.module_of(self.map, decl_span) {
+            self.out.associated.entry(module).or_default().push(candidate.clone());
+        }
+        if self.is_open_name(decl_span, &candidate.label) {
+            self.out.globals.push(candidate);
+        }
+    }
+
+    fn is_open_name(&self, decl_span: Span, label: &str) -> bool {
+        match self.hir.module_of(self.map, decl_span).as_deref() {
+            Some(module) if module.starts_with("std::") => self.imported_names.contains(label),
+            _ => true,
+        }
+    }
+
+    fn register_modules(&mut self) {
+        for path in self.hir.modules.values() {
+            let mut prefix = String::new();
+
+            for segment in path.split("::") {
+                let full = match prefix.is_empty() {
+                    true => segment.to_owned(),
+                    false => format!("{prefix}::{segment}"),
+                };
+                let candidate = Completion {
+                    label: segment.to_owned(),
+                    kind: CompletionKind::Module,
+                    detail: format!("mod {full}"),
+                    docs: None,
+                    type_key: None,
+                };
+
+                match prefix.is_empty() {
+                    true => self.out.globals.push(candidate),
+                    false => self.out.associated.entry(prefix.clone()).or_default().push(candidate),
+                }
+
+                prefix = full;
+            }
+        }
+    }
+}
+
 impl From<Function<'_>> for FnInfo {
     fn from(value: Function<'_>) -> Self {
         Self {
@@ -859,6 +1067,8 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
     index.constants = constants.iter().map(|constant| ConstInfo::of(constant, &index)).collect();
     index.functions = functions.into_iter().map(FnInfo::from).collect();
 
+    let imported_names: HashSet<_> =
+        imports.iter().map(|(_, name)| index.symbols.get(*name).to_owned()).collect();
     let importable = importable_items(&index);
     for (span, name) in imports {
         let Some(&item) = importable.get(index.symbols.get(name)) else {
@@ -896,7 +1106,7 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
         goto_definitions,
         inlay_hints,
         document_symbols: symbols,
-        completions: completions(&index, map),
+        completions: completions(&index, map, &imported_names),
         scopes,
         index,
         source_map: SourceMap::default(),
@@ -1094,198 +1304,9 @@ fn type_key(typ: Type, hir: &Index) -> Option<String> {
 }
 
 /// collect every name completion can offer, keyed by how it is reached
-fn completions(hir: &Index, map: &SourceMap) -> Completions {
-    let mut out = Completions::default();
-    register_modules(&mut out, hir);
-
-    for (idx, structure) in hir.structs.iter().enumerate() {
-        let name = base_name(hir.symbols.get(structure.name));
-        let typ = Type::structure(StructId(idx as u32));
-        let key = base_name(&format_type(typ, hir, &[]));
-
-        let fields = out.members.entry(key).or_default();
-        for field in &structure.fields {
-            fields.push(Completion {
-                label: hir.symbols.get(field.name).to_owned(),
-                kind: CompletionKind::Field,
-                detail: format_type(field.typ, hir, &structure.generics),
-                docs: hir.docs(field.name_span),
-                type_key: type_key(field.typ, hir),
-            });
-        }
-
-        if structure.decl_span != Span::default() {
-            let candidate = Completion {
-                label: name,
-                kind: CompletionKind::Struct,
-                detail: format!(
-                    "struct {}",
-                    nominal_name(structure.name, &structure.generics, hir)
-                ),
-                docs: hir.docs(structure.decl_span),
-                type_key: None,
-            };
-            export(&mut out, hir, map, structure.decl_span, candidate);
-        }
-    }
-
-    for enumeration in hir.enums.iter() {
-        let name = base_name(hir.symbols.get(enumeration.name));
-        let variants = out.associated.entry(name.clone()).or_default();
-        for variant in &enumeration.variants {
-            variants.push(Completion {
-                label: hir.symbols.get(variant.name).to_owned(),
-                kind: CompletionKind::Variant,
-                detail: match variant.payload {
-                    Some(payload) => format_type(payload, hir, &enumeration.generics),
-                    None => variant.value.to_string(),
-                },
-                docs: hir.docs(variant.name_span),
-                type_key: None,
-            });
-        }
-
-        if enumeration.decl_span != Span::default() {
-            let candidate = Completion {
-                label: name,
-                kind: CompletionKind::Enum,
-                detail: format!(
-                    "enum {}",
-                    nominal_name(enumeration.name, &enumeration.generics, hir)
-                ),
-                docs: hir.docs(enumeration.decl_span),
-                type_key: None,
-            };
-            export(&mut out, hir, map, enumeration.decl_span, candidate);
-        }
-    }
-
-    for interface in &hir.interfaces {
-        let name = base_name(hir.symbols.get(interface.name));
-        let methods = out.associated.entry(name.clone()).or_default();
-        for method in &interface.methods {
-            methods.push(Completion {
-                label: base_name(hir.symbols.get(method.name)),
-                kind: CompletionKind::Method,
-                detail: interface_signature(method, interface, hir),
-                docs: hir.docs(method.decl_span),
-                type_key: None,
-            });
-        }
-
-        let candidate = Completion {
-            label: name,
-            kind: CompletionKind::Interface,
-            detail: format!(
-                "interface {}",
-                nominal_name(interface.name, &interface.generic_params, hir)
-            ),
-            docs: hir.docs(interface.decl_span),
-            type_key: None,
-        };
-        export(&mut out, hir, map, interface.decl_span, candidate);
-    }
-
-    for func in &hir.functions {
-        let qualified = hir.symbols.get(func.name);
-        let receiver = func.receiver(hir);
-        let candidate = Completion {
-            label: base_name(qualified),
-            kind: match receiver {
-                Some(_) => CompletionKind::Method,
-                None => CompletionKind::Function,
-            },
-            detail: signature(func, hir),
-            docs: hir.docs(func.decl_span),
-            type_key: type_key(func.return_type, hir),
-        };
-
-        match (receiver, implementor_of(func.owner, hir, &[])) {
-            (Some(receiver), _) => {
-                let key = base_name(&format_type(through_reference(receiver), hir, &[]));
-                out.members.entry(key).or_default().push(candidate);
-            },
-            (None, Some(implementor)) => {
-                out.associated.entry(base_name(&implementor)).or_default().push(candidate);
-            },
-            (None, None) => {
-                if let Some(module) = hir.module_of(map, func.decl_span) {
-                    out.associated.entry(module).or_default().push(candidate.clone());
-                }
-                out.globals.push(candidate);
-            },
-        }
-    }
-
-    for constant in &hir.constants {
-        let qualified = hir.symbols.get(constant.name);
-        let candidate = Completion {
-            label: base_name(qualified),
-            kind: CompletionKind::Constant,
-            detail: format_type(constant.typ, hir, &[]),
-            docs: hir.docs(constant.decl_span),
-            type_key: type_key(constant.typ, hir),
-        };
-
-        match implementor_of(constant.owner, hir, &[]) {
-            Some(implementor) => {
-                out.associated.entry(base_name(&implementor)).or_default().push(candidate);
-            },
-            None => {
-                if let Some(module) = hir.module_of(map, constant.decl_span) {
-                    out.associated.entry(module).or_default().push(candidate.clone());
-                }
-                out.globals.push(candidate);
-            },
-        }
-    }
-
-    for list in out.members.values_mut().chain(out.associated.values_mut()) {
-        dedup_by_label(list);
-    }
-    dedup_by_label(&mut out.globals);
-
-    out
-}
-
-fn export(
-    out: &mut Completions,
-    hir: &Index,
-    map: &SourceMap,
-    decl_span: Span,
-    candidate: Completion,
-) {
-    if let Some(module) = hir.module_of(map, decl_span) {
-        out.associated.entry(module).or_default().push(candidate.clone());
-    }
-    out.globals.push(candidate);
-}
-
-fn register_modules(out: &mut Completions, hir: &Index) {
-    for path in hir.modules.values() {
-        let mut prefix = String::new();
-
-        for segment in path.split("::") {
-            let full = match prefix.is_empty() {
-                true => segment.to_owned(),
-                false => format!("{prefix}::{segment}"),
-            };
-            let candidate = Completion {
-                label: segment.to_owned(),
-                kind: CompletionKind::Module,
-                detail: format!("mod {full}"),
-                docs: None,
-                type_key: None,
-            };
-
-            match prefix.is_empty() {
-                true => out.globals.push(candidate),
-                false => out.associated.entry(prefix.clone()).or_default().push(candidate),
-            }
-
-            prefix = full;
-        }
-    }
+#[inline]
+fn completions(hir: &Index, map: &SourceMap, imported_names: &HashSet<String>) -> Completions {
+    CompletionCollector::new(hir, map, imported_names).collect()
 }
 
 /// drop repeats a monomorphised template leaves behind, keeping source order
@@ -2395,6 +2416,29 @@ fn main() {
     }
 
     #[test]
+    fn unimported_standard_functions_are_not_offered_unqualified() {
+        let source = "fn main() { let value = pri; }";
+        let a = analyse("complete_unimported_std", source);
+        let offered = offered(&a, source, "let value = pri");
+
+        assert!(!offered.contains(&"print".to_owned()), "print needs an import: {offered:?}");
+        assert!(!offered.contains(&"println".to_owned()), "println needs an import: {offered:?}");
+    }
+
+    #[test]
+    fn imported_standard_functions_are_offered_unqualified() {
+        let source = "use std::io::{print};\nfn main() { let value = pri; }";
+        let a = analyse("complete_imported_std", source);
+        let offered = offered(&a, source, "let value = pri");
+
+        assert!(offered.contains(&"print".to_owned()), "the imported name is open: {offered:?}");
+        assert!(
+            !offered.contains(&"println".to_owned()),
+            "other exports stay qualified: {offered:?}"
+        );
+    }
+
+    #[test]
     fn a_module_path_offers_the_types_it_exports() {
         let a = analyse("complete_module_type", RICH);
         let exports: Vec<_> = a.completions.associated["std::optional"]
@@ -2433,7 +2477,9 @@ fn main() {
         let a = analyse("generic_render", "use std::ptr;\nfn main() { }");
         let rendered = a
             .completions
-            .globals
+            .associated
+            .get("std::ptr")
+            .expect("std::ptr is indexed")
             .iter()
             .find(|item| item.label == "add_mut")
             .map(|item| item.detail.clone())

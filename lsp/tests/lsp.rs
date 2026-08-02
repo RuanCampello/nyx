@@ -568,6 +568,18 @@ async fn an_intrinsic_declaration_hovers() {
 }
 
 #[tokio::test]
+async fn completion_excludes_unimported_standard_functions() {
+    let src = "fn main() { pri }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client.completion_labels(&url, position_of(src, "pri }")).await;
+    assert!(!labels.contains(&"print".to_owned()), "print needs an import: {labels:?}");
+    assert!(!labels.contains(&"println".to_owned()), "println needs an import: {labels:?}");
+}
+
+#[tokio::test]
 async fn a_path_qualifier_completes_submodules_and_their_items() {
     let src = "fn main() { }\n";
     let mut client = TestClient::start().await;
