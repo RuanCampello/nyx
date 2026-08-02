@@ -24,17 +24,13 @@ enum Shape {
     At(Point),
 }
 
-fn score(shape: Shape): i32 {
-    match shape {
-        Shape::Empty -> 0,
-        Shape::At(Point { x, y: 0 }) -> x,
-        Shape::At(Point { x, y }) -> x * x + y * y,
-    }
-}
+fn score(shape: Shape): i32 = match shape {
+    Shape::Empty -> 0,
+    Shape::At(Point { x, y: 0 }) -> x,
+    Shape::At(Point { x, y }) -> x * x + y * y,
+};
 
-fn main(): i32 {
-    score(Shape::At(Point { x: 3, y: 4 })) // 25
-}
+fn main(): i32 = score(Shape::At(Point { x: 3, y: 4 })); // 25
 ```
 
 <details>
@@ -55,9 +51,7 @@ impl Counter with Sink {
         self.value = self.value + value;
     }
 
-    fn total(&self): i32 {
-        self.value
-    }
+    fn total(&self): i32 = self.value;
 }
 
 fn collect<S: Sink>(sink: &mut S): i32 {

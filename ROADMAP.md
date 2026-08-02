@@ -113,7 +113,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Definition (`fn`)
   - [x] Mutable parameters
   - [ ] Default parameter values (**requires** definition of _default_ interface)
-  - [ ] Single expression functions
+  - [x] Single expression functions (`fn name(...): T = expression;`)
   - [ ] Modifiers
     - [x] Constant constraint (`const`)
     - [x] Inlining (`inline`)
