@@ -1,0 +1,19 @@
+fn classify(value: i32): i32 = match value {
+    0 -> 1,
+    _ -> value,
+};
+
+interface Incremented {
+    fn value(&self): i32;
+    fn incremented(&self): i32 = self.value() + 1;
+}
+
+struct Number {
+    value: i32,
+}
+
+impl Number with Incremented {
+    fn value(&self): i32 = self.value;
+}
+
+fn main(): i32 = classify(20) + Number { value: 21 }.incremented();
