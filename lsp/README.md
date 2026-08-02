@@ -25,7 +25,7 @@ The Language Server for [Nyx](../README.md).
 
 ```sh
 cargo build --release -p lsp
-# binary at: target/release/lsp
+# binary at: target/release/nyx-lsp
 ```
 
 The server needs to find the Nyx standard library. It resolves it in this order:
@@ -50,7 +50,7 @@ local configs = require("lspconfig.configs")
 if not configs.lsp then
   configs.lsp = {
     default_config = {
-      cmd = { "/path/to/nyx/target/release/lsp" },
+      cmd = { "/path/to/nyx/target/release/nyx-lsp" },
       cmd_env = { NYX_STD_PATH = "/path/to/nyx/std" },
       filetypes = { "nyx" },
       root_dir = lspconfig.util.root_pattern(".git"),
@@ -73,7 +73,7 @@ augroup lsp
   autocmd BufRead,BufNewFile *.nyx setfiletype nyx
   autocmd User lsp_setup call lsp#register_server({
     \ 'name': 'lsp',
-    \ 'cmd': {server_info->['/path/to/nyx/target/release/lsp']},
+    \ 'cmd': {server_info->['/path/to/nyx/target/release/nyx-lsp']},
     \ 'allowlist': ['nyx'],
     \ })
 augroup END

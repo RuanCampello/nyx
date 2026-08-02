@@ -450,6 +450,37 @@ async fn diagnostics_clear_after_a_fix() {
 }
 
 #[tokio::test]
+async fn expression_bodied_functions_have_no_diagnostics() {
+    let src = r#"
+        fn classify(value: i32): i32 = match value {
+            0 -> 1,
+            _ -> value,
+        };
+
+        interface Incremented {
+            fn value(&self): i32;
+            fn incremented(&self): i32 = self.value() + 1;
+        }
+
+        struct Number {
+            value: i32,
+        }
+
+        impl Number with Incremented {
+            fn value(&self): i32 = self.value;
+        }
+
+        fn absolute(value: i32): i32 = if value < 0 { -value } else { value };
+        fn main(): i32 = absolute(classify(20)) + Number { value: 20 }.incremented();
+    "#;
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+
+    let diagnostics = client.wait_diagnostics(&url).await;
+    assert!(diagnostics.is_empty(), "expression bodies are valid: {diagnostics:#?}");
+}
+
+#[tokio::test]
 async fn empty_buffer_analyses_clean() {
     let mut client = TestClient::start().await;
     let url = client.open("main.nyx", "").await;
