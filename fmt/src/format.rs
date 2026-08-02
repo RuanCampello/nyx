@@ -28,7 +28,7 @@ pub struct FieldOptions {
     /// struct Foo {
     ///     x: u32,
     ///     y: u32,
-    ///     y: u32,
+    ///     z: u32,
     /// }
     ///
     /// fn main() {
