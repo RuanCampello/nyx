@@ -13,6 +13,8 @@ pub enum Context<'s> {
     Path { qualifier: String },
     /// anywhere else, offering everything nameable
     Open,
+    /// directly inside an interface implementation, offering its required items
+    InterfaceImpl { interface: String },
     /// inside a comment or a literal, where prose is not code and nothing is
     /// nameable
     Inert,
@@ -47,11 +49,15 @@ pub fn context_at(text: &str, offset: usize) -> Context<'_> {
     // `use a::b::{c, d|` still completes against `a::b`, so step back over the
     // brace list the cursor sits in
     let before = before.trim_end_matches([' ', '\t', '\n', ',']);
-    let before = before.strip_suffix('{').unwrap_or(before);
+    let implementation = interface_impl_at(before);
+    let path = before.strip_suffix('{').unwrap_or(before);
 
-    match before.strip_suffix("::") {
+    match path.strip_suffix("::") {
         Some(head) => Context::Path { qualifier: path_before(head) },
-        None => Context::Open,
+        None => match implementation {
+            Some(interface) => Context::InterfaceImpl { interface },
+            None => Context::Open,
+        },
     }
 }
 
@@ -77,6 +83,13 @@ pub fn candidates<'a>(
             .iter()
             .collect(),
         Context::Open => scope.unwrap_or_default().iter().chain(index.globals.iter()).collect(),
+        Context::InterfaceImpl { interface } => index
+            .associated
+            .get(interface)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .collect(),
         Context::Inert => Vec::new(),
     }
 }
@@ -134,6 +147,51 @@ fn receiver_type(
     named(scope.unwrap_or_default())
         .or_else(|| named(&index.globals))
         .or_else(|| index.members.contains_key(receiver).then(|| receiver.to_owned()))
+}
+
+fn interface_impl_at(before: &str) -> Option<String> {
+    let mut braces = Vec::new();
+    let mut mode = Mode::Code;
+    let bytes = before.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        mode = match (mode, bytes[i]) {
+            (Mode::Code, b'/') if bytes.get(i + 1) == Some(&b'/') => {
+                i += 1;
+                Mode::Comment
+            },
+            (Mode::Code, b'"') => Mode::Str,
+            (Mode::Code, b'\'') => Mode::Char,
+            (Mode::Code, b'{') => {
+                braces.push(i);
+                Mode::Code
+            },
+            (Mode::Code, b'}') => {
+                braces.pop();
+                Mode::Code
+            },
+            (Mode::Comment, b'\n') => Mode::Code,
+            (Mode::Str | Mode::Char, b'\\') => {
+                i += 1;
+                mode
+            },
+            (Mode::Str, b'"') | (Mode::Char, b'\'') => Mode::Code,
+            _ => mode,
+        };
+        i += 1;
+    }
+
+    let open = braces.last().copied()?;
+    let header = &before[..open];
+    let header = header.rfind(['{', '}', ';']).map_or(header, |boundary| &header[boundary + 1..]);
+    let mut words = header.split(|c: char| !is_name_char(c)).filter(|word| !word.is_empty());
+    if words.next()? != "impl" {
+        return None;
+    }
+
+    words.find(|&word| word == "with")?;
+    words.next().map(str::to_owned)
 }
 
 /// The `::`-separated path ending at the end of `text`
@@ -208,6 +266,20 @@ mod tests {
         assert_eq!(context("let x = |"), Context::Open);
         assert_eq!(context("fn go() { to|"), Context::Open);
         assert_eq!(context("|"), Context::Open);
+    }
+
+    #[test]
+    fn an_interface_impl_offers_its_requirements() {
+        assert_eq!(
+            context("impl Packet with Encoded {\n    |"),
+            Context::InterfaceImpl { interface: "Encoded".into() }
+        );
+        assert_eq!(
+            context("impl Packet with Encoded { fn encode(&self) { |"),
+            Context::Open,
+            "a method body is ordinary expression scope"
+        );
+        assert_eq!(context("fn simple_without() { |"), Context::Open);
     }
 
     #[test]

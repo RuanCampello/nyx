@@ -634,6 +634,7 @@ const fn completion_kind(kind: CompletionKind) -> CompletionItemKind {
         CompletionKind::Struct => CompletionItemKind::STRUCT,
         CompletionKind::Enum => CompletionItemKind::ENUM,
         CompletionKind::Interface => CompletionItemKind::INTERFACE,
+        CompletionKind::Primitive => CompletionItemKind::KEYWORD,
         CompletionKind::Constant => CompletionItemKind::CONSTANT,
         CompletionKind::Variable => CompletionItemKind::VARIABLE,
     }

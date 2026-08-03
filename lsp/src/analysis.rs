@@ -1,9 +1,9 @@
 use frontend::hir::module;
 use frontend::hir::{
     self, ArrayId, ArrayType, Block, Constant, Enum, EnumId, ExpressionKind, Function, FunctionId,
-    FunctionKind, Hir, InterfaceMethodSignature, InterfaceSignature, Literal, Local, LocalId,
-    Owner, Parameter, Res, Statement, Struct, StructId, SymbolId, SymbolTable, Type, TypeKind,
-    TypeckResults, index_vec::IndexVec,
+    FunctionKind, Hir, InterfaceConstSignature, InterfaceMethodSignature, InterfaceSignature,
+    Literal, Local, LocalId, Owner, Parameter, Res, Statement, Struct, StructId, SymbolId,
+    SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
 };
 use frontend::{
     diagnostic::AsDiagnostic,
@@ -194,6 +194,7 @@ pub enum CompletionKind {
     Struct,
     Enum,
     Interface,
+    Primitive,
     Constant,
     Variable,
 }
@@ -236,6 +237,10 @@ pub enum HoverTarget {
     InterfaceMethod {
         interface: u32,
         method: u32,
+    },
+    InterfaceConstant {
+        interface: u32,
+        constant: u32,
     },
 }
 
@@ -348,6 +353,9 @@ impl Index {
             HoverTarget::Interface(at) => self.interface_hover(at as usize, map),
             HoverTarget::InterfaceMethod { interface, method } => {
                 self.interface_method_hover(interface as usize, method as usize, map)
+            },
+            HoverTarget::InterfaceConstant { interface, constant } => {
+                self.interface_constant_hover(interface as usize, constant as usize, map)
             },
         };
 
@@ -714,6 +722,16 @@ impl<'a> CompletionCollector<'a> {
         let hir = self.hir;
         self.register_modules();
 
+        self.out
+            .globals
+            .extend(frontend::PRIMITIVE_TYPES.iter().map(|&name| Completion {
+                label: name.to_owned(),
+                kind: CompletionKind::Primitive,
+                detail: format!("primitive type {name}"),
+                docs: None,
+                type_key: None,
+            }));
+
         for (idx, structure) in hir.structs.iter().enumerate() {
             let name = base_name(hir.symbols.get(structure.name));
             let typ = Type::structure(StructId(idx as u32));
@@ -782,6 +800,15 @@ impl<'a> CompletionCollector<'a> {
                     detail: interface_signature(method, interface, hir),
                     docs: hir.docs(method.decl_span),
                     type_key: None,
+                });
+            }
+            for constant in &interface.constants {
+                methods.push(Completion {
+                    label: base_name(hir.symbols.get(constant.name)),
+                    kind: CompletionKind::Constant,
+                    detail: interface_const_signature(constant, interface, hir),
+                    docs: hir.docs(constant.decl_span),
+                    type_key: type_key(constant.typ, hir),
                 });
             }
             let nominal = nominal_name(interface.name, &interface.generic_params, hir);
@@ -1049,6 +1076,17 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
                 hover_types.push((
                     signature.name_span,
                     HoverTarget::InterfaceMethod { interface: at as u32, method: method as u32 },
+                ));
+            }
+        }
+        for (constant, signature) in interface.constants.iter().enumerate() {
+            if signature.name_span != Span::default() {
+                hover_types.push((
+                    signature.name_span,
+                    HoverTarget::InterfaceConstant {
+                        interface: at as u32,
+                        constant: constant as u32,
+                    },
                 ));
             }
         }
@@ -1412,12 +1450,18 @@ impl Index {
             ty.push_str(&bounds.join(" + "));
         }
 
-        if !interface.methods.is_empty() {
-            let methods = interface
-                .methods
+        let item_count = interface.methods.len() + interface.constants.len();
+        if item_count != 0 {
+            let items = interface
+                .constants
                 .iter()
-                .map(|method| format!("    {};", interface_signature(method, interface, self)));
-            ty = format!("{ty} {{\n{}\n}}", truncated(methods, interface.methods.len()));
+                .map(|constant| {
+                    format!("    {};", interface_const_signature(constant, interface, self))
+                })
+                .chain(interface.methods.iter().map(|method| {
+                    format!("    {};", interface_signature(method, interface, self))
+                }));
+            ty = format!("{ty} {{\n{}\n}}", truncated(items, item_count));
         }
 
         HoverInfo {
@@ -1443,6 +1487,38 @@ impl Index {
             docs: self.docs(method.decl_span),
         }
     }
+
+    fn interface_constant_hover(&self, at: usize, constant: usize, map: &SourceMap) -> HoverInfo {
+        let interface = &self.interfaces[at];
+        let constant = &interface.constants[constant];
+        let owner = nominal_name(interface.name, &interface.generic_params, self);
+        let path = self
+            .module_of(map, interface.decl_span)
+            .map(|module| format!("{module}::{owner}"));
+
+        HoverInfo {
+            path,
+            ty: format!(
+                "interface {owner}\n{}",
+                interface_const_signature(constant, interface, self)
+            ),
+            layout: layout_of(self, constant.typ),
+            docs: self.docs(constant.decl_span),
+        }
+    }
+}
+
+#[inline]
+fn interface_const_signature(
+    constant: &InterfaceConstSignature,
+    interface: &InterfaceSignature,
+    hir: &Index,
+) -> String {
+    format!(
+        "const {}: {}",
+        short_name(hir.symbols.get(constant.name)),
+        format_type(constant.typ, hir, &interface.generic_params)
+    )
 }
 
 fn interface_signature(
@@ -2191,50 +2267,50 @@ mod tests {
     }
 
     const RICH: &str = r#"
-use std::mem::{size_of};
+        use std::mem::{size_of};
 
-/// A documented interface.
-interface Shape {
-    /// the area of the shape
-    fn area(&self): i32;
-}
+        /// A documented interface.
+        interface Shape {
+            /// the area of the shape
+            fn area(&self): i32;
+        }
 
-/// A point in space.
-struct Point {
-    /// the horizontal coordinate
-    x: i32,
-    y: i32,
-}
+        /// A point in space.
+        struct Point {
+            /// the horizontal coordinate
+            x: i32,
+            y: i32,
+        }
 
-/// The kind of message.
-enum Msg {
-    /// nothing to say
-    Quiet,
-    /// shouting, with a volume
-    Loud(i32),
-}
+        /// The kind of message.
+        enum Msg {
+            /// nothing to say
+            Quiet,
+            /// shouting, with a volume
+            Loud(i32),
+        }
 
-impl Point {
-    /// make a point
-    fn origin(): Point { Point { x: 0, y: 0 } }
-}
+        impl Point {
+            /// make a point
+            fn origin(): Point { Point { x: 0, y: 0 } }
+        }
 
-impl Point with Shape {
-    fn area(&self): i32 { self.x * self.y }
-}
+        impl Point with Shape {
+            fn area(&self): i32 { self.x * self.y }
+        }
 
-@unsafe
-fn danger(): i32 { 7 }
+        @unsafe
+        fn danger(): i32 { 7 }
 
-fn take(p: Point, m: Msg): i32 { p.x }
+        fn take(p: Point, m: Msg): i32 { p.x }
 
-fn main() {
-    let p = Point::origin();
-    let total = p.area();
-    let m = Msg::Loud(3);
-    let size = size_of(i32);
-}
-"#;
+        fn main() {
+            let p = Point::origin();
+            let total = p.area();
+            let m = Msg::Loud(3);
+            let size = size_of(i32);
+        }
+    "#;
 
     #[test]
     fn struct_fields_hover_with_their_docs() {
@@ -2558,17 +2634,17 @@ fn main() {
     #[test]
     fn a_generic_impl_names_its_receiver_type() {
         let source = r#"
-struct Holder<T> { value: T }
+            struct Holder<T> { value: T }
 
-impl Holder<T> {
-    fn get(&self): T { self.value }
-}
+            impl Holder<T> {
+                fn get(&self): T { self.value }
+            }
 
-fn main() {
-    let h = Holder { value: 1 };
-    let v = h.get();
-}
-"#;
+            fn main() {
+                let h = Holder { value: 1 };
+                let v = h.get();
+            }
+        "#;
         let a = analyse("generic_owner", source);
         assert!(a.ok, "{:?}", a.diagnostics);
 

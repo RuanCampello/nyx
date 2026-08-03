@@ -580,6 +580,38 @@ async fn completion_excludes_unimported_standard_functions() {
 }
 
 #[tokio::test]
+async fn completion_offers_primitive_types() {
+    let src = "fn main() { let value: i }";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client.completion_labels(&url, position_of(src, "i }")).await;
+    assert!(labels.contains(&"i32".to_owned()), "an integer primitive: {labels:?}");
+    assert!(labels.contains(&"bool".to_owned()), "a non-numeric primitive: {labels:?}");
+    assert!(labels.contains(&"str".to_owned()), "a string primitive: {labels:?}");
+}
+
+#[tokio::test]
+async fn completion_offers_interface_requirements_inside_an_impl() {
+    let src = "interface Encoded {
+    fn encode(&self): i32;
+    const SIZE: uptr;
+}
+struct Packet {}
+impl Packet with Encoded {
+
+}";
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", src).await;
+    client.wait_diagnostics(&url).await;
+
+    let labels = client.completion_labels(&url, position_of_nth(src, "\n}", 1)).await;
+    assert!(labels.contains(&"encode".to_owned()), "a required method: {labels:?}");
+    assert!(labels.contains(&"SIZE".to_owned()), "a required constant: {labels:?}");
+}
+
+#[tokio::test]
 async fn a_path_qualifier_completes_submodules_and_their_items() {
     let src = "fn main() { }\n";
     let mut client = TestClient::start().await;

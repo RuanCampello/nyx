@@ -413,6 +413,7 @@ fn classify_word(
     let next = next_code[i].map(|j| raws[j].text);
     let capitalised = text.chars().next().is_some_and(char::is_uppercase);
     let none = TokenModifiers::default();
+    let turbofish_call = is_turbofish_call(raws, next_code, i);
 
     let by_keyword = match prev {
         Some("fn") => Some((TokenType::Function, TokenModifiers::DECLARATION)),
@@ -466,7 +467,9 @@ fn classify_word(
     }
 
     match next {
+        _ if turbofish_call => (TokenType::Function, none),
         Some("(") => (TokenType::Function, none),
+        Some("::") if capitalised || is_primitive(text) => (TokenType::Type, none),
         Some("::") => (TokenType::Namespace, none),
         _ if is_screaming_case(text) => (TokenType::Variable, TokenModifiers::READONLY),
         _ if is_primitive(text) => (TokenType::Type, none),
@@ -475,6 +478,32 @@ fn classify_word(
         _ if prev == Some("::") => (TokenType::Namespace, none),
         _ => (TokenType::Variable, none),
     }
+}
+
+fn is_turbofish_call(raws: &[Raw<'_>], next_code: &[Option<usize>], at: usize) -> bool {
+    let Some(path) = next_code[at].filter(|&next| raws[next].text == "::") else {
+        return false;
+    };
+    let Some(open) = next_code[path].filter(|&next| raws[next].text == "<") else {
+        return false;
+    };
+
+    let mut depth = 1u32;
+    let mut current = open;
+    while let Some(next) = next_code[current] {
+        current = next;
+        depth = match raws[current].text {
+            "<" => depth + 1,
+            ">" => depth.saturating_sub(1),
+            ">>" => depth.saturating_sub(2),
+            _ => depth,
+        };
+        if depth == 0 {
+            return next_code[current].is_some_and(|next| raws[next].text == "(");
+        }
+    }
+
+    false
 }
 
 /// a single uppercase letter is a type parameter (`T`, `S`) by convention
@@ -790,6 +819,24 @@ mod tests {
     }
 
     #[test]
+    fn turbofish_calls_remain_functions() {
+        check(
+            "assert_alignment::<FastEthernet, i32>(); Factory::make::<u8>();",
+            expect![[r#"
+            function assert_alignment
+            operator <
+            type FastEthernet
+            type i32
+            operator >
+            type Factory
+            function make
+            operator <
+            type u8
+            operator >"#]],
+        );
+    }
+
+    #[test]
     fn variant_constructors_match_bare_variants() {
         check(
             "match self { Some(value) -> value, None -> false, }",
@@ -846,7 +893,7 @@ mod tests {
             expect![[r#"
             function syscall
             variable.readonly SYS_EXIT
-            namespace i32
+            type i32
             variable.readonly MAX"#]],
         );
     }
