@@ -291,10 +291,8 @@ where
             },
 
             Stmt::Return(statement) => {
-                let value = statement
-                    .value
-                    .as_ref()
-                    .map(|expr| {
+                let value = match statement.value.as_ref() {
+                    Some(expr) => {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
                         self.assert_type_at(
                             self.return_type,
@@ -302,9 +300,18 @@ where
                             expr.span,
                             self.return_type_span,
                         )?;
-                        Ok(expr.expr)
-                    })
-                    .transpose()?;
+                        Some(expr.expr)
+                    },
+                    None => {
+                        self.assert_type_at(
+                            self.return_type,
+                            TypeKind::Unit,
+                            statement.span,
+                            self.return_type_span,
+                        )?;
+                        None
+                    },
+                };
 
                 Ok((Statement::Return(value), true))
             },

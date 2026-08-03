@@ -821,6 +821,9 @@ fn foo(): i32 {
     return true;  // error: type bool does not match the declared type i32
 }
 ```
+
+A valueless `return;` produces `unit`, so it is only valid in a function that
+does not declare a value return.
 "#;
 
 E147 => "unsafe function called from a safe one", r#"

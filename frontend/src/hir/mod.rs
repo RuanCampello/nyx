@@ -860,6 +860,22 @@ mod tests {
     }
 
     #[test]
+    fn valueless_return_must_match_the_declared_return_type() {
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new("fn answer(): i32 { return; }").parse().unwrap();
+        let error = super::lower(statements, &arena).unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
+                if expected.kind() == TypeKind::I32 && found.kind() == TypeKind::Unit
+        ));
+
+        let statements = Parser::new("fn discard() { return; }").parse().unwrap();
+        assert!(super::lower(statements, &arena).is_ok());
+    }
+
+    #[test]
     fn expression_body_is_checked_against_the_declared_return_type() {
         let arena = bumpalo::Bump::new();
         let statements = Parser::new("fn answer(): bool = 42;").parse().unwrap();

@@ -784,6 +784,9 @@ fn foo(): i32 {
 }
 ```
 
+A valueless `return;` produces `unit`, so it is only valid in a function that
+does not declare a value return.
+
 ### E147: unsafe function called from a safe one
 
 A function marked `@unsafe` carries obligations its caller must uphold, so it
