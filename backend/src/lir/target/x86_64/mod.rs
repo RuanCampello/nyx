@@ -126,8 +126,7 @@ pub enum X86Instr {
         uses: Vec<VReg>,
         ret: Option<VReg>,
         aggregate_ret: Vec<VReg>,
-        /// stack based arguments in call order
-        /// the emitter will push then in **reverse** order to match SysV ABI layout
+        /// stack-based arguments in declaration order
         stack_args: Vec<(X86Operand, MachineType)>,
     },
 

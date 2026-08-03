@@ -31,7 +31,7 @@ pub trait Target: Sized {
     fn caller_saved<'r>() -> &'r [Self::Reg];
 
     /// byte offset **from the caller's stack pointer at the call site** for the `n-th`
-    /// stack passed argument of the given class (i. e. those for which `param` returns `None`)
+    /// stack-passed argument across all register classes
     ///
     /// returns `None` if all arguments of that class fit in registers (no stack slot exists)
     #[inline(always)]
@@ -394,8 +394,7 @@ where
         let entry = BlockId(0);
         let mut int_idx = 0;
         let mut float_idx = 0;
-        let mut int_stack_idx = 0;
-        let mut float_stack_idx = 0;
+        let mut stack_idx = 0;
 
         if T::uses_sret(self.function.return_type, self.layouts) {
             let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
@@ -417,10 +416,10 @@ where
                 match T::param(int_idx, RegClass::Int) {
                     Some(reg) => self.lir.add_precolour(ptr, reg),
                     None => {
-                        let offset = T::param_stack_offset(int_stack_idx, RegClass::Int)
+                        let offset = T::param_stack_offset(stack_idx, RegClass::Int)
                             .expect("param_stack_offset must be defined when param() returns None");
                         self.lir.push_instr(&entry, T::load_param_stack(ptr, offset, ptr_mt));
-                        int_stack_idx += 1;
+                        stack_idx += 1;
                     },
                 }
 
@@ -435,9 +434,9 @@ where
             let class = mt.class();
             let dest = self.value[vid];
 
-            let (reg_idx, stack_idx) = match class {
-                RegClass::Int => (&mut int_idx, &mut int_stack_idx),
-                RegClass::Float => (&mut float_idx, &mut float_stack_idx),
+            let reg_idx = match class {
+                RegClass::Int => &mut int_idx,
+                RegClass::Float => &mut float_idx,
             };
 
             match T::param(*reg_idx, class) {
@@ -447,10 +446,10 @@ where
                     self.lir.push_instr(&entry, T::load_param_reg(dest, abi_vreg, mt));
                 },
                 None => {
-                    let offset = T::param_stack_offset(*stack_idx, class)
+                    let offset = T::param_stack_offset(stack_idx, class)
                         .expect("param_stack_offset must be defined when param() returns None");
                     self.lir.push_instr(&entry, T::load_param_stack(dest, offset, mt));
-                    *stack_idx += 1;
+                    stack_idx += 1;
                 },
             }
 
