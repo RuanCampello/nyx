@@ -12,7 +12,45 @@ impl Kelvin {
 
 const KELVIN_ABSOLUTE_ZERO: f64 = 0.0;
 
+interface NetworkProtocol {
+    /// Maximum transmission unit payload limit in bytes
+    const MAX_PAYLOAD: uptr;
+}
+
+interface StorageBlock {
+    /// Standard disk section size in bytes
+    const BLOCK_SIZE: uptr;
+}
+
+struct FastEthernet {}
+struct LegacyHardDrive {}
+
+impl FastEthernet with NetworkProtocol {
+    const MAX_PAYLOAD: uptr = 512;
+}
+
+impl LegacyHardDrive with StorageBlock {
+    const BLOCK_SIZE: uptr = 512;
+}
+
 fn main() {
   assert_eq(KELVIN_ABSOLUTE_ZERO, Celsius::ABSOLUTE_ZERO - Kelvin::CELSIUS_OFFSET);
   assert_eq(Celsius::ABSOLUTE_ZERO, Kelvin::CELSIUS_OFFSET);
+
+  assert_eq(FastEthernet::MAX_PAYLOAD, LegacyHardDrive::BLOCK_SIZE);
+  assert_sector_payload_alignment::<FastEthernet, LegacyHardDrive>();
+}
+
+fn assert_sector_payload_alignment<N, S>()
+where
+    N: NetworkProtocol,
+    S: StorageBlock,
+{
+    // if a network payload equals a sector size, dividing them yields exactly 1 sector
+    let ratio = N::MAX_PAYLOAD / S::BLOCK_SIZE;
+    // TODO: mod operation for those kinds of thing
+    // let remainder = N::MAX_PAYLOAD_BYTES % S::SECTOR_SIZE_BYTES;
+
+    assert_eq(ratio, 1 as uptr);
+    // assert_eq(remainder, 0);
 }
