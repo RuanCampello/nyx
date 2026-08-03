@@ -654,6 +654,30 @@ mod tests {
     }
 
     #[test]
+    fn interface_associated_constants_are_parsed_and_documented() {
+        let statements = Parser::new(
+            r#"
+            interface Buffer {
+                /// Size in bytes
+                const SIZE: uptr;
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected interface");
+        };
+
+        assert_eq!(interface.constants.len(), 1);
+        assert_eq!(interface.constants[0].name, "SIZE");
+        assert_eq!(interface.member_docs[0].0, interface.constants[0].span);
+        assert_eq!(interface.member_docs[0].1.as_ref(), [" Size in bytes"]);
+    }
+
+    #[test]
     fn rust_style_generic_impl_header_is_rejected() {
         let err = Parser::new(
             r#"

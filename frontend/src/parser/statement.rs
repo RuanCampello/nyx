@@ -288,8 +288,17 @@ pub struct Interface<'i> {
     pub generics: Vec<GenericBound<'i>>,
     pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
+    pub constants: Vec<InterfaceConst<'i>>,
     pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct InterfaceConst<'i> {
+    pub name: &'i str,
+    pub name_span: Span,
+    pub typ: Spanned<Type<'i>>,
     pub span: Span,
 }
 
@@ -1145,13 +1154,22 @@ impl<'i> Parsable<'i> for Interface<'i> {
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut methods = Vec::new();
+        let mut constants = Vec::new();
         let mut member_docs = Vec::new();
 
-        let close = parse_braced_members(parser, |parser, docs| {
-            let method = InterfaceMethod::parse(parser)?;
-            push_member_docs(&mut member_docs, method.span, docs);
-            methods.push(method);
-            Ok(())
+        let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
+            Some(Ok(token)) if token.is_kind(Keyword::Const) => {
+                let constant = InterfaceConst::parse(parser)?;
+                push_member_docs(&mut member_docs, constant.span, docs);
+                constants.push(constant);
+                Ok(())
+            },
+            _ => {
+                let method = InterfaceMethod::parse(parser)?;
+                push_member_docs(&mut member_docs, method.span, docs);
+                methods.push(method);
+                Ok(())
+            },
         })?;
 
         Ok(Self {
@@ -1161,9 +1179,22 @@ impl<'i> Parsable<'i> for Interface<'i> {
             superinterfaces,
             span: interface_token.span + close.span,
             methods,
+            constants,
             member_docs,
             is_pub,
         })
+    }
+}
+
+impl<'i> Parsable<'i> for InterfaceConst<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let const_token = parser.expect_token(Keyword::Const)?;
+        let (name, name_span) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Colon)?;
+        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
+        let semi = parser.expect_token(Punct::Semicolon)?;
+
+        Ok(Self { name, name_span, typ, span: const_token.span + semi.span })
     }
 }
 
@@ -1867,6 +1898,8 @@ impl<'s> Statement<'s> {
 
 macro_rules! primitive_spellings {
     ($($variant:ident => $spelling:literal),+ $(,)?) => {
+        pub const PRIMITIVE_TYPES: &[&str] = &[$($spelling,)+];
+
         impl<'i> Type<'i> {
             pub fn from_str(name: &'i str) -> Option<Self> {
                 Some(match name {
