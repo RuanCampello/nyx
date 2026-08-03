@@ -1527,7 +1527,7 @@ fn interface_signature(
     hir: &Index,
 ) -> String {
     let generics = &interface.generic_params;
-    let mut params: Vec<String> = Vec::with_capacity(method.params.len() + 1);
+    let mut params: Vec<_> = Vec::with_capacity(method.params.len() + 1);
 
     if method.has_receiver {
         params.push(match method.receiver_mut {
@@ -2267,50 +2267,50 @@ mod tests {
     }
 
     const RICH: &str = r#"
-        use std::mem::{size_of};
+use std::mem::{size_of};
 
-        /// A documented interface.
-        interface Shape {
-            /// the area of the shape
-            fn area(&self): i32;
-        }
+/// A documented interface.
+interface Shape {
+    /// the area of the shape
+    fn area(&self): i32;
+}
 
-        /// A point in space.
-        struct Point {
-            /// the horizontal coordinate
-            x: i32,
-            y: i32,
-        }
+/// A point in space.
+struct Point {
+    /// the horizontal coordinate
+    x: i32,
+    y: i32,
+}
 
-        /// The kind of message.
-        enum Msg {
-            /// nothing to say
-            Quiet,
-            /// shouting, with a volume
-            Loud(i32),
-        }
+/// The kind of message.
+enum Msg {
+    /// nothing to say
+    Quiet,
+    /// shouting, with a volume
+    Loud(i32),
+}
 
-        impl Point {
-            /// make a point
-            fn origin(): Point { Point { x: 0, y: 0 } }
-        }
+impl Point {
+    /// make a point
+    fn origin(): Point { Point { x: 0, y: 0 } }
+}
 
-        impl Point with Shape {
-            fn area(&self): i32 { self.x * self.y }
-        }
+impl Point with Shape {
+    fn area(&self): i32 { self.x * self.y }
+}
 
-        @unsafe
-        fn danger(): i32 { 7 }
+@unsafe
+fn danger(): i32 { 7 }
 
-        fn take(p: Point, m: Msg): i32 { p.x }
+fn take(p: Point, m: Msg): i32 { p.x }
 
-        fn main() {
-            let p = Point::origin();
-            let total = p.area();
-            let m = Msg::Loud(3);
-            let size = size_of(i32);
-        }
-    "#;
+fn main() {
+    let p = Point::origin();
+    let total = p.area();
+    let m = Msg::Loud(3);
+    let size = size_of(i32);
+}
+"#;
 
     #[test]
     fn struct_fields_hover_with_their_docs() {
