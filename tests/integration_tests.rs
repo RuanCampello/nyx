@@ -65,6 +65,11 @@ const CASES: &[Case] = &[
         exit_code: Some(49),
     },
     Case {
+        name: "mixed_stack_args",
+        file: "tests/single/mixed_stack_args.nyx",
+        exit_code: Some(42),
+    },
+    Case {
         name: "mandelbrot",
         file: "tests/single/mandelbrot.nyx",
         exit_code: Some(232),
