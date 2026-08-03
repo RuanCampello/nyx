@@ -22,7 +22,7 @@ use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
 pub(crate) use scope::SLICE_IMPL_NAME;
-pub use scope::{InterfaceMethodSignature, InterfaceSignature};
+pub use scope::{InterfaceConstSignature, InterfaceMethodSignature, InterfaceSignature};
 pub use structs::struct_field;
 pub use structs::type_layout;
 pub use symbols::SymbolTable;
@@ -1784,6 +1784,65 @@ mod tests {
                 && interface_name == "StorageEngine"
                 && method_name == "read_page"
         ));
+    }
+
+    #[test]
+    fn interface_requires_its_associated_constants() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Buffer { const SIZE: uptr; }
+            struct Page {}
+            impl Page with Buffer {}
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::MissingInterfaceConstant {
+                struct_name: "Page",
+                interface_name: "Buffer",
+                constant_name: "SIZE",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn interface_associated_constant_type_must_match() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Buffer { const SIZE: uptr; }
+            struct Page {}
+            impl Page with Buffer { const SIZE: i32 = 4096; }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::InterfaceConstantTypeMismatch {
+                struct_name: "Page",
+                interface_name: "Buffer",
+                constant_name: "SIZE",
+                expected,
+                found,
+                ..
+            } if expected == TypeKind::Uptr.into() && found == TypeKind::I32.into()
+        ));
+    }
+
+    #[test]
+    fn generic_bound_resolves_its_associated_constant() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface HasValue { const VALUE: i32; }
+            struct Number {}
+            impl Number with HasValue { const VALUE: i32 = 42; }
+
+            fn value<T: HasValue>(): i32 { T::VALUE }
+            fn main(): i32 { value::<Number>() }
+        "#;
+
+        super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
     }
 
     #[test]

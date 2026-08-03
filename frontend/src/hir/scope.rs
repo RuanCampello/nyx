@@ -109,9 +109,18 @@ pub struct InterfaceSignature {
     pub name: SymbolId,
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature>,
+    pub constants: Vec<InterfaceConstSignature>,
     pub generic_params: Vec<SymbolId>,
     pub decl_span: Span,
     /// the declared name alone, where goto-definition lands
+    pub name_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InterfaceConstSignature {
+    pub name: SymbolId,
+    pub typ: Type,
+    pub decl_span: Span,
     pub name_span: Span,
 }
 

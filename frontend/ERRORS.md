@@ -749,6 +749,30 @@ fn main() {
 }
 ```
 
+### E151: missing interface constant
+
+An `impl Type with Interface` block does not define every associated constant
+required by the interface.
+
+```rust
+interface Buffer { const SIZE: uptr; }
+struct Page {}
+impl Page with Buffer {}  // error: Page is missing SIZE
+```
+
+### E152: interface constant type mismatch
+
+An associated constant in an `impl ... with` block has a different type from
+the interface declaration.
+
+```rust
+interface Buffer { const SIZE: uptr; }
+struct Page {}
+impl Page with Buffer {
+    const SIZE: i32 = 4096;  // error: Buffer declares SIZE as uptr
+}
+```
+
 ### E146: type does not match its annotation
 
 An initialiser or returned value does not match the type declared for it. The

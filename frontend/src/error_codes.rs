@@ -788,6 +788,30 @@ fn main() {
 ```
 "#;
 
+E151 => "missing interface constant", r#"
+An `impl Type with Interface` block does not define every associated constant
+required by the interface.
+
+```nyx
+interface Buffer { const SIZE: uptr; }
+struct Page {}
+impl Page with Buffer {}  // error: Page is missing SIZE
+```
+"#;
+
+E152 => "interface constant type mismatch", r#"
+An associated constant in an `impl ... with` block has a different type from
+the interface declaration.
+
+```nyx
+interface Buffer { const SIZE: uptr; }
+struct Page {}
+impl Page with Buffer {
+    const SIZE: i32 = 4096;  // error: Buffer declares SIZE as uptr
+}
+```
+"#;
+
 E146 => "type does not match its annotation", r#"
 An initialiser or returned value does not match the type declared for it. The
 report points back at the annotation that fixed the expected type.

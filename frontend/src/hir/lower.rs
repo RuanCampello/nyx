@@ -31,6 +31,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     return_type: Type,
     return_type_span: Option<Span>,
     function: Option<&'f statement::Function<'src>>,
+    generics: &'f [statement::GenericBound<'src>],
     function_id: FunctionId,
     next_local: u32,
     next_expr_id: u32,
@@ -80,6 +81,7 @@ where
         let mut builder = Self::raw(scope, arena);
         builder.is_const = function.is_const;
         builder.function = Some(function);
+        builder.generics = &function.generics;
         builder.function_id = function_id;
         builder.self_type = self_type;
         builder
@@ -110,6 +112,7 @@ where
             return_type: TypeKind::Unit.into(),
             return_type_span: None,
             function: None,
+            generics: &[],
             function_id: FunctionId(0),
             next_local: 0,
             next_expr_id: 0,
@@ -668,6 +671,40 @@ where
         self.scope.constants.get(&symbol).copied()
     }
 
+    fn generic_associated_constant(
+        &self,
+        qualifier: &str,
+        name: &str,
+    ) -> Option<&'hir Constant<'hir>> {
+        let concrete = *self.generic_env.get(qualifier)?;
+        let generic = self.generics.iter().find(|generic| generic.name == qualifier)?;
+
+        let required_interface = generic.bounds.iter().find_map(|bound| {
+            let interface_name = match bound.value_ref() {
+                statement::Type::Named(name) | statement::Type::Generic(name, _) => name,
+                _ => return None,
+            };
+            let interface = self.scope.symbols.get_id(interface_name)?;
+            self.scope
+                .interfaces
+                .get(&interface)?
+                .constants
+                .iter()
+                .any(|constant| {
+                    self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
+                })
+                .then_some(interface)
+        })?;
+
+        self.scope.constants.values().copied().find(|constant| {
+            matches!(
+                constant.owner,
+                Owner::Interface { on, interface }
+                    if on == concrete && interface == required_interface
+            ) && self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
+        })
+    }
+
     #[inline]
     fn mangler(&self) -> &Mangler<'_> {
         &self.scope.mangler
@@ -780,17 +817,14 @@ where
 
                 let mangled_name = self.mangler().scoped_item(qualifier, name);
                 let qualified = qualified(self.arena, qualifier, name);
-                let symbol = self
+                let c = self
                     .scope
                     .symbols
                     .get_id(&mangled_name)
                     .or_else(|| self.scope.symbols.get_id(&self.mangler().item(name)))
+                    .and_then(|symbol| self.scope.constants.get(&symbol).copied())
+                    .or_else(|| self.generic_associated_constant(qualifier, name))
                     .ok_or_else(|| hir_error!(*span, UndeclaredIdentifier { name: qualified }))?;
-
-                let c =
-                    self.scope.constants.get(&symbol).copied().ok_or_else(|| {
-                        hir_error!(*span, UndeclaredIdentifier { name: qualified })
-                    })?;
 
                 let lowered = self.alloc(ExpressionKind::Const(c), c.typ, *span);
                 self.typeck.const_uses.insert(lowered.expr.id, c.name);

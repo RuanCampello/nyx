@@ -457,6 +457,36 @@ pub enum HirErrorKind<'h> {
         help = "Use a literal or another {`const`}"
     )]
     NonConstValue { name: &'h str },
+
+    #[diagnostic(
+        code = "E151",
+        message = "{struct_name!} is missing {constant_name!} required by {interface_name*}",
+        primary = "{constant_name~} is not defined in this block",
+        secondary(span_field = "decl", optional, label = "{interface_name*} requires it here"),
+        help = "Add {`const {constant_name}: … = …;`} to this {`impl`} block"
+    )]
+    MissingInterfaceConstant {
+        struct_name: &'h str,
+        interface_name: &'h str,
+        constant_name: &'h str,
+        decl: Option<Span>,
+    },
+
+    #[diagnostic(
+        code = "E152",
+        message = "Constant {constant_name!} does not match its declaration in {interface_name*}",
+        primary = "found type {found~}",
+        secondary(span_field = "decl", optional, label = "{interface_name*} declares type {expected^}"),
+        help = "Update {constant_name!} in {`impl {struct_name} with {interface_name}`} to match"
+    )]
+    InterfaceConstantTypeMismatch {
+        struct_name: &'h str,
+        interface_name: &'h str,
+        constant_name: &'h str,
+        expected: Type,
+        found: Type,
+        decl: Option<Span>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Diagnostic)]

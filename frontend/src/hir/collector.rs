@@ -2,6 +2,7 @@
 //! with declarations before any body is lowered
 
 use crate::{
+    diagnostic,
     hir::{
         self, Enum, EnumId, EnumRepr, EnumVariant, Function, FunctionId, FunctionKind, Intrinsic,
         Layout, Method, Owner, StructId, SymbolId, Type, TypeKind, constants,
@@ -10,8 +11,9 @@ use crate::{
         index_vec::IndexVec,
         interfaces, lower,
         scope::{
-            FunctionSignature, GenericEnv, InterfaceMethodSignature, InterfaceSignature, Scope,
-            generic_param_env, intrinsic_method, is_generic_impl, resolve_primitive_type,
+            FunctionSignature, GenericEnv, InterfaceConstSignature, InterfaceMethodSignature,
+            InterfaceSignature, Scope, generic_param_env, intrinsic_method, is_generic_impl,
+            resolve_primitive_type,
         },
         structs,
         symbols::qualified,
@@ -185,7 +187,7 @@ impl<'hir> Scope<'hir> {
             }
 
             let id = StructId((self.structs.len() + structs.len()) as u32);
-            crate::diagnostic::register_struct_name(id.0, struct_decl.name);
+            diagnostic::register_struct_name(id.0, struct_decl.name);
             self.struct_map.insert(symbol, id);
             structs.push(*struct_decl);
         }
@@ -278,7 +280,7 @@ impl<'hir> Scope<'hir> {
                 },
             };
             let id = EnumId::new(self.enums.len() as u32, repr);
-            crate::diagnostic::register_enum_name(id.id(), enum_decl.name);
+            diagnostic::register_enum_name(id.id(), enum_decl.name);
 
             self.enum_map.insert(symbol, id);
             self.enums.push(Enum {
@@ -410,10 +412,26 @@ impl<'hir> Scope<'hir> {
                 });
             }
 
+            let mut constants = Vec::with_capacity(interface.constants.len());
+            for constant in &interface.constants {
+                constants.push(InterfaceConstSignature {
+                    name: self.symbols.insert(constant.name),
+                    typ: self.resolve_type(
+                        constant.typ.value_ref(),
+                        constant.typ.span(),
+                        None,
+                        base_env,
+                    )?,
+                    decl_span: constant.span,
+                    name_span: constant.name_span,
+                });
+            }
+
             let signature = InterfaceSignature {
                 name,
                 superinterfaces,
                 methods,
+                constants,
                 generic_params,
                 decl_span: interface.span,
                 name_span: interface.name_span,

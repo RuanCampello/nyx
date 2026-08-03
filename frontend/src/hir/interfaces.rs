@@ -110,6 +110,11 @@ fn validate_impls<'hir, 'd, 'h>(
 
         let impl_methods: HashMap<_, _> =
             implementation.methods.iter().map(|m| (m.name, m)).collect();
+        let impl_constants: HashMap<_, _> = implementation
+            .constants
+            .iter()
+            .map(|constant| (constant.name, constant))
+            .collect();
 
         for &required in &interface.superinterfaces {
             if !scope.interfaces.contains_key(&required) {
@@ -204,6 +209,48 @@ fn validate_impls<'hir, 'd, 'h>(
                         method_name,
                         expected: scope.arena.alloc_str(&expected),
                         found: scope.arena.alloc_str(&found),
+                        decl: collector::source_span(required.decl_span),
+                    }
+                ));
+            }
+        }
+
+        for required in &interface.constants {
+            let constant_name = scope.arena.alloc_str(scope.symbols.get(required.name));
+            let Some(impl_constant) = impl_constants.get(constant_name) else {
+                errors.push(hir_error!(
+                    implementation.span,
+                    MissingInterfaceConstant {
+                        struct_name: implementation.name,
+                        interface_name,
+                        constant_name,
+                        decl: collector::source_span(required.decl_span),
+                    }
+                ));
+                continue;
+            };
+
+            let symbol_name = scope.mangler.scoped_item(implementation.name, impl_constant.name);
+            let Some(found) = scope
+                .symbols
+                .get_id(&symbol_name)
+                .and_then(|symbol| scope.constants.get(&symbol).copied())
+                .map(|constant| constant.typ)
+            else {
+                continue;
+            };
+            let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
+            let expected = substitute_self(required.typ.subst(&subst_table), receiver_type);
+
+            if found != expected {
+                errors.push(hir_error!(
+                    impl_constant.span,
+                    InterfaceConstantTypeMismatch {
+                        struct_name: implementation.name,
+                        interface_name,
+                        constant_name,
+                        expected,
+                        found,
                         decl: collector::source_span(required.decl_span),
                     }
                 ));
