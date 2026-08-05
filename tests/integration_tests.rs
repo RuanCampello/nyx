@@ -210,6 +210,16 @@ const CASES: &[Case] = &[
         exit_code: Some(101),
     },
     Case {
+        name: "mul_overflow",
+        file: "tests/single/mul_overflow.nyx",
+        exit_code: Some(101),
+    },
+    Case {
+        name: "mul_widths",
+        file: "tests/single/mul_widths.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "string_len",
         file: "tests/single/string_len.nyx",
         exit_code: Some(11),
@@ -512,7 +522,7 @@ fn run_aarch64_integration_tests() {
 
 /// Fixtures whose result legitimately depends on the optimisation level, with what they
 /// are expected to produce above `debug`
-const LEVEL_DEPENDENT: &[(&str, i32)] = &[("overflow", 0)];
+const LEVEL_DEPENDENT: &[(&str, i32)] = &[("overflow", 0), ("mul_overflow", 0)];
 
 #[test]
 fn optimisation_levels_agree_with_debug() {

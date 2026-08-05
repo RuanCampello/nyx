@@ -1,0 +1,10 @@
+fn main(): i32 {
+    let x = i32::MAX;
+
+    // this should panic on 'debug'
+    // and wrap around on 'sane'/'max' opt level
+    let y = x * 2;
+    if y != -2 return 69;
+
+    0
+}
