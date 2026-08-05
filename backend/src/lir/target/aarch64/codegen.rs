@@ -363,6 +363,15 @@ impl Function<AArch64> {
                 }
             },
 
+            A64Instr::Mul { dest, lhs, rhs, bytes, checked: true } => {
+                let signed = self.is_signed(dest);
+                let dest = alloc.location(dest, bytes);
+                let lhs = alloc.location(lhs, bytes);
+                let rhs = alloc.location(rhs, bytes);
+
+                emit_checked_mul(out, &dest, &lhs, &rhs, *bytes, signed);
+            },
+
             #[rustfmt::skip]
             A64Instr::Mul { dest, lhs, rhs, bytes, .. }
             | A64Instr::SDiv { dest, lhs, rhs, bytes } => {
@@ -829,6 +838,60 @@ fn load_ptr_addr<'s>(out: &mut String, ptr: &'s str) -> &'s str {
     }
 }
 
+/// `AArch64` has no flag-setting multiply, so overflow is detected by computing the product
+/// wider than its operands and checking that it still equals its own truncation
+#[inline(always)]
+fn emit_checked_mul(out: &mut String, dest: &str, lhs: &str, rhs: &str, bytes: u8, signed: bool) {
+    let symbol = Panic::MulOverflow.require();
+    let high = A64Reg::X16.name(8);
+    let low = A64Reg::X16.name(4);
+
+    // the high half is computed first so that a 'dest'
+    // aliasing 'lhs' or 'rhs' is still intact
+    match bytes {
+        8 => match signed {
+            true => {
+                emit!(out, "smulh   {high}, {lhs}, {rhs}");
+                emit!(out, "mul     {dest}, {lhs}, {rhs}");
+                emit!(out, "cmp     {high}, {dest}, asr #63");
+                emit!(out, "b.ne    {symbol}");
+            },
+            false => {
+                emit!(out, "umulh   {high}, {lhs}, {rhs}");
+                emit!(out, "mul     {dest}, {lhs}, {rhs}");
+                emit!(out, "cbnz    {high}, {symbol}");
+            },
+        },
+        _ => {
+            #[rustfmt::skip]
+            let extend = match (bytes, signed) {
+                (1, true) => "sxtb", (1, false) => "uxtb",
+                (2, true) => "sxth", (2, false) => "uxth",
+                (4, true) => "sxtw", (4, false) => "uxtw",
+                _ => panic!("checked multiplication of {bytes}-byte operands"),
+            };
+
+            let product = match bytes {
+                4 => {
+                    match signed {
+                        true => emit!(out, "smull   {high}, {lhs}, {rhs}"),
+                        false => emit!(out, "umull   {high}, {lhs}, {rhs}"),
+                    };
+                    high
+                },
+                _ => {
+                    emit!(out, "mul     {low}, {lhs}, {rhs}");
+                    low
+                },
+            };
+
+            emit!(out, "cmp     {product}, {low}, {extend}");
+            emit!(out, "b.ne    {symbol}");
+            emit!(out, "mov     {dest}, {low}");
+        },
+    }
+}
+
 #[inline(always)]
 fn load_src_if_mem_with_scratch<'s>(
     out: &mut String,
@@ -942,5 +1005,76 @@ const fn mem_suffix<'s>(bytes: &u8) -> &'s str {
         1 => "b",
         2 => "h",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::emit_checked_mul;
+
+    fn emit(bytes: u8, signed: bool) -> Vec<String> {
+        let (dest, lhs, rhs) = match bytes {
+            8 => ("x0", "x1", "x2"),
+            _ => ("w0", "w1", "w2"),
+        };
+        let mut out = String::new();
+        emit_checked_mul(&mut out, dest, lhs, rhs, bytes, signed);
+
+        out.lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    #[test]
+    fn sub_word_products_are_compared_against_their_own_truncation() {
+        for (bytes, signed, extend) in
+            [(1, true, "sxtb"), (1, false, "uxtb"), (2, true, "sxth"), (2, false, "uxth")]
+        {
+            assert_eq!(
+                emit(bytes, signed),
+                [
+                    "mul w16, w1, w2".to_string(),
+                    format!("cmp w16, w16, {extend}"),
+                    "b.ne __nyx_panic_mul_overflow".to_string(),
+                    "mov w0, w16".to_string(),
+                ],
+                "{bytes}-byte signed={signed}"
+            );
+        }
+    }
+
+    #[test]
+    fn word_products_are_widened_to_a_doubleword() {
+        for (signed, mul, extend) in [(true, "smull", "sxtw"), (false, "umull", "uxtw")] {
+            assert_eq!(
+                emit(4, signed),
+                [
+                    format!("{mul} x16, w1, w2"),
+                    format!("cmp x16, w16, {extend}"),
+                    "b.ne __nyx_panic_mul_overflow".to_string(),
+                    "mov w0, w16".to_string(),
+                ],
+                "signed={signed}"
+            );
+        }
+    }
+
+    /// the high half must be computed before `mul` writes `dest`, which may alias an operand
+    #[test]
+    fn doubleword_products_check_the_high_half_first() {
+        assert_eq!(
+            emit(8, true),
+            [
+                "smulh x16, x1, x2",
+                "mul x0, x1, x2",
+                "cmp x16, x0, asr #63",
+                "b.ne __nyx_panic_mul_overflow",
+            ]
+        );
+
+        assert_eq!(
+            emit(8, false),
+            ["umulh x16, x1, x2", "mul x0, x1, x2", "cbnz x16, __nyx_panic_mul_overflow",]
+        );
     }
 }
