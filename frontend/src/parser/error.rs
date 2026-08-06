@@ -98,6 +98,11 @@ impl<'i> ParserError<'i> {
     pub fn new(kind: ParseErrorKind<'i>, span: Span) -> Self {
         Self { kind, span }
     }
+
+    #[inline]
+    pub const fn span(&self) -> Span {
+        self.span
+    }
 }
 
 impl<'i> From<&LexError<'i>> for ParserError<'i> {
