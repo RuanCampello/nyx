@@ -17,7 +17,7 @@ use crate::{
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
-            aarch64::{A64Instr, A64Operand, A64Reg, AArch64},
+            aarch64::{A64Cond, A64Instr, A64Operand, A64Reg, AArch64},
             resolve_parallel_moves,
         },
     },
@@ -653,6 +653,13 @@ impl Function<AArch64> {
                 let condition = alloc.location(cond, &4);
 
                 emit!(out, "cbnz    {condition}, .L_block_{name}_{}", then_block.0);
+                emit!(out, "b       .L_block_{name}_{}", else_block.0);
+            },
+
+            Term::BranchCc { cond, then_block, else_block } => {
+                let cond = A64Cond::from(*cond).as_str();
+
+                emit!(out, "b.{cond}    .L_block_{name}_{}", then_block.0);
                 emit!(out, "b       .L_block_{name}_{}", else_block.0);
             },
 

@@ -10,12 +10,13 @@
 
 use crate::{
     hir::{Type, TypeKind},
-    lir::target::{Emittable, Lowerable, RegClass, Target},
+    lir::target::{CondCode, Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+mod opt;
 mod regalloc;
 pub mod target;
 
@@ -53,7 +54,21 @@ pub struct Block<I> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Term {
     Jump(BlockId),
-    Branch { cond: VReg, then_block: BlockId, else_block: BlockId },
+    Branch {
+        cond: VReg,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
+    /// branch on the condition flags left by an earlier comparison in the same
+    /// block, rather than on a materialised boolean
+    ///
+    /// produced only by [crate::lir::opt], which is responsible for proving
+    /// that nothing between the comparison and the terminator disturbs the flags
+    BranchCc {
+        cond: CondCode,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
     Return(Option<VReg>),
 }
 
@@ -110,7 +125,7 @@ where
             continue;
         }
 
-        let lir = T::lower(
+        let mut lir = T::lower(
             function,
             &mir.symbols,
             &mir.functions,
@@ -118,6 +133,8 @@ where
             &mir.enum_layouts,
             &mir.array_layouts,
         );
+        opt::combine(&mut lir);
+
         let alloc = lir.allocate();
         lir.emit(alloc, &mut out);
     }
@@ -426,7 +443,7 @@ impl Term {
         match self {
             Self::Return(Some(v)) => std::slice::from_ref(v),
             Self::Branch { cond, .. } => std::slice::from_ref(cond),
-            Self::Return(None) | Self::Jump(_) => &[],
+            Self::Return(None) | Self::Jump(_) | Self::BranchCc { .. } => &[],
         }
     }
 }

@@ -13,7 +13,7 @@ use crate::{
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
             resolve_parallel_moves,
-            x86_64::{X86_64, X86Instr, X86Operand, X86Reg},
+            x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
 };
@@ -718,6 +718,13 @@ impl Function<X86_64> {
                     _ => emit!(out, "test{suffix}    {condition}, {condition}"),
                 }
                 emit!(out, "jne         .L_block_{name}_{}", then_block.0);
+                emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
+            },
+
+            Term::BranchCc { cond, then_block, else_block } => {
+                let cond = Condition::from(*cond).as_str();
+
+                emit!(out, "j{cond}         .L_block_{name}_{}", then_block.0);
                 emit!(out, "jmp         .L_block_{name}_{}", else_block.0);
             },
 
