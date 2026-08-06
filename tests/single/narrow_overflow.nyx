@@ -1,0 +1,13 @@
+// an i8 addition that overflows i8 but not the register holding it
+//
+// this must panic on 'debug' and wrap around on 'sane'/'max', so the overflow
+// test has to be made at the type's width rather than the machine's
+
+fn add(a: i8, b: i8): i8 = a + b;
+
+fn main(): i32 {
+    let wrapped = add(100, 100);
+    if wrapped != -56 return 69;
+
+    0
+}

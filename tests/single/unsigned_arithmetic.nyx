@@ -1,0 +1,21 @@
+// checked unsigned arithmetic whose result fits its own type
+
+fn u16_product(a: u16, b: u16): u16 = a * b;
+fn u32_product(a: u32, b: u32): u32 = a * b;
+fn u64_product(a: u64, b: u64): u64 = a * b;
+
+fn u16_sum(a: u16, b: u16): u16 = a + b;
+fn u32_sum(a: u32, b: u32): u32 = a + b;
+fn u64_sum(a: u64, b: u64): u64 = a + b;
+
+fn main(): i32 {
+    if u16_product(255, 257) != 65535 return 1;
+    if u32_product(65535, 65537) != 4294967295 return 2;
+    if u64_product(4294967296, 4294967295) != 18446744069414584320 return 3;
+
+    if u16_sum(65534, 1) != 65535 return 4;
+    if u32_sum(4294967294, 1) != 4294967295 return 5;
+    if u64_sum(18446744073709551614, 1) != 18446744073709551615 return 6;
+
+    0
+}

@@ -1,0 +1,52 @@
+// arithmetic on more live values than there are registers, so the allocator
+// must spill and the emitter must cope with an operand living on the stack
+
+fn accumulate(a: i64): i64 {
+    let v0 = a + 1;
+    let v1 = a + 2;
+    let v2 = a + 3;
+    let v3 = a + 4;
+    let v4 = a + 5;
+    let v5 = a + 6;
+    let v6 = a + 7;
+    let v7 = a + 8;
+    let v8 = a + 9;
+    let v9 = a + 10;
+    let v10 = a + 11;
+    let v11 = a + 12;
+    let v12 = a + 13;
+    let v13 = a + 14;
+    let v14 = a + 15;
+    let v15 = a + 16;
+    let v16 = a + 17;
+    let v17 = a + 18;
+    let v18 = a + 19;
+    let v19 = a + 20;
+    let v20 = a + 21;
+    let v21 = a + 22;
+    let v22 = a + 23;
+    let v23 = a + 24;
+    let v24 = a + 25;
+    let v25 = a + 26;
+    let v26 = a + 27;
+    let v27 = a + 28;
+    let v28 = a + 29;
+    let v29 = a + 30;
+    let v30 = a + 31;
+    let v31 = a + 32;
+    let v32 = a + 33;
+    let v33 = a + 34;
+    let v34 = a + 35;
+    let v35 = a + 36;
+    let v36 = a + 37;
+    let v37 = a + 38;
+    let v38 = a + 39;
+    let v39 = a + 40;
+    v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29 + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39;
+}
+
+fn main(): i32 {
+    if accumulate(3) != 940 return 1;
+
+    0
+}

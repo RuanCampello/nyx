@@ -225,6 +225,26 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "unsigned_arithmetic",
+        file: "tests/single/unsigned_arithmetic.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "small_int_mul",
+        file: "tests/single/small_int_mul.nyx",
+        exit_code: Some(0),
+    },
+    Case {
+        name: "narrow_overflow",
+        file: "tests/single/narrow_overflow.nyx",
+        exit_code: Some(101),
+    },
+    Case {
+        name: "register_pressure",
+        file: "tests/single/register_pressure.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "string_len",
         file: "tests/single/string_len.nyx",
         exit_code: Some(11),
@@ -428,12 +448,19 @@ fn run_integration_tests() {
     }
 }
 
+/// `qemu-user` installs the emulator unsuffixed, `qemu-user-static` suffixes it
+fn qemu() -> Option<&'static str> {
+    ["qemu-aarch64", "qemu-aarch64-static"]
+        .into_iter()
+        .find(|binary| Command::new(binary).arg("--version").status().is_ok())
+}
+
 #[test]
 fn run_aarch64_integration_tests() {
-    if Command::new("qemu-aarch64").arg("--version").status().is_err() {
+    let Some(qemu) = qemu() else {
         println!("qemu-aarch64 not found, skipping aarch64 integration tests");
         return;
-    }
+    };
     if Command::new("aarch64-linux-gnu-as").arg("--version").status().is_err() {
         println!("aarch64-linux-gnu-as not found, skipping aarch64 integration tests");
         return;
@@ -487,10 +514,10 @@ fn run_aarch64_integration_tests() {
             }
 
             if let Some(expected_code) = test.exit_code {
-                let run_status = Command::new("qemu-aarch64")
+                let run_status = Command::new(qemu)
                     .arg(&exe_path)
                     .status()
-                    .map_err(|e| format!("qemu-aarch64 failed to run: {e}"))?;
+                    .map_err(|e| format!("{qemu} failed to run: {e}"))?;
 
                 fs::remove_file(&exe_path).ok();
 
@@ -527,7 +554,8 @@ fn run_aarch64_integration_tests() {
 
 /// Fixtures whose result legitimately depends on the optimisation level, with what they
 /// are expected to produce above `debug`
-const LEVEL_DEPENDENT: &[(&str, i32)] = &[("overflow", 0), ("mul_overflow", 0)];
+const LEVEL_DEPENDENT: &[(&str, i32)] =
+    &[("overflow", 0), ("mul_overflow", 0), ("narrow_overflow", 0)];
 
 #[test]
 fn optimisation_levels_agree_with_debug() {

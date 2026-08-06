@@ -1,0 +1,12 @@
+// 8-bit multiplication, whose products fit i8 and u8
+
+fn i8_product(a: i8, b: i8): i8 = a * b;
+fn u8_product(a: u8, b: u8): u8 = a * b;
+
+fn main(): i32 {
+    if i8_product(11, 11) != 121 return 1;
+    if i8_product(-11, 11) != -121 return 2;
+    if u8_product(15, 17) != 255 return 3;
+
+    0
+}
