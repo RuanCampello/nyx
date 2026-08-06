@@ -334,55 +334,73 @@ impl Function<AArch64> {
             // integer arithmetic
             A64Instr::Add { dest, lhs, rhs, bytes, checked }
             | A64Instr::Sub { dest, lhs, rhs, bytes, checked } => {
-                let dest_vreg = dest;
-                let dest = alloc.location(dest, bytes);
+                let signed = self.is_signed(dest);
+                let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
+                let (dest, lhs, rhs) = resolve_alu(out, &slot, &lhs, &rhs, *bytes);
+
+                // a sub-word result is checked and narrowed against its own width
+                // below, so the operation itself is always done unchecked
+                let wide = *checked && *bytes >= 4;
 
                 #[rustfmt::skip]
                 match instruction {
                     A64Instr::Sub { .. } => {
-                        let op = if *checked { "subs" } else { "sub" };
+                        let op = if wide { "subs" } else { "sub" };
                         emit!(out, "{op}    {dest}, {lhs}, {rhs}")
                     },
                     A64Instr::Add { .. } => {
-                        let op = if *checked { "adds" } else { "add" };
+                        let op = if wide { "adds" } else { "add" };
                         emit!(out, "{op}    {dest}, {lhs}, {rhs}")
                     },
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 };
 
-                if let Some(panic) = instruction.overflow_panic() {
-                    let symbol = panic.require();
-                    match (instruction, self.is_signed(dest_vreg)) {
-                        (_, true) => emit!(out, "b.vs    {symbol}"),
-                        (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
-                        (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    {symbol}"),
-                        _ => unsafe { std::hint::unreachable_unchecked() },
-                    }
+                match instruction.overflow_panic() {
+                    Some(panic) if wide => {
+                        let symbol = panic.require();
+                        match (instruction, signed) {
+                            (_, true) => emit!(out, "b.vs    {symbol}"),
+                            (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
+                            (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    {symbol}"),
+                            _ => unsafe { std::hint::unreachable_unchecked() },
+                        }
+                    },
+                    Some(panic) => emit_narrow_check(out, dest, dest, *bytes, signed, panic),
+                    None => {},
+                }
+
+                if is_mem(&slot) {
+                    emit_store(out, dest, &slot, *bytes);
                 }
             },
 
             A64Instr::Mul { dest, lhs, rhs, bytes, checked: true } => {
                 let signed = self.is_signed(dest);
-                let dest = alloc.location(dest, bytes);
+                let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = alloc.location(rhs, bytes);
 
-                emit_checked_mul(out, &dest, &lhs, &rhs, *bytes, signed);
+                emit_checked_mul(out, &slot, &lhs, &rhs, *bytes, signed);
             },
 
             #[rustfmt::skip]
             A64Instr::Mul { dest, lhs, rhs, bytes, .. }
             | A64Instr::SDiv { dest, lhs, rhs, bytes } => {
-                let dest = alloc.location(dest, bytes);
+                let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = alloc.location(rhs, bytes);
+                let (dest, lhs, rhs) = resolve_alu(out, &slot, &lhs, &rhs, *bytes);
 
                 match instruction {
                     A64Instr::Mul { .. } => emit!(out, "mul     {dest}, {lhs}, {rhs}"),
-                    A64Instr::SDiv { .. } => emit!(out, "sdiv     {dest}, {lhs}, {rhs}"),
+                    A64Instr::SDiv { .. } => emit!(out, "sdiv    {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+
+                if is_mem(&slot) {
+                    emit_store(out, dest, &slot, *bytes);
                 }
             },
 
@@ -393,9 +411,10 @@ impl Function<AArch64> {
             | A64Instr::Lsl { dest, lhs, rhs, bytes }
             | A64Instr::Lsr { dest, lhs, rhs, bytes }
             | A64Instr::Asr { dest, lhs, rhs, bytes } => {
-                let dest = alloc.location(dest, bytes);
+                let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = self.operand(alloc, rhs, bytes);
+                let (dest, lhs, rhs) = resolve_alu(out, &slot, &lhs, &rhs, *bytes);
 
                 match instruction {
                     A64Instr::And { .. } => emit!(out, "and     {dest}, {lhs}, {rhs}"),
@@ -405,6 +424,10 @@ impl Function<AArch64> {
                     A64Instr::Lsr { .. } => emit!(out, "lsr     {dest}, {lhs}, {rhs}"),
                     A64Instr::Asr { .. } => emit!(out, "asr     {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
+                }
+
+                if is_mem(&slot) {
+                    emit_store(out, dest, &slot, *bytes);
                 }
             },
 
@@ -845,57 +868,141 @@ fn load_ptr_addr<'s>(out: &mut String, ptr: &'s str) -> &'s str {
     }
 }
 
+/// verify that a result computed at register width still fits the narrower type
+/// it belongs to, by comparing it against its own truncation
+///
+/// `wide` and `narrow` name the same value at the width it was computed in and
+/// at the width it must fit, which differ once a 32-bit result is held in an
+/// `X` register
+fn emit_narrow_check(
+    out: &mut String,
+    wide: &str,
+    narrow: &str,
+    bytes: u8,
+    signed: bool,
+    fault: Panic,
+) {
+    #[rustfmt::skip]
+    let extend = match (bytes, signed) {
+        (1, true) => "sxtb", (1, false) => "uxtb",
+        (2, true) => "sxth", (2, false) => "uxth",
+        (4, true) => "sxtw", (4, false) => "uxtw",
+        _ => panic!("{bytes}-byte results have no narrower width to check against"),
+    };
+
+    emit!(out, "cmp     {wide}, {narrow}, {extend}");
+    emit!(out, "b.ne    {}", fault.require());
+}
+
 /// `AArch64` has no flag-setting multiply, so overflow is detected by computing the product
 /// wider than its operands and checking that it still equals its own truncation
-#[inline(always)]
-fn emit_checked_mul(out: &mut String, dest: &str, lhs: &str, rhs: &str, bytes: u8, signed: bool) {
+fn emit_checked_mul(out: &mut String, slot: &str, lhs: &str, rhs: &str, bytes: u8, signed: bool) {
     let symbol = Panic::MulOverflow.require();
     let high = A64Reg::X16.name(8);
     let low = A64Reg::X16.name(4);
 
-    // the high half is computed first so that a 'dest'
-    // aliasing 'lhs' or 'rhs' is still intact
-    match bytes {
-        8 => match signed {
-            true => {
-                emit!(out, "smulh   {high}, {lhs}, {rhs}");
-                emit!(out, "mul     {dest}, {lhs}, {rhs}");
-                emit!(out, "cmp     {high}, {dest}, asr #63");
-                emit!(out, "b.ne    {symbol}");
-            },
-            false => {
-                emit!(out, "umulh   {high}, {lhs}, {rhs}");
-                emit!(out, "mul     {dest}, {lhs}, {rhs}");
-                emit!(out, "cbnz    {high}, {symbol}");
-            },
-        },
-        _ => {
-            #[rustfmt::skip]
-            let extend = match (bytes, signed) {
-                (1, true) => "sxtb", (1, false) => "uxtb",
-                (2, true) => "sxth", (2, false) => "uxth",
-                (4, true) => "sxtw", (4, false) => "uxtw",
-                _ => panic!("checked multiplication of {bytes}-byte operands"),
-            };
+    // `rhs` takes X16 and `lhs` X17, leaving X16 free to receive the product:
+    // every form below reads both operands before writing it
+    let load = |out: &mut String, bytes: u8| {
+        let rhs = load_src_if_mem_with_scratch(out, rhs, bytes, false, A64Reg::X16, A64Reg::D16);
+        let lhs = load_src_if_mem_with_scratch(out, lhs, bytes, false, A64Reg::X17, A64Reg::D17);
+        (lhs, rhs)
+    };
 
-            let product = match bytes {
-                4 => {
-                    match signed {
-                        true => emit!(out, "smull   {high}, {lhs}, {rhs}"),
-                        false => emit!(out, "umull   {high}, {lhs}, {rhs}"),
-                    };
-                    high
-                },
-                _ => {
-                    emit!(out, "mul     {low}, {lhs}, {rhs}");
-                    low
-                },
-            };
+    if bytes < 8 {
+        let (loaded_lhs, loaded_rhs) = load(out, bytes);
 
-            emit!(out, "cmp     {product}, {low}, {extend}");
+        match bytes {
+            4 if signed => emit!(out, "smull   {high}, {loaded_lhs}, {loaded_rhs}"),
+            4 => emit!(out, "umull   {high}, {loaded_lhs}, {loaded_rhs}"),
+            _ => emit!(out, "mul     {low}, {loaded_lhs}, {loaded_rhs}"),
+        };
+
+        let product = match bytes == 4 {
+            true => high,
+            _ => low,
+        };
+        emit_narrow_check(out, product, low, bytes, signed, Panic::MulOverflow);
+        emit_move_or_store(out, low, slot, bytes);
+
+        return;
+    }
+
+    let mulh = match signed {
+        true => "smulh",
+        _ => "umulh",
+    };
+    let check = |out: &mut String, low: &str| match signed {
+        true => {
+            emit!(out, "cmp     {high}, {low}, asr #63");
             emit!(out, "b.ne    {symbol}");
-            emit!(out, "mov     {dest}, {low}");
         },
+        false => emit!(out, "cbnz    {high}, {symbol}"),
+    };
+
+    match (is_mem(slot), is_mem(lhs) && is_mem(rhs)) {
+        // the destination is a register that may alias an operand, so the high
+        // half is taken first, before 'mul' can destroy one
+        (false, false) => {
+            let lhs = load_src_if_mem_with_scratch(out, lhs, 8, false, A64Reg::X17, A64Reg::D17);
+            let rhs = load_src_if_mem_with_scratch(out, rhs, 8, false, A64Reg::X17, A64Reg::D17);
+
+            emit!(out, "{mulh}   {high}, {lhs}, {rhs}");
+            emit!(out, "mul     {slot}, {lhs}, {rhs}");
+            check(out, slot);
+        },
+
+        // both operands sit in scratch, so the destination cannot alias either
+        // and 'mul' leaves them intact for the high half
+        (false, true) => {
+            let (lhs, rhs) = load(out, 8);
+
+            emit!(out, "mul     {slot}, {lhs}, {rhs}");
+            emit!(out, "{mulh}   {high}, {lhs}, {rhs}");
+            check(out, slot);
+        },
+
+        // no register survives to hold the low half, so it is parked in its own
+        // slot and the operands are reloaded for the high half
+        (true, _) => {
+            let (lhs, rhs) = load(out, 8);
+            emit!(out, "mul     {high}, {lhs}, {rhs}");
+            emit_store(out, high, slot, 8);
+
+            let (lhs, rhs) = load(out, 8);
+            emit!(out, "{mulh}   {high}, {lhs}, {rhs}");
+
+            let low = A64Reg::X17.name(8);
+            if signed {
+                emit_load(out, low, slot, 8);
+            }
+            check(out, low);
+        },
+    }
+}
+
+fn emit_move_or_store(out: &mut String, src: &str, dest: &str, bytes: u8) {
+    match is_mem(dest) {
+        true => emit_store(out, src, dest, bytes),
+        false => emit!(out, "mov     {dest}, {src}"),
+    }
+}
+
+/// bring a three-address instruction's operands into registers
+#[inline(always)]
+fn resolve_alu<'s>(
+    out: &mut String,
+    dest: &'s str,
+    lhs: &'s str,
+    rhs: &'s str,
+    bytes: u8,
+) -> (&'s str, &'s str, &'s str) {
+    let lhs = load_src_if_mem_with_scratch(out, lhs, bytes, false, A64Reg::X16, A64Reg::D16);
+    let rhs = load_src_if_mem_with_scratch(out, rhs, bytes, false, A64Reg::X17, A64Reg::D17);
+
+    match is_mem(dest) {
+        true => (A64Reg::X16.name(bytes), lhs, rhs),
+        false => (dest, lhs, rhs),
     }
 }
 
