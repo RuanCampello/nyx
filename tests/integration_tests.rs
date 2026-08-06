@@ -220,6 +220,11 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "branch_fusion",
+        file: "tests/single/branch_fusion.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "string_len",
         file: "tests/single/string_len.nyx",
         exit_code: Some(11),

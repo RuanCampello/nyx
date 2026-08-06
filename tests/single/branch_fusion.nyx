@@ -1,0 +1,52 @@
+// every condition the combiner can fold into a terminator, including the
+// unsigned codes a float comparison produces, plus the case it must refuse
+
+fn lt(a: i32, b: i32): i32 = if a < b { 1 } else { 0 };
+fn le(a: i32, b: i32): i32 = if a <= b { 1 } else { 0 };
+fn gt(a: i32, b: i32): i32 = if a > b { 1 } else { 0 };
+fn ge(a: i32, b: i32): i32 = if a >= b { 1 } else { 0 };
+fn eq(a: i32, b: i32): i32 = if a == b { 1 } else { 0 };
+fn ne(a: i32, b: i32): i32 = if a != b { 1 } else { 0 };
+
+fn flt(a: f64, b: f64): i32 = if a < b { 1 } else { 0 };
+fn fle(a: f64, b: f64): i32 = if a <= b { 1 } else { 0 };
+fn fgt(a: f64, b: f64): i32 = if a > b { 1 } else { 0 };
+fn fge(a: f64, b: f64): i32 = if a >= b { 1 } else { 0 };
+
+fn clobbered(a: i32, b: i32, x: i32, y: i32): i32 {
+    let less = a < b;
+    let sum = x + y;
+    match less {
+        true -> sum,
+        _ -> 0 - sum,
+    }
+}
+
+fn main(): i32 {
+    if lt(1, 2) != 1 return 1;
+    if lt(2, 1) != 0 return 2;
+    if le(2, 2) != 1 return 3;
+    if le(3, 2) != 0 return 4;
+    if gt(2, 1) != 1 return 5;
+    if gt(1, 2) != 0 return 6;
+    if ge(2, 2) != 1 return 7;
+    if ge(1, 2) != 0 return 8;
+    if eq(2, 2) != 1 return 9;
+    if eq(2, 3) != 0 return 10;
+    if ne(2, 3) != 1 return 11;
+    if ne(2, 2) != 0 return 12;
+
+    if flt(1.5, 2.5) != 1 return 13;
+    if flt(2.5, 1.5) != 0 return 14;
+    if fle(2.5, 2.5) != 1 return 15;
+    if fle(3.5, 2.5) != 0 return 16;
+    if fgt(2.5, 1.5) != 1 return 17;
+    if fgt(1.5, 2.5) != 0 return 18;
+    if fge(2.5, 2.5) != 1 return 19;
+    if fge(1.5, 2.5) != 0 return 20;
+
+    if clobbered(1, 2, 20, 22) != 42 return 21;
+    if clobbered(2, 1, 20, 22) != -42 return 22;
+
+    0
+}
