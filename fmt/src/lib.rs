@@ -5,8 +5,10 @@
 
 pub mod doc;
 mod format;
+mod print;
 mod render;
+mod trivia;
 
 pub use doc::{Doc, Line};
-pub use format::{FormatError, FormatOptions, Indentation, format};
-pub use render::{RenderOptions, render};
+pub use format::{FormatError, FormatOptions, format};
+pub use render::{Indentation, RenderOptions, render};

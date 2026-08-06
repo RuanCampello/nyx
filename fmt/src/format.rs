@@ -1,3 +1,7 @@
+use crate::print::Printer;
+use crate::render::{Indentation, RenderOptions, render};
+use frontend::lexer::token::Span;
+use frontend::parser::Parser;
 use serde::Deserialize;
 use std::num::NonZero;
 
@@ -18,10 +22,13 @@ pub struct LayoutOptions {
     indentation: Indentation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FieldOptions {
     /// Whether use initialise field shorthand if possible
+    ///
+    /// Off until the parser makes the colon optional in a struct literal:
+    /// until then `Foo { x }` is source the compiler rejects.
     ///
     /// **default: false**
     /// ```rust
@@ -80,37 +87,20 @@ pub struct FieldOptions {
     struct_align: Option<NonZero<u8>>,
 }
 
-/// Whitespace used for one indentation level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(tag = "style", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Indentation {
-    /// A tab character for every indentation level
-    Tabs,
-    /// A fixed number of spaces for every indentation level
-    Spaces {
-        /// Number of spaces written for one indentation level
-        width: u8,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FormatError {}
-
-impl Default for Indentation {
-    fn default() -> Self {
-        Self::Tabs
-    }
+pub enum FormatError {
+    /// The source does not parse, so there is nothing to lay out
+    Parse { span: Span },
+    /// A grammar production the printer does not handle yet
+    Unsupported { span: Span },
+    /// The printer did not account for every comment in the source
+    /// Formatting is refused rather than silently discarding a comment
+    CommentDropped { printed: usize, scanned: usize },
 }
 
 impl Default for LayoutOptions {
     fn default() -> Self {
         Self { indentation: Indentation::default(), line_width: 80 }
-    }
-}
-
-impl Default for FieldOptions {
-    fn default() -> Self {
-        Self { initialise_short_hand: true, struct_align: None }
     }
 }
 
@@ -131,8 +121,47 @@ impl std::str::FromStr for FormatOptions {
     }
 }
 
-pub fn format(_source: &str, _options: FormatOptions) -> Result<String, FormatError> {
-    unimplemented!()
+impl FormatOptions {
+    #[inline]
+    pub const fn line_width(&self) -> usize {
+        self.layout.line_width
+    }
+
+    #[inline]
+    pub const fn indentation(&self) -> Indentation {
+        self.layout.indentation
+    }
+
+    #[inline]
+    pub const fn indent_width(&self) -> u8 {
+        self.layout.indentation.width()
+    }
+
+    #[inline]
+    pub const fn initialise_short_hand(&self) -> bool {
+        self.field.initialise_short_hand
+    }
+
+    #[inline]
+    pub const fn struct_align(&self) -> Option<NonZero<u8>> {
+        self.field.struct_align
+    }
+}
+
+pub fn format(source: &str, options: FormatOptions) -> Result<String, FormatError> {
+    let statements = Parser::new(source)
+        .parse()
+        .map_err(|error| FormatError::Parse { span: error.span() })?;
+
+    let document = Printer::new(source, options).into_document(&statements)?;
+
+    Ok(render(
+        &document,
+        RenderOptions {
+            print_width: options.line_width(),
+            indentation: options.indentation(),
+        },
+    ))
 }
 
 #[cfg(test)]

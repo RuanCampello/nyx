@@ -27,9 +27,10 @@ pub enum Doc<'src> {
 pub enum Line {
     /// Always a new line
     Hard,
-    /// Space when a [group](Doc::Group) fits,
-    /// newline when it breaks
+    /// Space when a [group](Doc::Group) fits, newline when it breaks
     Soft,
+    /// Nothing when a [group](Doc::Group) fits, newline when it breaks
+    Break,
 }
 
 impl<'src> Doc<'src> {
@@ -40,12 +41,19 @@ impl<'src> Doc<'src> {
         }
     }
 
+    #[inline]
     pub const fn hard_line() -> Self {
         Self::Line(Line::Hard)
     }
 
+    #[inline]
     pub const fn soft_line() -> Self {
         Self::Line(Line::Soft)
+    }
+
+    #[inline]
+    pub const fn break_line() -> Self {
+        Self::Line(Line::Break)
     }
 
     pub fn concat(parts: impl IntoIterator<Item = Self>) -> Self {
@@ -66,6 +74,7 @@ impl<'src> Doc<'src> {
         }
     }
 
+    #[inline]
     pub fn indent(width: u8, content: Self) -> Self {
         match width {
             0 => content,
@@ -104,6 +113,7 @@ impl fmt::Debug for Doc<'_> {
                 },
                 Doc::Line(Line::Hard) => f.write_str("hard_line()"),
                 Doc::Line(Line::Soft) => f.write_str("soft_line()"),
+                Doc::Line(Line::Break) => f.write_str("break_line()"),
                 Doc::Indent { width, content } => {
                     write!(f, "indent({width},\n")?;
                     write_indent(f, depth + 1)?;

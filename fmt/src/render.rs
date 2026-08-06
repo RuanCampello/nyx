@@ -1,9 +1,10 @@
-//! Width-aware rendering for [crate::Doc].
+//! Width-aware rendering for [crate::Doc]
 //!
 //! The renderer is inspired by the work-stack implementation in Philip Wadler's
 //! [*A Prettier Printer*](https://homepages.inf.ed.ac.uk/wadler/papers/prettier/prettier.pdf)
 
 use crate::doc::{Doc, Line};
+use serde::Deserialize;
 
 /// A pending document together with the indentation and layout it inherits
 #[derive(Clone, Copy)]
@@ -13,10 +14,24 @@ struct Command<'doc, 'src> {
     doc: &'doc Doc<'src>,
 }
 
-/// The width constraint used when rendering a document
+/// The width constraint and whitespace used when rendering a document
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderOptions {
     pub print_width: usize,
+    pub indentation: Indentation,
+}
+
+/// Whitespace written for one indentation level
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(tag = "style", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Indentation {
+    /// A tab character for every indentation level
+    Tabs,
+    /// A fixed number of spaces for every indentation level
+    Spaces {
+        /// Number of spaces written for one indentation level
+        width: u8,
+    },
 }
 
 /// The layout selected for an enclosing document group
@@ -28,9 +43,33 @@ enum Mode {
 
 const MAX_FIT_STEPS: usize = 1 << 16;
 
+impl Default for Indentation {
+    fn default() -> Self {
+        Self::Spaces { width: 4 }
+    }
+}
+
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { print_width: 80 }
+        Self { print_width: 80, indentation: Indentation::default() }
+    }
+}
+
+impl Indentation {
+    #[inline]
+    pub const fn width(self) -> u8 {
+        match self {
+            Self::Tabs => 1,
+            Self::Spaces { width } => width,
+        }
+    }
+
+    #[inline]
+    const fn unit(self) -> char {
+        match self {
+            Self::Tabs => '\t',
+            Self::Spaces { .. } => ' ',
+        }
     }
 }
 
@@ -38,22 +77,31 @@ pub fn render(doc: &Doc<'_>, options: RenderOptions) -> String {
     let mut output = String::new();
     let mut column = 0;
     let mut commands = vec![Command { indent: 0, mode: Mode::Break, doc }];
+    let mut pending = None;
 
     while let Some(command) = commands.pop() {
         match command.doc {
             Doc::Empty => {},
             Doc::Text(text) => {
+                flush_indent(&mut output, &mut pending, options.indentation);
                 output.push_str(text);
                 column += text.chars().count();
             },
             Doc::Concat(parts) => push_parts(&mut commands, command.indent, command.mode, parts),
-            Doc::Line(Line::Hard) => write_line(&mut output, &mut column, command.indent),
+            Doc::Line(Line::Hard) => {
+                write_line(&mut output, &mut pending, &mut column, command.indent)
+            },
             Doc::Line(Line::Soft) => match command.mode {
                 Mode::Flat => {
+                    flush_indent(&mut output, &mut pending, options.indentation);
                     output.push(' ');
                     column += 1;
                 },
-                Mode::Break => write_line(&mut output, &mut column, command.indent),
+                Mode::Break => write_line(&mut output, &mut pending, &mut column, command.indent),
+            },
+            Doc::Line(Line::Break) => match command.mode {
+                Mode::Flat => {},
+                Mode::Break => write_line(&mut output, &mut pending, &mut column, command.indent),
             },
             Doc::Indent { width, content } => commands.push(Command {
                 indent: command.indent + usize::from(*width),
@@ -104,6 +152,10 @@ fn fits<'doc, 'src>(mut remaining: usize, mut commands: Vec<Command<'doc, 'src>>
                 },
                 Mode::Break => return true,
             },
+            Doc::Line(Line::Break) => match command.mode {
+                Mode::Flat => {},
+                Mode::Break => return true,
+            },
             Doc::Indent { width, content } => commands.push(Command {
                 indent: command.indent + usize::from(*width),
                 mode: command.mode,
@@ -128,10 +180,18 @@ fn push_parts<'doc, 'src>(
     commands.extend(parts.iter().rev().map(|doc| Command { indent, mode, doc }));
 }
 
-fn write_line(output: &mut String, column: &mut usize, indent: usize) {
+#[inline]
+fn write_line(output: &mut String, pending: &mut Option<usize>, column: &mut usize, indent: usize) {
     output.push('\n');
-    output.extend(std::iter::repeat_n(' ', indent));
+    *pending = Some(indent);
     *column = indent;
+}
+
+#[inline]
+fn flush_indent(output: &mut String, pending: &mut Option<usize>, indentation: Indentation) {
+    if let Some(indent) = pending.take() {
+        output.extend(std::iter::repeat_n(indentation.unit(), indent));
+    }
 }
 
 #[cfg(test)]
@@ -157,13 +217,16 @@ mod tests {
 
     #[test]
     fn renders_a_group_flat_when_it_fits() {
-        assert_eq!(render(&list(), RenderOptions { print_width: 80 }), "call( first, second )");
+        assert_eq!(
+            render(&list(), RenderOptions { print_width: 80, ..Default::default() }),
+            "call( first, second )"
+        );
     }
 
     #[test]
     fn renders_a_group_broken_when_it_does_not_fit() {
         assert_eq!(
-            render(&list(), RenderOptions { print_width: 12 }),
+            render(&list(), RenderOptions { print_width: 12, ..Default::default() }),
             "call(\n  first,\n  second\n)"
         );
     }
@@ -176,7 +239,10 @@ mod tests {
             Doc::text("tail"),
         ]);
 
-        assert_eq!(render(&doc, RenderOptions { print_width: 7 }), "xa\nbtail");
+        assert_eq!(
+            render(&doc, RenderOptions { print_width: 7, ..Default::default() }),
+            "xa\nbtail"
+        );
     }
 
     #[test]
@@ -203,8 +269,14 @@ mod tests {
             Doc::text("]"),
         ]));
 
-        assert_eq!(render(&doc, RenderOptions { print_width: 80 }), "[ item ]");
-        assert_eq!(render(&doc, RenderOptions { print_width: 6 }), "[\n  item,\n]");
+        assert_eq!(
+            render(&doc, RenderOptions { print_width: 80, ..Default::default() }),
+            "[ item ]"
+        );
+        assert_eq!(
+            render(&doc, RenderOptions { print_width: 6, ..Default::default() }),
+            "[\n  item,\n]"
+        );
     }
 
     #[test]
