@@ -157,6 +157,14 @@ impl<'f> Lower<'f, X86_64> {
                         self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes));
                     }
 
+                    // two-operand 'imul' has no one-byte form at all, and its overflow
+                    // flag is a signed test that rejects legal unsigned results
+                    B::Mul if !is_float && (bytes == 1 || (checked && !is_signed)) => {
+                        let factor = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
+                        self.lir.push_instr(id, X86Instr::Mov { dest: factor, src: lhs, bytes });
+                        self.lir.push_instr(id, X86Instr::wide_mul(dest, factor, rhs, bytes, is_signed, checked));
+                    }
+
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => self.lower_cmp(
                         id,
                         dest,

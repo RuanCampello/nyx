@@ -430,6 +430,46 @@ impl Function<X86_64> {
                 }
             },
 
+            Inst::WideMul { result, lhs, rhs, bytes, signed, .. } => {
+                let suffix = suffix(bytes);
+                let rax = format!("%{}", X86Reg::Rax.name(*bytes));
+                let op = match *signed {
+                    true => "imul",
+                    _ => "mul",
+                };
+                let lhs = alloc.location(lhs, bytes);
+                let result = alloc.location(result, bytes);
+
+                if lhs != rax {
+                    emit!(out, "mov{suffix}    {lhs}, {rax}");
+                }
+
+                match rhs {
+                    // the one-operand form takes no immediate
+                    X86Operand::Imm(_) => {
+                        let rhs = self.operand(alloc, rhs, bytes);
+                        emit!(out, "subq    $8, %rsp");
+                        emit!(out, "mov{suffix}    {rhs}, (%rsp)");
+                        emit!(out, "{op}{suffix}    (%rsp)");
+                        emit!(out, "addq    $8, %rsp");
+                    },
+                    _ => {
+                        let rhs = self.operand(alloc, rhs, bytes);
+                        emit!(out, "{op}{suffix}    {rhs}");
+                    },
+                }
+
+                // both forms set CF and OF when the result does not fit the
+                // operand width, whatever the signedness
+                if let Some(panic) = instruction.overflow_panic() {
+                    emit!(out, "jo      {}", panic.require());
+                }
+
+                if result != rax {
+                    emit!(out, "mov{suffix}    {rax}, {result}");
+                }
+            },
+
             Inst::IDiv { result, dividend, divisor, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let rax = format!("%{}", X86Reg::Rax.name(*bytes));

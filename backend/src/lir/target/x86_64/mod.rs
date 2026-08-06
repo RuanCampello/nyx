@@ -52,6 +52,21 @@ pub enum X86Instr {
     Imul { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
     Neg { dest: VReg, bytes: u8 },
 
+    /// one-operand multiply, `%rax * rhs -> %rdx:%rax`
+    ///
+    /// the only form that detects *unsigned* overflow, since two-operand `imul`
+    /// reports signed overflow only, and the only form that exists at all at
+    /// one byte wide
+    WideMul {
+        result: VReg,
+        lhs: VReg,
+        rhs: X86Operand,
+        bytes: u8,
+        signed: bool,
+        checked: bool,
+        precoloured_uses: [(VReg, X86Reg); 1],
+    },
+
     IDiv {
         result: VReg,
         dividend: VReg,
@@ -403,7 +418,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Shr { dest, .. }
             | Self::Sar { dest, .. } => std::slice::from_ref(dest),
 
-            Self::IDiv { result, .. } => std::slice::from_ref(result),
+            Self::IDiv { result, .. } | Self::WideMul { result, .. } => std::slice::from_ref(result),
 
             Self::FieldStore { .. } | Self::PtrStore { .. }
             | Self::Cmp { .. }
@@ -495,10 +510,11 @@ impl Instruction<X86_64> for X86Instr {
                 }
             }
 
-            Self::IDiv { dividend, divisor, .. } => {
-                uses.push(*dividend);
-                if let X86Operand::VReg(divisor) = divisor {
-                    uses.push(*divisor);
+            Self::IDiv { dividend: lhs, divisor: rhs, .. }
+            | Self::WideMul { lhs, rhs, .. } => {
+                uses.push(*lhs);
+                if let X86Operand::VReg(rhs) = rhs {
+                    uses.push(*rhs);
                 }
             }
             Self::Call { uses: instruction_uses, .. }
@@ -511,7 +527,7 @@ impl Instruction<X86_64> for X86Instr {
     #[inline]
     fn clobbers<'r>(&self) -> &'r [X86Reg] {
         match self {
-            Self::IDiv { .. } => &[X86Reg::Rdx],
+            Self::IDiv { .. } | Self::WideMul { .. } => &[X86Reg::Rdx],
             Self::Call { .. } | Self::Syscall { .. } => X86_64::caller_saved(),
             _ => &[],
         }
@@ -521,7 +537,8 @@ impl Instruction<X86_64> for X86Instr {
     #[inline]
     fn precoloured_uses(&self) -> &[(VReg, X86Reg)] {
         match self {
-            Self::IDiv { precoloured_uses, .. } => precoloured_uses,
+            Self::IDiv { precoloured_uses, .. }
+            | Self::WideMul { precoloured_uses, .. } => precoloured_uses,
             Self::Shl { precoloured_uses, .. }
             | Self::Shr { precoloured_uses, .. }
             | Self::Sar { precoloured_uses, .. } => precoloured_uses.as_slice(),
@@ -589,6 +606,26 @@ impl X86Instr {
         }
 
         Self::Call { target, moves, uses, ret, aggregate_ret, stack_args }
+    }
+
+    #[inline(always)]
+    pub const fn wide_mul(
+        result: VReg,
+        lhs: VReg,
+        rhs: X86Operand,
+        bytes: u8,
+        signed: bool,
+        checked: bool,
+    ) -> Self {
+        Self::WideMul {
+            result,
+            lhs,
+            rhs,
+            bytes,
+            signed,
+            checked,
+            precoloured_uses: [(lhs, X86Reg::Rax)],
+        }
     }
 
     #[inline(always)]
@@ -667,7 +704,9 @@ impl Checked for X86Instr {
         match self {
             Self::Add { checked: true, .. } => Some(Panic::AddOverflow),
             Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
-            Self::Imul { checked: true, .. } => Some(Panic::MulOverflow),
+            Self::Imul { checked: true, .. } | Self::WideMul { checked: true, .. } => {
+                Some(Panic::MulOverflow)
+            },
             _ => None,
         }
     }
