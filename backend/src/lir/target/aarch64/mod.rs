@@ -1,8 +1,8 @@
 use crate::lir::{
     self, BlockId, Checked, Layouts, MachineType, Panic, VReg,
     target::{
-        self, CallArgMoves, Instruction, MemOps, PhysicalReg, RegClass, StackArgs, Target,
-        TargetOperand, TargetOps,
+        self, CallArgMoves, CondCode, Instruction, MemOps, PhysicalReg, RegClass, StackArgs,
+        Target, TargetOperand, TargetOps,
     },
 };
 use crate::{
@@ -153,6 +153,17 @@ pub enum A64Cond {
 }
 
 impl A64Cond {
+    #[rustfmt::skip]
+    const fn code(self) -> CondCode {
+        match self {
+            Self::Eq => CondCode::Eq, Self::Ne => CondCode::Ne,
+            Self::Lt => CondCode::Lt, Self::Le => CondCode::Le,
+            Self::Gt => CondCode::Gt, Self::Ge => CondCode::Ge,
+            Self::Lo => CondCode::Lo, Self::Ls => CondCode::Ls,
+            Self::Hi => CondCode::Hi, Self::Hs => CondCode::Hs,
+        }
+    }
+
     #[rustfmt::skip]
     pub const fn as_str<'s>(&self) -> &'s str {
         match self {
@@ -566,6 +577,36 @@ impl Instruction<AArch64> for A64Instr {
             _ => &[],
         }
     }
+
+    #[rustfmt::skip]
+    #[inline]
+    fn writes_flags(&self) -> bool {
+        match self {
+            Self::Add { checked, .. } | Self::Sub { checked, .. }
+            | Self::Mul { checked, .. } => *checked,
+
+            Self::MovImm { .. } | Self::Mov { .. } | Self::Extend { .. }
+            | Self::LdrParam { .. } | Self::SDiv { .. } | Self::Neg { .. }
+            | Self::And { .. } | Self::Or { .. } | Self::Eor { .. } | Self::Mvn { .. }
+            | Self::Lsl { .. } | Self::Lsr { .. } | Self::Asr { .. }
+            | Self::Cset { .. } | Self::Csel { .. }
+            | Self::FMov { .. } | Self::FLiteral { .. }
+            | Self::FAdd { .. } | Self::FSub { .. } | Self::FMul { .. }
+            | Self::FDiv { .. } | Self::FNeg { .. } | Self::Adr { .. }
+            | Self::FieldLoad { .. } | Self::FieldStore { .. } | Self::StackAddr { .. }
+            | Self::PtrLoad { .. } | Self::PtrStore { .. } => false,
+
+            _ => true,
+        }
+    }
+
+    #[inline]
+    fn flag_to_bool(&self) -> Option<(VReg, CondCode)> {
+        match self {
+            Self::Cset { dest, cond } => Some((*dest, cond.code())),
+            _ => None,
+        }
+    }
 }
 
 impl A64Instr {
@@ -659,6 +700,20 @@ impl Checked for A64Instr {
             Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
             Self::Mul { checked: true, .. } => Some(Panic::MulOverflow),
             _ => None,
+        }
+    }
+}
+
+impl From<CondCode> for A64Cond {
+    #[rustfmt::skip]
+    #[inline]
+    fn from(code: CondCode) -> Self {
+        match code {
+            CondCode::Eq => Self::Eq, CondCode::Ne => Self::Ne,
+            CondCode::Lt => Self::Lt, CondCode::Le => Self::Le,
+            CondCode::Gt => Self::Gt, CondCode::Ge => Self::Ge,
+            CondCode::Lo => Self::Lo, CondCode::Ls => Self::Ls,
+            CondCode::Hi => Self::Hi, CondCode::Hs => Self::Hs,
         }
     }
 }

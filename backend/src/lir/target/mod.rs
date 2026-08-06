@@ -4,8 +4,8 @@ use crate::{
     mir::{self, Const, Function, Operand, ValueId},
 };
 
-mod aarch64;
-mod x86_64;
+pub(in crate::lir) mod aarch64;
+pub(in crate::lir) mod x86_64;
 
 pub use aarch64::AArch64;
 pub use x86_64::X86_64;
@@ -104,6 +104,28 @@ pub trait Instruction<T: Target> {
 
     fn stack_forced(&self) -> &[VReg] {
         &[]
+    }
+
+    /// whether executing this instruction leaves the condition flags in an
+    /// unspecified state
+    ///
+    /// The default is deliberately `true`
+    /// An instruction whose effect on the flags has not been described must
+    /// never be assumed transparent, or a rule that moves a flag
+    /// consumer across it silently miscompiles
+    fn writes_flags(&self) -> bool {
+        true
+    }
+
+    /// `(dest, cond)` when this instruction does nothing but materialise the
+    /// current flags into `dest` as a boolean, x86 `setcc`, AArch64 `cset`
+    fn flag_to_bool(&self) -> Option<(VReg, CondCode)> {
+        None
+    }
+
+    /// `(dest, src)` when this instruction does nothing but zero-extend `src`
+    fn zero_extension(&self) -> Option<(VReg, VReg)> {
+        None
     }
 }
 
@@ -238,6 +260,22 @@ pub struct ParallelMove<Reg> {
 pub enum RegClass {
     Int,
     Float,
+}
+
+/// A condition code, in the subset both backends share
+///
+/// Each target has its own spelling of these, this exists so that
+/// [Instruction::flag_to_bool] and [lir::Term::BranchCc] can name a condition
+/// without becoming generic over the target The unsigned codes are the ones a
+/// float comparison produces
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[rustfmt::skip]
+pub enum CondCode {
+    Eq, Ne,
+    Lt, Le,
+    Gt, Ge,
+    Lo, Ls,
+    Hi, Hs,
 }
 
 #[derive(Clone, Copy)]

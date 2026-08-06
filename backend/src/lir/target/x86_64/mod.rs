@@ -3,8 +3,8 @@ use crate::{
     lir::{
         self, BlockId, Checked, Layouts, MachineType, Panic, VReg,
         target::{
-            self, CallArgMoves, Instruction, MemOps, PhysicalReg, RegClass, StackArgs, Target,
-            TargetOperand, TargetOps,
+            self, CallArgMoves, CondCode, Instruction, MemOps, PhysicalReg, RegClass, StackArgs,
+            Target, TargetOperand, TargetOps,
         },
     },
     parser::expression::BinaryOperator,
@@ -538,6 +538,38 @@ impl Instruction<X86_64> for X86Instr {
             _ => &[],
         }
     }
+
+    #[rustfmt::skip]
+    #[inline]
+    fn writes_flags(&self) -> bool {
+        !matches!(
+            self,
+            Self::Mov { .. } | Self::MovFloat { .. } | Self::MovFromStack { .. }
+            | Self::Lea { .. } | Self::StackAddr { .. }
+            | Self::Movzx { .. } | Self::Movsx { .. }
+            | Self::Not { .. } | Self::Setcc { .. } | Self::Cmov { .. }
+            | Self::AddFloat { .. } | Self::SubFloat { .. } | Self::MulFloat { .. }
+            | Self::DivFloat { .. } | Self::XorFloat { .. }
+            | Self::FieldLoad { .. } | Self::FieldStore { .. }
+            | Self::PtrLoad { .. } | Self::PtrStore { .. }
+        )
+    }
+
+    #[inline]
+    fn flag_to_bool(&self) -> Option<(VReg, CondCode)> {
+        match self {
+            Self::Setcc { dest, condition } => Some((*dest, condition.code())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn zero_extension(&self) -> Option<(VReg, VReg)> {
+        match self {
+            Self::Movzx { dest, src: X86Operand::VReg(src), .. } => Some((*dest, *src)),
+            _ => None,
+        }
+    }
 }
 
 impl X86Instr {
@@ -643,6 +675,17 @@ impl Checked for X86Instr {
 
 impl Condition {
     #[rustfmt::skip]
+    const fn code(self) -> CondCode {
+        match self {
+            Self::E => CondCode::Eq, Self::Ne => CondCode::Ne,
+            Self::L => CondCode::Lt, Self::Le => CondCode::Le,
+            Self::G => CondCode::Gt, Self::Ge => CondCode::Ge,
+            Self::B => CondCode::Lo, Self::Be => CondCode::Ls,
+            Self::A => CondCode::Hi, Self::Ae => CondCode::Hs,
+        }
+    }
+
+    #[rustfmt::skip]
     pub const fn as_str<'s>(&self) -> &'s str {
         match self {
             Self::E => "e", Self::Ne => "ne",
@@ -671,6 +714,20 @@ impl Condition {
             (BinaryOperator::GtEq, false) => Self::Ge,
 
             _ => unreachable!("invalid combination of binary operator and float flag"),
+        }
+    }
+}
+
+impl From<CondCode> for Condition {
+    #[rustfmt::skip]
+    #[inline]
+    fn from(code: CondCode) -> Self {
+        match code {
+            CondCode::Eq => Self::E,  CondCode::Ne => Self::Ne,
+            CondCode::Lt => Self::L,  CondCode::Le => Self::Le,
+            CondCode::Gt => Self::G,  CondCode::Ge => Self::Ge,
+            CondCode::Lo => Self::B,  CondCode::Ls => Self::Be,
+            CondCode::Hi => Self::A,  CondCode::Hs => Self::Ae,
         }
     }
 }
