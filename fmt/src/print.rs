@@ -10,8 +10,9 @@ use frontend::lexer::Spanned;
 use frontend::lexer::token::{BytePos, Punct, Span};
 use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
-    Block, Const, Else, Function, If, Impl, Item, ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER,
-    Receiver, Return, Statement, Struct, Type, UseDecl, UseItems,
+    Block, Const, Else, Function, If, Impl, Interface, InterfaceConst, InterfaceMethod, Item,
+    ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver, Return, Statement,
+    Struct, Type, UseDecl, UseItems,
 };
 
 /// Walks the AST once, emitting a [Doc] and tracking the comments it consumed
@@ -36,6 +37,8 @@ enum Region {
 enum Member<'a, 'src> {
     Method(&'a Function<'src>),
     Constant(&'a Const<'src>),
+    Requirement(&'a InterfaceMethod<'src>),
+    RequiredConstant(&'a InterfaceConst<'src>),
 }
 
 impl<'src> Printer<'src> {
@@ -194,6 +197,7 @@ impl<'src> Printer<'src> {
             ItemKind::Struct(declaration) => parts.push(self.structure(declaration)?),
             ItemKind::Const(constant) => parts.push(self.constant(constant)?),
             ItemKind::Impl(block) => parts.push(self.implementation(block)?),
+            ItemKind::Interface(interface) => parts.push(self.interface(interface)?),
             ItemKind::Use(declaration) => parts.push(import(declaration)),
             other => return Err(FormatError::Unsupported { span: item_span(other) }),
         }
@@ -217,12 +221,33 @@ impl<'src> Printer<'src> {
             }
         }
 
-        parts.push(Doc::text("fn "));
-        parts.push(Doc::text(function.name));
-        parts.push(Doc::text(self.generics_at(function.name_span.end)));
+        parts.push(self.signature(
+            function.name,
+            function.name_span,
+            function.receiver,
+            &function.params,
+            function.return_type.as_ref(),
+            function.body.span.start,
+        ));
+        parts.push(self.body(&function.body)?);
 
-        let mut parameters: Vec<_> = function
-            .params
+        Ok(Doc::concat(parts))
+    }
+
+    /// `fn name<...>(...): Type where ...` all a declaration holds before its body
+    fn signature(
+        &mut self,
+        name: &'src str,
+        name_span: Span,
+        receiver: Option<Receiver>,
+        params: &[Parameter<'src>],
+        return_type: Option<&Spanned<Type<'src>>>,
+        body_start: BytePos,
+    ) -> Doc<'src> {
+        let mut parts =
+            vec![Doc::text("fn "), Doc::text(name), Doc::text(self.generics_at(name_span.end))];
+
+        let mut parameters: Vec<_> = params
             .iter()
             .map(|parameter| {
                 let mutable = match parameter.mutable {
@@ -239,28 +264,116 @@ impl<'src> Printer<'src> {
             })
             .collect();
 
-        if let Some(receiver) = function.receiver {
+        if let Some(receiver) = receiver {
             parameters.insert(0, Doc::text(receiver_name(receiver)));
         }
 
         parts.push(self.delimited("(", parameters, ")"));
 
-        let signature_end = match function.return_type {
-            Some(ref returned) => {
+        let signature_end = match return_type {
+            Some(returned) => {
                 parts.push(Doc::text(": "));
                 parts.push(Doc::text(self.slice(returned.span())));
                 returned.span().end
             },
-            None => match function.params.last() {
+            None => match params.last() {
                 Some(parameter) => parameter.span.end,
-                None => function.name_span.end,
+                None => name_span.end,
             },
         };
 
-        parts.push(self.where_clause(signature_end, function.body.span.start));
-        parts.push(self.body(&function.body)?);
+        parts.push(self.where_clause(signature_end, body_start));
+        Doc::concat(parts)
+    }
+
+    fn interface(&mut self, interface: &Interface<'src>) -> Result<Doc<'src>, FormatError> {
+        let mut parts = Vec::new();
+
+        if interface.is_pub {
+            parts.push(Doc::text("pub "));
+        }
+
+        parts.push(Doc::text("interface "));
+        parts.push(Doc::text(interface.name));
+        parts.push(Doc::text(self.generics_at(interface.name_span.end)));
+
+        for (index, superinterface) in interface.superinterfaces.iter().enumerate() {
+            parts.push(Doc::text(match index {
+                0 => ": ",
+                _ => " + ",
+            }));
+            parts.push(Doc::text(*superinterface));
+        }
+
+        parts.push(Doc::text(" {"));
+
+        let mut members: Vec<_> = interface
+            .methods
+            .iter()
+            .map(Member::Requirement)
+            .chain(interface.constants.iter().map(Member::RequiredConstant))
+            .collect();
+
+        members.sort_by_key(|member| member.span().start);
+
+        let body = match members.is_empty() {
+            true => Doc::Empty,
+            false => self.members(&members, &interface.member_docs)?,
+        };
+
+        parts.push(Doc::indent(
+            self.indent_width(),
+            Doc::concat([body, self.dangling(interface.span)]),
+        ));
+        parts.push(Doc::hard_line());
+        parts.push(Doc::text("}"));
 
         Ok(Doc::concat(parts))
+    }
+
+    /// a method an interface requires, which carries a body only when it supplies a default
+    fn interface_method(
+        &mut self,
+        method: &InterfaceMethod<'src>,
+    ) -> Result<Doc<'src>, FormatError> {
+        let mut parts = Vec::new();
+
+        for marker in &method.markers {
+            parts.push(Doc::text(Punct::At.as_str()));
+            parts.push(Doc::text(marker.as_str()));
+            parts.push(Doc::hard_line());
+        }
+
+        let terminator = match method.body {
+            Some(ref body) => body.span.start,
+            None => method.span.end,
+        };
+
+        parts.push(self.signature(
+            method.name,
+            method.name_span,
+            method.receiver,
+            &method.params,
+            method.return_type.as_ref(),
+            terminator,
+        ));
+
+        match method.body {
+            Some(ref body) => parts.push(self.body(body)?),
+            None => parts.push(Doc::text(";")),
+        }
+
+        Ok(Doc::concat(parts))
+    }
+
+    fn interface_constant(&mut self, constant: &InterfaceConst<'src>) -> Doc<'src> {
+        Doc::concat([
+            Doc::text("const "),
+            Doc::text(constant.name),
+            Doc::text(": "),
+            Doc::text(self.slice(constant.typ.span())),
+            Doc::text(";"),
+        ])
     }
 
     fn body(&mut self, block: &Block<'src>) -> Result<Doc<'src>, FormatError> {
@@ -293,7 +406,8 @@ impl<'src> Printer<'src> {
             match character {
                 '<' => depth += 1,
                 '>' => depth = depth.saturating_sub(1),
-                '(' | '{' | ';' | '=' if depth == 0 => return rest[..offset].trim(),
+                // a `:` at depth zero opens a superinterface list, never a bound
+                '(' | '{' | ';' | '=' | ':' if depth == 0 => return rest[..offset].trim(),
                 _ => {},
             }
         }
@@ -305,10 +419,14 @@ impl<'src> Printer<'src> {
     fn where_clause(&self, from: BytePos, to: BytePos) -> Doc<'src> {
         let between = &self.source[from.offset()..to.offset()];
 
-        match between.find("where") {
-            Some(at) => Doc::text(format!(" {}", normalise_spaces(&between[at..]))),
-            None => Doc::Empty,
-        }
+        let Some(at) = between.find("where") else {
+            return Doc::Empty;
+        };
+
+        let clause = &between[at..];
+        let clause = clause.split([';', '{']).next().unwrap_or(clause);
+
+        Doc::text(format!(" {}", normalise_spaces(clause)))
     }
 
     fn structure(&mut self, declaration: &Struct<'src>) -> Result<Doc<'src>, FormatError> {
@@ -435,6 +553,8 @@ impl<'src> Printer<'src> {
             parts.push(match member {
                 Member::Method(method) => self.function(method)?,
                 Member::Constant(constant) => self.constant(constant)?,
+                Member::Requirement(method) => self.interface_method(method)?,
+                Member::RequiredConstant(constant) => self.interface_constant(constant),
             });
 
             self.push_trailing_comment(&mut parts, span);
@@ -795,6 +915,8 @@ impl Member<'_, '_> {
         match self {
             Self::Method(method) => method.span,
             Self::Constant(constant) => constant.span,
+            Self::Requirement(method) => method.span,
+            Self::RequiredConstant(constant) => constant.span,
         }
     }
 }
