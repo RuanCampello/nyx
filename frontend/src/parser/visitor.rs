@@ -19,6 +19,7 @@ pub trait Visitor<'i>: Sized {
             Statement::Item(item) => match &item.kind {
                 ItemKind::Fn(func) => self.visit_function(func),
                 ItemKind::Const(const_stmt) => self.visit_const(const_stmt),
+                ItemKind::Static(static_item) => self.visit_expression(&static_item.value),
                 ItemKind::Impl(impl_block) => self.visit_impl(impl_block),
                 ItemKind::Interface(interface) => self.visit_interface(interface),
                 ItemKind::Struct(_) | ItemKind::Enum(_) | ItemKind::Use(_) => {},

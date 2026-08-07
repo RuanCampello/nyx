@@ -413,6 +413,16 @@ impl<'i> Parser<'i> {
         }
     }
 
+    pub(crate) fn is_static_decl(&mut self) -> bool {
+        match self.peek_nth(0) {
+            Some(Ok(t)) if t.is_kind(Keyword::Static) => true,
+            Some(Ok(t)) if t.is_kind(Keyword::Pub) => {
+                matches!(self.peek_nth(1), Some(Ok(t2)) if t2.is_kind(Keyword::Static))
+            },
+            _ => false,
+        }
+    }
+
     pub(crate) fn is_const_decl(&mut self) -> bool {
         match self.peek_nth(0) {
             Some(Ok(t)) if t.is_kind(Keyword::Const) => {

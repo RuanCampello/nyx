@@ -18,6 +18,7 @@ pub enum ItemKind<'i> {
     Struct(Struct<'i>),
     Enum(Enum<'i>),
     Const(Const<'i>),
+    Static(Static<'i>),
     Impl(Impl<'i>),
     Interface(Interface<'i>),
     Use(UseDecl<'i>),
@@ -55,6 +56,18 @@ pub struct Let<'i> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Const<'i> {
     pub is_pub: bool,
+    pub name: &'i str,
+    pub name_span: Span,
+    pub typ: Spanned<Type<'i>>,
+    pub value: Expression<'i>,
+    pub span: Span,
+}
+
+/// A module-level mutable or immutable global
+#[derive(Debug, PartialEq, Clone)]
+pub struct Static<'i> {
+    pub is_pub: bool,
+    pub is_mut: bool,
     pub name: &'i str,
     pub name_span: Span,
     pub typ: Spanned<Type<'i>>,
@@ -414,6 +427,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
             return Ok(Statement::Item(Item { docs, kind: ItemKind::Const(parser.parse_node()?) }));
         }
 
+        if parser.is_static_decl() {
+            return Ok(Statement::Item(Item {
+                docs,
+                kind: ItemKind::Static(parser.parse_node()?),
+            }));
+        }
+
         // non-item statements return directly
         let kind = match kind {
             TokenKind::Keyword(Keyword::Let) => return Ok(Statement::Let(parser.parse_node()?)),
@@ -546,6 +566,31 @@ impl<'i> Parsable<'i> for Const<'i> {
         let span = start_span + semi.span;
 
         Ok(Const { is_pub, name, name_span, typ, value, span })
+    }
+}
+
+impl<'i> Parsable<'i> for Static<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let start_span = match parser.peek() {
+            Some(Ok(token)) => token.span,
+            Some(Err(err)) => return Err(err.into()),
+            None => {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
+            },
+        };
+
+        let is_pub = parser.consume_token(Keyword::Pub)?;
+        let _static_token = parser.expect_token(Keyword::Static)?;
+        let is_mut = parser.consume_token(Keyword::Mut)?;
+        let (name, name_span) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Colon)?;
+        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
+        parser.expect_token(Punct::Eq)?;
+        let value = parser.parse_node::<Expression<'i>>()?;
+        let semi = parser.expect_token(Punct::Semicolon)?;
+        let span = start_span + semi.span;
+
+        Ok(Static { is_pub, is_mut, name, name_span, typ, value, span })
     }
 }
 
@@ -1885,6 +1930,7 @@ impl<'i> ItemKind<'i> {
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,
             Self::Const(c) => c.span,
+            Self::Static(s) => s.span,
             Self::Impl(i) => i.span,
             Self::Interface(i) => i.span,
             Self::Use(u) => u.span,
@@ -1898,6 +1944,7 @@ impl<'i> ItemKind<'i> {
             Self::Struct(_) => "struct",
             Self::Enum(_) => "enum",
             Self::Const(_) => "const",
+            Self::Static(_) => "static",
             Self::Impl(_) => "impl",
             Self::Interface(_) => "interface",
             Self::Use(_) => "use",
