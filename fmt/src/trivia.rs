@@ -45,7 +45,7 @@ impl<'src> Trivia<'src> {
                 let gap = Span::new(previous, span.start);
                 let pieces = scan_gap(&source[gap.start.offset()..gap.end.offset()]);
 
-                if pieces.is_empty() {
+                if !pieces.is_empty() {
                     gaps.push(Gap { span: gap, follows_token, pieces });
                 }
             }
