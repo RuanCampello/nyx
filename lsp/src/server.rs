@@ -182,6 +182,7 @@ impl LanguageServer for Lsp {
                 definition_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(tokens_capabilities),
                 ..Default::default()
             },
@@ -453,8 +454,25 @@ impl LanguageServer for Lsp {
         Ok(None)
     }
 
-    async fn formatting(&self, _: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        Ok(None)
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(text) = self.state.documents.read().await.text(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let encoding = *self.state.encoding.read().await;
+        let options = fmt::FormatOptions::default().with_indentation(indentation(&params.options));
+
+        let Ok(formatted) = fmt::format(&text, options) else {
+            return Ok(None);
+        };
+
+        match formatted == text {
+            true => Ok(None),
+            false => Ok(Some(vec![TextEdit {
+                range: convert::whole_text(&text, encoding),
+                new_text: formatted,
+            }])),
+        }
     }
 
     async fn range_formatting(
@@ -579,6 +597,14 @@ impl State {
         let guard = RwLockReadGuard::map(state_guard, |state| state.get(url).unwrap());
 
         Some((guard, encoding))
+    }
+}
+
+#[inline]
+fn indentation(options: &FormattingOptions) -> fmt::Indentation {
+    match options.insert_spaces {
+        true => fmt::Indentation::Spaces { width: options.tab_size.clamp(1, 16) as u8 },
+        false => fmt::Indentation::Tabs,
     }
 }
 

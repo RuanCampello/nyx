@@ -63,6 +63,22 @@ pub fn position_to_offset(text: &str, position: Position, encoding: Encoding) ->
     line_start + line.len()
 }
 
+pub fn whole_text(text: &str, encoding: Encoding) -> Range {
+    let last = text.rsplit_once('\n').map_or(text, |(_, tail)| tail);
+    let character = match encoding {
+        Encoding::Utf16 => last.chars().map(char::len_utf16).sum(),
+        Encoding::Utf8 => last.len(),
+    };
+
+    Range {
+        start: Position { line: 0, character: 0 },
+        end: Position {
+            line: text.matches('\n').count() as u32,
+            character: character as u32,
+        },
+    }
+}
+
 pub fn url_for_file(map: &SourceMap, file: FileId) -> Option<Url> {
     Url::from_file_path(map.path(file)).ok()
 }
