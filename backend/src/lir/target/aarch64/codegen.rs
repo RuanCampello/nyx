@@ -16,7 +16,7 @@ use crate::{
         Checked, Function, MachineType, Panic, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
             aarch64::{A64Cond, A64Instr, A64Operand, A64Reg, AArch64},
             resolve_parallel_moves,
         },
@@ -625,6 +625,38 @@ impl Function<AArch64> {
             },
 
             A64Instr::Syscall { id: syscall_id, moves, ret, .. } => {
+                // the argument registers overlap the registers the sources live
+                // in, so a sequential emission would clobber a value another
+                // move still has to read
+                let reg_moves: Vec<_> = moves
+                    .iter()
+                    .filter_map(|(operand, reg, bytes)| {
+                        let vreg = operand.as_vreg()?;
+                        let src = alloc.location(&vreg, bytes);
+                        let src_reg = alloc.reg(&vreg);
+                        let dest = reg.name(*bytes).to_string();
+                        let (dest_reg, bytes, is_float) = (*reg, *bytes, false);
+                        let mov = ParallelMove { src, src_reg, dest, dest_reg, bytes, is_float };
+
+                        Some(mov)
+                    })
+                    .collect();
+
+                resolve_parallel_moves(
+                    reg_moves,
+                    out,
+                    |out, m| emit_move(out, &m.dest, &m.src, m.bytes, false),
+                    |out, m| {
+                        let scratch_name = A64Reg::X16.name(m.bytes).to_string();
+
+                        emit_move(out, &scratch_name, &m.src, m.bytes, false);
+                        m.src = scratch_name;
+                        m.src_reg = Some(A64Reg::X16);
+                    },
+                );
+
+                // immediates and label addresses read no register, so they are
+                // safe once every register-to-register move has been settled
                 for (operand, reg, bytes) in moves {
                     let dest = reg.name(*bytes);
 
@@ -633,12 +665,13 @@ impl Function<AArch64> {
                             emit!(out, "adrp    {dest}, {label}");
                             emit!(out, "add     {dest}, {dest}, :lo12:{label}");
                         },
-                        _ => {
+                        A64Operand::Imm(_) => {
                             let src = self.operand(alloc, operand, bytes);
                             if src != dest {
                                 emit_move(out, dest, &src, *bytes, false);
                             }
                         },
+                        A64Operand::VReg(_) => {},
                     }
                 }
 

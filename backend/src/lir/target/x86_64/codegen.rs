@@ -11,7 +11,7 @@ use crate::{
         self, Checked, Function, MachineType, Panic, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
-            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target,
+            Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
             resolve_parallel_moves,
             x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
         },
@@ -696,16 +696,50 @@ impl Function<X86_64> {
             },
 
             Inst::Syscall { id: syscall_id, moves, ret, .. } => {
+                // look 'aarch64/codegen.rs' comment on A64Instr::Syscall
+                #[rustfmt::skip]
+                let reg_moves: Vec<_> = moves
+                    .iter()
+                    .filter_map(|(operand, reg, bytes)| {
+                        let vreg = operand.as_vreg()?;
+                        let src = alloc.location(&vreg, bytes);
+                        let src_reg = alloc.reg(&vreg);
+                        let dest = format!("%{}", reg.name(*bytes));
+                        let (dest_reg, bytes, is_float) = (*reg, *bytes, false);
+                        let mov = ParallelMove { src, src_reg, dest, dest_reg, bytes, is_float };
+
+                        Some(mov)
+                    })
+                    .collect();
+
+                resolve_parallel_moves(
+                    reg_moves,
+                    out,
+                    |out, m| {
+                        let suffix = suffix(&m.bytes);
+                        mov_or_scratch(out, &m.src, &m.dest, suffix, false);
+                    },
+                    |out, m| {
+                        let suffix = suffix(&m.bytes);
+                        let scratch = scratch_gpr(suffix);
+
+                        emit!(out, "mov{suffix}    {}, {scratch}", m.src);
+                        m.src = scratch.to_string();
+                        m.src_reg = None;
+                    },
+                );
+
                 for (operand, reg, bytes) in moves {
                     let dest = format!("%{}", reg.name(*bytes));
 
                     match operand {
                         X86Operand::RipRel(src) => emit!(out, "leaq   {src}, {dest}"),
-                        _ => {
+                        X86Operand::Imm(_) => {
                             let src = self.operand(alloc, operand, bytes);
                             let suffix = suffix(bytes);
                             mov_or_scratch(out, &src, &dest, suffix, false);
                         },
+                        X86Operand::VReg(_) => {},
                     }
                 }
 
