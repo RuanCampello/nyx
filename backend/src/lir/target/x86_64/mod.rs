@@ -1,5 +1,5 @@
 use crate::{
-    hir::{SyscallCode, Type},
+    hir::{Syscall, Type},
     lir::{
         self, BlockId, Checked, Layouts, MachineType, Panic, VReg,
         target::{
@@ -258,10 +258,14 @@ impl Target for X86_64 {
     }
 
     #[inline(always)]
-    fn syscall_code(code: SyscallCode) -> u64 {
+    fn syscall_code(code: Syscall) -> u64 {
         match code {
-            SyscallCode::Write => 1,
-            SyscallCode::Exit => 60,
+            Syscall::Write => 1,
+            Syscall::Exit => 60,
+            Syscall::Mmap => 9,
+            Syscall::Munmap => 11,
+            Syscall::Mremap => 25,
+            Syscall::Madvise => 28,
         }
     }
 }

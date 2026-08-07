@@ -6,7 +6,7 @@ use crate::lir::{
     },
 };
 use crate::{
-    hir::{SyscallCode, Type},
+    hir::{Syscall, Type},
     parser::expression::BinaryOperator,
 };
 
@@ -317,10 +317,14 @@ impl Target for AArch64 {
     }
 
     #[inline(always)]
-    fn syscall_code(code: SyscallCode) -> u64 {
+    fn syscall_code(code: Syscall) -> u64 {
         match code {
-            SyscallCode::Write => 64,
-            SyscallCode::Exit => 93,
+            Syscall::Write => 64,
+            Syscall::Exit => 93,
+            Syscall::Mmap => 222,
+            Syscall::Munmap => 215,
+            Syscall::Mremap => 216,
+            Syscall::Madvise => 233,
         }
     }
 }

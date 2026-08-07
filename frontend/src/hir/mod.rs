@@ -40,6 +40,7 @@ mod lower;
 pub mod module;
 mod mono;
 mod scope;
+mod statics;
 mod structs;
 mod symbols;
 mod type_resolver;
@@ -54,6 +55,7 @@ pub struct Hir<'hir> {
     pub arrays: IndexVec<ArrayId, ArrayType>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
+    pub statics: IndexVec<StaticId, Static>,
     pub interfaces: Vec<InterfaceSignature>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
     pub docs: HashMap<Span, Box<str>>,
@@ -245,6 +247,23 @@ pub struct Constant<'hir> {
     pub name_span: Span,
 }
 
+/// A module-level global occupying one address for the whole program
+///
+/// Where a [Constant] is spliced into each use, a static is storage, which is
+/// what lets `static mut` carry state between calls
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Static {
+    pub id: StaticId,
+    pub name: SymbolId,
+    pub typ: Type,
+    pub is_mut: bool,
+    pub is_pub: bool,
+    /// the compile-time value the storage is born holding
+    pub init: Literal,
+    pub decl_span: Span,
+    pub name_span: Span,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
     pub receiver: Type,
@@ -364,6 +383,8 @@ pub enum ExpressionKind<'hir> {
     /// The referenced value tree lives in the constant's own [`ExprId`] space,
     /// MIR swaps to its [`TypeckResults`] when lowering through this node
     Const(&'hir Constant<'hir>),
+    /// A read of a module-level global, which loads from its address
+    Static(StaticId),
     /// A function call
     ///
     /// The `callee` is a structural [`ExpressionKind::Path`],
@@ -382,7 +403,7 @@ pub enum ExpressionKind<'hir> {
         args: &'hir [&'hir Expression<'hir>],
     },
     Syscall {
-        code: SyscallCode,
+        code: Syscall,
         args: &'hir [&'hir Expression<'hir>],
     },
     IntrinsicCall {
@@ -451,13 +472,20 @@ pub enum Intrinsic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyscallCode {
+pub enum Syscall {
     Write,
     Exit,
+    Mmap,
+    Munmap,
+    Mremap,
+    Madvise,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StaticId(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub Spur);
@@ -528,12 +556,15 @@ fn lower_inner<'hir>(
     let arrays = scope.arrays.snapshot();
     structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
 
+    let statics = scope.statics_ordered();
+
     Ok(Hir {
         symbols: scope.symbols,
         structs: scope.structs,
         enums: scope.enums,
         arrays,
         functions,
+        statics,
         constants: scope.constants.into_values().cloned().collect(),
         interfaces: scope.interfaces.into_values().collect(),
         docs: scope.docs,
@@ -645,6 +676,12 @@ impl Idx for FunctionId {
     }
 }
 
+impl Idx for StaticId {
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 impl Idx for ExprId {
     fn to_usize(self) -> usize {
         self.0 as usize
@@ -688,6 +725,7 @@ impl<'hir> Hir<'hir> {
             arrays: IndexVec::new(),
             functions: IndexVec::new(),
             constants: Vec::new(),
+            statics: IndexVec::new(),
             interfaces: Vec::new(),
             docs: HashMap::new(),
             imports: Vec::new(),
@@ -786,13 +824,17 @@ impl FromStr for Intrinsic {
     }
 }
 
-impl FromStr for SyscallCode {
+impl FromStr for Syscall {
     type Err = ();
 
     fn from_str(str: &str) -> Result<Self, Self::Err> {
         Ok(match str {
             "SYS_WRITE" => Self::Write,
             "SYS_EXIT" => Self::Exit,
+            "SYS_MMAP" => Self::Mmap,
+            "SYS_MUNMAP" => Self::Munmap,
+            "SYS_MREMAP" => Self::Mremap,
+            "SYS_MADVISE" => Self::Madvise,
 
             _ => return Err(()),
         })
@@ -809,6 +851,55 @@ impl std::fmt::Debug for SymbolId {
 mod tests {
     use super::*;
     use crate::{hir::error::HirErrorKind, parser::Parser};
+
+    #[test]
+    fn statics_are_laid_out_with_their_initialiser() {
+        let arena = bumpalo::Bump::new();
+        let source =
+            "static LIMIT: i32 = 10;\nstatic mut CURSOR: i32 = 0;\nfn main(): i32 { LIMIT }";
+        let statements = Parser::new(source).parse().unwrap();
+        let hir = super::lower(statements, &arena).unwrap();
+
+        assert_eq!(hir.statics.len(), 2);
+
+        let limit = hir.statics[StaticId(0)];
+        assert_eq!(limit.init, Literal::Int(10));
+        assert!(!limit.is_mut);
+
+        let cursor = hir.statics[StaticId(1)];
+        assert_eq!(cursor.init, Literal::Int(0));
+        assert!(cursor.is_mut);
+    }
+
+    #[test]
+    fn mutable_static_needs_an_unsafe_context() {
+        let arena = bumpalo::Bump::new();
+        let source = "static mut CURSOR: i32 = 0;\nfn main(): i32 { CURSOR }";
+        let statements = Parser::new(source).parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+
+        assert_eq!(err.kind, HirErrorKind::UnsafeStatic { name: "nyx::CURSOR" });
+    }
+
+    #[test]
+    fn mutable_static_is_allowed_inside_unsafe() {
+        let arena = bumpalo::Bump::new();
+        let source = "static mut CURSOR: i32 = 0;\n@unsafe\nfn main(): i32 { CURSOR }";
+        let statements = Parser::new(source).parse().unwrap();
+
+        assert!(super::lower(statements, &arena).is_ok());
+    }
+
+    #[test]
+    fn static_initialiser_must_be_known_at_compile_time() {
+        let arena = bumpalo::Bump::new();
+        let source =
+            "const fn seed(): i32 { 7 }\nstatic mut CURSOR: i32 = seed();\nfn main(): i32 { 0 }";
+        let statements = Parser::new(source).parse().unwrap();
+        let err = super::lower(statements, &arena).unwrap_err();
+
+        assert_eq!(err.kind, HirErrorKind::NonConstStaticInit { name: "CURSOR" });
+    }
 
     #[test]
     fn unknown_identifier() {
