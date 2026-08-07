@@ -812,6 +812,36 @@ impl Page with Buffer {
 ```
 "#;
 
+E154 => "mutable static touched outside an unsafe context", r#"
+A `static mut` is shared, unsynchronised storage, so every read and write of one
+has to be marked.
+
+```nyx
+static mut CURSOR: uptr = 0;
+
+fn bump() {
+    CURSOR = CURSOR + 1;  // error: requires an unsafe context
+}
+
+@unsafe
+fn bump_ok() {
+    CURSOR = CURSOR + 1;  // fine
+}
+```
+"#;
+
+E153 => "static initialiser is not a compile-time value", r#"
+A `static` is storage the compiler lays out in the executable, so its initial
+value has to be written there at build time.
+
+```nyx
+fn seed(): uptr { 7 }
+
+static mut CURSOR: uptr = seed();  // error: seed() runs at run time
+static mut LIMIT: uptr = 4096;     // fine
+```
+"#;
+
 E146 => "type does not match its annotation", r#"
 An initialiser or returned value does not match the type declared for it. The
 report points back at the annotation that fixed the expected type.
