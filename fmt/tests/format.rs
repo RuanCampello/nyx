@@ -454,6 +454,73 @@ fn keeps_impl_members_in_the_order_they_were_written() {
 }
 
 #[test]
+fn formats_an_interface_with_requirements_and_a_default() {
+    assert_formats(
+        indoc! {"
+            pub interface Ord {
+                const LIMIT: i32;
+                fn cmp( &self ,other:&Self ):Ordering;
+                fn max(&self,other:&Self):Self{
+                    self
+                }
+            }
+        "},
+        indoc! {"
+            pub interface Ord {
+                const LIMIT: i32;
+                fn cmp(&self, other: &Self): Ordering;
+                fn max(&self, other: &Self): Self {
+                    self
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn formats_superinterfaces_without_duplicating_them() {
+    assert_formats(
+        indoc! {"
+            pub interface Copy: Clone {}
+        "},
+        indoc! {"
+            pub interface Copy: Clone {
+            }
+        "},
+    );
+
+    assert_formats(
+        indoc! {"
+            pub interface Ord: PartialOrd + Eq {}
+        "},
+        indoc! {"
+            pub interface Ord: PartialOrd + Eq {
+            }
+        "},
+    );
+}
+
+#[test]
+fn a_generic_interface_keeps_its_parameters_and_member_docs() {
+    assert_formats(
+        indoc! {"
+            pub interface PartialEq<Rhs> {
+                /// whether the two compare equal
+                @unsafe
+                fn eq(&self, other: &Rhs): bool;
+            }
+        "},
+        indoc! {"
+            pub interface PartialEq<Rhs> {
+                /// whether the two compare equal
+                @unsafe
+                fn eq(&self, other: &Rhs): bool;
+            }
+        "},
+    );
+}
+
+#[test]
 fn preserves_an_expression_bodied_function() {
     assert_formats(
         indoc! {"
