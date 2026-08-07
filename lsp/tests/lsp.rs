@@ -891,6 +891,64 @@ fn main() { let x = helper(); }
     assert!(inside.contains(&"other".to_owned()), "an unimported export too: {inside:?}");
 }
 
+#[tokio::test]
+async fn formatting_replaces_the_whole_document() {
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", "fn  main( ):i32{let x=1;x}").await;
+    client.wait_diagnostics(&url).await;
+
+    let edits = format_document(&mut client, &url, 4, true).await;
+    let [edit] = edits.as_slice() else {
+        panic!("expected one whole-document edit, got {edits:?}");
+    };
+
+    assert_eq!(edit.new_text, "fn main(): i32 {\n    let x = 1;\n    x\n}\n");
+    assert_eq!(edit.range.start, Position::new(0, 0));
+    assert_eq!(edit.range.end, Position::new(0, 26), "the edit must span the original text");
+}
+
+#[tokio::test]
+async fn formatting_honours_the_editor_indentation() {
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", "fn main():i32{let x=1;x}").await;
+    client.wait_diagnostics(&url).await;
+
+    let spaces = format_document(&mut client, &url, 2, true).await;
+    assert!(spaces[0].new_text.contains("\n  let x"), "{:?}", spaces[0].new_text);
+
+    let tabs = format_document(&mut client, &url, 4, false).await;
+    assert!(tabs[0].new_text.contains("\n\tlet x"), "{:?}", tabs[0].new_text);
+}
+
+#[tokio::test]
+async fn formatting_leaves_source_that_does_not_parse_alone() {
+    let mut client = TestClient::start().await;
+    let url = client.open("main.nyx", "fn main( {").await;
+    client.wait_diagnostics(&url).await;
+
+    assert!(
+        format_document(&mut client, &url, 4, true).await.is_empty(),
+        "a half-typed buffer must never be rewritten"
+    );
+}
+
+async fn format_document(
+    client: &mut TestClient,
+    url: &Url,
+    tab_size: u32,
+    insert_spaces: bool,
+) -> Vec<TextEdit> {
+    client
+        .request::<request::Formatting>(DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri: url.clone() },
+            options: FormattingOptions { tab_size, insert_spaces, ..Default::default() },
+            work_done_progress_params: Default::default(),
+        })
+        .await
+        .expect("formatting must not fail")
+        .unwrap_or_default()
+}
+
 fn label(hint: &InlayHint) -> String {
     match &hint.label {
         InlayHintLabel::String(label) => label.clone(),
