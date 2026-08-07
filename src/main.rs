@@ -104,6 +104,29 @@ enum Commands {
         #[arg(long, value_name = "LEVEL", default_value = "debug")]
         opt: optimisation::Level,
     },
+
+    /// Rewrite nyx source files in the canonical layout
+    ///
+    /// Directories are searched recursively for `.nyx` files.
+    Fmt {
+        /// Files or directories to format
+        ///
+        /// - Single file: `nyx fmt file.nyx`
+        /// - Directory:   `nyx fmt ./std/`
+        /// - Omitted:     formats the current directory
+        paths: Vec<PathBuf>,
+
+        /// Report which files are not formatted instead of rewriting them
+        ///
+        /// Exits non-zero when any file would change, which is the form to run
+        /// in continuous integration.
+        #[arg(long)]
+        check: bool,
+
+        /// Read layout options from a TOML file instead of using the defaults
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, ValueEnum)]
@@ -154,6 +177,8 @@ fn main() -> Result<(), NyxError> {
 
             cmd_run(&entry, &name)
         },
+
+        Commands::Fmt { paths, check, config } => cmd_fmt(&paths, check, config.as_deref()),
     };
 
     match result {
@@ -206,6 +231,110 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
 
     let _ = fs::remove_file(&exe);
     result
+}
+
+fn cmd_fmt(paths: &[PathBuf], check: bool, config: Option<&Path>) -> Result<i32, NyxError> {
+    let options = load_format_options(config)?;
+    let mut sources = Vec::new();
+
+    match paths.is_empty() {
+        true => collect_sources(Path::new("."), &mut sources)?,
+        false => {
+            for path in paths {
+                collect_sources(path, &mut sources)?;
+            }
+        },
+    }
+
+    let mut unformatted = 0;
+    let mut refused = 0;
+
+    for path in &sources {
+        let source = fs::read_to_string(path)?;
+
+        match fmt::format(&source, options) {
+            Ok(formatted) if formatted == source => {},
+            Ok(formatted) => {
+                unformatted += 1;
+
+                match check {
+                    true => println!("would reformat {}", path.display()),
+                    false => fs::write(path, formatted)?,
+                }
+            },
+            Err(error) => {
+                refused += 1;
+                eprintln!("{}: {error}", locate(&source, path, error.offset()));
+            },
+        }
+    }
+
+    report_formatting(sources.len(), unformatted, refused, check);
+
+    match refused > 0 || (check && unformatted > 0) {
+        true => Ok(1),
+        false => Ok(0),
+    }
+}
+
+fn report_formatting(total: usize, unformatted: usize, refused: usize, check: bool) {
+    let verb = match check {
+        true => "would reformat",
+        false => "reformatted",
+    };
+
+    println!("{total} files checked, {verb} {unformatted}, refused {refused}");
+}
+
+fn load_format_options(config: Option<&Path>) -> Result<fmt::FormatOptions, NyxError> {
+    use std::io::{Error, ErrorKind};
+
+    let Some(path) = config else {
+        return Ok(fmt::FormatOptions::default());
+    };
+
+    fs::read_to_string(path)?.parse().map_err(|error| {
+        NyxError::Io(Error::new(ErrorKind::InvalidData, format!("{}: {error}", path.display())))
+    })
+}
+
+/// `path:line:column` for a byte `offset`, or the bare path when there is none
+fn locate(source: &str, path: &Path, offset: Option<usize>) -> String {
+    let Some(offset) = offset else {
+        return path.display().to_string();
+    };
+
+    let consumed = &source[..offset.min(source.len())];
+    let line = consumed.lines().count().max(1);
+    let column = consumed
+        .rsplit_once('\n')
+        .map_or(consumed.len(), |(_, last)| last.chars().count());
+
+    format!("{}:{line}:{}", path.display(), column + 1)
+}
+
+fn collect_sources(path: &Path, found: &mut Vec<PathBuf>) -> Result<(), NyxError> {
+    if path.is_file() {
+        found.push(path.to_path_buf());
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(path)? {
+        let entry = entry?.path();
+        let name = entry.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+
+        match entry.is_dir() {
+            // build outputs and dot directories hold no source worth rewriting
+            true if name.starts_with('.') || name == "target" => {},
+            true => collect_sources(&entry, found)?,
+            false if entry.extension().is_some_and(|extension| extension == "nyx") => {
+                found.push(entry);
+            },
+            false => {},
+        }
+    }
+
+    Ok(())
 }
 
 /// Emits whichever outputs [kinds](self::Emit) requests.

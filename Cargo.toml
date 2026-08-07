@@ -15,6 +15,7 @@ resolver = "2"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 backend = { path = "./backend" }
+fmt = { path = "./fmt" }
 
 [dev-dependencies]
 criterion = "0.5"

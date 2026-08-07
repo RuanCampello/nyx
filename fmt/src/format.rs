@@ -121,7 +121,25 @@ impl std::str::FromStr for FormatOptions {
     }
 }
 
+impl FormatError {
+    /// byte offset the failure is anchored to, for callers that report a location
+    #[inline]
+    pub const fn offset(&self) -> Option<usize> {
+        match self {
+            Self::Parse { span } | Self::Unsupported { span } => Some(span.start.offset()),
+            Self::CommentDropped { .. } => None,
+        }
+    }
+}
+
 impl FormatOptions {
+    #[inline]
+    #[must_use]
+    pub const fn with_indentation(mut self, indentation: Indentation) -> Self {
+        self.layout.indentation = indentation;
+        self
+    }
+
     #[inline]
     pub const fn line_width(&self) -> usize {
         self.layout.line_width
@@ -145,6 +163,20 @@ impl FormatOptions {
     #[inline]
     pub const fn struct_align(&self) -> Option<NonZero<u8>> {
         self.field.struct_align
+    }
+}
+
+impl std::fmt::Display for FormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { .. } => f.write_str("does not parse"),
+            Self::Unsupported { .. } => f.write_str("syntax the formatter does not handle yet"),
+            Self::CommentDropped { printed, scanned } => write!(
+                f,
+                "refused to place {} of {scanned} comments, so the file was left alone",
+                scanned - printed
+            ),
+        }
     }
 }
 
