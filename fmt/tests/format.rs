@@ -362,6 +362,195 @@ fn keeps_doc_comments_on_items_and_fields() {
 }
 
 #[test]
+fn formats_both_import_forms_and_keeps_them_in_one_block() {
+    assert_formats(
+        indoc! {"
+            use   std::io;
+            use std::cmp::{PartialEq,Ordering};
+
+            fn main(){}
+        "},
+        indoc! {"
+            use std::io;
+            use std::cmp::{PartialEq, Ordering};
+
+            fn main() {
+            }
+        "},
+    );
+}
+
+#[test]
+fn formats_every_loop_header() {
+    assert_formats(
+        indoc! {"
+            fn main(){
+                loop{break;}
+                loop 0..5{continue;}
+                loop i in 0..=10{break;}
+                loop value in items{break;}
+            }
+        "},
+        indoc! {"
+            fn main() {
+                loop {
+                    break;
+                }
+                loop 0..5 {
+                    continue;
+                }
+                loop i in 0..=10 {
+                    break;
+                }
+                loop value in items {
+                    break;
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn formats_an_impl_block_with_an_interface_and_a_receiver() {
+    assert_formats(
+        indoc! {"
+            impl Counter with Clone{
+                const LIMIT:i32=10;
+                pub fn tick(&mut self,by:i32):i32{self.value+by}
+            }
+        "},
+        indoc! {"
+            impl Counter with Clone {
+                const LIMIT: i32 = 10;
+                pub fn tick(&mut self, by: i32): i32 {
+                    self.value + by
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn keeps_impl_members_in_the_order_they_were_written() {
+    let source = indoc! {"
+        impl Counter {
+            pub fn first(&self): i32 {
+                1
+            }
+            const MIDDLE: i32 = 2;
+            pub fn last(&self): i32 {
+                3
+            }
+        }
+    "};
+
+    let formatted = format(source, FormatOptions::default()).unwrap();
+    let order: Vec<_> = ["first", "MIDDLE", "last"]
+        .iter()
+        .map(|name| formatted.find(name).expect("member is printed"))
+        .collect();
+
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "members were reordered: {formatted}");
+}
+
+#[test]
+fn preserves_an_expression_bodied_function() {
+    assert_formats(
+        indoc! {"
+            fn double(x:i32):i32=x*2;
+        "},
+        indoc! {"
+            fn double(x: i32): i32 = x * 2;
+        "},
+    );
+}
+
+#[test]
+fn preserves_generics_markers_and_a_where_clause() {
+    assert_formats(
+        indoc! {"
+            @intrinsic
+            pub inline const fn each<T: Clone>(items:T)  where  T: Default {
+            }
+        "},
+        indoc! {"
+            @intrinsic
+            pub inline const fn each<T: Clone>(items: T) where T: Default {
+            }
+        "},
+    );
+}
+
+#[test]
+fn a_where_clause_is_never_moved_into_the_angle_brackets() {
+    let source = "impl Result<S, F> {\n    pub fn get(self): S where S: Default {\n        1\n    }\n}\n";
+    let formatted = format(source, FormatOptions::default()).unwrap();
+
+    assert!(formatted.contains("where S: Default"), "{formatted}");
+    assert!(!formatted.contains("get<"), "the bound was redeclared on the method: {formatted}");
+}
+
+#[test]
+fn preserves_the_spelling_of_an_array_repeat_count() {
+    assert_formats(
+        indoc! {"
+            fn main(){let grid=[0;1_000];let nested=[[1;2];3];}
+        "},
+        indoc! {"
+            fn main() {
+                let grid = [0; 1_000];
+                let nested = [[1; 2]; 3];
+            }
+        "},
+    );
+}
+
+#[test]
+fn parenthesises_a_dereference_a_cast_would_otherwise_absorb() {
+    assert_formats(
+        indoc! {"
+            fn main(){let n=(*self) as u32;}
+        "},
+        indoc! {"
+            fn main() {
+                let n = (*self) as u32;
+            }
+        "},
+    );
+}
+
+#[test]
+fn keeps_the_semicolon_after_an_expression_else() {
+    assert_formats(
+        indoc! {"
+            fn main(){if a{b=1;}else b=2;}
+        "},
+        indoc! {"
+            fn main() {
+                if a {
+                    b = 1;
+                } else b = 2;
+            }
+        "},
+    );
+}
+
+#[test]
+fn a_comment_above_a_modified_item_is_kept() {
+    assert_formats(
+        indoc! {"
+            // why this is public
+            pub fn visible(){}
+        "},
+        indoc! {"
+            // why this is public
+            pub fn visible() {
+            }
+        "},
+    );
+}
+
+#[test]
 fn a_blank_line_never_carries_trailing_whitespace() {
     let formatted = format("fn a():i32{1}\nfn b():i32{2}\n", FormatOptions::default()).unwrap();
 
