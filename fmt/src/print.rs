@@ -6,10 +6,12 @@
 use crate::doc::Doc;
 use crate::format::{FormatError, FormatOptions};
 use crate::trivia::{Piece, Trivia, opens_with_blank_line};
-use frontend::lexer::token::{BytePos, Span};
-use frontend::parser::expression::{BinaryOperator, Expression, StructField, UnaryOperator};
+use frontend::lexer::Spanned;
+use frontend::lexer::token::{BytePos, Punct, Span};
+use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
-    Block, Const, Else, Function, If, Item, ItemKind, Let, Return, Statement, Struct,
+    Block, Const, Else, Function, If, Impl, Item, ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER,
+    Receiver, Return, Statement, Struct, Type, UseDecl, UseItems,
 };
 
 /// Walks the AST once, emitting a [Doc] and tracking the comments it consumed
@@ -29,18 +31,11 @@ enum Region {
     Block,
 }
 
-/// Whether the grammar accepts a comma after the final item of a list
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrailingComma {
-    Allowed,
-    Rejected,
-}
-
-#[repr(u8)]
-enum Precendence {
-    Cast = 12,
-    Unary = 13,
-    Postfix = 14,
+/// A member of an `impl` block
+#[derive(Debug, Clone, Copy)]
+enum Member<'a, 'src> {
+    Method(&'a Function<'src>),
+    Constant(&'a Const<'src>),
 }
 
 impl<'src> Printer<'src> {
@@ -76,12 +71,16 @@ impl<'src> Printer<'src> {
 
         for (index, statement) in statements.iter().enumerate() {
             let span = statement_span(statement);
-            let leading = self.trivia.leading(span.start);
+            let start = self.declaration_start(span);
+            let leading = self.trivia.leading(start);
 
             if index > 0 {
                 parts.push(Doc::hard_line());
                 let blank = match region {
-                    Region::Module => true,
+                    Region::Module => match both_imports(&statements[index - 1], statement) {
+                        true => opens_with_blank_line(leading),
+                        false => true,
+                    },
                     Region::Block => opens_with_blank_line(leading),
                 };
 
@@ -90,7 +89,7 @@ impl<'src> Printer<'src> {
                 }
             }
 
-            for comment in self.comments_before(span.start) {
+            for comment in self.comments_before(start) {
                 parts.push(Doc::text(comment));
                 parts.push(Doc::hard_line());
             }
@@ -100,6 +99,26 @@ impl<'src> Printer<'src> {
         }
 
         Ok(Doc::concat(parts))
+    }
+
+    /// where a declaration really begins, ahead of the markers and modifiers
+    fn declaration_start(&self, span: Span) -> BytePos {
+        let mut start = span.start.offset();
+
+        loop {
+            let before = self.source[..start].trim_end();
+            let word = match before.rfind(char::is_whitespace) {
+                Some(at) => &before[at + 1..],
+                None => before,
+            };
+
+            match word {
+                "pub" | "inline" | "const" | "@unsafe" | "@intrinsic" => {
+                    start = before.len() - word.len();
+                },
+                _ => return BytePos(start as u32),
+            }
+        }
     }
 
     fn comments_before(&mut self, at: BytePos) -> Vec<&'src str> {
@@ -144,6 +163,7 @@ impl<'src> Printer<'src> {
             Statement::Let(binding) => self.binding(binding),
             Statement::Return(returned) => self.returned(returned),
             Statement::If(conditional) => self.conditional(conditional),
+            Statement::Loop(repeated) => self.repetition(repeated),
             Statement::Block(block) => self.block(block),
             Statement::Break(_) => Ok(Doc::text("break;")),
             Statement::Continue(_) => Ok(Doc::text("continue;")),
@@ -173,6 +193,8 @@ impl<'src> Printer<'src> {
             ItemKind::Fn(function) => parts.push(self.function(function)?),
             ItemKind::Struct(declaration) => parts.push(self.structure(declaration)?),
             ItemKind::Const(constant) => parts.push(self.constant(constant)?),
+            ItemKind::Impl(block) => parts.push(self.implementation(block)?),
+            ItemKind::Use(declaration) => parts.push(import(declaration)),
             other => return Err(FormatError::Unsupported { span: item_span(other) }),
         }
 
@@ -182,20 +204,24 @@ impl<'src> Printer<'src> {
     fn function(&mut self, function: &Function<'src>) -> Result<Doc<'src>, FormatError> {
         let mut parts = Vec::new();
 
-        if function.is_pub {
-            parts.push(Doc::text("pub "));
+        for marker in &function.markers {
+            parts.push(Doc::text(Punct::At.as_str()));
+            parts.push(Doc::text(marker.as_str()));
+            parts.push(Doc::hard_line());
         }
-        if function.is_const {
-            parts.push(Doc::text("const "));
-        }
-        if function.inline {
-            parts.push(Doc::text("inline "));
+
+        for (present, keyword) in function.modifiers().into_iter().zip(MODIFIER_ORDER) {
+            if present {
+                parts.push(Doc::text(keyword.as_str()));
+                parts.push(Doc::text(" "));
+            }
         }
 
         parts.push(Doc::text("fn "));
         parts.push(Doc::text(function.name));
+        parts.push(Doc::text(self.generics_at(function.name_span.end)));
 
-        let parameters = function
+        let mut parameters: Vec<_> = function
             .params
             .iter()
             .map(|parameter| {
@@ -213,17 +239,76 @@ impl<'src> Printer<'src> {
             })
             .collect();
 
-        parts.push(self.delimited("(", parameters, ")", TrailingComma::Rejected));
-
-        if let Some(ref returned) = function.return_type {
-            parts.push(Doc::text(": "));
-            parts.push(Doc::text(self.slice(returned.span())));
+        if let Some(receiver) = function.receiver {
+            parameters.insert(0, Doc::text(receiver_name(receiver)));
         }
 
-        parts.push(Doc::text(" "));
-        parts.push(self.block(&function.body)?);
+        parts.push(self.delimited("(", parameters, ")"));
+
+        let signature_end = match function.return_type {
+            Some(ref returned) => {
+                parts.push(Doc::text(": "));
+                parts.push(Doc::text(self.slice(returned.span())));
+                returned.span().end
+            },
+            None => match function.params.last() {
+                Some(parameter) => parameter.span.end,
+                None => function.name_span.end,
+            },
+        };
+
+        parts.push(self.where_clause(signature_end, function.body.span.start));
+        parts.push(self.body(&function.body)?);
 
         Ok(Doc::concat(parts))
+    }
+
+    fn body(&mut self, block: &Block<'src>) -> Result<Doc<'src>, FormatError> {
+        if !self.slice(block.span).starts_with('=') {
+            return Ok(Doc::concat([Doc::text(" "), self.block(block)?]));
+        }
+
+        let [statement] = block.statements.as_slice() else {
+            return Err(FormatError::Unsupported { span: block.span });
+        };
+
+        let printed = self.statement(statement)?;
+        let terminated = matches!(
+            statement,
+            Statement::Expr(expr, _) if self.is_terminated(expr.span().end)
+        );
+
+        match terminated {
+            true => Ok(Doc::concat([Doc::text(" = "), printed])),
+            false => Ok(Doc::concat([Doc::text(" = "), printed, Doc::text(";")])),
+        }
+    }
+
+    /// The `<...>` or `::<...>` list written at `after`
+    fn generics_at(&self, after: BytePos) -> &'src str {
+        let rest = &self.source[after.offset()..];
+        let mut depth = 0usize;
+
+        for (offset, character) in rest.char_indices() {
+            match character {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                '(' | '{' | ';' | '=' if depth == 0 => return rest[..offset].trim(),
+                _ => {},
+            }
+        }
+
+        ""
+    }
+
+    /// The `where ...` clause between the end of a signature and its body
+    fn where_clause(&self, from: BytePos, to: BytePos) -> Doc<'src> {
+        let between = &self.source[from.offset()..to.offset()];
+
+        match between.find("where") {
+            Some(at) => Doc::text(format!(" {}", normalise_spaces(&between[at..]))),
+            None => Doc::Empty,
+        }
     }
 
     fn structure(&mut self, declaration: &Struct<'src>) -> Result<Doc<'src>, FormatError> {
@@ -235,6 +320,7 @@ impl<'src> Printer<'src> {
 
         parts.push(Doc::text("struct "));
         parts.push(Doc::text(declaration.name));
+        parts.push(Doc::text(self.generics_at(declaration.name_span.end)));
         parts.push(Doc::text(" {"));
 
         let mut fields = Vec::new();
@@ -275,6 +361,120 @@ impl<'src> Printer<'src> {
         parts.push(Doc::text(" = "));
         parts.push(self.expression(&constant.value)?);
         parts.push(Doc::text(";"));
+
+        Ok(Doc::concat(parts))
+    }
+
+    fn implementation(&mut self, block: &Impl<'src>) -> Result<Doc<'src>, FormatError> {
+        let mut parts = vec![Doc::text("impl "), Doc::text(self.slice(block.receiver.span()))];
+
+        if let Some(ref interface) = block.interface_type {
+            parts.push(Doc::text(" with "));
+            parts.push(Doc::text(self.slice(interface.span())));
+        }
+
+        parts.push(Doc::text(" {"));
+
+        let mut members: Vec<_> = block
+            .methods
+            .iter()
+            .map(Member::Method)
+            .chain(block.constants.iter().map(Member::Constant))
+            .collect();
+
+        members.sort_by_key(|member| member.span().start);
+
+        match members.is_empty() {
+            true => {
+                let dangling = self.dangling(block.span);
+                parts.push(Doc::indent(self.indent_width(), dangling));
+            },
+            false => {
+                let body = self.members(&members, &block.member_docs)?;
+                parts.push(Doc::indent(
+                    self.indent_width(),
+                    Doc::concat([body, self.dangling(block.span)]),
+                ));
+            },
+        }
+
+        parts.push(Doc::hard_line());
+        parts.push(Doc::text("}"));
+
+        Ok(Doc::concat(parts))
+    }
+
+    fn members(
+        &mut self,
+        members: &[Member<'_, 'src>],
+        docs: &[(Span, Box<[&'src str]>)],
+    ) -> Result<Doc<'src>, FormatError> {
+        let mut parts = Vec::with_capacity(members.len() * 3);
+
+        for (index, member) in members.iter().enumerate() {
+            let span = member.span();
+            let start = self.declaration_start(span);
+            let leading = self.trivia.leading(start);
+
+            parts.push(Doc::hard_line());
+            if index > 0 && opens_with_blank_line(leading) {
+                parts.push(Doc::hard_line());
+            }
+
+            for comment in self.comments_before(start) {
+                parts.push(Doc::text(comment));
+                parts.push(Doc::hard_line());
+            }
+
+            for line in docs_for(docs, span) {
+                parts.push(Doc::text("///"));
+                parts.push(Doc::text(*line));
+                parts.push(Doc::hard_line());
+            }
+
+            parts.push(match member {
+                Member::Method(method) => self.function(method)?,
+                Member::Constant(constant) => self.constant(constant)?,
+            });
+
+            self.push_trailing_comment(&mut parts, span);
+        }
+
+        Ok(Doc::concat(parts))
+    }
+
+    fn repetition(&mut self, repeated: &Loop<'src>) -> Result<Doc<'src>, FormatError> {
+        let mut parts = vec![Doc::text("loop")];
+
+        match repeated.header {
+            LoopHeader::Infinite => {},
+            LoopHeader::Range { ref binding, ref start, ref end, inclusive } => {
+                if let Some(binding) = binding {
+                    parts.push(Doc::text(" "));
+                    parts.push(Doc::text(binding.name));
+                    parts.push(Doc::text(" in"));
+                }
+
+                let separator = match inclusive {
+                    true => "..=",
+                    false => "..",
+                };
+
+                parts.push(Doc::text(" "));
+                parts.push(self.expression(start)?);
+                parts.push(Doc::text(separator));
+                parts.push(self.expression(end)?);
+            },
+            LoopHeader::Iterable { ref binding, ref iterable } => {
+                parts.push(Doc::text(" "));
+                parts.push(Doc::text(binding.name));
+                parts.push(Doc::text(" in "));
+                parts.push(self.expression(iterable)?);
+            },
+        }
+
+        parts.push(Doc::text(" "));
+        parts.push(self.block(&repeated.body)?);
 
         Ok(Doc::concat(parts))
     }
@@ -326,7 +526,11 @@ impl<'src> Printer<'src> {
             match branch {
                 Else::If(nested) => parts.push(self.conditional(nested)?),
                 Else::Block(block) => parts.push(self.block(block)?),
-                Else::Expr(expr) => parts.push(self.expression(expr)?),
+                // the grammar closes an expression-bodied `else` with a semicolon
+                Else::Expr(expr) => {
+                    parts.push(self.expression(expr)?);
+                    parts.push(Doc::text(";"));
+                },
             }
         }
 
@@ -365,16 +569,22 @@ impl<'src> Printer<'src> {
             | Expression::Bool(_, span) => Ok(Doc::text(self.slice(*span))),
             Expression::Identifier(name, _) => Ok(Doc::text(*name)),
             Expression::Unary { operator, expr: operand, .. } => Ok(Doc::concat([
-                Doc::text(unary_operator(*operator)),
-                self.operand(operand, Precendence::Unary as _)?,
+                Doc::text(operator.as_str()),
+                Doc::text(match operator.needs_separator() {
+                    true => " ",
+                    false => "",
+                }),
+                // the operand keeps its parentheses unless it binds at least as
+                // tightly as the cast a prefix operator would otherwise absorb
+                self.operand(operand, Precedence::Suffix.level())?,
             ])),
             Expression::Binary { left, operator, right, .. } => {
-                let level = binary_precedence(*operator);
+                let level = operator.precedence().level();
 
                 Ok(Doc::group(Doc::concat([
                     self.operand(left, level)?,
                     Doc::text(" "),
-                    Doc::text(binary_operator(*operator)),
+                    Doc::text(operator.as_str()),
                     Doc::soft_line(),
                     self.operand(right, level + 1)?,
                 ])))
@@ -385,47 +595,56 @@ impl<'src> Printer<'src> {
                 self.expression(value)?,
             ])),
             Expression::Field { expr: base, field, .. } => Ok(Doc::concat([
-                self.operand(base, Precendence::Postfix as _)?,
+                self.operand(base, Precedence::Field.level())?,
                 Doc::text("."),
                 Doc::text(*field),
             ])),
             Expression::Index { base, index, .. } => Ok(Doc::concat([
-                self.operand(base, Precendence::Postfix as _)?,
+                self.operand(base, Precedence::Field.level())?,
                 Doc::text("["),
                 self.expression(index)?,
                 Doc::text("]"),
             ])),
             Expression::Cast { expr: value, target_type, .. } => Ok(Doc::concat([
-                self.operand(value, Precendence::Cast as _)?,
+                self.operand(value, Precedence::Suffix.level())?,
                 Doc::text(" as "),
                 Doc::text(self.slice(target_type.span())),
             ])),
-            Expression::Call { callee, args, .. } => {
-                let callee = self.operand(callee, Precendence::Postfix as _)?;
+            Expression::Call { callee, args, type_args, .. } => {
+                let turbofish = self.turbofish(type_args);
+                let callee = self.operand(callee, Precedence::Field.level())?;
                 let arguments = self.expressions(args)?;
 
-                Ok(Doc::concat([
-                    callee,
-                    self.delimited("(", arguments, ")", TrailingComma::Rejected),
-                ]))
+                Ok(Doc::concat([callee, turbofish, self.delimited("(", arguments, ")")]))
             },
             Expression::QualifiedName { path, name, .. } => {
                 Ok(Doc::text(self.qualified(path, name)))
             },
-            Expression::QualifiedCall { path, name, args, .. } => {
+            Expression::QualifiedCall { path, name, args, type_args, .. } => {
+                let turbofish = self.turbofish(type_args);
                 let arguments = self.expressions(args)?;
 
                 Ok(Doc::concat([
                     Doc::text(self.qualified(path, name)),
-                    self.delimited("(", arguments, ")", TrailingComma::Rejected),
+                    turbofish,
+                    self.delimited("(", arguments, ")"),
                 ]))
             },
             Expression::Array { elements, .. } => {
                 let items = self.expressions(elements)?;
 
-                Ok(self.delimited("[", items, "]", TrailingComma::Allowed))
+                Ok(self.delimited("[", items, "]"))
             },
-            Expression::Struct { name, fields, .. } => self.struct_literal(name, fields),
+            Expression::ArrayRepeat { value, span, .. } => Ok(Doc::concat([
+                Doc::text("["),
+                self.expression(value)?,
+                Doc::text("; "),
+                Doc::text(self.repeat_count(*span)),
+                Doc::text("]"),
+            ])),
+            Expression::Struct { name, fields, type_args, .. } => {
+                self.struct_literal(name, fields, type_args)
+            },
 
             other => Err(FormatError::Unsupported { span: other.span() }),
         }
@@ -435,9 +654,12 @@ impl<'src> Printer<'src> {
         &mut self,
         name: &'src str,
         fields: &[StructField<'src>],
+        type_args: &[Spanned<Type<'src>>],
     ) -> Result<Doc<'src>, FormatError> {
+        let turbofish = self.turbofish(type_args);
+
         match fields.is_empty() {
-            true => Ok(Doc::concat([Doc::text(name), Doc::text(" {}")])),
+            true => Ok(Doc::concat([Doc::text(name), turbofish, Doc::text(" {}")])),
             false => {
                 let mut printed = Vec::with_capacity(fields.len());
 
@@ -454,6 +676,7 @@ impl<'src> Printer<'src> {
 
                 Ok(Doc::group(Doc::concat([
                     Doc::text(name),
+                    turbofish,
                     Doc::text(" {"),
                     Doc::indent(
                         self.indent_width(),
@@ -499,28 +722,43 @@ impl<'src> Printer<'src> {
     }
 
     /// a comma-separated list that breaks as one unit, with a trailing comma only in the broken form
-    fn delimited(
-        &self,
-        open: &'src str,
-        items: Vec<Doc<'src>>,
-        close: &'src str,
-        trailing: TrailingComma,
-    ) -> Doc<'src> {
-        let comma = match trailing {
-            TrailingComma::Allowed => Doc::if_break(Doc::text(","), Doc::Empty),
-            TrailingComma::Rejected => Doc::Empty,
-        };
-
+    fn delimited(&self, open: &'src str, items: Vec<Doc<'src>>, close: &'src str) -> Doc<'src> {
         match items.is_empty() {
             true => Doc::concat([Doc::text(open), Doc::text(close)]),
             false => Doc::group(Doc::concat([
                 Doc::text(open),
                 Doc::indent(self.indent_width(), Doc::concat([Doc::break_line(), join(items)])),
-                comma,
+                Doc::if_break(Doc::text(","), Doc::Empty),
                 Doc::break_line(),
                 Doc::text(close),
             ])),
         }
+    }
+
+    /// The `::<...>` arguments naming which instantiation is called
+    fn turbofish(&self, arguments: &[Spanned<Type<'src>>]) -> Doc<'src> {
+        if arguments.is_empty() {
+            return Doc::Empty;
+        }
+
+        let mut written = String::from("::<");
+
+        for (index, argument) in arguments.iter().enumerate() {
+            if index > 0 {
+                written.push_str(", ");
+            }
+            written.push_str(self.slice(argument.span()));
+        }
+
+        written.push('>');
+        Doc::text(written)
+    }
+
+    /// the repeat count of `[value; count]` as written
+    fn repeat_count(&self, span: Span) -> &'src str {
+        self.slice(span)
+            .rsplit_once(';')
+            .map_or("", |(_, tail)| tail.trim().trim_end_matches(']').trim())
     }
 
     fn qualified(&self, path: &[&'src str], name: &'src str) -> String {
@@ -551,6 +789,66 @@ impl<'src> Printer<'src> {
     }
 }
 
+impl Member<'_, '_> {
+    #[inline]
+    const fn span(&self) -> Span {
+        match self {
+            Self::Method(method) => method.span,
+            Self::Constant(constant) => constant.span,
+        }
+    }
+}
+
+/// whether two adjacent top-level items are both imports
+fn both_imports(previous: &Statement<'_>, current: &Statement<'_>) -> bool {
+    let is_import = |statement: &Statement<'_>| matches!(statement, Statement::Item(item) if matches!(item.kind, ItemKind::Use(_)));
+
+    is_import(previous) && is_import(current)
+}
+
+fn import<'src>(declaration: &UseDecl<'src>) -> Doc<'src> {
+    let mut written = String::from("use ");
+
+    for (index, segment) in declaration.path.segments.iter().enumerate() {
+        if index > 0 {
+            written.push_str("::");
+        }
+        written.push_str(segment);
+    }
+
+    match declaration.items {
+        UseItems::Namespace => written.push(';'),
+        UseItems::Named(ref names) => {
+            written.push_str("::{");
+
+            for (index, item) in names.iter().enumerate() {
+                if index > 0 {
+                    written.push_str(", ");
+                }
+                written.push_str(item.name);
+            }
+
+            written.push_str("};");
+        },
+    }
+
+    Doc::text(written)
+}
+
+/// collapses every run of whitespace to a single space
+fn normalise_spaces(text: &str) -> String {
+    let mut written = String::with_capacity(text.len());
+
+    for (index, word) in text.split_whitespace().enumerate() {
+        if index > 0 {
+            written.push(' ');
+        }
+        written.push_str(word);
+    }
+
+    written
+}
+
 fn join(items: Vec<Doc<'_>>) -> Doc<'_> {
     let last = items.len().saturating_sub(1);
     let mut parts = Vec::with_capacity(items.len() * 3);
@@ -576,61 +874,21 @@ fn docs_for<'a, 'src>(member_docs: &'a [(Span, Box<[&'src str]>)], span: Span) -
 #[inline(always)]
 const fn precedence(expr: &Expression<'_>) -> u8 {
     match expr {
-        Expression::Assignment { .. } => 1,
-        Expression::Binary { operator, .. } => binary_precedence(*operator),
-        Expression::Cast { .. } => Precendence::Cast as _,
-        Expression::Unary { .. } => Precendence::Unary as _,
+        Expression::Assignment { .. } => Precedence::Assignment.level(),
+        Expression::Binary { operator, .. } => operator.precedence().level(),
+        Expression::Cast { .. } => Precedence::Suffix.level(),
+        Expression::Unary { .. } => Precedence::UNARY_OPERAND.level(),
         _ => u8::MAX,
     }
 }
 
 #[inline(always)]
-const fn binary_precedence(operator: BinaryOperator) -> u8 {
-    match operator {
-        BinaryOperator::Or => 2,
-        BinaryOperator::And => 3,
-        BinaryOperator::Eq | BinaryOperator::Ne => 4,
-        BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq => 5,
-        BinaryOperator::BitOr => 6,
-        BinaryOperator::BitXor => 7,
-        BinaryOperator::BitAnd => 8,
-        BinaryOperator::Shl | BinaryOperator::Shr => 9,
-        BinaryOperator::Add | BinaryOperator::Sub => 10,
-        BinaryOperator::Mul | BinaryOperator::Div => 11,
-    }
-}
-
-#[inline(always)]
-const fn binary_operator<'s>(operator: BinaryOperator) -> &'s str {
-    match operator {
-        BinaryOperator::Add => "+",
-        BinaryOperator::Sub => "-",
-        BinaryOperator::Mul => "*",
-        BinaryOperator::Div => "/",
-        BinaryOperator::Eq => "==",
-        BinaryOperator::Ne => "!=",
-        BinaryOperator::Lt => "<",
-        BinaryOperator::LtEq => "<=",
-        BinaryOperator::Gt => ">",
-        BinaryOperator::GtEq => ">=",
-        BinaryOperator::And => "&&",
-        BinaryOperator::Or => "||",
-        BinaryOperator::BitAnd => "&",
-        BinaryOperator::BitOr => "|",
-        BinaryOperator::BitXor => "^",
-        BinaryOperator::Shl => "<<",
-        BinaryOperator::Shr => ">>",
-    }
-}
-
-#[inline(always)]
-const fn unary_operator<'s>(operator: UnaryOperator) -> &'s str {
-    match operator {
-        UnaryOperator::Neg => "-",
-        UnaryOperator::Not => "!",
-        UnaryOperator::Deref => "*",
-        UnaryOperator::Ref => "&",
-        UnaryOperator::RefMut => "&mut ",
+const fn receiver_name<'s>(receiver: Receiver) -> &'s str {
+    match (receiver.by_ref, receiver.mutable) {
+        (true, true) => "&mut self",
+        (true, false) => "&self",
+        (false, true) => "mut self",
+        (false, false) => "self",
     }
 }
 
