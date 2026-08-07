@@ -465,6 +465,40 @@ mod tests {
         Parser::new(source).recovering().parse_recovering()
     }
 
+    #[test]
+    fn a_trailing_comma_closes_every_comma_separated_list() {
+        let sources = [
+            "fn takes(a: i32, b: i32,) {}",
+            "fn calls() { takes(1, 2,); }",
+            "struct Point { x: i32, y: i32, }",
+            "fn literal() { let p = Point { x: 1, y: 2, }; }",
+            "fn array() { let xs = [1, 2, 3,]; }",
+            "fn method(&self, a: i32,) {}",
+        ];
+
+        for source in sources {
+            assert!(
+                Parser::new(source).parse().is_ok(),
+                "a trailing comma must be accepted everywhere: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_operator_binds_looser_than_a_cast() {
+        let Ok(statements) = Parser::new("fn main() { let n = *x as u32; }").parse() else {
+            panic!("source must parse")
+        };
+
+        // `*x as u32` is `*(x as u32)`, which is what the formatter re-derives
+        // its parentheses from
+        let printed = format!("{statements:?}");
+        let cast_inside_deref = printed.find("Unary").expect("a deref is parsed")
+            < printed.find("Cast").expect("a cast is parsed");
+
+        assert!(cast_inside_deref, "the cast must sit inside the dereference: {printed}");
+    }
+
     fn item_names<'i>(statements: &[Statement<'i>]) -> Vec<&'i str> {
         statements
             .iter()
