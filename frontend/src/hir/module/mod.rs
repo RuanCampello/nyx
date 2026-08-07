@@ -287,11 +287,14 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
         let arrays = scope.arrays.snapshot();
         structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
 
+        let statics = scope.statics_ordered();
+
         Ok(Hir {
             functions,
             structs: scope.structs,
             enums: scope.enums,
             arrays,
+            statics,
             constants: scope.constants.into_values().cloned().collect(),
             interfaces: scope.interfaces.into_values().collect(),
             docs: scope.docs,
@@ -905,7 +908,7 @@ mod tests {
             };
             matches!(
                 &id.kind,
-                hir::ExpressionKind::Syscall { code: hir::SyscallCode::Exit, args }
+                hir::ExpressionKind::Syscall { code: hir::Syscall::Exit, args }
                 if args.len() == 1
             )
         });

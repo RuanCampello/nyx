@@ -1,8 +1,8 @@
 use crate::{
     hir::{
         ArrayId, ArrayType, Constant, Enum, EnumId, EnumRepr, EnumVariant, FunctionId,
-        FunctionKind, Intrinsic, Layout, Method, Owner, Struct, StructField, StructId, SymbolId,
-        SymbolTable, Type, TypeKind,
+        FunctionKind, Intrinsic, Layout, Method, Owner, Static, Struct, StructField, StructId,
+        SymbolId, SymbolTable, Type, TypeKind,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
         index_vec::IndexVec,
@@ -40,6 +40,7 @@ pub struct Scope<'hir> {
     pub interfaces: Interfaces,
     pub interface_impls: InterfaceImpls,
     pub constants: HashMap<SymbolId, &'hir Constant<'hir>>,
+    pub statics: HashMap<SymbolId, Static>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
     pub docs: HashMap<Span, Box<str>>,
     /// `(span, item name)` for every item named in a `use` declaration
@@ -178,6 +179,7 @@ impl<'hir> Scope<'hir> {
             interfaces: HashMap::new(),
             interface_impls: HashSet::new(),
             constants: HashMap::new(),
+            statics: HashMap::new(),
             docs: HashMap::new(),
             imports: Vec::new(),
             type_refs: HashMap::new(),
@@ -192,6 +194,29 @@ impl<'hir> Scope<'hir> {
             index_refs: false,
             diagnostics: Diagnostics::default(),
         }
+    }
+
+    /// statics in [static id] order, which is the order the backend lays them out
+    ///
+    /// [static id]: crate::hir::StaticId
+    pub fn static_by_id(&self, id: crate::hir::StaticId) -> Static {
+        self.statics
+            .values()
+            .find(|item| item.id == id)
+            .copied()
+            .expect("every StaticId is issued by the statics pass")
+    }
+
+    pub fn statics_ordered(&self) -> IndexVec<crate::hir::StaticId, Static> {
+        let mut ordered: Vec<_> = self.statics.values().copied().collect();
+        ordered.sort_unstable_by_key(|item| item.id);
+
+        let mut out = IndexVec::with_capacity(ordered.len());
+        for item in ordered {
+            out.push(item);
+        }
+
+        out
     }
 
     /// Record `error` and yield a poison [`Type`] so analysis can continue, or

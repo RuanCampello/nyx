@@ -473,6 +473,24 @@ pub enum HirErrorKind<'h> {
     },
 
     #[diagnostic(
+        code = "E154",
+        message = "Reading or writing {name!} requires an unsafe context",
+        primary = "this touches a mutable global",
+        note = "Nothing stops two pieces of code reaching a {`static mut`} at once, so the compiler cannot vouch for it",
+        help = "Wrap the access in {`@unsafe { … }`} or mark the enclosing function {`@unsafe`}"
+    )]
+    UnsafeStatic { name: &'h str },
+
+    #[diagnostic(
+        code = "E153",
+        message = "The initialiser of static {name!} is not known at compile time",
+        primary = "this cannot be evaluated before the program runs",
+        note = "A static is storage laid out in the executable, so it must start at a value the compiler can write there",
+        help = "Use a literal, a negated literal, or a {`const`}"
+    )]
+    NonConstStaticInit { name: &'h str },
+
+    #[diagnostic(
         code = "E152",
         message = "Constant {constant_name!} does not match its declaration in {interface_name*}",
         primary = "found type {found~}",

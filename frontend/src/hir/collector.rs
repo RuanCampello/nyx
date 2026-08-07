@@ -15,7 +15,7 @@ use crate::{
             InterfaceSignature, Scope, generic_param_env, intrinsic_method, is_generic_impl,
             resolve_primitive_type,
         },
-        structs,
+        statics, structs,
         symbols::qualified,
     },
     lexer::token::Span,
@@ -68,6 +68,7 @@ impl<'hir> Scope<'hir> {
         self.extend_interfaces(declarations)?;
         self.extend_signatures(declarations)?;
         constants::extend(self, declarations, arena)?;
+        statics::extend(self, declarations, arena)?;
         interfaces::validate(self, declarations)
     }
 

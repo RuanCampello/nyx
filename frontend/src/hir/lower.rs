@@ -2,7 +2,7 @@ use crate::{
     hir::{
         Arm, Block, Constant, EnumId, ExprId, Expression, ExpressionKind, Function, FunctionId,
         Intrinsic, Literal, Local, LocalId, LoopKind, Owner, Parameter, Pattern, PatternKind,
-        RefTarget, Res, Statement, Struct, StructId, SymbolId, SymbolTable, SyscallCode, Type,
+        RefTarget, Res, Statement, Static, Struct, StructId, SymbolId, SymbolTable, Syscall, Type,
         TypeKind, TypeckResults,
         error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
@@ -551,6 +551,12 @@ where
             return Ok(lowered);
         }
 
+        if let Some(item) = self.static_item(name) {
+            self.check_static_safety(&item, span)?;
+
+            return Ok(self.alloc(ExpressionKind::Static(item.id), item.typ, span));
+        }
+
         let symbol = self
             .scope
             .symbols
@@ -669,6 +675,37 @@ where
         let top_level = self.mangler().item(name);
         self.constant_by_symbol_name(&top_level)
             .or_else(|| self.constant_by_symbol_name(name))
+    }
+
+    fn static_item(&self, name: &str) -> Option<Static> {
+        let top_level = self.mangler().item(name);
+
+        self.static_by_symbol_name(&top_level)
+            .or_else(|| self.static_by_symbol_name(name))
+    }
+
+    #[inline]
+    fn static_by_symbol_name(&self, name: &str) -> Option<Static> {
+        let symbol = self.scope.symbols.get_id(name)?;
+
+        self.scope.statics.get(&symbol).copied()
+    }
+
+    /// A `static mut` is unsynchronised shared storage, so every use of one is
+    /// an unsafe operation, exactly like a raw pointer dereference
+    fn check_static_safety(&mut self, item: &Static, span: Span) -> Result<(), HirError<'hir>> {
+        if !item.is_mut {
+            return Ok(());
+        }
+
+        if self.unsafe_depth > 0 {
+            self.unsafe_ops += 1;
+            return Ok(());
+        }
+
+        let name = self.arena.alloc_str(self.scope.symbols.get(item.name));
+
+        self.soft(hir_error!(span, UnsafeStatic { name }))
     }
 
     #[inline]
@@ -1039,6 +1076,25 @@ where
                     },
                     _ => None,
                 };
+
+                if let ExpressionKind::Static(id) = target_lowered.expr.kind {
+                    let item = self.scope.static_by_id(id);
+                    if !item.is_mut {
+                        let name = self.arena.alloc_str(self.scope.symbols.get(item.name));
+                        let decl = crate::hir::collector::source_span(item.decl_span);
+                        return Err(hir_error!(*span, ImmutableBind { name, decl }));
+                    }
+
+                    let value = self.lower_expr(value, Some(target_lowered.typ))?;
+                    self.assert_type(target_lowered.typ, value.typ, *span)?;
+
+                    let typ = target_lowered.typ;
+                    return Ok(self.alloc(
+                        ExpressionKind::Assign { target: target_lowered.expr, value: value.expr },
+                        typ,
+                        *span,
+                    ));
+                }
 
                 match behind_pointer {
                     Some(true) => {},
@@ -2126,7 +2182,7 @@ where
             return Err(hir_error!(code_arg.span(), UndeclaredIdentifier { name }));
         };
 
-        let code = SyscallCode::from_str(name)
+        let code = Syscall::from_str(name)
             .map_err(|_| hir_error!(*code_span, UndeclaredIdentifier { name }))?;
 
         let args = value_args
@@ -2135,7 +2191,7 @@ where
             .collect::<Result<Vec<_>, _>>()?;
 
         let return_type = match code {
-            SyscallCode::Exit => TypeKind::Never.into(),
+            Syscall::Exit => TypeKind::Never.into(),
             _ => return_type,
         };
 

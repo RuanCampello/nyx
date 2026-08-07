@@ -2,7 +2,7 @@ use crate::{
     hir::error::HirError,
     lexer::token::Span,
     parser::statement::{
-        self, Const, Enum, Function, Impl, Interface, ItemKind, Statement, Struct, UseDecl,
+        self, Const, Enum, Function, Impl, Interface, ItemKind, Statement, Static, Struct, UseDecl,
     },
 };
 
@@ -12,6 +12,7 @@ pub(in crate::hir) struct Declarations<'d, 'src> {
     pub structs: Vec<&'d Struct<'src>>,
     pub enums: Vec<&'d Enum<'src>>,
     pub constants: Vec<&'d Const<'src>>,
+    pub statics: Vec<&'d Static<'src>>,
     pub functions: Vec<&'d Function<'src>>,
     pub interfaces: Vec<&'d Interface<'src>>,
     pub impls: Vec<&'d Impl<'src>>,
@@ -49,6 +50,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
             structs: Vec::new(),
             enums: Vec::new(),
             constants: Vec::new(),
+            statics: Vec::new(),
             functions: Vec::new(),
             interfaces: Vec::new(),
             impls: Vec::new(),
@@ -93,6 +95,7 @@ impl<'d, 'src> Declarations<'d, 'src> {
                     declarations.impls.push(i);
                 },
                 ItemKind::Const(c) => declarations.constants.push(c),
+                ItemKind::Static(s) => declarations.statics.push(s),
             }
         }
 
