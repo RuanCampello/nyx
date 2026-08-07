@@ -396,6 +396,9 @@ pub enum Type<'i> {
     Never,
 }
 
+/// The modifiers a declaration may carry, in the one order the grammar accepts
+pub const MODIFIER_ORDER: [Keyword; 3] = [Keyword::Pub, Keyword::Inline, Keyword::Const];
+
 impl<'i> Parsable<'i> for Statement<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let docs = parser.parse_outer_docs();
@@ -835,9 +838,16 @@ impl Function<'_> {
     }
 }
 
+impl Function<'_> {
+    #[inline]
+    pub const fn modifiers(&self) -> [bool; MODIFIER_ORDER.len()] {
+        [self.is_pub, self.inline, self.is_const]
+    }
+}
+
 impl Marker {
     #[inline]
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str<'s>(self) -> &'s str {
         match self {
             Self::Unsafe => "unsafe",
             Self::Intrinsic => "intrinsic",
@@ -856,9 +866,7 @@ impl Marker {
 impl<'i> Parsable<'i> for Function<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let markers = parse_markers(parser)?;
-        let is_pub = parser.consume_token(Keyword::Pub)?;
-        let inline = parser.consume_token(Keyword::Inline)?;
-        let is_const = parser.consume_token(Keyword::Const)?;
+        let [is_pub, inline, is_const] = parse_modifiers(parser)?;
 
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, name_span) = parser.expect_identifier()?;
@@ -1543,6 +1551,18 @@ fn parse_unsafe_block<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, Pars
     Ok(Statement::Unsafe { block, marker: at.span + span })
 }
 
+fn parse_modifiers<'i>(
+    parser: &mut Parser<'i>,
+) -> Result<[bool; MODIFIER_ORDER.len()], ParserError<'i>> {
+    let mut present = [false; MODIFIER_ORDER.len()];
+
+    for (slot, keyword) in present.iter_mut().zip(MODIFIER_ORDER) {
+        *slot = parser.consume_token(keyword)?;
+    }
+
+    Ok(present)
+}
+
 fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError<'i>> {
     let mut markers = Vec::new();
 
@@ -1620,6 +1640,12 @@ fn parse_receiver_and_params<'i>(
             Ok(_) => {
                 if !params.is_empty() || receiver.is_some() {
                     parser.expect_token(Punct::Comma)?;
+
+                    let is_close = matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::CloseParen));
+                    if is_close {
+                        parser.expect_token(Punct::CloseParen)?;
+                        break;
+                    }
                 }
 
                 if params.is_empty() && receiver.is_none() {

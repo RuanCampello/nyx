@@ -94,6 +94,29 @@ pub enum BinaryOperator {
     Shr,
 }
 
+/// How tightly each operator binds, as the Pratt parser climbs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Precedence {
+    /// not an infix operator at all
+    None = 0,
+    Assignment = 1,
+    Or = 2,
+    And = 3,
+    Equality = 4,
+    Comparison = 5,
+    BitOr = 6,
+    BitXor = 7,
+    BitAnd = 8,
+    Shift = 9,
+    Sum = 10,
+    Product = 11,
+    /// a call, an index and an `as`, which all bind equally
+    Suffix = 12,
+    Path = 13,
+    Field = 14,
+}
+
 impl<'i> Parsable<'i> for Expression<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         Self::parse_expr(parser, 0)
@@ -180,7 +203,7 @@ impl<'i> Expression<'i> {
                     },
                 };
 
-                let expr = Self::parse_expr(parser, 11)?;
+                let expr = Self::parse_expr(parser, Precedence::UNARY_OPERAND.level())?;
                 let span = token.span + expr.span();
 
                 Ok(Expression::Unary { operator, expr: Box::new(expr), span })
@@ -261,30 +284,28 @@ impl<'i> Expression<'i> {
         Ok(Expression::Array { elements, span: open + close })
     }
 
+    /// The level `kind` binds at as an infix operator, zero when it is not one
     #[inline(always)]
     const fn infix_precedence(kind: &TokenKind) -> u8 {
-        match kind {
-            TokenKind::Punct(Punct::Eq) => 1, // assignment
-            TokenKind::Punct(Punct::Or) => 2,
-            TokenKind::Punct(Punct::And) => 3,
-            TokenKind::Punct(Punct::EqEq) | TokenKind::Punct(Punct::BangEq) => 4,
-            TokenKind::Punct(Punct::Lt)
-            | TokenKind::Punct(Punct::LtEq)
-            | TokenKind::Punct(Punct::Gt)
-            | TokenKind::Punct(Punct::GtEq) => 5,
-            TokenKind::Punct(Punct::Pipe) => 6,
-            TokenKind::Punct(Punct::Caret) => 7,
-            TokenKind::Punct(Punct::Ampersand) => 8,
-            TokenKind::Punct(Punct::Shl) | TokenKind::Punct(Punct::Shr) => 9,
-            TokenKind::Punct(Punct::Plus) | TokenKind::Punct(Punct::Minus) => 10,
-            TokenKind::Punct(Punct::Star) | TokenKind::Punct(Punct::Slash) => 11,
-            TokenKind::Punct(Punct::OpenParen) => 12, // function call
-            TokenKind::Punct(Punct::OpenBracket) => 12, // indexing
-            TokenKind::Keyword(Keyword::As) => 12,    // casting
-            TokenKind::Punct(Punct::ColonColon) => 13,
-            TokenKind::Punct(Punct::Dot) => 14, // field access
-            _ => 0,
+        let punct = match kind {
+            TokenKind::Punct(punct) => *punct,
+            TokenKind::Keyword(Keyword::As) => return Precedence::Suffix.level(),
+            _ => return Precedence::None.level(),
+        };
+
+        if let Some(operator) = BinaryOperator::from_punct(punct) {
+            return operator.precedence().level();
         }
+
+        let precedence = match punct {
+            Punct::Eq => Precedence::Assignment,
+            Punct::OpenParen | Punct::OpenBracket => Precedence::Suffix,
+            Punct::ColonColon => Precedence::Path,
+            Punct::Dot => Precedence::Field,
+            _ => Precedence::None,
+        };
+
+        precedence.level()
     }
 
     fn parse_call_args_after_paren(
@@ -308,6 +329,11 @@ impl<'i> Expression<'i> {
 
             if !first {
                 parser.expect_token(Punct::Comma)?;
+
+                if matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::CloseParen)) {
+                    end_span = parser.expect_token(Punct::CloseParen)?.span;
+                    break;
+                }
             }
 
             first = false;
@@ -484,29 +510,15 @@ impl<'i> Expression<'i> {
 
             _ => {
                 let operator = match token.kind {
-                    TokenKind::Punct(Punct::Plus) => BinaryOperator::Add,
-                    TokenKind::Punct(Punct::Minus) => BinaryOperator::Sub,
-                    TokenKind::Punct(Punct::Star) => BinaryOperator::Mul,
-                    TokenKind::Punct(Punct::Slash) => BinaryOperator::Div,
-                    TokenKind::Punct(Punct::EqEq) => BinaryOperator::Eq,
-                    TokenKind::Punct(Punct::BangEq) => BinaryOperator::Ne,
-                    TokenKind::Punct(Punct::Lt) => BinaryOperator::Lt,
-                    TokenKind::Punct(Punct::LtEq) => BinaryOperator::LtEq,
-                    TokenKind::Punct(Punct::Gt) => BinaryOperator::Gt,
-                    TokenKind::Punct(Punct::GtEq) => BinaryOperator::GtEq,
-                    TokenKind::Punct(Punct::And) => BinaryOperator::And,
-                    TokenKind::Punct(Punct::Or) => BinaryOperator::Or,
-                    TokenKind::Punct(Punct::Ampersand) => BinaryOperator::BitAnd,
-                    TokenKind::Punct(Punct::Pipe) => BinaryOperator::BitOr,
-                    TokenKind::Punct(Punct::Caret) => BinaryOperator::BitXor,
-                    TokenKind::Punct(Punct::Shl) => BinaryOperator::Shl,
-                    TokenKind::Punct(Punct::Shr) => BinaryOperator::Shr,
-                    _ => {
-                        return Err(ParserError::new(
-                            ParseErrorKind::InvalidBinaryOperator { found: token.kind },
-                            token.span,
-                        ));
-                    },
+                    TokenKind::Punct(punct) => BinaryOperator::from_punct(punct),
+                    _ => None,
+                };
+
+                let Some(operator) = operator else {
+                    return Err(ParserError::new(
+                        ParseErrorKind::InvalidBinaryOperator { found: token.kind },
+                        token.span,
+                    ));
                 };
 
                 let right = Self::parse_expr(parser, precedence)?;
@@ -547,5 +559,105 @@ impl From<&TypeIntrinsicKind> for &str {
             TypeIntrinsicKind::SizeOf => "size_of",
             TypeIntrinsicKind::AlignOf => "align_of",
         }
+    }
+}
+
+impl Precedence {
+    /// the level a prefix operator parses its operand at
+    pub const UNARY_OPERAND: Self = Self::Product;
+
+    #[inline]
+    pub const fn level(self) -> u8 {
+        self as u8
+    }
+}
+
+impl UnaryOperator {
+    #[inline]
+    pub const fn as_str<'s>(self) -> &'s str {
+        match self {
+            Self::Neg => Punct::Minus.as_str(),
+            Self::Not => Punct::Bang.as_str(),
+            Self::Deref => Punct::Star.as_str(),
+            Self::Ref => Punct::Ampersand.as_str(),
+            Self::RefMut => "&mut",
+        }
+    }
+
+    #[inline]
+    pub const fn needs_separator(self) -> bool {
+        matches!(self, Self::RefMut)
+    }
+}
+
+impl BinaryOperator {
+    #[inline]
+    pub const fn punct(self) -> Punct {
+        match self {
+            Self::Add => Punct::Plus,
+            Self::Sub => Punct::Minus,
+            Self::Mul => Punct::Star,
+            Self::Div => Punct::Slash,
+            Self::Eq => Punct::EqEq,
+            Self::Ne => Punct::BangEq,
+            Self::Lt => Punct::Lt,
+            Self::LtEq => Punct::LtEq,
+            Self::Gt => Punct::Gt,
+            Self::GtEq => Punct::GtEq,
+            Self::And => Punct::And,
+            Self::Or => Punct::Or,
+            Self::BitAnd => Punct::Ampersand,
+            Self::BitOr => Punct::Pipe,
+            Self::BitXor => Punct::Caret,
+            Self::Shl => Punct::Shl,
+            Self::Shr => Punct::Shr,
+        }
+    }
+
+    #[inline]
+    pub const fn from_punct(punct: Punct) -> Option<Self> {
+        let operator = match punct {
+            Punct::Plus => Self::Add,
+            Punct::Minus => Self::Sub,
+            Punct::Star => Self::Mul,
+            Punct::Slash => Self::Div,
+            Punct::EqEq => Self::Eq,
+            Punct::BangEq => Self::Ne,
+            Punct::Lt => Self::Lt,
+            Punct::LtEq => Self::LtEq,
+            Punct::Gt => Self::Gt,
+            Punct::GtEq => Self::GtEq,
+            Punct::And => Self::And,
+            Punct::Or => Self::Or,
+            Punct::Ampersand => Self::BitAnd,
+            Punct::Pipe => Self::BitOr,
+            Punct::Caret => Self::BitXor,
+            Punct::Shl => Self::Shl,
+            Punct::Shr => Self::Shr,
+            _ => return None,
+        };
+
+        Some(operator)
+    }
+
+    #[inline]
+    pub const fn precedence(self) -> Precedence {
+        match self {
+            Self::Or => Precedence::Or,
+            Self::And => Precedence::And,
+            Self::Eq | Self::Ne => Precedence::Equality,
+            Self::Lt | Self::LtEq | Self::Gt | Self::GtEq => Precedence::Comparison,
+            Self::BitOr => Precedence::BitOr,
+            Self::BitXor => Precedence::BitXor,
+            Self::BitAnd => Precedence::BitAnd,
+            Self::Shl | Self::Shr => Precedence::Shift,
+            Self::Add | Self::Sub => Precedence::Sum,
+            Self::Mul | Self::Div => Precedence::Product,
+        }
+    }
+
+    #[inline]
+    pub const fn as_str<'s>(self) -> &'s str {
+        self.punct().as_str()
     }
 }
