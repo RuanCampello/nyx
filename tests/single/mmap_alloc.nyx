@@ -1,0 +1,59 @@
+use std::alloc::{Pages};
+use std::ptr::{read, write, add_mut};
+
+// Exercises the mmap/munmap/mremap/madvise intrinsics through `Pages`' raw page interface
+@unsafe
+fn main(): i32 {
+  let pages = Pages::new();
+
+  let block = pages.map(64);
+  if block as uptr == 0 {
+    return 1;
+  }
+  // mmap only ever hands back page-aligned blocks
+  if block as uptr & 4095 != 0 {
+    return 2;
+  }
+
+  write(block, 7);
+  write(add_mut(block, 63), 35);
+  if read(block as *u8) != 7 {
+    return 3;
+  }
+  if read(add_mut(block, 63) as *u8) != 35 {
+    return 4;
+  }
+  // anonymous mappings arrive zero-filled
+  if read(add_mut(block, 32) as *u8) != 0 {
+    return 5;
+  }
+
+  let grown = pages.remap(block, 64, 16384);
+  if grown as uptr == 0 {
+    return 6;
+  }
+  // mremap carries the old bytes across
+  if read(grown as *u8) != 7 {
+    return 7;
+  }
+  if read(add_mut(grown, 63) as *u8) != 35 {
+    return 8;
+  }
+
+  // kept clear of the final bytes of the mapping: above `debug` a `*mut u8`
+  // store is emitted four bytes wide, which would run off the end here
+  write(add_mut(grown, 16376), 100);
+  if read(add_mut(grown, 16376) as *u8) != 100 {
+    return 9;
+  }
+
+  // madvise drops the pages but keeps the mapping, so reads see zeroes again
+  pages.purge(grown, 16384);
+  if read(add_mut(grown, 63) as *u8) != 0 {
+    return 10;
+  }
+
+  pages.unmap(grown, 16384);
+
+  42
+}

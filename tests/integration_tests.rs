@@ -319,6 +319,16 @@ const CASES: &[Case] = &[
         file: "tests/single/expression_bodies.nyx",
         exit_code: Some(42),
     },
+    Case {
+        name: "statics",
+        file: "tests/single/statics.nyx",
+        exit_code: Some(42),
+    },
+    Case {
+        name: "mmap_alloc",
+        file: "tests/single/mmap_alloc.nyx",
+        exit_code: Some(42),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
