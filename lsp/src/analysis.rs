@@ -2,8 +2,8 @@ use frontend::hir::module;
 use frontend::hir::{
     self, ArrayId, ArrayType, Block, Constant, Enum, EnumId, ExpressionKind, Function, FunctionId,
     FunctionKind, Hir, InterfaceConstSignature, InterfaceMethodSignature, InterfaceSignature,
-    Literal, Local, LocalId, Owner, Parameter, Res, Statement, Struct, StructId, SymbolId,
-    SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
+    Literal, Local, LocalId, Owner, Parameter, Res, Statement, Static, StaticId, Struct, StructId,
+    SymbolId, SymbolTable, Type, TypeKind, TypeckResults, index_vec::IndexVec,
 };
 use frontend::{
     diagnostic::AsDiagnostic,
@@ -57,6 +57,7 @@ pub struct Index {
     pub interfaces: Vec<InterfaceSignature>,
     pub functions: Vec<FnInfo>,
     pub constants: Vec<ConstInfo>,
+    pub statics: IndexVec<StaticId, Static>,
     /// rendered `///` documentation, keyed by the span of the name it sits above
     pub docs: HashMap<Span, Box<str>>,
     /// the `use`-path form of each file, for the container line above a hover
@@ -644,6 +645,12 @@ impl<'a, 'h> Walker<'a, 'h> {
             ExpressionKind::Const(constant) => {
                 self.defs.insert(expr.span, constant.name_span);
             },
+            // likewise a leaf: a static's initialiser is folded at its declaration
+            ExpressionKind::Static(id) => {
+                if let Some(item) = self.index.statics.get(*id) {
+                    self.defs.insert(expr.span, item.name_span);
+                }
+            },
             ExpressionKind::Call { callee, args } => {
                 if let Some((position, target)) = resolved {
                     self.defs.insert(callee.span, target.name_span);
@@ -823,8 +830,22 @@ impl<'a> CompletionCollector<'a> {
             self.export(interface.decl_span, candidate);
         }
 
+        // a monomorphised instance carries the concrete arguments of one call
+        // site, so completing against it would read back `add_mut<u8>` where the
+        // source says `add_mut<T>`: the template is what the user wrote
+        let templates: HashSet<String> = hir
+            .functions
+            .iter()
+            .filter(|func| !is_generic_instance(func, hir))
+            .map(|func| base_name(hir.symbols.get(func.name)))
+            .collect();
+
         for func in &hir.functions {
             let qualified = hir.symbols.get(func.name);
+            if is_generic_instance(func, hir) && templates.contains(&base_name(qualified)) {
+                continue;
+            }
+
             let receiver = func.receiver(hir);
             let candidate = Completion {
                 label: base_name(qualified),
@@ -961,6 +982,7 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
         arrays,
         functions,
         constants,
+        statics,
         interfaces,
         docs,
         imports,
@@ -974,6 +996,7 @@ fn walk_hir(hir: Hir<'_>, map: &SourceMap, modules: HashMap<FileId, String>) -> 
         enums,
         arrays,
         interfaces,
+        statics,
         docs,
         modules,
         functions: Vec::new(),
@@ -1847,6 +1870,14 @@ fn format_type(typ: Type, hir: &Index, generics: &[SymbolId]) -> String {
         },
         kind => kind.to_string(),
     }
+}
+
+/// whether a function is one concrete specialisation of a template
+fn is_generic_instance(func: &FnInfo, hir: &Index) -> bool {
+    let qualified = hir.symbols.get(func.name);
+    let tail = qualified.rsplit("::").next().unwrap_or(qualified);
+
+    tail.contains('$') && func.generics.is_empty()
 }
 
 fn function_name(func: &FnInfo, hir: &Index) -> String {
