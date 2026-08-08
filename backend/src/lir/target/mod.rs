@@ -1,5 +1,5 @@
 use crate::{
-    hir::{FunctionId, Intrinsic, SymbolTable, SyscallCode, Type, TypeKind},
+    hir::{FunctionId, Intrinsic, SymbolTable, Syscall, Type, TypeKind},
     lir::{self, BlockId, Layouts, MachineType, Term, TypeExt, VReg, assembly_label, regalloc},
     mir::{self, Const, Function, Operand, ValueId},
 };
@@ -47,7 +47,7 @@ pub trait Target: Sized {
     fn ret(class: RegClass) -> Option<Self::Reg>;
 
     /// map an abstract syscall code to this platform's numeric value
-    fn syscall_code(code: SyscallCode) -> u64;
+    fn syscall_code(code: Syscall) -> u64;
 }
 
 /// Lowers MIR into target-specific LIR.

@@ -17,7 +17,7 @@ use crate::{
     lir::{
         self, BlockId, TypeExt, VReg,
         target::{
-            self, AggregateCopy, Lower, Lowerable, MemOps, Target,
+            self, AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
             aggregate_copy,
         },
@@ -354,6 +354,13 @@ impl<'f> Lower<'f, AArch64> {
 
             InstructionKind::ElementAddr { base, index, bound, stride } => {
                 self.lower_element_addr(id, dest, base, index, bound, *stride)
+            },
+
+            InstructionKind::StaticAddr { id: static_id } => {
+                let label = lir::static_label(*static_id);
+                let load = AArch64::load_label(dest, label, false, 8);
+
+                self.lir.push_instr(id, load);
             },
 
             InstructionKind::AddressOf { src, offset } => {

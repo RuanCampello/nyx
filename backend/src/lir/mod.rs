@@ -9,7 +9,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::{
-    hir::{Type, TypeKind},
+    hir::{Static, Type, TypeKind},
     lir::target::{CondCode, Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
@@ -93,6 +93,19 @@ pub enum MachineType {
     Struct { size: u32, align: u32 },
 }
 
+/// A runtime fault that aborts the program through a shared panic handler
+///
+/// Each variant owns the runtime symbol it jumps to. Code generation calls
+/// [Panic::require] at a fault site to both record that the handler is needed
+/// and obtain its symbol, [Panic::required] then drives handler emission
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panic {
+    AddOverflow,
+    SubOverflow,
+    MulOverflow,
+    IndexOutOfBounds,
+}
+
 thread_local! {
     static PANIC_HANDLERS: std::cell::Cell<u8> = Default::default();
 }
@@ -163,20 +176,44 @@ where
         }
     }
 
+    let layouts = Layouts {
+        structs: &mir.struct_layouts,
+        enums: &mir.enum_layouts,
+        arrays: &mir.array_layouts,
+    };
+    emit_statics(&mir.statics, layouts, &mut out);
+
     out
 }
 
-/// A runtime fault that aborts the program through a shared panic handler
+/// Lay out module-level globals
 ///
-/// Each variant owns the runtime symbol it jumps to. Code generation calls
-/// [Panic::require] at a fault site to both record that the handler is needed
-/// and obtain its symbol, [Panic::required] then drives handler emission
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panic {
-    AddOverflow,
-    SubOverflow,
-    MulOverflow,
-    IndexOutOfBounds,
+/// a zero initialiser costs nothing in the image, so those go to `.bss` and the
+/// loader zeroes them, everything else has to carry its bytes in `.data`
+fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
+    let (zeroed, initialised): (Vec<&Static>, Vec<&Static>) =
+        statics.iter().partition(|item| item.init.is_zero());
+
+    for (section, items) in [(".bss", zeroed), (".data", initialised)] {
+        if items.is_empty() {
+            continue;
+        }
+
+        label!(out, ".section {}", section);
+        for item in items {
+            let (size, align) = match item.typ.machine_type(layouts) {
+                MachineType::Struct { size, align } => (size, align),
+                scalar => (u32::from(scalar.bytes()), u32::from(scalar.bytes())),
+            };
+            label!(out, ".align {align}");
+            label!(out, "{}:", static_label(item.id));
+
+            match section {
+                ".bss" => label!(out, "    .zero {size}"),
+                _ => label!(out, "    {}", item.init.static_directive(size)),
+            }
+        }
+    }
 }
 
 impl Panic {
@@ -438,6 +475,11 @@ fn assembly_label(name: &str) -> String {
     name.replace("::", ".")
 }
 
+/// The assembly symbol a module-level global is laid out under
+pub fn static_label(id: crate::hir::StaticId) -> String {
+    format!(".L_static_{}", id.0)
+}
+
 impl Term {
     pub fn uses_of(&self) -> &[VReg] {
         match self {
@@ -455,8 +497,8 @@ impl std::ops::Index<mir::ValueId> for Vec<VReg> {
     }
 }
 
-impl From<crate::mir::BlockId> for BlockId {
-    fn from(value: crate::mir::BlockId) -> Self {
+impl From<mir::BlockId> for BlockId {
+    fn from(value: mir::BlockId) -> Self {
         Self(value.0)
     }
 }

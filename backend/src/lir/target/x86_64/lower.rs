@@ -14,7 +14,7 @@ use crate::hir::{SymbolTable, TypeKind};
 use crate::lir::{
     self, BlockId, MachineType, TypeExt, VReg,
     target::{
-        self, AggregateCopy, Lower, Lowerable, MemOps, Target, aggregate_copy,
+        self, AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps, aggregate_copy,
         x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
     },
 };
@@ -334,6 +334,13 @@ impl<'f> Lower<'f, X86_64> {
 
             InstructionKind::ElementAddr { base, index, bound, stride } => {
                 self.lower_element_addr(id, dest, base, index, bound, *stride)
+            },
+
+            InstructionKind::StaticAddr { id: static_id } => {
+                let label = lir::static_label(*static_id);
+                let load = X86_64::load_label(dest, label, false, 8);
+
+                self.lir.push_instr(id, load);
             },
 
             InstructionKind::AddressOf { src, offset } => {
