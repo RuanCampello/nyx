@@ -344,6 +344,11 @@ const CASES: &[Case] = &[
         file: "tests/single/heap_alloc.nyx",
         exit_code: Some(42),
     },
+    Case {
+        name: "heap_reclaim",
+        file: "tests/single/heap_reclaim.nyx",
+        exit_code: Some(42),
+    },
 ];
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {

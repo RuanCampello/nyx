@@ -1,0 +1,86 @@
+use std::alloc::{Heap};
+
+// A page whose blocks have all come back must return to its segment, so another
+// size class can take it. Without that the heap is simple segregated storage:
+// memory freed as one class can never serve another, which is the one policy the
+// fragmentation literature singles out as blowing up on real programs
+
+const SLAB_PAGE: uptr = 65536;
+
+@unsafe
+fn main(): i32 {
+  let heap = Heap::new();
+
+  // the largest class puts four blocks in a page, so eight fills two of them
+  let a0 = heap.alloc(16384, 8);
+  let a1 = heap.alloc(16384, 8);
+  let a2 = heap.alloc(16384, 8);
+  let a3 = heap.alloc(16384, 8);
+  if a0 as uptr == 0 || a3 as uptr == 0 {
+    return 1;
+  }
+
+  let b0 = heap.alloc(16384, 8);
+  let b1 = heap.alloc(16384, 8);
+  let b2 = heap.alloc(16384, 8);
+  let b3 = heap.alloc(16384, 8);
+  if b0 as uptr == 0 || b3 as uptr == 0 {
+    return 2;
+  }
+
+  let page_a = a0 as uptr / SLAB_PAGE;
+  let page_b = b0 as uptr / SLAB_PAGE;
+  if page_a == page_b {
+    return 3;
+  }
+
+  // every block of the first page goes back, but the second stays occupied
+  heap.dealloc(a0, 16384, 8);
+  heap.dealloc(a1, 16384, 8);
+  heap.dealloc(a2, 16384, 8);
+  heap.dealloc(a3, 16384, 8);
+
+  // a page still holding live blocks must not be handed to another class
+  let squatter = heap.alloc(8, 8);
+  if squatter as uptr == 0 {
+    return 4;
+  }
+  if squatter as uptr / SLAB_PAGE == page_b {
+    return 5;
+  }
+
+  // the emptied page is fair game though, so it is what the new class gets
+  if squatter as uptr / SLAB_PAGE != page_a {
+    return 6;
+  }
+
+  // the class that gave the page up must not still believe it owns it, or it
+  // will hand out blocks at its own stride from a page somebody else is filling
+  let regrown = heap.alloc(16384, 8);
+  if regrown as uptr == 0 {
+    return 7;
+  }
+  if regrown as uptr / SLAB_PAGE == squatter as uptr / SLAB_PAGE {
+    return 8;
+  }
+
+  // the second page's blocks survived another class moving in next door
+  if b0 as uptr / SLAB_PAGE != page_b {
+    return 9;
+  }
+  heap.dealloc(b0, 16384, 8);
+  heap.dealloc(b1, 16384, 8);
+  heap.dealloc(b2, 16384, 8);
+  heap.dealloc(b3, 16384, 8);
+
+  // and once it empties too, it joins the pool behind the first
+  let after = heap.alloc(16384, 8);
+  if after as uptr == 0 {
+    return 10;
+  }
+  if after as uptr / SLAB_PAGE != page_b {
+    return 11;
+  }
+
+  42
+}
