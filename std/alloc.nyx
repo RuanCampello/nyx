@@ -108,11 +108,12 @@ const SEGMENT_PAGES: uptr = 64;
 /// descriptor, then (in the root segment alone) one partial-page slot per class
 const SEG_NEXT: uptr = 0;
 const SEG_CURSOR: uptr = 1;
+const SEG_FREE: uptr = 2;
 const PAGE_FREE: uptr = 0;
 const PAGE_CLASS: uptr = 1;
 const PAGE_LIVE: uptr = 2;
 const PAGE_BUMP: uptr = 3;
-const CLASS_SLOTS: uptr = 258;
+const CLASS_SLOTS: uptr = 259;
 
 /// The first segment, which also carries the per-class partial-page table
 ///
@@ -304,9 +305,7 @@ impl Pages {
 }
 
 impl Heap {
-    pub const fn new(): Heap {
-        Heap { reserved: 0 }
-    }
+    pub const fn new(): Heap = Heap { reserved: 0 };
 
     /// A block of at least `size` bytes on an `align` boundary, or null
     ///
@@ -385,15 +384,31 @@ impl Heap {
 
         write(ptr as *mut uptr, slot_get(segment, offset + PAGE_FREE));
         slot_set(segment, offset + PAGE_FREE, address);
-        slot_set(segment, offset + PAGE_LIVE, slot_get(segment, offset + PAGE_LIVE) - 1);
 
-        // publish the page for its class, so the block comes straight back out
+        let live = slot_get(segment, offset + PAGE_LIVE) - 1;
+        slot_set(segment, offset + PAGE_LIVE, live);
+
         let class = slot_get(segment, offset + PAGE_CLASS);
-        slot_set(root_segment(), CLASS_SLOTS + class, segment + page * SLAB_PAGE);
+        let base = segment + page * SLAB_PAGE;
+
+        if live != 0 {
+            // publish the page for its class, so the block comes straight back out
+            slot_set(root_segment(), CLASS_SLOTS + class, base);
+            return;
+        }
+
+        // the page is empty: hand it to the segment rather than let one class
+        // hoard memory another one needs, which is what separates this from
+        // simple segregated storage
+        if slot_get(root_segment(), CLASS_SLOTS + class) == base {
+            slot_set(root_segment(), CLASS_SLOTS + class, 0);
+        }
+        slot_set(segment, offset + PAGE_FREE, slot_get(segment, SEG_FREE));
+        slot_set(segment, SEG_FREE, page);
     }
 }
 
-inline const fn descriptor(page: uptr): uptr = 2 + page * 4;
+inline const fn descriptor(page: uptr): uptr = 3 + page * 4;
 inline const fn segment_of(address: uptr): uptr = address & !(SEGMENT_SIZE - 1);
 inline const fn page_of(address: uptr): uptr = (address & (SEGMENT_SIZE - 1)) / SLAB_PAGE;
 
@@ -475,6 +490,13 @@ fn claim_page(class: uptr): uptr {
     if segment == 0 return 0;
 
     loop {
+        // a page handed back by another class costs nothing to take on
+        let recycled = slot_get(segment, SEG_FREE);
+        if recycled != 0 {
+            slot_set(segment, SEG_FREE, slot_get(segment, descriptor(recycled) + PAGE_FREE));
+            return open_page(segment, recycled, class);
+        }
+
         let cursor = slot_get(segment, SEG_CURSOR);
         if cursor < SEGMENT_PAGES {
             slot_set(segment, SEG_CURSOR, cursor + 1);
