@@ -1,0 +1,62 @@
+use std::alloc::{good_size};
+
+fn main(): i32 {
+  if good_size(1) != 8 {
+    return 1;
+  }
+  if good_size(8) != 8 {
+    return 2;
+  }
+  if good_size(9) != 16 {
+    return 3;
+  }
+  if good_size(100) != 104 {
+    return 4;
+  }
+  if good_size(128) != 128 {
+    return 5;
+  }
+
+  // four classes to a doubling above 128
+  if good_size(129) != 160 {
+    return 6;
+  }
+  if good_size(160) != 160 {
+    return 7;
+  }
+  if good_size(161) != 192 {
+    return 8;
+  }
+  if good_size(1000) != 1024 {
+    return 9;
+  }
+  if good_size(2048) != 2048 {
+    return 10;
+  }
+  if good_size(2049) != 2560 {
+    return 11;
+  }
+  if good_size(4096) != 4096 {
+    return 12;
+  }
+
+  // the ceiling is itself a class
+  if good_size(16384) != 16384 {
+    return 13;
+  }
+
+  // past it, the large path rounds to whole pages
+  if good_size(16385) != 20480 {
+    return 14;
+  }
+  if good_size(50000) != 53248 {
+    return 15;
+  }
+
+  // and it must never promise less than was asked for
+  if good_size(777) < 777 {
+    return 16;
+  }
+
+  42
+}
