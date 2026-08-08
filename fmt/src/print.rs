@@ -12,7 +12,7 @@ use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
     Block, Const, Else, Function, If, Impl, Interface, InterfaceConst, InterfaceMethod, Item,
     ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver, Return, Statement,
-    Struct, Type, UseDecl, UseItems,
+    Static, Struct, Type, UseDecl, UseItems,
 };
 
 /// Walks the AST once, emitting a [Doc] and tracking the comments it consumed
@@ -196,6 +196,7 @@ impl<'src> Printer<'src> {
             ItemKind::Fn(function) => parts.push(self.function(function)?),
             ItemKind::Struct(declaration) => parts.push(self.structure(declaration)?),
             ItemKind::Const(constant) => parts.push(self.constant(constant)?),
+            ItemKind::Static(item) => parts.push(self.static_item(item)?),
             ItemKind::Impl(block) => parts.push(self.implementation(block)?),
             ItemKind::Interface(interface) => parts.push(self.interface(interface)?),
             ItemKind::Use(declaration) => parts.push(import(declaration)),
@@ -478,6 +479,28 @@ impl<'src> Printer<'src> {
         parts.push(Doc::text(self.slice(constant.typ.span())));
         parts.push(Doc::text(" = "));
         parts.push(self.expression(&constant.value)?);
+        parts.push(Doc::text(";"));
+
+        Ok(Doc::concat(parts))
+    }
+
+    fn static_item(&mut self, item: &Static<'src>) -> Result<Doc<'src>, FormatError> {
+        let mut parts = Vec::new();
+
+        if item.is_pub {
+            parts.push(Doc::text("pub "));
+        }
+
+        parts.push(Doc::text("static "));
+        if item.is_mut {
+            parts.push(Doc::text("mut "));
+        }
+
+        parts.push(Doc::text(item.name));
+        parts.push(Doc::text(": "));
+        parts.push(Doc::text(self.slice(item.typ.span())));
+        parts.push(Doc::text(" = "));
+        parts.push(self.expression(&item.value)?);
         parts.push(Doc::text(";"));
 
         Ok(Doc::concat(parts))
@@ -1036,6 +1059,7 @@ const fn item_span(kind: &ItemKind<'_>) -> Span {
         ItemKind::Struct(declaration) => declaration.span,
         ItemKind::Enum(enumeration) => enumeration.span,
         ItemKind::Const(constant) => constant.span,
+        ItemKind::Static(item) => item.span,
         ItemKind::Impl(block) => block.span,
         ItemKind::Interface(interface) => interface.span,
         ItemKind::Use(declaration) => declaration.span,
