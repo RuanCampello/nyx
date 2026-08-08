@@ -2,6 +2,29 @@ use std::result::{Result};
 use std::mem::{size_of, align_of};
 use std::ptr::{copy_nonoverlapping, dangling, addr, null_mut};
 
+/// The layout of a block of memory: a `size` and a power-of-two `align`
+pub struct Layout {
+    size: uptr,
+    align: uptr,
+}
+
+/// Raw pages, straight from the kernel
+///
+/// The layer an allocator is built *on*, not the one to allocate from: a
+/// four-byte request costs a full page and a syscall, and an alignment above
+/// `PAGE_SIZE` cannot be served at all. Acquire memory in bulk here, then hand
+/// out of that block with something that keeps its own bookkeeping
+pub struct Pages { reserved: u8 }
+
+/// A request the allocator could not serve
+pub struct AllocError { size: uptr }
+
+/// A `size`/`align` pair that cannot describe a valid block
+pub struct LayoutErr {
+    size: uptr,
+    align: uptr,
+}
+
 pub interface Allocator {
     /// A block matching `layout`, or the request that could not be served
     ///
@@ -43,22 +66,84 @@ pub interface Allocator {
     }
 }
 
-/// The layout of a block of memory
+const PAGE_SIZE: uptr = 4096;
+
+const PROT_READ: iptr = 1;
+const PROT_WRITE: iptr = 2;
+
+const MAP_PRIVATE: iptr = 2;
+const MAP_ANONYMOUS: iptr = 32;
+
+const MREMAP_MAYMOVE: iptr = 1;
+
+const MADV_DONTNEED: iptr = 4;
+
+/// The kernel reports failure as `-errno` in the return register and errno never
+/// exceeds this; anything below it is a real address, however negative it looks
+const MAX_ERRNO: iptr = 4095;
+
+/// Size classes step by 8 up to [DENSE_LIMIT], then run four to a doubling
 ///
-/// Memory layouts are associated with a `size` and a power-of-two
-/// `alignment`
-pub struct Layout {
-    size: uptr,
-    align: uptr,
+/// The dense bottom is where allocation volume concentrates, the geometric top
+/// bounds internal fragmentation at 20% without a large table
+const DENSE_LIMIT: uptr = 128;
+const DENSE_COUNT: uptr = 16;
+const CLASS_COUNT: uptr = 44;
+const MAX_CLASS_SIZE: uptr = 16384;
+
+/// The bytes an allocation of `size` will actually occupy
+///
+/// A heap rounds a request up to a size class, and above [MAX_CLASS_SIZE] up to
+/// a whole page, so the caller is nearly always given more than it asked for
+/// Growable containers should claim the difference rather than waste it
+pub const fn good_size(size: uptr): uptr {
+    let index = class_index(size);
+
+    match index == CLASS_COUNT {
+        true -> page_round_up(size),
+        _ -> class_size(index)
+    }
 }
 
-/// A request the allocator could not serve
-pub struct AllocError { size: uptr }
+/// The class that serves `size`, or [CLASS_COUNT] when no class can
+const fn class_index(size: uptr): uptr {
+    if size > MAX_CLASS_SIZE {
+        return CLASS_COUNT;
+    }
+    if size <= 8 {
+        return 0;
+    }
+    if size <= DENSE_LIMIT {
+        return (size + 7) / 8 - 1;
+    }
 
-/// A `size`/`align` pair that cannot describe a valid block
-pub struct LayoutErr {
-    size: uptr,
-    align: uptr,
+    // narrow to the doubling holding `size`, so that base < size <= base * 2
+    let mut base: uptr = DENSE_LIMIT;
+    let mut doubling: uptr = 0;
+    loop {
+        if size <= base * 2 {
+            break;
+        }
+        base = base * 2;
+        doubling = doubling + 1;
+    }
+
+    let step = base / 4;
+
+    DENSE_COUNT + doubling * 4 + (size - base + step - 1) / step - 1
+}
+
+/// The bytes class `index` hands out
+const fn class_size(index: uptr): uptr {
+    if index < DENSE_COUNT {
+        return (index + 1) * 8;
+    }
+
+    let rank = index - DENSE_COUNT;
+    let doubling = rank / 4;
+    let base = DENSE_LIMIT << doubling;
+
+    base + (base / 4) * (rank - doubling * 4 + 1)
 }
 
 impl Layout {
@@ -95,33 +180,10 @@ impl Layout {
         self.align
     }
 
-    inline const fn is_sized_align_valid(
-        size: uptr,
-        align: uptr
-    ): bool {
-        if align.is_power_of_two() && size <= max_size_for_align(align) {
-            return true;
-        }
-
-        false
+    inline const fn is_sized_align_valid(size: uptr, align: uptr): bool {
+        align.is_power_of_two() && size <= max_size_for_align(align)
     }
 }
-
-/// The largest block that can still be rounded up to `align` without the
-/// address space wrapping
-inline const fn max_size_for_align(align: uptr): uptr {
-    (iptr::MAX as uptr) - (align - 1)
-}
-
-/// Raw pages, straight from the kernel
-///
-/// This is the layer an allocator is built *on*, not the one to allocate from:
-/// one `mmap` per `allocate` and one `munmap` per `deallocate`, so a four-byte
-/// request costs a full page and a syscall, and an alignment above `PAGE_SIZE`
-/// cannot be served at all
-/// Reach for it to acquire memory in bulk, then hand
-/// out of that block with something that tracks its own bookkeeping
-pub struct Pages { reserved: u8 }
 
 impl Pages {
     pub const fn new(): Pages {
@@ -130,8 +192,8 @@ impl Pages {
 
     /// A fresh zero-filled block of at least `size` bytes, or null
     ///
-    /// The raw counterpart of `allocate`: failure is a null pointer rather than
-    /// a `Failure`, which is what an allocator hooked up to the runtime has to expose anyway
+    /// The raw counterpart of `allocate`: failure is a null pointer rather than a
+    /// `Failure`, which is the shape a runtime-facing allocator has to expose anyway
     @unsafe
     pub fn map(&self, size: uptr): *mut u8 {
         let len = page_round_up(size);
@@ -152,6 +214,48 @@ impl Pages {
             true -> null_mut::<u8>(),
             _ -> result as *mut u8
         }
+    }
+
+    /// A block of at least `size` bytes starting on an `align` boundary, or null
+    ///
+    /// `mmap` promises no more than page alignment, so anything stronger is had
+    /// by over-mapping and handing the slack back. That costs two extra syscalls
+    /// on a mapping large enough to be worth aligning, and nothing at all when
+    /// `align` is already within what the kernel guarantees
+    ///
+    /// # Safety
+    ///   `align` must be a power of two
+    @unsafe
+    pub fn map_aligned(&self, size: uptr, align: uptr): *mut u8 {
+        let len = page_round_up(size);
+        if len == 0 {
+            return dangling::<u8>();
+        }
+        if align <= PAGE_SIZE {
+            return self.map(len);
+        }
+
+        // an over-map of `len + align` always contains an aligned window of
+        // `len`, since the first aligned address sits less than `align` in
+        let probe = self.map(len + align);
+        let base = addr(probe as *u8);
+        if base == 0 {
+            return null_mut::<u8>();
+        }
+
+        let aligned = (base + align - 1) & !(align - 1);
+
+        let head = aligned - base;
+        if head != 0 {
+            sys_munmap(base, head);
+        }
+
+        let tail = base + len + align - (aligned + len);
+        if tail != 0 {
+            sys_munmap(aligned + len, tail);
+        }
+
+        aligned as *mut u8
     }
 
     /// Returns a block obtained from `map` to the kernel
@@ -185,8 +289,8 @@ impl Pages {
 
     /// Drops the physical pages backing a block while keeping the mapping
     ///
-    /// The next read sees zeroes, so this releases memory without giving up
-    /// the address range
+    /// The next read sees zeroes, so this releases memory without giving up the
+    /// address range
     @unsafe
     pub fn purge(&self, ptr: *mut u8, size: uptr) {
         let len = page_round_up(size);
@@ -198,23 +302,11 @@ impl Pages {
     }
 }
 
-const PAGE_SIZE: uptr = 4096;
-
-const PROT_READ: iptr = 1;
-const PROT_WRITE: iptr = 2;
-
-const MAP_PRIVATE: iptr = 2;
-const MAP_ANONYMOUS: iptr = 32;
-
-const MREMAP_MAYMOVE: iptr = 1;
-
-const MADV_DONTNEED: iptr = 4;
-const MADV_FREE: iptr = 8;
-
-/// The kernel reports failure as `-errno` in the return register, and errno
-/// never exceeds this
-/// Anything below it is a real address, however negative it looks
-const MAX_ERRNO: iptr = 4095;
+/// The largest block that can still be rounded up to `align` without the
+/// address space wrapping
+inline const fn max_size_for_align(align: uptr): uptr {
+    (iptr::MAX as uptr) - (align - 1)
+}
 
 inline const fn is_errno(result: iptr): bool {
     result < 0 && result >= (0 - MAX_ERRNO)
