@@ -1,6 +1,6 @@
 use std::result::{Result};
 use std::mem::{size_of, align_of};
-use std::ptr::{copy_nonoverlapping, dangling, addr, null_mut};
+use std::ptr::{copy_nonoverlapping, dangling, addr, null_mut, read, write};
 
 /// The layout of a block of memory: a `size` and a power-of-two `align`
 pub struct Layout {
@@ -15,6 +15,14 @@ pub struct Layout {
 /// `PAGE_SIZE` cannot be served at all. Acquire memory in bulk here, then hand
 /// out of that block with something that keeps its own bookkeeping
 pub struct Pages { reserved: u8 }
+
+/// A general-purpose allocator over size-classed slab pages
+///
+/// Blocks come from a free list private to the 64 KiB page that owns them, and
+/// pages come from 4 MiB segments taken from [Pages]. Allocation and release are
+/// both a handful of loads and stores, and a page whose blocks are all returned
+/// goes back to its segment rather than staying hoarded by one size class
+pub struct Heap { reserved: u8 }
 
 /// A request the allocator could not serve
 pub struct AllocError { size: uptr }
@@ -49,9 +57,7 @@ pub interface Allocator {
         new_layout: Layout
     ): Result<*mut u8, AllocError> {
         let fresh = self.allocate(new_layout);
-        if fresh.is_failure() {
-            return fresh;
-        }
+        if fresh.is_failure() return fresh;
 
         let target = fresh.unwrap();
         let mut carried = old_layout.size();
@@ -91,6 +97,30 @@ const DENSE_COUNT: uptr = 16;
 const CLASS_COUNT: uptr = 44;
 const MAX_CLASS_SIZE: uptr = 16384;
 
+/// A segment is the unit taken from the kernel, a slab page the unit a size class
+/// owns. Segments are aligned to their own size so that masking any block address
+/// recovers its segment, and shifting recovers its page, with no lookup
+const SEGMENT_SIZE: uptr = 4194304;
+const SLAB_PAGE: uptr = 65536;
+const SEGMENT_PAGES: uptr = 64;
+
+/// Page 0 of a segment is bookkeeping: two header slots, then four slots per page
+/// descriptor, then (in the root segment alone) one partial-page slot per class
+const SEG_NEXT: uptr = 0;
+const SEG_CURSOR: uptr = 1;
+const PAGE_FREE: uptr = 0;
+const PAGE_CLASS: uptr = 1;
+const PAGE_LIVE: uptr = 2;
+const PAGE_BUMP: uptr = 3;
+const CLASS_SLOTS: uptr = 258;
+
+/// The first segment, which also carries the per-class partial-page table
+///
+/// The only heap state in `.bss`: everything else lives inside the mapping,
+/// because a `static` initialiser must fold to one scalar and field access
+/// through a raw pointer is unsupported
+static mut ROOT: uptr = 0;
+
 /// The bytes an allocation of `size` will actually occupy
 ///
 /// A heap rounds a request up to a size class, and above [MAX_CLASS_SIZE] up to
@@ -107,15 +137,9 @@ pub const fn good_size(size: uptr): uptr {
 
 /// The class that serves `size`, or [CLASS_COUNT] when no class can
 const fn class_index(size: uptr): uptr {
-    if size > MAX_CLASS_SIZE {
-        return CLASS_COUNT;
-    }
-    if size <= 8 {
-        return 0;
-    }
-    if size <= DENSE_LIMIT {
-        return (size + 7) / 8 - 1;
-    }
+    if size > MAX_CLASS_SIZE return CLASS_COUNT;
+    if size <= 8 return 0;
+    if size <= DENSE_LIMIT return (size + 7) / 8 - 1;
 
     // narrow to the doubling holding `size`, so that base < size <= base * 2
     let mut base: uptr = DENSE_LIMIT;
@@ -135,9 +159,7 @@ const fn class_index(size: uptr): uptr {
 
 /// The bytes class `index` hands out
 const fn class_size(index: uptr): uptr {
-    if index < DENSE_COUNT {
-        return (index + 1) * 8;
-    }
+    if index < DENSE_COUNT return (index + 1) * 8;
 
     let rank = index - DENSE_COUNT;
     let doubling = rank / 4;
@@ -172,13 +194,8 @@ impl Layout {
         Layout { size: size_of(T), align: align_of(T) }
     }
 
-    pub const fn size(&self): uptr {
-        self.size
-    }
-
-    pub const fn align(&self): uptr {
-        self.align
-    }
+    pub const fn size(&self): uptr = self.size;
+    pub const fn align(&self): uptr = self.align;
 
     inline const fn is_sized_align_valid(size: uptr, align: uptr): bool {
         align.is_power_of_two() && size <= max_size_for_align(align)
@@ -228,32 +245,22 @@ impl Pages {
     @unsafe
     pub fn map_aligned(&self, size: uptr, align: uptr): *mut u8 {
         let len = page_round_up(size);
-        if len == 0 {
-            return dangling::<u8>();
-        }
-        if align <= PAGE_SIZE {
-            return self.map(len);
-        }
+        if len == 0 return dangling::<u8>();
+        if align <= PAGE_SIZE return self.map(len);
 
         // an over-map of `len + align` always contains an aligned window of
         // `len`, since the first aligned address sits less than `align` in
         let probe = self.map(len + align);
         let base = addr(probe as *u8);
-        if base == 0 {
-            return null_mut::<u8>();
-        }
+        if base == 0 return null_mut::<u8>();
 
         let aligned = (base + align - 1) & !(align - 1);
 
         let head = aligned - base;
-        if head != 0 {
-            sys_munmap(base, head);
-        }
+        if head != 0 sys_munmap(base, head);
 
         let tail = base + len + align - (aligned + len);
-        if tail != 0 {
-            sys_munmap(aligned + len, tail);
-        }
+        if tail != 0 sys_munmap(aligned + len, tail);
 
         aligned as *mut u8
     }
@@ -262,9 +269,7 @@ impl Pages {
     @unsafe
     pub fn unmap(&self, ptr: *mut u8, size: uptr) {
         let len = page_round_up(size);
-        if len == 0 {
-            return;
-        }
+        if len == 0 return;
 
         sys_munmap(addr(ptr as *u8), len);
     }
@@ -275,9 +280,7 @@ impl Pages {
     pub fn remap(&self, ptr: *mut u8, old_size: uptr, new_size: uptr): *mut u8 {
         let old_len = page_round_up(old_size);
         let new_len = page_round_up(new_size);
-        if old_len == 0 || new_len == 0 {
-            return self.map(new_size);
-        }
+        if old_len == 0 || new_len == 0 return self.map(new_size);
 
         let result = sys_mremap(addr(ptr as *u8), old_len, new_len, MREMAP_MAYMOVE);
 
@@ -294,27 +297,209 @@ impl Pages {
     @unsafe
     pub fn purge(&self, ptr: *mut u8, size: uptr) {
         let len = page_round_up(size);
-        if len == 0 {
-            return;
-        }
+        if len == 0 return;
 
         sys_madvise(addr(ptr as *u8), len, MADV_DONTNEED);
     }
 }
 
-/// The largest block that can still be rounded up to `align` without the
-/// address space wrapping
-inline const fn max_size_for_align(align: uptr): uptr {
-    (iptr::MAX as uptr) - (align - 1)
+impl Heap {
+    pub const fn new(): Heap {
+        Heap { reserved: 0 }
+    }
+
+    /// A block of at least `size` bytes on an `align` boundary, or null
+    ///
+    /// Failure is a null pointer rather than a `Failure`, matching [Pages]: this
+    /// is the raw core runtime consumes, with the typed [Allocator] surface layered over it
+    @unsafe
+    pub fn alloc(&self, size: uptr, align: uptr): *mut u8 {
+        let width = request_width(size, align);
+        let class = class_index(width);
+        if class == CLASS_COUNT {
+            let pages = Pages::new();
+            return pages.map(width);
+        }
+
+        let root = root_segment();
+        if root == 0 return null_mut::<u8>();
+
+        let stride = class_size(class);
+        let capacity = SLAB_PAGE / stride;
+        let mut block: uptr = 0;
+
+        loop {
+            let mut page = slot_get(root, CLASS_SLOTS + class);
+            if page == 0 {
+                page = claim_page(class);
+                if page == 0 {
+                    break;
+                }
+            }
+
+            let segment = segment_of(page);
+            let offset = descriptor(page_of(page));
+
+            // a returned block is preferred over untouched space, so that a page
+            // stays hot rather than marching across all 64 KiB of itself
+            let head = slot_get(segment, offset + PAGE_FREE);
+            if head != 0 {
+                slot_set(segment, offset + PAGE_FREE, read(head as *uptr));
+                block = head;
+            } else {
+                let bump = slot_get(segment, offset + PAGE_BUMP);
+                if bump < capacity {
+                    slot_set(segment, offset + PAGE_BUMP, bump + 1);
+                    block = page + bump * stride;
+                }
+            }
+
+            if block != 0 {
+                slot_set(segment, offset + PAGE_LIVE, slot_get(segment, offset + PAGE_LIVE) + 1);
+                break;
+            }
+
+            // the page is spent: forget it, and take a fresh one next time round
+            slot_set(root, CLASS_SLOTS + class, 0);
+        }
+
+        block as *mut u8
+    }
+
+    /// Returns a block to the heap under the `size` and `align` it was taken with
+    @unsafe
+    pub fn dealloc(&self, ptr: *mut u8, size: uptr, align: uptr) {
+        let address = addr(ptr as *u8);
+        if address == 0 return;
+
+        let width = request_width(size, align);
+        if class_index(width) == CLASS_COUNT {
+            let pages = Pages::new();
+            pages.unmap(ptr, width);
+            return;
+        }
+
+        let segment = segment_of(address);
+        let page = page_of(address);
+        let offset = descriptor(page);
+
+        write(ptr as *mut uptr, slot_get(segment, offset + PAGE_FREE));
+        slot_set(segment, offset + PAGE_FREE, address);
+        slot_set(segment, offset + PAGE_LIVE, slot_get(segment, offset + PAGE_LIVE) - 1);
+
+        // publish the page for its class, so the block comes straight back out
+        let class = slot_get(segment, offset + PAGE_CLASS);
+        slot_set(root_segment(), CLASS_SLOTS + class, segment + page * SLAB_PAGE);
+    }
 }
 
-inline const fn is_errno(result: iptr): bool {
-    result < 0 && result >= (0 - MAX_ERRNO)
+inline const fn descriptor(page: uptr): uptr = 2 + page * 4;
+inline const fn segment_of(address: uptr): uptr = address & !(SEGMENT_SIZE - 1);
+inline const fn page_of(address: uptr): uptr = (address & (SEGMENT_SIZE - 1)) / SLAB_PAGE;
+
+/// The block width a request needs
+///
+/// Blocks sit at multiples of their class width inside a page aligned to
+/// [SLAB_PAGE], so a class that is a power of two is aligned to itself and every
+/// other class is aligned to 8. Anything stronger has to round up to a power of two
+inline const fn request_width(size: uptr, align: uptr): uptr {
+    let mut want = size;
+    if want < align {
+        want = align;
+    }
+    if align <= 8 {
+        return want;
+    }
+
+    let mut power: uptr = 8;
+    loop {
+        if power >= want {
+            break;
+        }
+        power = power * 2;
+    }
+
+    power
 }
 
-inline const fn page_round_up(size: uptr): uptr {
-    (size + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1)
+@unsafe
+inline fn slot_get(base: uptr, index: uptr): uptr = read((base + index * 8) as *uptr);
+
+@unsafe
+inline fn slot_set(base: uptr, index: uptr, value: uptr) {
+    write((base + index * 8) as *mut uptr, value);
 }
+
+@unsafe
+fn new_segment(): uptr {
+    let pages = Pages::new();
+    let base = addr(pages.map_aligned(SEGMENT_SIZE, SEGMENT_SIZE) as *u8);
+    if base == 0 return 0;
+
+    // the mapping arrives zeroed, so only the page cursor needs a value, and it
+    // starts at 1 because page 0 is the bookkeeping page
+    slot_set(base, SEG_CURSOR, 1);
+
+    base
+}
+
+@unsafe
+fn root_segment(): uptr {
+    if ROOT == 0 {
+        ROOT = new_segment();
+    }
+
+    ROOT
+}
+
+/// Hands page `page` of `segment` to `class` and publishes it as that class's
+/// partial page
+@unsafe
+fn open_page(segment: uptr, page: uptr, class: uptr): uptr {
+    let offset = descriptor(page);
+    slot_set(segment, offset + PAGE_FREE, 0);
+    slot_set(segment, offset + PAGE_CLASS, class);
+    slot_set(segment, offset + PAGE_LIVE, 0);
+    slot_set(segment, offset + PAGE_BUMP, 0);
+
+    let base = segment + page * SLAB_PAGE;
+    slot_set(root_segment(), CLASS_SLOTS + class, base);
+
+    base
+}
+
+/// A page owned by `class` with room left in it, or 0
+@unsafe
+fn claim_page(class: uptr): uptr {
+    let mut segment = root_segment();
+    if segment == 0 return 0;
+
+    loop {
+        let cursor = slot_get(segment, SEG_CURSOR);
+        if cursor < SEGMENT_PAGES {
+            slot_set(segment, SEG_CURSOR, cursor + 1);
+            return open_page(segment, cursor, class);
+        }
+
+        let next = slot_get(segment, SEG_NEXT);
+        if next == 0 {
+            break;
+        }
+        segment = next;
+    }
+
+    // every segment is spent, so chain a fresh one onto the last
+    let fresh = new_segment();
+    if fresh == 0 return 0;
+    slot_set(segment, SEG_NEXT, fresh);
+    slot_set(fresh, SEG_CURSOR, 2);
+
+    open_page(fresh, 1, class)
+}
+
+inline const fn max_size_for_align(align: uptr): uptr = (iptr::MAX as uptr) - (align - 1);
+inline const fn is_errno(result: iptr): bool = result < 0 && result >= (0 - MAX_ERRNO);
+inline const fn page_round_up(size: uptr): uptr = (size + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1);
 
 @unsafe
 fn sys_mmap(
@@ -324,21 +509,18 @@ fn sys_mmap(
     flags: iptr,
     fd: iptr,
     offset: uptr
-): iptr {
-    syscall(SYS_MMAP, addr, len, prot, flags, fd, offset)
-}
+): iptr = syscall(SYS_MMAP, addr, len, prot, flags, fd, offset);
 
 @unsafe
-fn sys_munmap(addr: uptr, len: uptr): iptr {
-    syscall(SYS_MUNMAP, addr, len)
-}
+fn sys_munmap(addr: uptr, len: uptr): iptr = syscall(SYS_MUNMAP, addr, len);
 
 @unsafe
-fn sys_mremap(addr: uptr, old_len: uptr, new_len: uptr, flags: iptr): iptr {
-    syscall(SYS_MREMAP, addr, old_len, new_len, flags)
-}
+fn sys_mremap(
+    addr: uptr,
+    old_len: uptr,
+    new_len: uptr,
+    flags: iptr
+): iptr = syscall(SYS_MREMAP, addr, old_len, new_len, flags);
 
 @unsafe
-fn sys_madvise(addr: uptr, len: uptr, advice: iptr): iptr {
-    syscall(SYS_MADVISE, addr, len, advice)
-}
+fn sys_madvise(addr: uptr, len: uptr, advice: iptr): iptr = syscall(SYS_MADVISE, addr, len, advice);
