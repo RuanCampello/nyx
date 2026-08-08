@@ -450,7 +450,10 @@ fn keeps_impl_members_in_the_order_they_were_written() {
         .map(|name| formatted.find(name).expect("member is printed"))
         .collect();
 
-    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "members were reordered: {formatted}");
+    assert!(
+        order.windows(2).all(|pair| pair[0] < pair[1]),
+        "members were reordered: {formatted}"
+    );
 }
 
 #[test]
@@ -550,11 +553,15 @@ fn preserves_generics_markers_and_a_where_clause() {
 
 #[test]
 fn a_where_clause_is_never_moved_into_the_angle_brackets() {
-    let source = "impl Result<S, F> {\n    pub fn get(self): S where S: Default {\n        1\n    }\n}\n";
+    let source =
+        "impl Result<S, F> {\n    pub fn get(self): S where S: Default {\n        1\n    }\n}\n";
     let formatted = format(source, FormatOptions::default()).unwrap();
 
     assert!(formatted.contains("where S: Default"), "{formatted}");
-    assert!(!formatted.contains("get<"), "the bound was redeclared on the method: {formatted}");
+    assert!(
+        !formatted.contains("get<"),
+        "the bound was redeclared on the method: {formatted}"
+    );
 }
 
 #[test]
@@ -678,4 +685,22 @@ fn formats_the_repository_corpus_without_damage() {
 
     println!("formatted {formatted} files, {unsupported} use unsupported syntax");
     assert!(formatted > 0, "the corpus exercised nothing");
+}
+
+#[test]
+fn formats_static_declarations() {
+    assert_formats(
+        indoc! {"
+            static   LIMIT:i32=10;
+            pub static mut CURSOR:uptr=0;
+            pub   static SEEDED:u64=7;
+        "},
+        indoc! {"
+            static LIMIT: i32 = 10;
+
+            pub static mut CURSOR: uptr = 0;
+
+            pub static SEEDED: u64 = 7;
+        "},
+    );
 }
