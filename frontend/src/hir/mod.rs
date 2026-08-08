@@ -664,6 +664,42 @@ impl Res {
     }
 }
 
+impl Literal {
+    #[inline(always)]
+    pub const fn is_zero(self) -> bool {
+        match self {
+            Literal::Int(value) => value == 0,
+            Literal::Float(value) => value == 0.0,
+            Literal::Bool(value) => !value,
+            Literal::Char(value) => value == '\0',
+            Literal::Unit | Literal::Str(_) => true,
+        }
+    }
+
+    #[inline]
+    pub fn static_directive(self, size: u32) -> String {
+        let bits = match self {
+            Literal::Int(value) => value,
+            Literal::Bool(value) => i64::from(value),
+            Literal::Char(value) => i64::from(u32::from(value)),
+            Literal::Float(value) => match size {
+                4 => i64::from((value as f32).to_bits()),
+                _ => value.to_bits() as i64,
+            },
+            Literal::Unit | Literal::Str(_) => {
+                unreachable!("a zero-sized initialiser is laid out in .bss")
+            },
+        };
+
+        match size {
+            1 => format!(".byte {}", bits as u8),
+            2 => format!(".short {}", bits as u16),
+            4 => format!(".long {}", bits as u32),
+            _ => format!(".quad {}", bits as u64),
+        }
+    }
+}
+
 impl Default for Layout {
     fn default() -> Self {
         Self::new(0, 1, false)
