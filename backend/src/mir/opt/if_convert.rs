@@ -13,7 +13,6 @@ use crate::{
     mir::{
         Block, BlockId, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator as Term, ValueId,
-        dce::{each_operand, each_operand_mut, writes_through_dest},
     },
     optimisation::Level,
     parser::expression::BinaryOperator,
@@ -243,7 +242,7 @@ fn speculate(
 
     for index in 0..function.blocks[arm].instructions.len() {
         let mut instruction = function.blocks[arm].instructions[index].clone();
-        each_operand_mut(&mut instruction.kind, |operand| {
+        instruction.kind.each_operand_mut(|operand| {
             if let Operand::Place(place) = operand
                 && let Some(value) = renamed.get(&place.id)
             {
@@ -277,14 +276,14 @@ fn read_outside(function: &Function, then_arm: usize, else_arm: usize) -> HashSe
         }
 
         for instruction in &block.instructions {
-            each_operand(&instruction.kind, |operand| {
+            instruction.kind.each_operand(|operand| {
                 if let Operand::Place(place) = operand {
                     read.insert(place.id);
                 }
             });
 
             // a store reads its destination aggregate rather than replacing it
-            if writes_through_dest(&instruction.kind) {
+            if instruction.kind.writes_through_dest() {
                 read.insert(instruction.dest.id);
             }
         }

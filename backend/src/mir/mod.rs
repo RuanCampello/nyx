@@ -20,7 +20,9 @@
 
 use crate::{
     Span,
-    hir::{FunctionId, Intrinsic, SymbolId, SymbolTable, SyscallCode, Type, TypeKind},
+    hir::{
+        FunctionId, Intrinsic, Static, StaticId, SymbolId, SymbolTable, Syscall, Type, TypeKind,
+    },
     parser::expression::{BinaryOperator, UnaryOperator},
 };
 
@@ -41,6 +43,8 @@ mod opt;
 pub struct Mir {
     pub(crate) symbols: SymbolTable,
     pub(crate) strings: Vec<String>,
+    /// module-level globals, in [StaticId] order, laid out by the backend
+    pub(crate) statics: Vec<Static>,
     pub(crate) functions: Vec<Function>,
     pub(crate) struct_layouts: Vec<Layout>,
     pub(crate) enum_layouts: Vec<Layout>,
@@ -138,13 +142,20 @@ pub enum InstructionKind {
 
     AddressOf { src: Place, offset: u32 },
 
+    /// the address of a module-level global
+    ///
+    /// Reads and writes of a static go through this, so they reuse the same
+    /// [InstructionKind::FieldLoad]/[InstructionKind::FieldStore] pair a raw
+    /// pointer dereference already uses
+    StaticAddr { id: StaticId },
+
     Call {
         callee: FunctionId,
         args: Vec<Operand>,
     },
 
     Syscall {
-        code: SyscallCode,
+        code: Syscall,
         args: Vec<Operand>,
         returns: bool,
     },

@@ -106,6 +106,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
         functions,
         symbols,
         strings,
+        statics: hir.statics.iter().copied().collect(),
         struct_layouts: hir.structs.iter().map(|s| s.layout).collect(),
         enum_layouts: hir.enums.iter().map(|e| e.layout).collect(),
         array_layouts,
@@ -608,6 +609,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 value
             },
 
+            ExpressionKind::Static(id) => {
+                let address = self.static_address(*id, typ);
+                let dest = self.fresh_temporary(typ);
+
+                self.emit(dest, Kind::FieldLoad { src: Operand::Place(address), offset: 0, typ });
+
+                Ok(Operand::Place(dest))
+            },
+
             ExpressionKind::Cast { from, to } => {
                 let from = *from;
                 let to = *to;
@@ -751,6 +761,16 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     };
 
                     self.emit(base, Kind::ElementStore { index, bound, value, stride });
+
+                    return Ok(value);
+                }
+
+                if let ExpressionKind::Static(id) = &target.kind {
+                    let target_type = self.typeck.type_of(target.id);
+                    let address = self.static_address(*id, target_type);
+                    let value = self.lower_expr(value_expr)?;
+
+                    self.emit(address, Kind::FieldStore { value, offset: 0 });
 
                     return Ok(value);
                 }
@@ -1191,6 +1211,18 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         matches!(&expr.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. })
     }
 
+    /// A temporary holding the address of `id`, typed as a mutable raw pointer
+    /// so the LIR picks pointer addressing rather than a frame-slot offset
+    fn static_address(&mut self, id: hir::StaticId, typ: Type) -> Place {
+        let to = hir::RefTarget::try_from(typ)
+            .expect("a static's declared type is never an indirection");
+        let dest = self.fresh_temporary(Type::raw(to, true));
+
+        self.emit(dest, InstructionKind::StaticAddr { id });
+
+        dest
+    }
+
     fn place_info(&self, expr: &Expression<'hir>) -> (Place, u32, Type) {
         match &expr.kind {
             ExpressionKind::Local(local_id) => {
@@ -1531,7 +1563,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.emit(
             dest,
             InstructionKind::Syscall {
-                code: crate::hir::SyscallCode::Write,
+                code: hir::Syscall::Write,
                 args: vec![
                     Operand::Const(Const::Int(1, TypeKind::I32.into())),
                     Operand::Const(Const::Str { id, len }),
@@ -1861,7 +1893,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         ExpressionKind::Local(id) => uses[*id] = true,
         // a constant's tree has its own local space, nothing here can
         // reference the enclosing body's locals
-        ExpressionKind::Const(_) => {},
+        ExpressionKind::Const(_) | ExpressionKind::Static(_) => {},
         ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
         ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(from, uses),
         ExpressionKind::Binary { left, right, .. } => {

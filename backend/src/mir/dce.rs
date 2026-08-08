@@ -145,7 +145,7 @@ impl Body for Instructions {
 
         for block in &function.blocks {
             for instruction in &block.instructions {
-                each_operand(&instruction.kind, |operand| {
+                instruction.kind.each_operand(|operand| {
                     if let Operand::Place(place) = operand {
                         read.insert(place.id);
                     }
@@ -155,7 +155,7 @@ impl Body for Instructions {
                     read.insert(src.id);
                 }
 
-                if writes_through_dest(&instruction.kind) {
+                if instruction.kind.writes_through_dest() {
                     read.insert(instruction.dest.id);
                 }
             }
@@ -186,7 +186,7 @@ impl Program for Strings {
         for function in &mir.functions {
             for block in &function.blocks {
                 for instruction in &block.instructions {
-                    each_operand(&instruction.kind, |operand| {
+                    instruction.kind.each_operand(|operand| {
                         if let Operand::Const(Const::Str { id, .. }) = operand {
                             used.insert(*id);
                         }
@@ -221,7 +221,7 @@ impl Program for Strings {
         for function in &mut mir.functions {
             for block in &mut function.blocks {
                 for instruction in &mut block.instructions {
-                    each_operand_mut(&mut instruction.kind, |operand| {
+                    instruction.kind.each_operand_mut(|operand| {
                         if let Operand::Const(Const::Str { id, .. }) = operand {
                             *id = renumbered[*id];
                         }
@@ -238,77 +238,75 @@ impl Program for Strings {
     }
 }
 
-#[inline(always)]
-pub(in crate::mir) const fn writes_through_dest(kind: &InstructionKind) -> bool {
-    matches!(kind, InstructionKind::FieldStore { .. } | InstructionKind::ElementStore { .. })
-}
-
-pub(in crate::mir) fn each_operand(kind: &InstructionKind, mut visit: impl FnMut(&Operand)) {
-    use InstructionKind::*;
-
-    match kind {
-        Assign(operand)
-        | Unary { rhs: operand, .. }
-        | FieldLoad { src: operand, .. }
-        | FieldStore { value: operand, .. }
-        | Cast { src: operand, .. } => visit(operand),
-        Binary { lhs, rhs, .. } => {
-            visit(lhs);
-            visit(rhs);
-        },
-        ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
-            visit(base);
-            visit(index);
-            visit(bound);
-        },
-        ElementStore { index, bound, value, .. } => {
-            visit(index);
-            visit(bound);
-            visit(value);
-        },
-        Call { args, .. } | Syscall { args, .. } => args.iter().for_each(visit),
-        Select { condition, then_value, else_value } => {
-            visit(condition);
-            visit(then_value);
-            visit(else_value);
-        },
-        AddressOf { .. } => {},
+impl InstructionKind {
+    #[inline(always)]
+    pub(in crate::mir) const fn writes_through_dest(&self) -> bool {
+        matches!(self, InstructionKind::FieldStore { .. } | InstructionKind::ElementStore { .. })
     }
-}
 
-pub(in crate::mir) fn each_operand_mut(
-    kind: &mut InstructionKind,
-    mut visit: impl FnMut(&mut Operand),
-) {
-    use InstructionKind::*;
+    pub(in crate::mir) fn each_operand(&self, mut visit: impl FnMut(&Operand)) {
+        use InstructionKind::*;
+        match self {
+            Assign(operand)
+            | Unary { rhs: operand, .. }
+            | FieldLoad { src: operand, .. }
+            | FieldStore { value: operand, .. }
+            | Cast { src: operand, .. } => visit(operand),
+            Binary { lhs, rhs, .. } => {
+                visit(lhs);
+                visit(rhs);
+            },
+            ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
+                visit(base);
+                visit(index);
+                visit(bound);
+            },
+            ElementStore { index, bound, value, .. } => {
+                visit(index);
+                visit(bound);
+                visit(value);
+            },
+            Call { args, .. } | Syscall { args, .. } => args.iter().for_each(visit),
+            Select { condition, then_value, else_value } => {
+                visit(condition);
+                visit(then_value);
+                visit(else_value);
+            },
+            AddressOf { .. } | StaticAddr { .. } => {},
+        }
+    }
 
-    match kind {
-        Assign(operand)
-        | Unary { rhs: operand, .. }
-        | FieldLoad { src: operand, .. }
-        | FieldStore { value: operand, .. }
-        | Cast { src: operand, .. } => visit(operand),
-        Binary { lhs, rhs, .. } => {
-            visit(lhs);
-            visit(rhs);
-        },
-        ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
-            visit(base);
-            visit(index);
-            visit(bound);
-        },
-        ElementStore { index, bound, value, .. } => {
-            visit(index);
-            visit(bound);
-            visit(value);
-        },
-        Call { args, .. } | Syscall { args, .. } => args.iter_mut().for_each(visit),
-        Select { condition, then_value, else_value } => {
-            visit(condition);
-            visit(then_value);
-            visit(else_value);
-        },
-        AddressOf { .. } => {},
+    pub(in crate::mir) fn each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand)) {
+        use InstructionKind::*;
+
+        match self {
+            Assign(operand)
+            | Unary { rhs: operand, .. }
+            | FieldLoad { src: operand, .. }
+            | FieldStore { value: operand, .. }
+            | Cast { src: operand, .. } => visit(operand),
+            Binary { lhs, rhs, .. } => {
+                visit(lhs);
+                visit(rhs);
+            },
+            ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
+                visit(base);
+                visit(index);
+                visit(bound);
+            },
+            ElementStore { index, bound, value, .. } => {
+                visit(index);
+                visit(bound);
+                visit(value);
+            },
+            Call { args, .. } | Syscall { args, .. } => args.iter_mut().for_each(visit),
+            Select { condition, then_value, else_value } => {
+                visit(condition);
+                visit(then_value);
+                visit(else_value);
+            },
+            AddressOf { .. } | StaticAddr { .. } => {},
+        }
     }
 }
 
@@ -343,6 +341,7 @@ const fn pure(kind: &InstructionKind) -> bool {
             | InstructionKind::Binary { checked: false, .. }
             | InstructionKind::FieldLoad { .. }
             | InstructionKind::AddressOf { .. }
+            | InstructionKind::StaticAddr { .. }
             | InstructionKind::Cast { .. }
             | InstructionKind::Select { .. }
     )

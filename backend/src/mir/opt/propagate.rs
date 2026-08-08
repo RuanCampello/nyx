@@ -308,6 +308,7 @@ impl<'a> Solver<'a> {
                 callee: *callee,
                 args: args.iter().map(|&arg| operand(arg)).collect(),
             },
+            StaticAddr { id } => StaticAddr { id: *id },
             Syscall { code, args, returns } => Syscall {
                 code: *code,
                 args: args.iter().map(|&arg| operand(arg)).collect(),
