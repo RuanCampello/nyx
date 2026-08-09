@@ -19,6 +19,7 @@ use crate::{
     },
 };
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     ops::Index,
     str::FromStr,
@@ -31,6 +32,12 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     return_type: Type,
     return_type_span: Option<Span>,
     function: Option<&'f statement::Function<'src>>,
+    /// the implementing type's name, kept apart from [Self::function] because
+    /// lowering takes that out before the body it belongs to is walked
+    impl_type: Option<&'hir str>,
+    /// the unmangled impl name, which is where associated constants stay filed:
+    /// unlike methods they are collected once and never specialised per instance
+    impl_template: Option<&'src str>,
     generics: &'f [statement::GenericBound<'src>],
     function_id: FunctionId,
     next_local: u32,
@@ -81,6 +88,8 @@ where
         let mut builder = Self::raw(scope, arena);
         builder.is_const = function.is_const;
         builder.function = Some(function);
+        builder.impl_type = function.impl_type;
+        builder.impl_template = function.impl_type;
         builder.generics = &function.generics;
         builder.function_id = function_id;
         builder.self_type = self_type;
@@ -93,9 +102,11 @@ where
         function: &'f statement::Function<'src>,
         arena: &'hir bumpalo::Bump,
         generic_env: GenericEnv,
+        impl_type: Option<&'hir str>,
     ) -> Self {
         let mut builder = Self::new(scope, function_id, function, arena);
         builder.generic_env = generic_env;
+        builder.impl_type = impl_type.or(builder.impl_type);
         builder
     }
 
@@ -112,6 +123,8 @@ where
             return_type: TypeKind::Unit.into(),
             return_type_span: None,
             function: None,
+            impl_type: None,
+            impl_template: None,
             generics: &[],
             function_id: FunctionId(0),
             next_local: 0,
@@ -657,6 +670,44 @@ where
         self.alloc(ExpressionKind::Local(id), typ, span)
     }
 
+    /// the mutability of the indirection a place is reached through, if any
+    fn place_indirection(&self, expr: &Expression<'hir>) -> Option<bool> {
+        match &expr.kind {
+            ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => {
+                match self.typeck.type_of(expr.id).kind() {
+                    TypeKind::Ref { mutable, .. } | TypeKind::Raw { mutable, .. } => Some(mutable),
+                    _ => None,
+                }
+            },
+
+            ExpressionKind::Index { base, .. } | ExpressionKind::Field { base, .. } => {
+                match self.typeck.type_of(base.id).kind() {
+                    TypeKind::Slice { mutable, .. } => Some(mutable),
+                    TypeKind::Ref { mutable: true, .. } | TypeKind::Raw { mutable: true, .. } => {
+                        Some(true)
+                    },
+                    TypeKind::Ref { .. } | TypeKind::Raw { .. } => None,
+                    _ => self.place_indirection(base),
+                }
+            },
+
+            _ => None,
+        }
+    }
+
+    fn resolve_self_path<'p>(&self, path: &'p [&'hir str]) -> Cow<'p, [&'hir str]> {
+        match (path.split_first(), self.impl_type) {
+            (Some((&"Self", rest)), Some(impl_type)) => {
+                let mut resolved = Vec::with_capacity(rest.len() + 1);
+                resolved.push(impl_type);
+                resolved.extend_from_slice(rest);
+
+                Cow::Owned(resolved)
+            },
+            _ => Cow::Borrowed(path),
+        }
+    }
+
     fn constant(&self, name: &str) -> Option<&'hir Constant<'hir>> {
         // a body-level constant lexically shadows any module or impl constant
         if let Some(symbol) = self.scope.symbols.get_id(name)
@@ -665,7 +716,7 @@ where
             return Some(constant);
         }
 
-        if let Some(impl_type) = self.function.and_then(|function| function.impl_type) {
+        for impl_type in [self.impl_type, self.impl_template.map(|t| &*t)].into_iter().flatten() {
             let scoped = self.mangler().scoped_item(impl_type, name);
             if let Some(constant) = self.constant_by_symbol_name(&scoped) {
                 return Some(constant);
@@ -713,6 +764,19 @@ where
         let symbol = self.scope.symbols.get_id(name)?;
 
         self.scope.constants.get(&symbol).copied()
+    }
+
+    #[inline]
+    fn template_associated_constant(
+        &self,
+        qualifier: &str,
+        name: &str,
+    ) -> Option<&'hir Constant<'hir>> {
+        self.impl_template
+            .filter(|_| self.impl_type == Some(qualifier))
+            .and_then(|template| {
+                self.constant_by_symbol_name(&self.mangler().scoped_item(template, name))
+            })
     }
 
     fn generic_associated_constant(
@@ -835,6 +899,7 @@ where
             Expr::Identifier(name, span) => self.lower_identifier(name, *span),
 
             Expr::QualifiedName { path, name, span } => {
+                let path = &*self.resolve_self_path(path);
                 let qualifier = self.arena.alloc_str(&path.join("::"));
                 let enum_symbol = self.scope.symbols.insert(qualifier);
                 let variant_symbol = self.scope.symbols.insert(name);
@@ -867,6 +932,7 @@ where
                     .get_id(&mangled_name)
                     .or_else(|| self.scope.symbols.get_id(&self.mangler().item(name)))
                     .and_then(|symbol| self.scope.constants.get(&symbol).copied())
+                    .or_else(|| self.template_associated_constant(qualifier, name))
                     .or_else(|| self.generic_associated_constant(qualifier, name))
                     .ok_or_else(|| hir_error!(*span, UndeclaredIdentifier { name: qualified }))?;
 
@@ -879,13 +945,13 @@ where
                 let inner_hint = match operator {
                     UnaryOperator::Neg => hint,
                     UnaryOperator::Not => hint,
-                    UnaryOperator::Deref => hint.map(|h| {
+                    UnaryOperator::Deref => hint.and_then(|h| {
                         let to = match h.kind() {
                             TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => to,
                             TypeKind::Struct(id) => RefTarget::new(TypeKind::Struct(id)),
-                            _ => RefTarget::new(TypeKind::Char),
+                            _ => return None,
                         };
-                        Type::refer(to, false)
+                        Some(Type::refer(to, false))
                     }),
                     UnaryOperator::Ref | UnaryOperator::RefMut => hint.map(|h| h.strip_reference()),
                 };
@@ -924,15 +990,7 @@ where
                             self.check_raw_deref(expr.typ, expr.span)?;
                             to.into()
                         },
-                        _ => {
-                            return Err(hir_error!(
-                                expr.span,
-                                TypeMismatch {
-                                    expected: Type::refer(RefTarget::new(TypeKind::Char), false),
-                                    found: expr.typ
-                                }
-                            ));
-                        },
+                        _ => return Err(hir_error!(expr.span, InvalidDeref { found: expr.typ })),
                     },
 
                     UnaryOperator::Ref | UnaryOperator::RefMut => {
@@ -940,14 +998,9 @@ where
                             // `&array` unsizes to a `&[T]`/`&mut [T]` slice in slice context
                             Some(slice) => slice,
                             None => {
-                                let err = hir_error!(
-                                    expr.span,
-                                    TypeMismatch {
-                                        expected: Type::structure(Default::default()),
-                                        found: expr.typ
-                                    }
-                                );
-                                let to = RefTarget::try_from(expr.typ).map_err(|_| err)?;
+                                let to = RefTarget::try_from(expr.typ).map_err(|_| {
+                                    hir_error!(expr.span, NestedIndirection { found: expr.typ })
+                                })?;
                                 Type::refer(to, *operator == UnaryOperator::RefMut)
                             },
                         }
@@ -1057,25 +1110,7 @@ where
             Expr::Assignment { target, value, span } => {
                 let target_lowered = self.lower_expr(target, None)?;
 
-                // assigning through an indirection is governed by the mutability the
-                // indirection carries, not by the binding that holds it
-                let behind_pointer = match &target_lowered.expr.kind {
-                    ExpressionKind::Index { base, .. } => {
-                        match self.typeck.type_of(base.id).kind() {
-                            TypeKind::Slice { mutable, .. } => Some(mutable),
-                            _ => None,
-                        }
-                    },
-                    ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => {
-                        match self.typeck.type_of(expr.id).kind() {
-                            TypeKind::Ref { mutable, .. } | TypeKind::Raw { mutable, .. } => {
-                                Some(mutable)
-                            },
-                            _ => None,
-                        }
-                    },
-                    _ => None,
-                };
+                let behind_pointer = self.place_indirection(target_lowered.expr);
 
                 if let ExpressionKind::Static(id) = target_lowered.expr.kind {
                     let item = self.scope.static_by_id(id);
@@ -1199,10 +1234,14 @@ where
 
             Expr::Field { expr: base, field, span } => {
                 let base_lowered = self.lower_expr(base, None)?;
-                if !matches!(
+                let is_place = matches!(
                     &base_lowered.expr.kind,
-                    ExpressionKind::Local(_) | ExpressionKind::Field { .. }
-                ) {
+                    ExpressionKind::Local(_)
+                        | ExpressionKind::Field { .. }
+                        | ExpressionKind::Index { .. }
+                        | ExpressionKind::Unary { operator: UnaryOperator::Deref, .. }
+                );
+                if !is_place {
                     return Err(hir_error!(*span, InvalidFieldAccess));
                 }
 
@@ -1472,6 +1511,8 @@ where
             },
 
             Expr::QualifiedCall { path, name, args, span, type_args } => {
+                let path = &*self.resolve_self_path(path);
+
                 // `Enum::Variant(payload)` constructs a tagged-union value
                 if let Some(lowered) =
                     self.lower_variant(path, name, args, type_args, hint, *span)?

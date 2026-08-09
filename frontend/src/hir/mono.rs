@@ -47,7 +47,7 @@
 //! functions whose parameters are scalars/references
 
 use crate::hir::{
-    Function, FunctionId, FunctionKind, Res, Type, TypeKind,
+    Function, FunctionId, FunctionKind, Owner, Res, Type, TypeKind,
     error::HirError,
     index_vec::IndexVec,
     lower::FunctionBuilder,
@@ -268,10 +268,18 @@ fn specialise<'hir>(
         scope.functions.insert(name, id);
     }
 
+    let impl_type = match owner {
+        Owner::Inherent(on) | Owner::Interface { on, .. } => {
+            scope.nominal_name(on).map(|name| &*arena.alloc_str(name))
+        },
+        Owner::Free => None,
+    };
+
     // Generic templates currently do not record their origin module, so std-only
     // lowering rules such as `syscall` must stay out of generic templates.
     scope.in_std = false;
-    let function = FunctionBuilder::new_instance(scope, id, &template, arena, env).lower()?;
+    let function =
+        FunctionBuilder::new_instance(scope, id, &template, arena, env, impl_type).lower()?;
 
     Ok((id, function))
 }
