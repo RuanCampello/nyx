@@ -1376,6 +1376,21 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_separates_const_requirements_from_constants() {
+        let src = "interface Bounded { const LIMIT: i32; const fn peak(&self): i32; }";
+        let statements = Parser::new(src).parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected an interface item");
+        };
+
+        assert_eq!(interface.constants.len(), 1);
+        assert_eq!(interface.constants[0].name, "LIMIT");
+        assert_eq!(interface.methods.len(), 1);
+        assert!(interface.methods[0].is_const);
+    }
+
+    #[test]
     fn an_unknown_marker_is_rejected() {
         let err = Parser::new("@fast fn go() {}").parse().unwrap_err();
         assert!(matches!(err.kind, ParseErrorKind::UnknownMarker { name: "fast" }));

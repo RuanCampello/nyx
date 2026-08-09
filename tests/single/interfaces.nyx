@@ -1,3 +1,22 @@
+interface Bounded {
+    const LIMIT: i64;
+    const fn peak(&self): i64;
+    const fn headroom(&self): i64 = self.peak() - 1;
+}
+
+impl Circle with Bounded {
+    const LIMIT: i64 = 50;
+    const fn peak(&self): i64 = self.radius * 10;
+}
+
+interface Named {
+    fn tag(&self): i64;
+}
+
+impl Rectangle with Named {
+    const fn tag(&self): i64 = 7;
+}
+
 interface Shape {
     fn area(&self): i64;
     fn perimeter(&self): i64;
@@ -16,33 +35,15 @@ struct Circle {
 }
 
 impl Rectangle with Shape {
-    fn area(&self): i64 {
-        self.width * self.height
-    }
-
-    fn perimeter(&self): i64 {
-        2 * self.width + 2 * self.height
-    }
-
-    fn is_larger_than(&self, other_area: i64): bool {
-        self.area() > other_area
-    }
+    fn area(&self): i64 = self.width * self.height;
+    fn perimeter(&self): i64 = 2 * self.width + 2 * self.height;
+    fn is_larger_than(&self, other_area: i64): bool = self.area() > other_area;
 }
 
 impl Circle with Shape {
-    fn area(&self): i64 {
-        // pi approximated as 3 for integer arithmetic
-        self.radius * self.radius * 3
-    }
-
-    fn perimeter(&self): i64 {
-        // 2 * pi * r, pi approx 3
-        2 * self.radius * 3
-    }
-
-    fn is_larger_than(&self, other_area: i64): bool {
-        self.area() > other_area
-    }
+    fn area(&self): i64 = self.radius * self.radius * 3;
+    fn perimeter(&self): i64 = 2 * self.radius * 3;
+    fn is_larger_than(&self, other_area: i64): bool = self.area() > other_area;
 }
 
 fn main(): i64 {
@@ -76,6 +77,10 @@ fn main(): i64 {
 
     // cross-check rect.area() < circle.area()
     if rect.area() >= circle.area() return 9;
+
+    if circle.peak() != 30 return 10;
+    if circle.headroom() != 29 return 11;
+    if rect.tag() != 7 return 12;
 
     0
 }

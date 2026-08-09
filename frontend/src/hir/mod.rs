@@ -1934,6 +1934,37 @@ mod tests {
     }
 
     #[test]
+    fn a_const_requirement_binds_the_implementation() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Bounded { const fn limit(&self): i32; }
+            struct Gauge { n: i32 }
+
+            impl Gauge with Bounded {
+                fn limit(&self): i32 { 100 }
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::NonConstInterfaceMethod { .. }));
+    }
+
+    #[test]
+    fn an_implementation_may_be_const_without_the_interface() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Plain { fn value(&self): i32; }
+            struct Gauge { n: i32 }
+
+            impl Gauge with Plain {
+                const fn value(&self): i32 { 100 }
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
+    }
+
+    #[test]
     fn shared_self_cannot_assign_fields() {
         let arena = bumpalo::Bump::new();
         let src = r#"

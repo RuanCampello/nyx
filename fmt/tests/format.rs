@@ -538,6 +538,24 @@ fn keeps_inline_on_a_requirement() {
 }
 
 #[test]
+fn keeps_const_on_a_requirement() {
+    assert_formats(
+        indoc! {"
+            pub interface Bounded {
+                const LIMIT: i32;
+                const fn peak(&self):i32;
+            }
+        "},
+        indoc! {"
+            pub interface Bounded {
+                const LIMIT: i32;
+                const fn peak(&self): i32;
+            }
+        "},
+    );
+}
+
+#[test]
 fn keeps_associated_type_bounds() {
     assert_formats(
         indoc! {"
