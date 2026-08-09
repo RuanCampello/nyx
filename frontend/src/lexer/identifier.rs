@@ -56,6 +56,14 @@ mod tests {
         assert_eq!(tok("return").kind, TokenKind::Keyword(Keyword::Return));
         assert_eq!(tok("struct").kind, TokenKind::Keyword(Keyword::Struct));
         assert_eq!(tok("static").kind, TokenKind::Keyword(Keyword::Static));
+        assert_eq!(tok("type").kind, TokenKind::Keyword(Keyword::Type));
+    }
+
+    /// `type` must not swallow identifiers that merely start with it
+    #[test]
+    fn type_prefix_is_an_identifier() {
+        assert_eq!(tok("types").kind, TokenKind::Identifier("types"));
+        assert_eq!(tok("type_of").kind, TokenKind::Identifier("type_of"));
     }
 
     /// `static` must not swallow identifiers that merely start with it

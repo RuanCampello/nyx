@@ -1,0 +1,160 @@
+use std::ops::{Index, IndexMutable};
+use std::panic;
+
+struct Pair {
+  a: i32,
+  b: i32,
+}
+
+struct Cell {
+  v: i32,
+}
+
+struct Grid {
+  rows: [[i32; 2]; 2],
+}
+
+struct Bag {
+  items: [i32; 3],
+}
+
+impl Pair {
+  fn first(&mut self): &mut i32 {
+    &mut self.a
+  }
+}
+
+impl Bag {
+  fn at(&mut self, index: uptr): &mut i32 {
+    &mut self.items[index]
+  }
+}
+
+impl Grid {
+  fn at(&mut self, row: uptr, column: uptr): &mut i32 {
+    &mut self.rows[row][column]
+  }
+}
+
+impl Bag with Index<uptr> {
+  type Output = i32;
+
+  fn index(&self, index: uptr): &Self::Output {
+    &self.items[index]
+  }
+}
+
+impl Bag with IndexMutable<uptr> {
+  fn index_mut(&mut self, index: uptr): &mut Self::Output {
+    &mut self.items[index]
+  }
+}
+
+fn check_field_address() {
+  let mut pair = Pair { a: 1, b: 2 };
+  *pair.first() = 40;
+  panic::assert_eq(pair.a, 40);
+  panic::assert_eq(pair.b, 2);
+}
+
+fn check_element_address() {
+  let mut bag = Bag { items: [1, 2, 3] };
+  *bag.at(0) = 40;
+  *bag.at(2) = 2;
+  panic::assert_eq(bag.items[0], 40);
+  panic::assert_eq(bag.items[1], 2);
+  panic::assert_eq(bag.items[2], 2);
+}
+
+fn check_nested_element_address() {
+  let mut grid = Grid { rows: [[1, 2], [3, 4]] };
+  *grid.at(0, 0) = 40;
+  *grid.at(1, 1) = 2;
+  panic::assert_eq(grid.rows[0][0], 40);
+  panic::assert_eq(grid.rows[1][1], 2);
+}
+
+fn check_local_element_pointer() {
+  let mut items: [i32; 3] = [1, 2, 3];
+  let slot = &mut items[0];
+  *slot = 40;
+  panic::assert_eq(items[0], 40);
+}
+
+fn fill(pair: &mut Pair) {
+  pair.a = 40;
+  pair.b = 2;
+}
+
+fn shift(bag: &mut Bag) {
+  bag.items[0] = 40;
+}
+
+fn check_write_through_reference() {
+  let mut pair = Pair { a: 1, b: 1 };
+  fill(&mut pair);
+  panic::assert_eq(pair.a, 40);
+  panic::assert_eq(pair.b, 2);
+
+  let mut bag = Bag { items: [1, 2, 3] };
+  shift(&mut bag);
+  panic::assert_eq(bag.items[0], 40);
+}
+
+fn check_projected_field() {
+  let mut cells: [Cell; 2] = [Cell { v: 1 }, Cell { v: 2 }];
+  cells[0].v = 40;
+  panic::assert_eq(cells[0].v, 40);
+  panic::assert_eq(cells[1].v, 2);
+
+  let mut pair = Pair { a: 1, b: 1 };
+  let held = &mut pair;
+  (*held).a = 40;
+  (*held).b = 2;
+  panic::assert_eq(pair.a, 40);
+  panic::assert_eq(pair.b, 2);
+}
+
+struct Row {
+  pairs: [Pair; 2],
+}
+
+impl Pair {
+  fn doubled(&self): i32 {
+    self.a * 2
+  }
+}
+
+fn raise(slot: &mut i32) {
+  *slot = *slot + 1;
+}
+
+fn check_element_field() {
+  let mut row = Row { pairs: [Pair { a: 1, b: 0 }, Pair { a: 2, b: 0 }] };
+  row.pairs[0].a = 39;
+  raise(&mut row.pairs[0].a);
+  panic::assert_eq(row.pairs[0].a, 40);
+  panic::assert_eq(row.pairs[1].a, 2);
+  panic::assert_eq(row.pairs[1].doubled(), 4);
+}
+
+fn check_index_interface() {
+  let mut bag = Bag { items: [1, 2, 3] };
+  *bag.index_mut(0) = 40;
+  *bag.index_mut(1) = 2;
+  panic::assert_eq(*bag.index(0), 40);
+  panic::assert_eq(*bag.index(1), 2);
+}
+
+fn main(): i32 {
+  check_field_address();
+  check_element_address();
+  check_nested_element_address();
+  check_local_element_pointer();
+  check_write_through_reference();
+  check_projected_field();
+  check_element_field();
+  check_index_interface();
+
+  0
+}

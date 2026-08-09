@@ -315,6 +315,11 @@ const CASES: &[Case] = &[
         exit_code: Some(42),
     },
     Case {
+        name: "place_addresses",
+        file: "tests/single/place_addresses.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "expression_bodies",
         file: "tests/single/expression_bodies.nyx",
         exit_code: Some(42),
