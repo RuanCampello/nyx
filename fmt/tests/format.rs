@@ -480,6 +480,59 @@ fn formats_an_interface_with_requirements_and_a_default() {
     );
 }
 
+/// an associated type is a member like any other: dropping it silently deletes the
+/// binding an implementation is required to supply
+#[test]
+fn keeps_associated_types() {
+    assert_formats(
+        indoc! {"
+            pub interface Index<Idx> {
+                type   Output ;
+                fn index(&self,index:Idx):&Self::Output;
+            }
+        "},
+        indoc! {"
+            pub interface Index<Idx> {
+                type Output;
+                fn index(&self, index: Idx): &Self::Output;
+            }
+        "},
+    );
+
+    assert_formats(
+        indoc! {"
+            impl Bag with Index<uptr> {
+                type Output=i32;
+                fn index(&self,index:uptr):&Self::Output{&self.items[index]}
+            }
+        "},
+        indoc! {"
+            impl Bag with Index<uptr> {
+                type Output = i32;
+                fn index(&self, index: uptr): &Self::Output {
+                    &self.items[index]
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn keeps_associated_type_bounds() {
+    assert_formats(
+        indoc! {"
+            pub interface Show {
+                type Output : Display+Clone ;
+            }
+        "},
+        indoc! {"
+            pub interface Show {
+                type Output: Display + Clone;
+            }
+        "},
+    );
+}
+
 #[test]
 fn formats_superinterfaces_without_duplicating_them() {
     assert_formats(
