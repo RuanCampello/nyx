@@ -26,6 +26,14 @@ fn first_of(slot: &i32, count: uptr): i32 {
     }
 }
 
+/// `&*p` reborrows the address `p` holds, it does not copy the pointee into a
+/// temporary whose address would dangle the moment this frame is gone
+@unsafe
+fn nth(p: *i32, index: uptr): &i32 = &*add(p, index);
+
+@unsafe
+fn nth_mut(p: *mut i32, index: uptr): &mut i32 = &mut *add_mut(p, index);
+
 @unsafe
 fn main(): i32 {
     let mut src: [i32; 5] = [1, 2, 3, 4, 5];
@@ -35,39 +43,45 @@ fn main(): i32 {
     let d: *mut i32 = &mut dst[0];
 
     copy_nonoverlapping(s, d, 5);
-    if sum_through(d as *i32, 5) != 15 { return 91; }
+    if sum_through(d as *i32, 5) != 15 return 91;
 
     let old = replace(d, 100);
-    if old != 1 { return 92; }
-    if read(d as *i32) != 100 { return 93; }
+    if old != 1 return 92;
+    if read(d as *i32) != 100 return 93;
 
     write(d, 1);
     bump(d);
-    if read(d as *i32) != 2 { return 94; }
+    if read(d as *i32) != 2 return 94;
 
     let mut x: i32 = 7;
     let mut y: i32 = 9;
     swap(&mut x, &mut y);
-    if x != 9 { return 95; }
-    if y != 7 { return 96; }
+    if x != 9 return 95;
+    if y != 7 return 96;
 
     through_reference(&mut x);
-    if x != 18 { return 97; }
+    if x != 18 return 97;
 
-    if !is_null(null::<i32>()) { return 98; }
-    if is_null(s) { return 99; }
-    if addr(s) == 0 { return 100; }
+    if !is_null(null::<i32>()) return 98;
+    if is_null(s) return 99;
+    if addr(s) == 0 return 100;
 
     // overlapping copy shifts the block left by one element
     copy(add(s, 1), &mut src[0], 4);
-    if src[0] != 2 { return 101; }
-    if src[3] != 5 { return 102; }
+    if src[0] != 2 return 101;
+    if src[3] != 5 return 102;
 
-    if first_of(&src[0], 1) != 2 { return 104; }
+    if first_of(&src[0], 1) != 2 return 104;
 
     let second = add_mut(d, 1);
     write(second, 40);
-    if read(add(d as *i32, 1)) != 40 { return 103; }
+    if read(add(d as *i32, 1)) != 40 return 103;
+
+    if *nth(d as *i32, 1) != 40 return 105;
+    if addr(nth(d as *i32, 1)) != addr(add(d as *i32, 1)) return 106;
+
+    *nth_mut(d, 1) = 41;
+    if read(add(d as *i32, 1)) != 41 return 107;
 
     42
 }
