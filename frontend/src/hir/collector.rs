@@ -435,6 +435,7 @@ impl<'hir> Scope<'hir> {
                     return_type,
                     has_receiver,
                     receiver_mut,
+                    is_const: method.is_const,
                     decl_span: method.span,
                     name_span: method.name_span,
                 });

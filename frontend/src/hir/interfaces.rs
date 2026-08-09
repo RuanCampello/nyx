@@ -199,6 +199,18 @@ fn validate_impls<'hir, 'd, 'h>(
                 && required_params == impl_explicit_params
                 && required_return_type == signature.return_type;
 
+            if required.is_const && !signature.is_const {
+                errors.push(hir_error!(
+                    impl_method.span,
+                    NonConstInterfaceMethod {
+                        struct_name: implementation.name,
+                        interface_name,
+                        method_name,
+                        decl: collector::source_span(required.decl_span),
+                    }
+                ));
+            }
+
             if !signature_ok {
                 let expected = format_signature(
                     method_name,

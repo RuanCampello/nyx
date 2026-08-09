@@ -343,6 +343,7 @@ pub struct InterfaceMethod<'i> {
     /// applies to the default body this declaration supplies, an implementation
     /// that overrides it declares its own modifiers
     pub inline: bool,
+    pub is_const: bool,
     pub generics: Vec<GenericBound<'i>>,
     pub receiver: Option<Receiver>,
     pub params: Vec<Parameter<'i>>,
@@ -1080,7 +1081,7 @@ impl<'i> Impl<'i> {
                     params: m.params.clone(),
                     return_type: m.return_type.clone(),
                     body: body.clone(),
-                    is_const: false,
+                    is_const: m.is_const,
                     is_pub: false,
                     inline: m.inline,
                     markers: m.markers.clone(),
@@ -1246,7 +1247,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let mut member_docs = Vec::new();
 
         let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
-            Some(Ok(token)) if token.is_kind(Keyword::Const) => {
+            Some(Ok(_)) if parser.is_const_decl() => {
                 let constant = InterfaceConst::parse(parser)?;
                 push_member_docs(&mut member_docs, constant.span, docs);
                 constants.push(constant);
@@ -1330,8 +1331,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let markers = parse_markers(parser)?;
         let inline = parser.consume_token(Keyword::Inline)?;
-        // `const` on a requirement is accepted but carries no meaning yet
-        let _is_const = parser.consume_token(Keyword::Const)?;
+        let is_const = parser.consume_token(Keyword::Const)?;
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, name_span) = parser.expect_identifier()?;
 
@@ -1357,6 +1357,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             name,
             name_span,
             inline,
+            is_const,
             generics,
             receiver,
             params,

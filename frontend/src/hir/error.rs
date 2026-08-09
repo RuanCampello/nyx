@@ -392,6 +392,21 @@ pub enum HirErrorKind<'h> {
     UnknownInterface { name: &'h str },
 
     #[diagnostic(
+        code = "E158",
+        message = "{method_name!} must be {`const`} to implement {interface_name*}",
+        primary = "this implementation is not {`const`}",
+        secondary(span_field = "decl", optional, label = "{interface_name*} declares it {`const`} here"),
+        note = "A {`const`} requirement binds every implementation, an implementation may be {`const`} on its own without the interface asking",
+        help = "Declare it {`const fn {method_name}(…)`}"
+    )]
+    NonConstInterfaceMethod {
+        struct_name: &'h str,
+        interface_name: &'h str,
+        method_name: &'h str,
+        decl: Option<Span>,
+    },
+
+    #[diagnostic(
         code = "E137",
         message = "{struct_name!} is missing {method_name!} required by {interface_name*}",
         primary = "{method_name~} is not implemented in this block",

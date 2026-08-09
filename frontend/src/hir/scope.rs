@@ -138,6 +138,8 @@ pub struct InterfaceMethodSignature {
     pub return_type: Type,
     pub has_receiver: bool,
     pub receiver_mut: bool,
+    /// when set, every implementation of this method has to be `const` too
+    pub is_const: bool,
     pub decl_span: Span,
     /// the declared name alone, where goto-definition lands
     pub name_span: Span,

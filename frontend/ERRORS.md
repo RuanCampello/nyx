@@ -791,6 +791,26 @@ fn bump_ok() {
 }
 ```
 
+### E158: implementation of a const requirement is not const
+
+A `const` method in an interface binds every implementation. The reverse does not
+hold: an implementation may be `const` even when the interface never asked, and
+the optimiser folds it all the same.
+
+```rust
+pub interface Bounded {
+    const fn limit(&self): i32;
+}
+
+impl Gauge with Bounded {
+    fn limit(&self): i32 { 100 }        // error: must be const
+}
+
+impl Gauge with Bounded {
+    const fn limit(&self): i32 { 100 }  // fine
+}
+```
+
 ### E157: dereference of a non-pointer
 
 Only references and raw pointers can be dereferenced.
