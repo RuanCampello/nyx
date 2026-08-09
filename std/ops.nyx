@@ -1,0 +1,17 @@
+pub interface Index<Idx> {
+  type Output;
+
+  fn index(&self, index: Idx): &Self::Output;
+}
+
+pub interface IndexMutable<Idx>: Index {
+  fn index_mut(&mut self, index: Idx): &mut Self::Output;
+}
+
+pub interface Drop {
+  fn drop(&mut self) {
+      @unsafe {
+        // we need to implement drop here 
+      }
+  }
+}
