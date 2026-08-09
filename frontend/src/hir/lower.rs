@@ -1527,6 +1527,7 @@ where
         let mut arms = Vec::with_capacity(match_stmt.arms.len());
 
         let mut unified_type = hint;
+        let (mut divergent, mut valued) = (None, false);
 
         for arm in &match_stmt.arms {
             self.push_scope();
@@ -1541,11 +1542,15 @@ where
             }
 
             let body = self.lower_expr(&arm.body, unified_type)?;
-            match unified_type {
-                Some(expected) if !body.typ.diverges() => {
-                    self.assert_type(expected, body.typ, body.span)?
+            match body.typ.diverges() {
+                true => divergent = divergent.or(Some(body.typ)),
+                _ => {
+                    valued = true;
+                    match unified_type {
+                        Some(expected) => self.assert_type(expected, body.typ, body.span)?,
+                        None => unified_type = Some(body.typ),
+                    }
                 },
-                _ => unified_type = Some(body.typ),
             }
 
             self.pop_scope();
@@ -1558,7 +1563,12 @@ where
             });
         }
 
-        let return_type = unified_type.unwrap_or(TypeKind::Unit.into());
+        // every arm diverging makes the match itself diverge,
+        // whatever the context expected
+        let return_type = match valued {
+            true => unified_type.expect("a valued arm always sets the unified type"),
+            false => divergent.unwrap_or(TypeKind::Unit.into()),
+        };
         let arms = self.arena.alloc_slice_copy(&arms);
 
         Ok(self.alloc(
