@@ -349,6 +349,10 @@ impl<'src> Printer<'src> {
             parts.push(Doc::hard_line());
         }
 
+        if method.inline {
+            parts.push(Doc::text("inline "));
+        }
+
         let terminator = match method.body {
             Some(ref body) => body.span.start,
             None => method.span.end,

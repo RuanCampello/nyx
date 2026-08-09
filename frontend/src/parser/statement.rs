@@ -340,6 +340,9 @@ pub struct InterfaceMethod<'i> {
     pub name: &'i str,
     /// the declared name alone, where goto-definition lands
     pub name_span: Span,
+    /// applies to the default body this declaration supplies, an implementation
+    /// that overrides it declares its own modifiers
+    pub inline: bool,
     pub generics: Vec<GenericBound<'i>>,
     pub receiver: Option<Receiver>,
     pub params: Vec<Parameter<'i>>,
@@ -1079,7 +1082,7 @@ impl<'i> Impl<'i> {
                     body: body.clone(),
                     is_const: false,
                     is_pub: false,
-                    inline: false,
+                    inline: m.inline,
                     markers: m.markers.clone(),
                     span: m.span,
                 })
@@ -1326,8 +1329,8 @@ impl<'i> Parsable<'i> for InterfaceConst<'i> {
 impl<'i> Parsable<'i> for InterfaceMethod<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let markers = parse_markers(parser)?;
-        // accept (and ignore) `inline`/`const` modifiers on interface methods
-        let _inline = parser.consume_token(Keyword::Inline)?;
+        let inline = parser.consume_token(Keyword::Inline)?;
+        // `const` on a requirement is accepted but carries no meaning yet
         let _is_const = parser.consume_token(Keyword::Const)?;
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, name_span) = parser.expect_identifier()?;
@@ -1353,6 +1356,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             span,
             name,
             name_span,
+            inline,
             generics,
             receiver,
             params,
