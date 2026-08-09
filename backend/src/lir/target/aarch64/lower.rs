@@ -264,7 +264,7 @@ impl<'f> Lower<'f, AArch64> {
             },
 
             InstructionKind::FieldLoad { src, offset, typ } => {
-                if typ.is_aggregate() {
+                if typ.is_aggregate_lir(self.layouts) {
                     let origin = match src {
                         Operand::Place(p) => self.value[p.id],
                         Operand::Const(_) => unreachable!("struct constant in field access"),
@@ -312,7 +312,7 @@ impl<'f> Lower<'f, AArch64> {
             InstructionKind::FieldStore { value, offset } => {
                 let offset = *offset as i32;
 
-                if value.typ().is_aggregate() {
+                if value.typ().is_aggregate_lir(self.layouts) {
                     let Operand::Place(src) = value else {
                         unreachable!("aggregate field store source must be a place");
                     };

@@ -225,7 +225,7 @@ where
     /// argument rather than in registers
     #[inline(always)]
     fn uses_sret(typ: Type, layouts: Layouts) -> bool {
-        typ.is_aggregate() && Self::small_aggregate_return(typ, layouts).is_none()
+        typ.is_aggregate_lir(layouts) && Self::small_aggregate_return(typ, layouts).is_none()
     }
 }
 
@@ -555,7 +555,7 @@ where
         let is_ref = base.typ.is_pointer();
         let element = self.element_addr_into(block, None, origin, is_ref, index, bound, stride);
 
-        match typ.is_aggregate() {
+        match typ.is_aggregate_lir(self.layouts) {
             true => {
                 let size = typ.machine_type(self.layouts).stack_size() as u32;
                 let copy = AggregateCopy::new(element, dest, size).with_src_ref();
@@ -584,7 +584,7 @@ where
         let element = self.element_addr_into(block, None, dest, is_ref, index, bound, stride);
 
         let value_typ = value.typ();
-        match value_typ.is_aggregate() {
+        match value_typ.is_aggregate_lir(self.layouts) {
             true => {
                 let Operand::Place(src) = value else {
                     unreachable!("aggregate element store source must be a place");
@@ -663,14 +663,15 @@ where
 
         let callee = assembly_label(self.symbols.get(callee_fn.name_symbol));
         let return_type = callee_fn.return_type;
-        let aggregate_ret = match return_type.is_aggregate() {
+        let returns_aggregate = return_type.is_aggregate_lir(self.layouts);
+        let aggregate_ret = match returns_aggregate {
             true => T::small_aggregate_return(return_type, self.layouts).unwrap_or_default(),
             false => Vec::new(),
         };
 
         let mut int_idx = 0;
         let mut moves = Vec::new();
-        if return_type.is_aggregate() && aggregate_ret.is_empty() {
+        if returns_aggregate && aggregate_ret.is_empty() {
             let ptr = self.stack_addr(block, dest);
             let abi_reg = T::param(int_idx, RegClass::Int)
                 .expect("sret pointer must fit in the first integer argument register");
@@ -698,8 +699,7 @@ where
         );
         moves.extend(arg_moves);
 
-        let ret =
-            (return_type.kind() != TypeKind::Unit && !return_type.is_aggregate()).then_some(dest);
+        let ret = (return_type.kind() != TypeKind::Unit && !returns_aggregate).then_some(dest);
         let mut ret_vregs = Vec::with_capacity(aggregate_ret.len());
         for &(_, bytes, reg) in &aggregate_ret {
             let vreg = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
@@ -722,7 +722,7 @@ where
 
         let terminator = match terminator {
             MirTerm::Return(None) => Term::Return(None),
-            MirTerm::Return(Some(operand)) if operand.typ().is_aggregate() => {
+            MirTerm::Return(Some(operand)) if operand.typ().is_aggregate_lir(self.layouts) => {
                 let typ = operand.typ();
                 let Operand::Place(place) = operand else {
                     unreachable!("aggregate return source must be a place");
@@ -774,6 +774,7 @@ pub fn small_aggregate_chunks<R: Copy>(
     let size = typ.machine_type(layouts).stack_size() as u32;
     let contains_float = match typ.kind() {
         TypeKind::Struct(sid) => layouts.structs[sid.0 as usize].contains_float(),
+        TypeKind::Enum(eid) => layouts.enums[eid.id() as usize].contains_float(),
         _ => false,
     };
     if size == 0 || size > 16 || contains_float {
