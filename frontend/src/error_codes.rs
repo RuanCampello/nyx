@@ -842,7 +842,7 @@ fn main(): i32 {
 "#;
 
 E156 => "implementation leaves an associated type unbound", r#"
-An interface declares `type X,` and the implementation never says what `X` is.
+An interface declares `type X;` and the implementation never says what `X` is.
 
 ```nyx
 impl Buffer with Index<uptr> {
