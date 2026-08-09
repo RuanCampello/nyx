@@ -1363,6 +1363,19 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_requirement_carries_inline() {
+        let src = "interface Speak { fn tone(&self): i32; inline fn loud(&self): i32 { 1 } }";
+        let statements = Parser::new(src).parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Interface(interface), .. }) = &statements[0]
+        else {
+            panic!("expected an interface item");
+        };
+
+        assert!(!interface.methods[0].inline);
+        assert!(interface.methods[1].inline);
+    }
+
+    #[test]
     fn an_unknown_marker_is_rejected() {
         let err = Parser::new("@fast fn go() {}").parse().unwrap_err();
         assert!(matches!(err.kind, ParseErrorKind::UnknownMarker { name: "fast" }));

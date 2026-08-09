@@ -518,6 +518,26 @@ fn keeps_associated_types() {
 }
 
 #[test]
+fn keeps_inline_on_a_requirement() {
+    assert_formats(
+        indoc! {"
+            pub interface Hasher {
+                fn write(&mut self,byte:u8);
+                inline fn twice(&mut self,byte:u8){self.write(byte);}
+            }
+        "},
+        indoc! {"
+            pub interface Hasher {
+                fn write(&mut self, byte: u8);
+                inline fn twice(&mut self, byte: u8) {
+                    self.write(byte);
+                }
+            }
+        "},
+    );
+}
+
+#[test]
 fn keeps_associated_type_bounds() {
     assert_formats(
         indoc! {"
