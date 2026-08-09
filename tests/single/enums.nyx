@@ -2,11 +2,26 @@ use std::cmp::{PartialEq};
 use std::default::{Default};
 use std::mem;
 use std::panic;
+use std::result::{Result};
 
 enum Status {
     Ready = 1,
     Done = 2,
 } as u8
+
+struct Span { start: uptr, end: uptr }
+
+/// a payload pushes the enum past its tag, so it travels as an aggregate: in a
+/// register pair while it fits, through an sret pointer once it does not
+enum Slot {
+    Filled(uptr),
+    Empty,
+}
+
+enum Region {
+    Marked(Span),
+    Unmarked,
+}
 
 struct PackedFlags {
     a: i8,
@@ -32,6 +47,68 @@ impl Status with PartialEq<Status> {
     }
 }
 
+fn filled(value: uptr): Slot {
+    Slot::Filled(value)
+}
+
+fn marked(start: uptr, end: uptr): Region {
+    Region::Marked(Span { start: start, end: end })
+}
+
+fn payload_of(slot: Slot): uptr {
+    match slot {
+        Filled(value) -> value,
+        Empty -> 0,
+    }
+}
+
+fn width_of(region: Region): uptr {
+    match region {
+        Marked(span) -> span.end - span.start,
+        Unmarked -> 0,
+    }
+}
+
+fn checked(value: uptr): Result<Slot, uptr> {
+    match value == 0 {
+        true -> Result::Failure(value),
+        _ -> Result::Success(Slot::Filled(value)),
+    }
+}
+
+/// a returned payload survives the call, rather than arriving as its tag alone
+fn check_register_pair_return() {
+    panic::assert(payload_of(filled(42)) == 42);
+    panic::assert(payload_of(Slot::Empty) == 0);
+
+    let carried = filled(7);
+    panic::assert(payload_of(carried) == 7);
+}
+
+/// past two registers the payload travels through an sret pointer instead
+fn check_sret_return() {
+    panic::assert(width_of(marked(10, 34)) == 24);
+    panic::assert(width_of(Region::Unmarked) == 0);
+}
+
+/// a generic enum from another module, the shape `Allocator` returns
+fn check_generic_return() {
+    panic::assert(payload_of(checked(21).unwrap()) == 21);
+    panic::assert(checked(0).is_failure());
+}
+
+fn check_array_elements() {
+    let mut slots: [Slot; 3] = [Slot::Empty, Slot::Filled(30), Slot::Empty];
+    slots[2] = Slot::Filled(12);
+
+    let mut total: uptr = 0;
+    loop i in 0..3 {
+        let slot = slots[i];
+        total = total + payload_of(slot);
+    }
+    panic::assert(total == 42);
+}
+
 fn main(): i32 {
     let mut status = Status::default();
     let other = Status::Done;
@@ -43,6 +120,11 @@ fn main(): i32 {
     panic::assert(status.eq(&other));
     panic::assert(status.touch() == 9);
     panic::assert(status.code() == 7);
+
+    check_register_pair_return();
+    check_sret_return();
+    check_generic_return();
+    check_array_elements();
 
     0
 }
