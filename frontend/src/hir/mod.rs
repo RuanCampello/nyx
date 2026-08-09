@@ -590,12 +590,13 @@ pub fn join_docs(lines: &[&str]) -> Option<Box<str>> {
     Some(out.into_boxed_str())
 }
 
-/// Walk a place expression (`Local`/`Field`) to its base local, if any
+/// Walk a place expression to the local it is rooted at, if any
 pub fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
     match &expr.kind {
         ExpressionKind::Local(local) => Some(*local),
         ExpressionKind::Field { base, .. } => place_base_local(base),
         ExpressionKind::Index { base, .. } => place_base_local(base),
+        ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => place_base_local(expr),
         _ => None,
     }
 }
@@ -1877,6 +1878,59 @@ mod tests {
 
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "counter", .. }));
+    }
+
+    #[test]
+    fn mutable_reference_parameters_can_be_written_through() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            struct Counter { value: i32 }
+
+            fn bump(counter: &mut Counter) {
+                counter.value = 1;
+            }
+        "#;
+
+        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
+    }
+
+    #[test]
+    fn shared_reference_parameters_cannot_be_written_through() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            struct Counter { value: i32 }
+
+            fn bump(counter: &Counter) {
+                counter.value = 1;
+            }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "counter", .. }));
+    }
+
+    #[test]
+    fn a_reference_to_a_reference_reports_nested_indirection() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main(){let mut v:i32=1;let p=&mut v;let pp=&mut p;}";
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(
+            matches!(err.kind, HirErrorKind::NestedIndirection { .. }),
+            "a nested reference must not be reported as a mismatch against a made-up type"
+        );
+    }
+
+    #[test]
+    fn dereferencing_a_non_pointer_names_the_type() {
+        let arena = bumpalo::Bump::new();
+        let src = "fn main():i32{let x:i32=1;*x}";
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(
+            matches!(err.kind, HirErrorKind::InvalidDeref { .. }),
+            "dereferencing a non-pointer must not be reported against a made-up reference type"
+        );
     }
 
     #[test]

@@ -357,8 +357,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_range_loop(
         &mut self,
         binding: Option<LocalId>,
-        start: &Expression<'hir>,
-        end: &Expression<'hir>,
+        start: &'hir Expression<'hir>,
+        end: &'hir Expression<'hir>,
         inclusive: bool,
         body: &hir::Block<'hir>,
     ) -> Result<(), MirError> {
@@ -493,7 +493,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_iterable_loop(
         &mut self,
         binding: LocalId,
-        iterable: &Expression<'hir>,
+        iterable: &'hir Expression<'hir>,
         body: &hir::Block<'hir>,
     ) -> Result<(), MirError> {
         let iterable_type = self.typeck.type_of(iterable.id);
@@ -565,7 +565,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         );
     }
 
-    fn lower_expr(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
+    fn lower_expr(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand, MirError> {
         let outer = std::mem::replace(&mut self.span, expr.span);
         let lowered = self.lower_expr_inner(expr);
         self.span = outer;
@@ -573,7 +573,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         lowered
     }
 
-    fn lower_expr_inner(&mut self, expr: &Expression<'hir>) -> Result<Operand, MirError> {
+    fn lower_expr_inner(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand, MirError> {
         use InstructionKind as Kind;
 
         let typ = self.typeck.type_of(expr.id);
@@ -657,6 +657,14 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                 if is_ref && let Some(pointee) = deref_pointee {
                     return self.lower_expr(pointee);
+                }
+
+                // loading the place into a temporary first would address that copy, which dies with the frame
+                if is_ref
+                    && !typ.is_slice()
+                    && let Some(place) = self.place_address(inner)?
+                {
+                    return Ok(Operand::Place(place));
                 }
 
                 if let (UnaryOperator::Neg, ExpressionKind::Literal(hir::Literal::Int(value))) =
@@ -806,7 +814,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
 
                 let src = self.lower_expr(value_expr)?;
-                let (dest, offset, _) = self.place_info(target);
+                let (dest, offset, _) = self.place_parts(target)?;
 
                 match &target.kind {
                     ExpressionKind::Local(local) if self.runtime_local_uses(*local) => {
@@ -969,7 +977,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::Field { .. } => {
-                let (origin, offset, typ) = self.place_info(expr);
+                let (origin, offset, typ) = self.place_parts(expr)?;
                 let dest = self.fresh_temporary(typ);
                 self.emit(dest, Kind::FieldLoad { src: Operand::Place(origin), offset, typ });
                 Ok(Operand::Place(dest))
@@ -1092,8 +1100,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_short_circuit(
         &mut self,
         operator: BinaryOperator,
-        left: &Expression<'hir>,
-        right: &Expression<'hir>,
+        left: &'hir Expression<'hir>,
+        right: &'hir Expression<'hir>,
         typ: Type,
     ) -> Result<Operand, MirError> {
         debug_assert_eq!(
@@ -1251,6 +1259,31 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
     }
 
+    /// [Self::place_info] over any place, including ones reached dynamically
+    fn place_parts(
+        &mut self,
+        expr: &'hir Expression<'hir>,
+    ) -> Result<(Place, u32, Type), MirError> {
+        match &expr.kind {
+            ExpressionKind::Local(_) => Ok(self.place_info(expr)),
+
+            ExpressionKind::Field { base, field } => {
+                let (origin, base_offset, base_type) = self.place_parts(base)?;
+                let layout = hir::struct_field(base_type, *field, self.structs);
+
+                Ok((origin, base_offset + layout.offset, layout.typ))
+            },
+
+            _ => {
+                let address = self
+                    .place_address(expr)?
+                    .expect("place_parts called on a non-place expression");
+
+                Ok((address, 0, self.typeck.type_of(expr.id)))
+            },
+        }
+    }
+
     /// `(element, element_size, length)` of a fixed-size array type
     fn array_info(&self, array_type: Type) -> (Type, u32, u32) {
         match array_type.kind() {
@@ -1275,13 +1308,56 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         (element, stride)
     }
 
-    /// lower an index base into `(base, bound, element, stride)` so the same
-    /// [InstructionKind::ElementLoad]/[InstructionKind::ElementStore] serve arrays
-    /// and slices: arrays index their own stack storage against a constant length,
-    /// slices index through the fat pointer's `ptr` against its runtime `len`
+    fn place_address(&mut self, expr: &'hir Expression<'hir>) -> Result<Option<Place>, MirError> {
+        let pointer = Type::refer(RefTarget::new(TypeKind::U8), true);
+
+        match &expr.kind {
+            ExpressionKind::Local(_) | ExpressionKind::Field { .. } => {
+                let (origin, offset, _) = self.place_parts(expr)?;
+                let dest = self.fresh_temporary(pointer);
+                self.emit(dest, InstructionKind::AddressOf { src: origin, offset });
+
+                Ok(Some(dest))
+            },
+
+            ExpressionKind::Index { base, index } => {
+                let base_type = self.typeck.type_of(base.id);
+                let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                let index = self.lower_expr(index)?;
+                let dest = self.fresh_temporary(pointer);
+                self.emit(dest, InstructionKind::ElementAddr { base, index, bound, stride });
+
+                Ok(Some(dest))
+            },
+
+            ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => {
+                match self.lower_expr(expr)? {
+                    Operand::Place(place) => Ok(Some(place)),
+                    Operand::Const(_) => Ok(None),
+                }
+            },
+
+            _ => Ok(None),
+        }
+    }
+
+    fn array_base_place(
+        &mut self,
+        base: &'hir Expression<'hir>,
+    ) -> Result<Option<Place>, MirError> {
+        if let ExpressionKind::Local(_) | ExpressionKind::Field { .. } = &base.kind {
+            let (origin, offset, _) = self.place_info(base);
+            if offset == 0 && !origin.typ.is_pointer() {
+                return Ok(Some(origin));
+            }
+        }
+
+        self.place_address(base)
+    }
+
     fn index_operands(
         &mut self,
-        base: &Expression<'hir>,
+        base: &'hir Expression<'hir>,
         base_type: Type,
     ) -> Result<(Operand, Operand, Type, u32), MirError> {
         let (element, stride) = self.element_info(base_type);
@@ -1312,8 +1388,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
             _ => {
                 let (_, _, len) = self.array_info(base_type);
-                let base = self.lower_expr(base)?;
                 let bound = Operand::Const(Const::Int(len as i64, TypeKind::Uptr.into()));
+                let base = match self.array_base_place(base)? {
+                    Some(place) => Operand::Place(place),
+                    None => self.lower_expr(base)?,
+                };
+
                 Ok((base, bound, element, stride))
             },
         }
