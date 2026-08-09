@@ -1,4 +1,5 @@
 use std::panic;
+use std::optional::{Optional};
 
 enum Direction {
     North = 0,
@@ -66,6 +67,22 @@ fn letter_class(c: char): i32 {
     }
 }
 
+/// a diverging arm yields no value, so the match still takes its type from the others
+fn checked(n: i32): i32 {
+    match n > 0 {
+        true -> n * 2,
+        _ -> panic::panic("expected a positive value"),
+    }
+}
+
+/// the same, with the diverging arm read first
+fn checked_first(n: i32): i32 {
+    match n > 0 {
+        false -> panic::panic("expected a positive value"),
+        _ -> n * 3,
+    }
+}
+
 fn main(): i32 {
     let n = Direction::North;
     let s = Direction::South;
@@ -99,6 +116,13 @@ fn main(): i32 {
     panic::assert_eq(letter_class('c'), 1);
     panic::assert_eq(letter_class('p'), 2);
     panic::assert_eq(letter_class('A'), 3);
+
+    panic::assert_eq(checked(21), 42);
+    panic::assert_eq(checked_first(14), 42);
+
+    let some: Optional<i32> = Optional::Some(42);
+    panic::assert_eq(some.unwrap(), 42);
+    panic::assert_eq(some.expect("held a value"), 42);
 
     0
 }
