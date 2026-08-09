@@ -10,7 +10,8 @@ use frontend::lexer::Spanned;
 use frontend::lexer::token::{BytePos, Punct, Span};
 use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
-    Block, Const, Else, Function, If, Impl, Interface, InterfaceConst, InterfaceMethod, Item,
+    Block, Const, Else, Function, If, Impl, ImplType, Interface, InterfaceConst, InterfaceMethod,
+    InterfaceType, Item,
     ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver, Return, Statement,
     Static, Struct, Type, UseDecl, UseItems,
 };
@@ -39,6 +40,8 @@ enum Member<'a, 'src> {
     Constant(&'a Const<'src>),
     Requirement(&'a InterfaceMethod<'src>),
     RequiredConstant(&'a InterfaceConst<'src>),
+    Association(&'a ImplType<'src>),
+    RequiredAssociation(&'a InterfaceType<'src>),
 }
 
 impl<'src> Printer<'src> {
@@ -313,6 +316,7 @@ impl<'src> Printer<'src> {
             .iter()
             .map(Member::Requirement)
             .chain(interface.constants.iter().map(Member::RequiredConstant))
+            .chain(interface.types.iter().map(Member::RequiredAssociation))
             .collect();
 
         members.sort_by_key(|member| member.span().start);
@@ -375,6 +379,32 @@ impl<'src> Printer<'src> {
             Doc::text(self.slice(constant.typ.span())),
             Doc::text(";"),
         ])
+    }
+
+    fn associated_type(&mut self, associated: &ImplType<'src>) -> Doc<'src> {
+        Doc::concat([
+            Doc::text("type "),
+            Doc::text(associated.name),
+            Doc::text(" = "),
+            Doc::text(self.slice(associated.typ.span())),
+            Doc::text(";"),
+        ])
+    }
+
+    fn required_associated_type(&mut self, associated: &InterfaceType<'src>) -> Doc<'src> {
+        let mut parts = vec![Doc::text("type "), Doc::text(associated.name)];
+
+        for (index, bound) in associated.bounds.iter().enumerate() {
+            parts.push(Doc::text(match index {
+                0 => ": ",
+                _ => " + ",
+            }));
+            parts.push(Doc::text(self.slice(bound.span())));
+        }
+
+        parts.push(Doc::text(";"));
+
+        Doc::concat(parts)
     }
 
     fn body(&mut self, block: &Block<'src>) -> Result<Doc<'src>, FormatError> {
@@ -521,6 +551,7 @@ impl<'src> Printer<'src> {
             .iter()
             .map(Member::Method)
             .chain(block.constants.iter().map(Member::Constant))
+            .chain(block.types.iter().map(Member::Association))
             .collect();
 
         members.sort_by_key(|member| member.span().start);
@@ -578,6 +609,10 @@ impl<'src> Printer<'src> {
                 Member::Constant(constant) => self.constant(constant)?,
                 Member::Requirement(method) => self.interface_method(method)?,
                 Member::RequiredConstant(constant) => self.interface_constant(constant),
+                Member::Association(associated) => self.associated_type(associated),
+                Member::RequiredAssociation(associated) => {
+                    self.required_associated_type(associated)
+                },
             });
 
             self.push_trailing_comment(&mut parts, span);
@@ -940,6 +975,8 @@ impl Member<'_, '_> {
             Self::Constant(constant) => constant.span,
             Self::Requirement(method) => method.span,
             Self::RequiredConstant(constant) => constant.span,
+            Self::Association(associated) => associated.span,
+            Self::RequiredAssociation(associated) => associated.span,
         }
     }
 }
