@@ -85,7 +85,7 @@ fn validate_impls<'hir, 'd, 'h>(
             .lookup_named_type(implementation.name)
             .expect("impl type must exist in scope after declaration extension");
 
-        let concrete_args: Vec<_> = match (
+        let mut concrete_args: Vec<_> = match (
             interface.generic_params.is_empty(),
             implementation.interface_type.as_ref().map(|s| s.value()),
         ) {
@@ -107,6 +107,20 @@ fn validate_impls<'hir, 'd, 'h>(
             },
             _ => Vec::new(),
         };
+
+        concrete_args.resize(interface.generic_params.len(), TypeKind::SelfType.into());
+        for &associated in &interface.associated_types {
+            let bound = scope.associated_types.get(&(receiver_type, associated)).copied();
+            match bound {
+                Some(typ) => concrete_args.push(typ),
+                None => {
+                    let name = scope.arena.alloc_str(scope.symbols.get(associated));
+                    let span = implementation.span;
+                    errors.push(hir_error!(span, UnboundAssociatedType { name, interface_name }));
+                    concrete_args.push(TypeKind::Error.into());
+                },
+            }
+        }
 
         let impl_methods: HashMap<_, _> =
             implementation.methods.iter().map(|m| (m.name, m)).collect();

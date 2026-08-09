@@ -830,6 +830,46 @@ fn bump_ok() {
 ```
 "#;
 
+E157 => "dereference of a non-pointer", r#"
+Only references and raw pointers can be dereferenced.
+
+```nyx
+fn main(): i32 {
+    let x: i32 = 1;
+    *x  // error: i32 is not a reference or a raw pointer
+}
+```
+"#;
+
+E156 => "implementation leaves an associated type unbound", r#"
+An interface declares `type X,` and the implementation never says what `X` is.
+
+```nyx
+impl Buffer with Index<uptr> {
+    type Output = i32;  // required
+}
+```
+"#;
+
+E155 => "associated type is not bound by this implementation", r#"
+An implementation names `Self::X`, but no `type X = ...;` binds it. An interface
+declares the association, every implementation supplies the type.
+
+```nyx
+pub interface Index<Idx> {
+    type Output;
+
+    fn index(&self, index: Idx): &Self::Output;
+}
+
+impl Buffer with Index<uptr> {
+    type Output = i32;                                  // fine
+
+    fn index(&self, index: uptr): &Self::Output { ... }
+}
+```
+"#;
+
 E153 => "static initialiser is not a compile-time value", r#"
 A `static` is storage the compiler lays out in the executable, so its initial
 value has to be written there at build time.

@@ -581,7 +581,8 @@ impl Type {
             | AstType::Raw(_, _)
             | AstType::Array(_, _)
             | AstType::Slice(_, _)
-            | AstType::Generic(_, _) => return None,
+            | AstType::Generic(_, _)
+            | AstType::Associated(_, _) => return None,
             AstType::Unit => TypeKind::Unit,
         };
         Some(Type::new(kind))

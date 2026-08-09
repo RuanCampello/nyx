@@ -63,6 +63,23 @@ pub enum HirErrorKind<'h> {
     UnknownMethod { struct_name: &'h str, name: &'h str },
 
     #[diagnostic(
+        code = "E155",
+        message = "Cannot find associated type {name!}",
+        primary = "not an associated type of this implementation",
+        help = "Declare {`type {name} = ...;`} in the implementation"
+    )]
+    UnknownAssociatedType { name: &'h str },
+
+    #[diagnostic(
+        code = "E156",
+        message = "Implementation does not bind the associated type {name!}",
+        primary = "{name~} is left unbound here",
+        note = "{interface_name~} declares {name~} as an associated type, so every implementation supplies one",
+        help = "Add {`type {name} = ...;`} to the implementation"
+    )]
+    UnboundAssociatedType { name: &'h str, interface_name: &'h str },
+
+    #[diagnostic(
         code = "E106",
         message = "Cannot find type {name!}",
         primary = "not a known type",
@@ -250,6 +267,14 @@ pub enum HirErrorKind<'h> {
         help = "Mark the enclosing function @unsafe to take responsibility for the pointer"
     )]
     UnsafeDeref { found: Type },
+
+    #[diagnostic(
+        code = "E157",
+        message = "Cannot dereference {found}",
+        primary = "{found~} is not a reference or a raw pointer",
+        help = "Only {`&T`}, {`&mut T`}, {`*T`} and {`*mut T`} can be dereferenced"
+    )]
+    InvalidDeref { found: Type },
 
     #[diagnostic(
         code = "E123",

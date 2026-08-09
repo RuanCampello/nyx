@@ -288,6 +288,7 @@ pub struct Impl<'i> {
     pub generics: Vec<GenericBound<'i>>,
     pub methods: Vec<Function<'i>>,
     pub constants: Vec<Const<'i>>,
+    pub types: Vec<ImplType<'i>>,
     /// `(member_span, ///-lines)` for documented methods/constants, harvested
     /// into the HIR doc side-table like top-level [`Item`] docs
     pub member_docs: Vec<(Span, Box<[&'i str]>)>,
@@ -302,6 +303,7 @@ pub struct Interface<'i> {
     pub superinterfaces: Vec<&'i str>,
     pub methods: Vec<InterfaceMethod<'i>>,
     pub constants: Vec<InterfaceConst<'i>>,
+    pub types: Vec<InterfaceType<'i>>,
     pub member_docs: Vec<(Span, Box<[&'i str]>)>,
     pub is_pub: bool,
     pub span: Span,
@@ -309,6 +311,24 @@ pub struct Interface<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct InterfaceConst<'i> {
+    pub name: &'i str,
+    pub name_span: Span,
+    pub typ: Spanned<Type<'i>>,
+    pub span: Span,
+}
+
+/// `type Foo;` in an interface, optionally constrained as `type Foo: Bar;`
+#[derive(Debug, PartialEq, Clone)]
+pub struct InterfaceType<'i> {
+    pub name: &'i str,
+    pub name_span: Span,
+    pub bounds: Vec<Spanned<Type<'i>>>,
+    pub span: Span,
+}
+
+/// `type Foo = i32;`, the binding an implementation supplies
+#[derive(Debug, PartialEq, Clone)]
+pub struct ImplType<'i> {
     pub name: &'i str,
     pub name_span: Span,
     pub typ: Spanned<Type<'i>>,
@@ -404,6 +424,8 @@ pub enum Type<'i> {
     /// borrowed slice `&[T]` or `&mut [T]`, a fat pointer of (ptr, len)
     Slice(Box<Type<'i>>, bool),
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
+    /// an associated type reached through a qualifier, `Self::Foo` or `T::Foo`
+    Associated(Box<Type<'i>>, &'i str),
     #[allow(dead_code)]
     Unit,
     Never,
@@ -984,6 +1006,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
 
         let mut methods = Vec::new();
         let mut constants = Vec::new();
+        let mut types = Vec::new();
         let mut member_docs = Vec::new();
 
         let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
@@ -991,6 +1014,13 @@ impl<'i> Parsable<'i> for Impl<'i> {
                 let constant = parser.parse_node::<Const>()?;
                 push_member_docs(&mut member_docs, constant.span, docs);
                 constants.push(constant);
+                Ok(())
+            },
+
+            Some(Ok(token)) if token.is_kind(Keyword::Type) => {
+                let associated = ImplType::parse(parser)?;
+                push_member_docs(&mut member_docs, associated.span, docs);
+                types.push(associated);
                 Ok(())
             },
 
@@ -1022,6 +1052,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
             generics,
             methods,
             constants,
+            types,
             member_docs,
             span: impl_token.span + close.span,
         })
@@ -1208,6 +1239,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
 
         let mut methods = Vec::new();
         let mut constants = Vec::new();
+        let mut types = Vec::new();
         let mut member_docs = Vec::new();
 
         let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
@@ -1215,6 +1247,12 @@ impl<'i> Parsable<'i> for Interface<'i> {
                 let constant = InterfaceConst::parse(parser)?;
                 push_member_docs(&mut member_docs, constant.span, docs);
                 constants.push(constant);
+                Ok(())
+            },
+            Some(Ok(token)) if token.is_kind(Keyword::Type) => {
+                let associated = InterfaceType::parse(parser)?;
+                push_member_docs(&mut member_docs, associated.span, docs);
+                types.push(associated);
                 Ok(())
             },
             _ => {
@@ -1233,9 +1271,43 @@ impl<'i> Parsable<'i> for Interface<'i> {
             span: interface_token.span + close.span,
             methods,
             constants,
+            types,
             member_docs,
             is_pub,
         })
+    }
+}
+
+impl<'i> Parsable<'i> for InterfaceType<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let type_token = parser.expect_token(Keyword::Type)?;
+        let (name, name_span) = parser.expect_identifier()?;
+
+        let mut bounds = Vec::new();
+        if parser.consume_token(Punct::Colon)? {
+            loop {
+                bounds.push(parser.parse_node::<Spanned<Type<'i>>>()?);
+                if !parser.consume_token(Punct::Plus)? {
+                    break;
+                }
+            }
+        }
+
+        let semi = parser.expect_token(Punct::Semicolon)?;
+
+        Ok(Self { name, name_span, bounds, span: type_token.span + semi.span })
+    }
+}
+
+impl<'i> Parsable<'i> for ImplType<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let type_token = parser.expect_token(Keyword::Type)?;
+        let (name, name_span) = parser.expect_identifier()?;
+        parser.expect_token(Punct::Eq)?;
+        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
+        let semi = parser.expect_token(Punct::Semicolon)?;
+
+        Ok(Self { name, name_span, typ, span: type_token.span + semi.span })
     }
 }
 
@@ -1560,10 +1632,16 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
             type_span = span + parser.last_span().unwrap_or(span);
         }
 
-        let value = match !generic_args.is_empty() {
+        let mut value = match !generic_args.is_empty() {
             true => Type::Generic(name, generic_args),
             _ => Type::from_str(name).unwrap_or(Type::Named(name)),
         };
+
+        while parser.consume_token(Punct::ColonColon)? {
+            let (associated, end) = parser.expect_identifier()?;
+            value = Type::Associated(Box::new(value), associated);
+            type_span = type_span + end;
+        }
 
         Ok(Self::new(value, type_span))
     }

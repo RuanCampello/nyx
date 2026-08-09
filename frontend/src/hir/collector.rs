@@ -12,8 +12,8 @@ use crate::{
         interfaces, lower,
         scope::{
             FunctionSignature, GenericEnv, InterfaceConstSignature, InterfaceMethodSignature,
-            InterfaceSignature, Scope, generic_param_env, intrinsic_method, is_generic_impl,
-            resolve_primitive_type,
+            InterfaceSignature, Scope, associated_key, generic_param_env, intrinsic_method,
+            is_generic_impl, resolve_primitive_type,
         },
         statics, structs,
         symbols::qualified,
@@ -368,18 +368,45 @@ impl<'hir> Scope<'hir> {
                 continue;
             }
 
-            let superinterfaces =
+            let superinterfaces: Vec<_> =
                 interface.superinterfaces.iter().map(|name| self.symbols.insert(name)).collect();
 
             let generic_params =
                 interface.generics.iter().map(|g| self.symbols.insert(g.name)).collect();
 
-            let param_env: GenericEnv = interface
+            let mut param_env: GenericEnv = interface
                 .generics
                 .iter()
                 .enumerate()
                 .map(|(i, g)| (g.name.to_owned(), Type::generic_param(i as u8)))
                 .collect();
+
+            let mut associated_types: Vec<_> =
+                interface.types.iter().map(|t| self.symbols.insert(t.name)).collect();
+            let inherited: Vec<_> = superinterfaces
+                .iter()
+                .filter_map(|parent| self.interfaces.get(parent))
+                .flat_map(|parent| parent.associated_types.iter().copied())
+                .collect();
+
+            for name in inherited {
+                if !associated_types.contains(&name) {
+                    associated_types.push(name);
+                }
+            }
+
+            let declared = interface.generics.len();
+            let slots: Vec<_> = associated_types
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| {
+                    (
+                        associated_key(self.symbols.get(name)),
+                        Type::generic_param((declared + i) as u8),
+                    )
+                })
+                .collect();
+            param_env.extend(slots);
 
             let base_env = (!param_env.is_empty()).then_some(&param_env);
             let mut methods = Vec::with_capacity(interface.methods.len());
@@ -434,6 +461,7 @@ impl<'hir> Scope<'hir> {
                 methods,
                 constants,
                 generic_params,
+                associated_types,
                 decl_span: interface.span,
                 name_span: interface.name_span,
             };
@@ -777,8 +805,9 @@ impl<'hir> Scope<'hir> {
     where
         'h: 'hir,
     {
+        let associated = self.bind_associated_types(implementation, receiver_type, None)?;
         let Some(interface_name) = implementation.interface else {
-            return Ok(None);
+            return Ok(associated);
         };
 
         let interface_sym = self.symbols.insert(interface_name);
@@ -789,7 +818,7 @@ impl<'hir> Scope<'hir> {
             .get(&interface_sym)
             .filter(|interface| !interface.generic_params.is_empty())
         else {
-            return Ok(None);
+            return Ok(associated);
         };
         let generic_params = interface.generic_params.clone();
 
@@ -807,7 +836,7 @@ impl<'hir> Scope<'hir> {
             _ => Vec::new(),
         };
 
-        let env = generic_params
+        let mut env: GenericEnv = generic_params
             .into_iter()
             .enumerate()
             .map(|(i, sym)| {
@@ -816,8 +845,42 @@ impl<'hir> Scope<'hir> {
                 (name, typ)
             })
             .collect();
+        env.extend(associated.into_iter().flatten());
 
         Ok(Some(env))
+    }
+
+    /// resolve every `type X = T;` an implementation declares
+    pub(in crate::hir) fn bind_associated_types<'h>(
+        &mut self,
+        implementation: &statement::Impl<'h>,
+        receiver_type: Type,
+        env: Option<&GenericEnv>,
+    ) -> Result<Option<GenericEnv>, HirError<'hir>>
+    where
+        'h: 'hir,
+    {
+        if implementation.types.is_empty() {
+            return Ok(None);
+        }
+
+        let mut bindings = GenericEnv::with_capacity(implementation.types.len());
+        for associated in &implementation.types {
+            let typ = self
+                .resolve_type(
+                    associated.typ.value_ref(),
+                    associated.typ.span(),
+                    Some(receiver_type),
+                    env,
+                )
+                .or_else(|error| self.poison(error))?;
+
+            let symbol = self.symbols.insert(associated.name);
+            self.associated_types.insert((receiver_type, symbol), typ);
+            bindings.insert(associated_key(associated.name), typ);
+        }
+
+        Ok(Some(bindings))
     }
 }
 

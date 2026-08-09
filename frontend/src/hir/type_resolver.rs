@@ -22,6 +22,17 @@ pub(in crate::hir) trait TypeResolver<'h> {
     fn generic(&mut self, name: &'h str, args: &[Type], span: Span) -> Result<Type, HirError<'h>>;
     /// the meaning of `Self` in this context
     fn self_type(&mut self, span: Span) -> Result<Type, HirError<'h>>;
+
+    fn associated(
+        &mut self,
+        qualifier: Option<Type>,
+        name: &'h str,
+        span: Span,
+    ) -> Result<Type, HirError<'h>> {
+        let _ = qualifier;
+        Err(hir_error!(span, UnknownType { name }))
+    }
+
     fn arrays(&self) -> &ArrayTable;
 }
 
@@ -80,6 +91,14 @@ pub(in crate::hir) fn resolve<'h, R: TypeResolver<'h> + ?Sized>(
         statement::Type::RefSelf => {
             let self_typ = resolver.self_type(span)?;
             Ok(Type::refer(ref_target(self_typ, span)?, false))
+        },
+
+        statement::Type::Associated(qualifier, name) => {
+            let qualifier = match **qualifier {
+                statement::Type::SelfType => None,
+                ref other => Some(resolve(resolver, other, span)?),
+            };
+            resolver.associated(qualifier, name, span)
         },
 
         statement::Type::Generic(name, args) => {

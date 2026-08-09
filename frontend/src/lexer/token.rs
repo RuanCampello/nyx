@@ -66,6 +66,7 @@ pub enum Keyword {
     As,
     Where,
     Match,
+    Type,
 }
 
 /// Punctuators and operators.
@@ -282,6 +283,7 @@ impl Keyword {
             Self::As => "as",
             Self::Where => "where",
             Self::Match => "match",
+            Self::Type => "type",
         }
     }
 }
@@ -315,6 +317,7 @@ impl std::str::FromStr for Keyword {
             "as" => Self::As,
             "where" => Self::Where,
             "match" => Self::Match,
+            "type" => Self::Type,
             _ => return Err(()),
         })
     }

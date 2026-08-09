@@ -59,6 +59,9 @@ pub struct Scope<'hir> {
     pub generic_fns: HashMap<FunctionId, statement::Function<'hir>>,
     pub generic_fn_envs: HashMap<FunctionId, GenericEnv>,
     pub generic_impls: Vec<statement::Impl<'hir>>,
+    /// `(implementing type, associated name) -> bound type`, the `type Output = T;`
+    /// of every implementation, keyed so `Self::Output` resolves per receiver
+    pub associated_types: HashMap<(Type, SymbolId), Type>,
 
     pub(in crate::hir) specialized_slices: HashSet<Type>,
 
@@ -112,6 +115,9 @@ pub struct InterfaceSignature {
     pub methods: Vec<InterfaceMethodSignature>,
     pub constants: Vec<InterfaceConstSignature>,
     pub generic_params: Vec<SymbolId>,
+    /// declaration order of `type X;`, which is the order their implicit parameter
+    /// slots follow [`Self::generic_params`]
+    pub associated_types: Vec<SymbolId>,
     pub decl_span: Span,
     /// the declared name alone, where goto-definition lands
     pub name_span: Span,
@@ -188,6 +194,7 @@ impl<'hir> Scope<'hir> {
             generic_fns: HashMap::new(),
             generic_fn_envs: HashMap::new(),
             generic_impls: Vec::new(),
+            associated_types: HashMap::new(),
             specialized_slices: HashSet::new(),
             in_std: false,
             recover: false,
@@ -537,7 +544,13 @@ impl<'hir> Scope<'hir> {
         let matching: Vec<_> =
             self.generic_impls.iter().filter(|i| i.name == template_name).cloned().collect();
         for implementation in &matching {
-            let impl_env = build_impl_substitution(implementation, args);
+            let mut impl_env = build_impl_substitution(implementation, args);
+
+            if let Some(bindings) =
+                self.bind_associated_types(implementation, receiver_type, Some(&impl_env))?
+            {
+                impl_env.extend(bindings);
+            }
 
             if let Some(interface_name) = implementation.interface {
                 self.interface_impls
@@ -698,6 +711,16 @@ impl<'hir> Scope<'hir> {
     pub(in crate::hir) fn lookup_named_type(&self, name: &str) -> Option<Type> {
         resolve_primitive_type(name)
             .or_else(|| self.symbols.get_id(name).and_then(|s| self.nominal_type(s)))
+    }
+
+    /// the name a nominal type is registered under
+    #[inline]
+    pub(in crate::hir) fn nominal_name(&self, typ: Type) -> Option<&str> {
+        match typ.strip_reference().kind() {
+            TypeKind::Struct(id) => Some(self.symbols.get(self.structs[id].name)),
+            TypeKind::Enum(id) => Some(self.symbols.get(self.enums[id].name)),
+            _ => None,
+        }
     }
 
     pub(in crate::hir) fn resolve_function<F>(&self, operation: F) -> Option<FunctionId>
@@ -861,9 +884,43 @@ impl<'a, 'hir> TypeResolver<'hir> for ScopeResolver<'a, 'hir> {
         Ok(self.self_type.unwrap_or(TypeKind::SelfType.into()))
     }
 
+    fn associated(
+        &mut self,
+        qualifier: Option<Type>,
+        name: &'hir str,
+        span: Span,
+    ) -> Result<Type, HirError<'hir>> {
+        if qualifier.is_none() {
+            if let Some(&typ) = self.env.and_then(|env| env.get(&associated_key(name))) {
+                return Ok(typ);
+            }
+        }
+
+        let Some(owner) = qualifier.or(self.self_type) else {
+            return Err(hir_error!(span, UnknownAssociatedType { name }));
+        };
+
+        let symbol = self
+            .scope
+            .symbols
+            .get_id(name)
+            .ok_or_else(|| hir_error!(span, UnknownAssociatedType { name }))?;
+
+        self.scope
+            .associated_types
+            .get(&(owner.strip_reference(), symbol))
+            .copied()
+            .ok_or_else(|| hir_error!(span, UnknownAssociatedType { name }))
+    }
+
     fn arrays(&self) -> &ArrayTable {
         &self.scope.arrays
     }
+}
+
+#[inline(always)]
+pub(in crate::hir) fn associated_key(name: &str) -> String {
+    format!("Self::{name}")
 }
 
 #[inline(always)]
