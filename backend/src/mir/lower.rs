@@ -633,17 +633,30 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let operator = *operator;
                 let inner = *inner;
 
+                let is_ref = matches!(operator, UnaryOperator::Ref | UnaryOperator::RefMut);
+
                 // `&base[i]` / `&mut base[i]` takes the element's address rather than
                 // loading its value, so it never goes through the value-producing path
-                if matches!(operator, UnaryOperator::Ref | UnaryOperator::RefMut)
-                    && let ExpressionKind::Index { base, index } = &inner.kind
-                {
+                if is_ref && let ExpressionKind::Index { base, index } = &inner.kind {
                     let base_type = self.typeck.type_of(base.id);
                     let (base, bound, _, stride) = self.index_operands(base, base_type)?;
                     let index = self.lower_expr(index)?;
                     let dest = self.fresh_temporary(typ);
                     self.emit(dest, Kind::ElementAddr { base, index, bound, stride });
+
                     return Ok(Operand::Place(dest));
+                }
+
+                // `&*p` / `&mut *p` is the address `p` already holds, so it reborrows rather
+                // than loads: materialising the pointee into a temporary and addressing that
+                // would hand back a pointer into the current frame
+                let deref_pointee = match &inner.kind {
+                    ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => Some(expr),
+                    _ => None,
+                };
+
+                if is_ref && let Some(pointee) = deref_pointee {
+                    return self.lower_expr(pointee);
                 }
 
                 if let (UnaryOperator::Neg, ExpressionKind::Literal(hir::Literal::Int(value))) =
