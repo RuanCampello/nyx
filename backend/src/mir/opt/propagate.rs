@@ -315,11 +315,9 @@ impl<'a> Solver<'a> {
                 returns: *returns,
             },
             FieldStore { value, offset } => FieldStore { value: operand(*value), offset: *offset },
-            FieldLoad { src, offset, typ } => {
-                FieldLoad { src: operand(*src), offset: *offset, typ: *typ }
-            },
+            FieldLoad { src, offset, typ } => FieldLoad { src: *src, offset: *offset, typ: *typ },
             ElementLoad { base, index, bound, stride, typ } => ElementLoad {
-                base: operand(*base),
+                base: *base,
                 index: operand(*index),
                 bound: *bound,
                 stride: *stride,
@@ -427,5 +425,49 @@ fn rewritten_terminator(block: &Block, state: &[Lattice]) -> Option<Terminator> 
         },
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TargetArch, hir, mir, optimisation, parser::Parser};
+
+    #[test]
+    fn constant_propagation_preserves_enum_field_load_origins() {
+        let source = r#"
+            enum Choice { First, Second }
+
+            inline const fn number(choice: Choice): u8 {
+                match choice {
+                    Choice::First -> 1,
+                    Choice::Second -> 2,
+                }
+            }
+
+            fn main(): u8 { number(Choice::First) }
+        "#;
+        let arena = bumpalo::Bump::new();
+        let statements = Parser::new(source).parse().unwrap();
+        let hir = hir::lower(statements, &arena).unwrap();
+        let mut mir = mir::lower(hir).unwrap();
+
+        optimisation::set(Level::Sane);
+        mir::optimise(&mut mir, TargetArch::X86_64);
+        optimisation::set(Level::Debug);
+
+        let field_loads = mir
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction.kind {
+                InstructionKind::FieldLoad { src, .. } => Some(src),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!field_loads.is_empty(), "expected enum tag field loads");
+        assert!(field_loads.iter().all(|src| matches!(src, Operand::Place(_))));
     }
 }
