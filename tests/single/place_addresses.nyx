@@ -18,6 +18,10 @@ struct Bag {
   items: [i32; 3],
 }
 
+struct Shelf {
+  bags: [Bag; 2],
+}
+
 impl Pair {
   fn first(&mut self): &mut i32 {
     &mut self.a
@@ -27,6 +31,10 @@ impl Pair {
 impl Bag {
   fn at(&mut self, index: uptr): &mut i32 {
     &mut self.items[index]
+  }
+
+  fn set_first(&mut self, value: i32) {
+    self.items[0] = value;
   }
 }
 
@@ -47,6 +55,20 @@ impl Bag with Index<uptr> {
 impl Bag with IndexMutable<uptr> {
   fn index_mut(&mut self, index: uptr): &mut Self::Output {
     &mut self.items[index]
+  }
+}
+
+impl Shelf with Index<uptr> {
+  type Output = Bag;
+
+  fn index(&self, index: uptr): &Self::Output {
+    &self.bags[index]
+  }
+}
+
+impl Shelf with IndexMutable<uptr> {
+  fn index_mut(&mut self, index: uptr): &mut Self::Output {
+    &mut self.bags[index]
   }
 }
 
@@ -146,6 +168,29 @@ fn check_index_interface() {
   panic::assert_eq(*bag.index(1), 2);
 }
 
+fn check_index_syntax() {
+  let mut bag = Bag { items: [1, 2, 3] };
+  bag[0] = 40;
+  let slot = &mut bag[1];
+  *slot = 50;
+  panic::assert_eq(bag[0], 40);
+  panic::assert_eq(bag[1], 50);
+  panic::assert_eq(bag[2], 3);
+}
+
+fn check_nested_index_syntax() {
+  let mut shelf = Shelf {
+    bags: [Bag { items: [1, 2, 3] }, Bag { items: [4, 5, 6] }],
+  };
+  shelf[0].items[1] = 40;
+  shelf[1][2] = 2;
+  shelf[1].set_first(40);
+  panic::assert_eq(shelf[0][0], 1);
+  panic::assert_eq(shelf[0][1], 40);
+  panic::assert_eq(shelf[1][0], 40);
+  panic::assert_eq(shelf[1][2], 2);
+}
+
 fn main(): i32 {
   check_field_address();
   check_element_address();
@@ -155,6 +200,8 @@ fn main(): i32 {
   check_projected_field();
   check_element_field();
   check_index_interface();
+  check_index_syntax();
+  check_nested_index_syntax();
 
   0
 }

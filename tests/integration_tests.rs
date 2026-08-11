@@ -320,6 +320,11 @@ const CASES: &[Case] = &[
         exit_code: Some(0),
     },
     Case {
+        name: "index",
+        file: "tests/single/index.nyx",
+        exit_code: Some(0),
+    },
+    Case {
         name: "expression_bodies",
         file: "tests/single/expression_bodies.nyx",
         exit_code: Some(42),
