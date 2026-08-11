@@ -733,8 +733,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         .map(|p| p.typ)
                         .unwrap_or_else(|| self.typeck.type_of(right.id));
 
-                    let lhs = self.lower_overloaded(left, self_typ)?;
-                    let rhs = self.lower_overloaded(right, other_typ)?;
+                    let lhs = self.lower_call_argument(left, self_typ)?;
+                    let rhs = self.lower_call_argument(right, other_typ)?;
 
                     return self.emit_call(
                         function,
@@ -866,7 +866,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     .map(|p| p.typ)
                     .unwrap_or_else(|| self.typeck.type_of(receiver.id));
 
-                let place = self.lower_overloaded(receiver, receiver_typ)?;
+                let place = self.lower_call_argument(receiver, receiver_typ)?;
 
                 let mut lowered_args = Vec::with_capacity(args.len() + 1);
                 lowered_args.push(Operand::Place(place));
@@ -1139,7 +1139,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         Ok(Operand::Place(result))
     }
 
-    fn lower_overloaded(&mut self, left: &'hir Expression, typ: Type) -> Result<Place, MirError> {
+    fn lower_call_argument(
+        &mut self,
+        left: &'hir Expression,
+        typ: Type,
+    ) -> Result<Place, MirError> {
         let place = self.fresh_temporary(typ);
 
         if let Some(array_id) = self.array_coerced_to_slice(left, typ) {
@@ -1194,6 +1198,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.emit(place, instr)
             },
             _ => {
+                if let Some(address) = self.place_address(left)? {
+                    self.emit(place, InstructionKind::Assign(Operand::Place(address)));
+                    return Ok(place);
+                }
+
                 let val_type = self.typeck.type_of(left.id);
                 let lowered = self.lower_expr(left)?;
 
@@ -1229,7 +1238,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn is_place_expr(&self, expr: &Expression<'hir>) -> bool {
-        matches!(&expr.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. })
+        match &expr.kind {
+            ExpressionKind::Local(_) => true,
+            ExpressionKind::Field { base, .. } => self.is_place_expr(base),
+            _ => false,
+        }
     }
 
     /// A temporary holding the address of `id`, typed as a mutable raw pointer
@@ -1345,7 +1358,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         &mut self,
         base: &'hir Expression<'hir>,
     ) -> Result<Option<Place>, MirError> {
-        if let ExpressionKind::Local(_) | ExpressionKind::Field { .. } = &base.kind {
+        if self.is_place_expr(base) {
             let (origin, offset, _) = self.place_info(base);
             if offset == 0 && !origin.typ.is_pointer() {
                 return Ok(Some(origin));
@@ -1982,39 +1995,37 @@ fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId,
 }
 
 fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
+    use ExpressionKind::*;
     match &expr.kind {
-        ExpressionKind::Local(id) => uses[*id] = true,
+        Local(id) => uses[*id] = true,
         // a constant's tree has its own local space, nothing here can
         // reference the enclosing body's locals
-        ExpressionKind::Const(_) | ExpressionKind::Static(_) => {},
-        ExpressionKind::Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
-        ExpressionKind::Cast { from, .. } => visit_expr_runtime_uses(from, uses),
-        ExpressionKind::Binary { left, right, .. } => {
+        Const(_) | Static(_) => {},
+        Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
+        Cast { from, .. } => visit_expr_runtime_uses(from, uses),
+        Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
         },
-        ExpressionKind::Assign { target, value } => {
-            if !matches!(&target.kind, ExpressionKind::Local(_)) {
+        Assign { target, value } => {
+            if !matches!(&target.kind, Local(_)) {
                 visit_place_runtime_uses(target, uses);
             }
             visit_expr_runtime_uses(value, uses);
         },
-        ExpressionKind::Struct { fields, .. } => {
+        Struct { fields, .. } => {
             for &(_, value) in *fields {
                 visit_expr_runtime_uses(value, uses);
             }
         },
-        ExpressionKind::Call { args, .. }
-        | ExpressionKind::IntrinsicCall { args, .. }
-        | ExpressionKind::Syscall { args, .. } => {
+        Call { args, .. } | IntrinsicCall { args, .. } | Syscall { args, .. } => {
             for arg in *args {
                 visit_expr_runtime_uses(arg, uses);
             }
         },
-        ExpressionKind::MethodCall { receiver, args, .. } => {
+        MethodCall { receiver, args, .. } => {
             let receiver = *receiver;
-            let is_place =
-                matches!(&receiver.kind, ExpressionKind::Local(_) | ExpressionKind::Field { .. });
+            let is_place = matches!(&receiver.kind, Local(_) | Field { .. });
 
             match is_place {
                 true => visit_place_runtime_uses(receiver, uses),
@@ -2025,21 +2036,19 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
                 visit_expr_runtime_uses(arg, uses);
             }
         },
-        ExpressionKind::Field { .. } => visit_place_runtime_uses(expr, uses),
-        ExpressionKind::Array { elements } => {
+        Field { .. } => visit_place_runtime_uses(expr, uses),
+        Array { elements } => {
             for element in *elements {
                 visit_expr_runtime_uses(element, uses);
             }
         },
-        ExpressionKind::ArrayRepeat { value, .. } => visit_expr_runtime_uses(value, uses),
-        ExpressionKind::Index { base, index } => {
+        ArrayRepeat { value, .. } => visit_expr_runtime_uses(value, uses),
+        Index { base, index } => {
             visit_place_runtime_uses(base, uses);
             visit_expr_runtime_uses(index, uses);
         },
-        ExpressionKind::TypeIntrinsic { .. }
-        | ExpressionKind::Literal(_)
-        | ExpressionKind::Path(_) => {},
-        ExpressionKind::Match { scrutinee, arms } => {
+        TypeIntrinsic { .. } | Literal(_) | Path(_) => {},
+        Match { scrutinee, arms } => {
             visit_expr_runtime_uses(scrutinee, uses);
             for arm in *arms {
                 if let Some(guard) = arm.guard {
@@ -2052,8 +2061,16 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
 }
 
 fn visit_place_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
-    if let Some(local_id) = hir::place_base_local(expr) {
-        uses[local_id] = true;
+    use ExpressionKind::*;
+    match &expr.kind {
+        Local(local) => uses[*local] = true,
+        Field { base, .. } => visit_place_runtime_uses(base, uses),
+        Index { base, index } => {
+            visit_place_runtime_uses(base, uses);
+            visit_expr_runtime_uses(index, uses);
+        },
+        Unary { operator: UnaryOperator::Deref, expr } => visit_expr_runtime_uses(expr, uses),
+        _ => visit_expr_runtime_uses(expr, uses),
     }
 }
 
