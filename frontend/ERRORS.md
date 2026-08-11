@@ -537,12 +537,34 @@ fn main() {
 
 ### E126: type cannot be indexed
 
-Indexing with `[...]` is only supported on arrays `[T; N]` and slices `&[T]`.
+Indexing with `[...]` is supported natively on arrays and slices. Other types
+must implement `Index` with the index type and an associated `Output` type.
 
 ```rust
+struct Buffer { values: [i32; 2] }
+
 fn main() {
-    let x = 1;
-    let y = x[0];  // error: type {integer} cannot be indexed
+    let buffer = Buffer { values: [1, 2] };
+    let value = buffer[0];  // error: Buffer does not implement Index<uptr>
+}
+```
+
+### E159: type cannot be indexed mutably
+
+Writing through `value[index]` requires `IndexMutable`, in addition to the
+`Index` implementation used when reading through the same syntax.
+
+```rust
+struct Buffer { values: [i32; 2] }
+
+impl Buffer with Index<uptr> {
+    type Output = i32;
+    fn index(&self, index: uptr): &Self::Output { &self.values[index] }
+}
+
+fn main() {
+    let mut buffer = Buffer { values: [1, 2] };
+    buffer[0] = 3;  // error: Buffer does not implement IndexMutable<uptr>
 }
 ```
 
@@ -621,7 +643,8 @@ Annotate the binding: `let a: [i32; 0] = [];`.
 
 ### E134: assignment through shared reference
 
-A shared `&` reference is read-only, writing through it needs `&mut`.
+A shared `&` reference is read-only. Writing through it or taking a mutable
+borrow of its referent needs `&mut`.
 
 ```rust
 struct P { x: i32 }
@@ -803,11 +826,11 @@ pub interface Bounded {
 }
 
 impl Gauge with Bounded {
-    fn limit(&self): i32 { 100 }        // error: must be const
+    fn limit(&self): i32 = 100;        // error: must be const
 }
 
 impl Gauge with Bounded {
-    const fn limit(&self): i32 { 100 }  // fine
+    const fn limit(&self): i32 = 100;  // fine
 }
 ```
 

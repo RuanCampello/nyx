@@ -39,6 +39,7 @@ mod interfaces;
 mod lower;
 pub mod module;
 mod mono;
+mod overload;
 mod scope;
 mod statics;
 mod structs;
@@ -2745,6 +2746,88 @@ mod tests {
         let src = "fn main(){let a:[i32;2]=[1,2];let b:bool=true;a[b];}";
         let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
         assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn overloaded_indexing_normalises_to_contextual_method_calls() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Index<Idx> {
+                type Output;
+                fn index(&self, index: Idx): &Self::Output;
+            }
+            interface IndexMutable<Idx>: Index {
+                fn index_mut(&mut self, index: Idx): &mut Self::Output;
+            }
+            struct Bag { value: i32 }
+            impl Bag with Index<bool> {
+                type Output = i32;
+                fn index(&self, index: bool): &Self::Output { &self.value }
+            }
+            impl Bag with IndexMutable<bool> {
+                fn index_mut(&mut self, index: bool): &mut Self::Output { &mut self.value }
+            }
+            fn read(bag: &Bag): i32 { bag[false] }
+            fn write(bag: &mut Bag) { bag[true] = 9; }
+        "#;
+        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
+        let function = |name| {
+            hir.functions
+                .iter()
+                .find(|function| hir.symbols.get(function.name).ends_with(name))
+                .expect("function must be lowered")
+        };
+        fn index_call<'hir>(expr: &'hir Expression<'hir>) -> &'hir Expression<'hir> {
+            let ExpressionKind::Unary { operator: UnaryOperator::Deref, expr: call } = expr.kind
+            else {
+                panic!("overloaded indexing must normalise to a dereferenced call")
+            };
+            assert!(matches!(call.kind, ExpressionKind::MethodCall { .. }));
+            call
+        }
+        let resolved_name = |owner: &Function, call: &Expression| {
+            let id = owner
+                .typeck
+                .type_dependent_def(call.id)
+                .and_then(Res::function)
+                .expect("normalised call must have a resolved method");
+            hir.symbols.get(hir.functions[id].name)
+        };
+
+        let read = function("read");
+        let Statement::Return(Some(read_index)) = read.body.statements[0] else {
+            panic!("read must return its index expression")
+        };
+        assert!(resolved_name(read, index_call(read_index)).ends_with("Index::index"));
+
+        let write = function("write");
+        let Statement::Expr(assign) = write.body.statements[0] else {
+            panic!("write must contain an assignment")
+        };
+        let ExpressionKind::Assign { target: write_index, .. } = assign.kind else {
+            panic!("write expression must be an assignment")
+        };
+        assert!(resolved_name(write, index_call(write_index)).ends_with("IndexMutable::index_mut"));
+    }
+
+    #[test]
+    fn mutable_indexing_requires_index_mutable() {
+        let arena = bumpalo::Bump::new();
+        let src = r#"
+            interface Index<Idx> {
+                type Output;
+                fn index(&self, index: Idx): &Self::Output;
+            }
+            struct Bag { value: i32 }
+            impl Bag with Index<i32> {
+                type Output = i32;
+                fn index(&self, index: i32): &Self::Output { &self.value }
+            }
+            fn write(bag: &mut Bag) { bag[0] = 9; }
+        "#;
+
+        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
+        assert!(matches!(err.kind, HirErrorKind::NotMutablyIndexable { .. }));
     }
 
     #[test]

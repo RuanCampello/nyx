@@ -4,7 +4,7 @@ use crate::{
         Intrinsic, Literal, Local, LocalId, LoopKind, Owner, Parameter, Pattern, PatternKind,
         RefTarget, Res, Statement, Static, Struct, StructId, SymbolId, SymbolTable, Syscall, Type,
         TypeKind, TypeckResults,
-        error::{CmpInterface, ConstFnViolationKind, HirError, hir_error},
+        error::{ConstFnViolationKind, HirError, hir_error},
         index_vec::IndexVec,
         infer::InferTable,
         place_base_local,
@@ -26,7 +26,7 @@ use std::{
 };
 
 pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
-    scope: &'s mut Scope<'hir>,
+    pub(super) scope: &'s mut Scope<'hir>,
     locals: IndexVec<LocalId, Local>,
     scopes: Vec<HashMap<SymbolId, LocalId>>,
     return_type: Type,
@@ -42,15 +42,17 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     function_id: FunctionId,
     next_local: u32,
     next_expr_id: u32,
-    is_const: bool,
+    pub(super) is_const: bool,
     /// nesting of enclosing unsafe contexts: an `@unsafe fn` body seeds it at 1,
     /// each `@unsafe { … }` adds one
     unsafe_depth: u32,
     /// operations that needed an unsafe context, to spot a block that needed none
     unsafe_ops: u32,
     self_type: Option<Type>,
-    arena: &'hir bumpalo::Bump,
-    typeck: TypeckResults,
+    pub(super) arena: &'hir bumpalo::Bump,
+    pub(super) typeck: TypeckResults,
+    /// whether this body may need the overload canonicalisation pass
+    pub(super) has_index_overloads: bool,
     infer: InferTable,
     generic_env: GenericEnv,
     /// compile-time constants declared in this function body, spliced at use
@@ -68,9 +70,9 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
 /// lowering pass needs immediately for bidirectional checking
 #[derive(Clone, Copy)]
 pub(in crate::hir) struct Lowered<'hir> {
-    expr: &'hir Expression<'hir>,
-    typ: Type,
-    span: Span,
+    pub(super) expr: &'hir Expression<'hir>,
+    pub(super) typ: Type,
+    pub(super) span: Span,
 }
 
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
@@ -131,6 +133,7 @@ where
             next_expr_id: 0,
             locals: IndexVec::new(),
             typeck: TypeckResults::default(),
+            has_index_overloads: false,
             infer: InferTable::default(),
             scopes: vec![HashMap::new()],
             self_type: None,
@@ -145,7 +148,12 @@ where
     /// Push an expression node into the arena, record its type in the parallel
     /// side-table, and return a [`Lowered`] handle
     #[inline]
-    fn alloc(&mut self, kind: ExpressionKind<'hir>, typ: Type, span: Span) -> Lowered<'hir> {
+    pub(super) fn alloc(
+        &mut self,
+        kind: ExpressionKind<'hir>,
+        typ: Type,
+        span: Span,
+    ) -> Lowered<'hir> {
         let id = ExprId(self.next_expr_id);
         self.next_expr_id += 1;
         let expr = self.arena.alloc(Expression { id, kind, span });
@@ -198,6 +206,7 @@ where
         }
 
         self.resolve_inference();
+        let body = self.normalise_overloads(body);
         let generics = declared_fn_names(&self.generic_env, &mut self.scope.symbols);
 
         Ok(Function {
@@ -529,8 +538,9 @@ where
             let lowered = builder.lower_expr(&constant.value, Some(typ))?;
             builder.assert_type(typ, lowered.typ, lowered.span)?;
             builder.resolve_inference();
+            let value = builder.normalise_overload(lowered.expr);
 
-            (lowered.expr, builder.typeck)
+            (value, builder.typeck)
         };
 
         let decl_span = constant.span;
@@ -695,6 +705,26 @@ where
         }
     }
 
+    fn check_mutable_place(
+        &self,
+        expr: &Expression<'hir>,
+        blame: Span,
+    ) -> Result<(), HirError<'hir>> {
+        match self.place_indirection(expr) {
+            Some(true) => Ok(()),
+            Some(false) => Err(hir_error!(expr.span, AssignBehindSharedRef)),
+            None => match place_base_local(expr) {
+                None => Ok(()),
+                Some(local) if self[local].mutable => Ok(()),
+                Some(local) => {
+                    let name = self.arena.alloc_str(self.scope.symbols.get(self[local].name));
+                    let decl = crate::hir::collector::source_span(self[local].decl_span);
+                    Err(hir_error!(blame, ImmutableBind { name, decl }))
+                },
+            },
+        }
+    }
+
     fn resolve_self_path<'p>(&self, path: &'p [&'hir str]) -> Cow<'p, [&'hir str]> {
         match (path.split_first(), self.impl_type) {
             (Some((&"Self", rest)), Some(impl_type)) => {
@@ -824,7 +854,7 @@ where
     /// expected type is known from context
     ///
     /// When the hint is `None`, literals default to `i32` and `f64` respectively
-    fn lower_expr(
+    pub(super) fn lower_expr(
         &mut self,
         expr: &expression::Expression<'src>,
         hint: Option<Type>,
@@ -1007,6 +1037,11 @@ where
                     },
                 };
 
+                if *operator == UnaryOperator::RefMut {
+                    self.check_mutable_place(expr.expr, expr.expr.span)?;
+                    self.make_place_mutable(expr.expr)?;
+                }
+
                 if !matches!(
                     operator,
                     UnaryOperator::Deref | UnaryOperator::Ref | UnaryOperator::RefMut
@@ -1047,50 +1082,10 @@ where
                 };
                 let right = self.lower_expr(right, right_hint)?;
 
-                if let Some(method) = operator.overload_method() {
-                    let receiver = left.typ.strip_reference();
-                    if matches!(receiver.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)) {
-                        let method_symbol = self.scope.symbols.insert(method);
-                        if let Some(&function) = self.scope.methods.get(&(receiver, method_symbol))
-                        {
-                            let lowered = self.alloc(
-                                ExpressionKind::Binary {
-                                    operator: *operator,
-                                    left: left.expr,
-                                    right: right.expr,
-                                },
-                                TypeKind::Bool.into(),
-                                *span,
-                            );
-                            self.check_call_safety(function, *span)?;
-                            self.typeck
-                                .type_dependent_defs
-                                .insert(lowered.expr.id, Res::Function(function));
-                            return Ok(lowered);
-                        }
-
-                        let type_name = match receiver.kind() {
-                            TypeKind::Struct(sid) => {
-                                self.scope.symbols.get(self[sid].name).to_string()
-                            },
-                            TypeKind::Enum(id) => self
-                                .scope
-                                .enums
-                                .get(id)
-                                .map(|e| self.scope.symbols.get(e.name).to_string())
-                                .unwrap_or_else(|| receiver.to_string()),
-                            _ => receiver.to_string(),
-                        };
-                        let type_name = self.arena.alloc_str(&type_name);
-                        return Err(hir_error!(
-                            *span,
-                            OperatorRequiresInterface {
-                                op: operator.symbol(),
-                                type_name,
-                                interface_name: operator.required_interface(),
-                            }
-                        ));
-                    }
+                if let Some(lowered) =
+                    self.lower_overloaded_comparison(*operator, left, right, *span)?
+                {
+                    return Ok(lowered);
                 }
 
                 // PERFORMANCE: constant fold binary operator on literals
@@ -1109,8 +1104,6 @@ where
 
             Expr::Assignment { target, value, span } => {
                 let target_lowered = self.lower_expr(target, None)?;
-
-                let behind_pointer = self.place_indirection(target_lowered.expr);
 
                 if let ExpressionKind::Static(id) = target_lowered.expr.kind {
                     let item = self.scope.static_by_id(id);
@@ -1131,29 +1124,18 @@ where
                     ));
                 }
 
-                match behind_pointer {
-                    Some(true) => {},
-                    Some(false) => return Err(hir_error!(target.span(), AssignBehindSharedRef)),
-                    None => {
-                        let local = place_base_local(target_lowered.expr)
-                            .ok_or_else(|| hir_error!(*span, InvalidAssignmentTarget))?;
-
-                        if !self[local].mutable {
-                            let err_span = match &target_lowered.expr.kind {
-                                ExpressionKind::Local(_) => span,
-                                ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
-                                    &target.span()
-                                },
-                                _ => span,
-                            };
-
-                            let name =
-                                self.arena.alloc_str(self.scope.symbols.get(self[local].name));
-                            let decl = crate::hir::collector::source_span(self[local].decl_span);
-                            return Err(hir_error!(*err_span, ImmutableBind { name, decl }));
-                        }
-                    },
+                let is_place = self.place_indirection(target_lowered.expr).is_some()
+                    || place_base_local(target_lowered.expr).is_some();
+                if !is_place {
+                    return Err(hir_error!(*span, InvalidAssignmentTarget));
                 }
+
+                let blame = match target_lowered.expr.kind {
+                    ExpressionKind::Local(_) => *span,
+                    _ => target.span(),
+                };
+                self.check_mutable_place(target_lowered.expr, blame)?;
+                self.make_place_mutable(target_lowered.expr)?;
 
                 let value = self.lower_expr(value, Some(target_lowered.typ))?;
                 self.assert_type(target_lowered.typ, value.typ, *span)?;
@@ -1298,9 +1280,9 @@ where
 
             Expr::Index { base, index, span } => {
                 let base_lowered = self.lower_expr(base, None)?;
-                let element = self
-                    .element_type(base_lowered.typ)
-                    .ok_or_else(|| hir_error!(*span, NotIndexable { typ: base_lowered.typ }))?;
+                let Some(element) = self.element_type(base_lowered.typ) else {
+                    return self.lower_index_overload(base_lowered, index, *span);
+                };
 
                 let index_lowered = self.lower_expr(index, Some(TypeKind::Uptr.into()))?;
                 // an un-annotated counter used as an index defaults to `uptr`; a
@@ -1432,6 +1414,10 @@ where
                             .and_then(|id| crate::hir::collector::source_span(self[id].decl_span));
 
                         return Err(hir_error!(*span, ImmutableBind { name, decl }));
+                    }
+
+                    if signature.receiver_mutable() {
+                        self.make_place_mutable(receiver_lowered.expr)?;
                     }
 
                     let explicit_params = signature.explicit_params();
@@ -2378,7 +2364,7 @@ where
     }
 
     #[inline(always)]
-    fn assert_type(
+    pub(super) fn assert_type(
         &mut self,
         expected: impl Into<Type>,
         found: impl Into<Type>,
@@ -2472,7 +2458,11 @@ where
     }
 
     /// an `@unsafe` callee may only be reached from another `@unsafe` function
-    fn check_call_safety(&mut self, callee: FunctionId, span: Span) -> Result<(), HirError<'hir>> {
+    pub(super) fn check_call_safety(
+        &mut self,
+        callee: FunctionId,
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
         let signature = &self.scope.signatures[callee];
         if !signature.is_unsafe {
             return Ok(());
@@ -2709,46 +2699,6 @@ where
     }
 }
 
-impl BinaryOperator {
-    #[inline(always)]
-    const fn overload_method<'op>(&self) -> Option<&'op str> {
-        Some(match self {
-            BinaryOperator::Eq => "eq",
-            BinaryOperator::Ne => "ne",
-            BinaryOperator::Lt => "lt",
-            BinaryOperator::LtEq => "le",
-            BinaryOperator::Gt => "gt",
-            BinaryOperator::GtEq => "ge",
-            _ => return None,
-        })
-    }
-
-    #[inline(always)]
-    const fn required_interface(&self) -> CmpInterface {
-        match self {
-            BinaryOperator::Eq | BinaryOperator::Ne => CmpInterface::Equality,
-            BinaryOperator::Lt
-            | BinaryOperator::LtEq
-            | BinaryOperator::Gt
-            | BinaryOperator::GtEq => CmpInterface::Ordering,
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }
-    }
-
-    #[inline(always)]
-    const fn symbol<'op>(&self) -> &'op str {
-        match self {
-            BinaryOperator::Eq => "==",
-            BinaryOperator::Ne => "!=",
-            BinaryOperator::Lt => "<",
-            BinaryOperator::LtEq => "<=",
-            BinaryOperator::Gt => ">",
-            BinaryOperator::GtEq => ">=",
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }
-    }
-}
-
 fn declared_fn_names(env: &GenericEnv, symbols: &mut SymbolTable) -> Vec<SymbolId> {
     let mut named: Vec<(u8, &str)> = Vec::with_capacity(env.len());
     for (name, typ) in env {
@@ -2804,8 +2754,9 @@ where
 
     builder.assert_type(expected_type, lowered.typ, lowered.span)?;
     builder.resolve_inference();
+    let value = builder.normalise_overload(lowered.expr);
 
-    Ok((lowered.expr, builder.typeck))
+    Ok((value, builder.typeck))
 }
 
 impl<'s, 'f, 'hir, 'src> TypeResolver<'hir> for FunctionBuilder<'s, 'f, 'hir, 'src>

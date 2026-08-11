@@ -300,10 +300,18 @@ pub enum HirErrorKind<'h> {
     #[diagnostic(
         code = "E126",
         message = "Type {typ!} cannot be indexed",
-        primary = "not an array or slice",
-        help = "Indexing is only supported on arrays {`[T; N]`} and slices {`&[T]`}"
+        primary = "not an array, slice, or implementation of {`Index`}",
+        help = "Implement {`Index<Idx>`} for {typ!} to use {`value[index]`}"
     )]
     NotIndexable { typ: Type },
+
+    #[diagnostic(
+        code = "E159",
+        message = "Type {typ!} cannot be indexed mutably",
+        primary = "{`IndexMutable`} is not implemented",
+        help = "Implement {`IndexMutable<Idx>`} for {typ!} to mutate {`value[index]`}"
+    )]
+    NotMutablyIndexable { typ: Type },
 
     #[diagnostic(
         code = "E127",
@@ -368,9 +376,9 @@ pub enum HirErrorKind<'h> {
 
     #[diagnostic(
         code = "E134",
-        message = "Cannot assign through a shared {`&`} reference",
+        message = "Cannot mutate through a shared {`&`} reference",
         primary = "the referent is read-only through this reference",
-        help = "Take a mutable {`&mut`} reference to write through it"
+        help = "Use a mutable {`&mut`} reference to change or mutably borrow the referent"
     )]
     AssignBehindSharedRef,
 
