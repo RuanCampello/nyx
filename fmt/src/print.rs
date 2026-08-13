@@ -11,9 +11,8 @@ use frontend::lexer::token::{BytePos, Punct, Span};
 use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
     Block, Const, Else, Function, If, Impl, ImplType, Interface, InterfaceConst, InterfaceMethod,
-    InterfaceType, Item,
-    ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver, Return, Statement,
-    Static, Struct, Type, UseDecl, UseItems,
+    InterfaceType, Item, ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver,
+    Return, Statement, Static, Struct, Type, UseDecl, UseItems,
 };
 
 /// Walks the AST once, emitting a [Doc] and tracking the comments it consumed
