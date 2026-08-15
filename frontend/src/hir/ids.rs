@@ -4,8 +4,49 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 pub trait Idx: Copy {
+    fn from_usize(index: usize) -> Self;
     fn to_usize(self) -> usize;
 }
+
+macro_rules! dense_id {
+    ($($(#[$meta:meta])* $name:ident),+ $(,)?) => {
+        $(
+            $(#[$meta])*
+            #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+            pub struct $name(pub u32);
+
+            impl Idx for $name {
+                #[inline(always)]
+                fn from_usize(index: usize) -> Self {
+                    assert!(index <= u32::MAX as usize, "HIR index exceeds u32 capacity");
+                    Self(index as u32)
+                }
+
+                #[inline(always)]
+                fn to_usize(self) -> usize {
+                    self.0 as usize
+                }
+            }
+        )+
+    };
+}
+
+dense_id!(
+    /// A nominal algebraic-data-type definition
+    AdtId,
+    /// An interned fixed-size array definition
+    ArrayId,
+    /// A lowered executable body owned by an item definition
+    BodyId,
+    /// A function definition or concrete monomorphised instance
+    FunctionId,
+    /// A module-level static allocation
+    StaticId,
+    /// A local binding within one body
+    LocalId,
+    /// An expression within one body's type-checking results
+    ExprId,
+);
 
 #[derive(Clone, PartialEq)]
 pub struct IndexVec<I, T> {
@@ -36,8 +77,13 @@ impl<I, T> IndexVec<I, T> {
         self.raw.resize(n, value);
     }
 
-    pub fn push(&mut self, value: T) {
+    pub fn push(&mut self, value: T) -> I
+    where
+        I: Idx,
+    {
+        let index = I::from_usize(self.raw.len());
         self.raw.push(value);
+        index
     }
 
     pub fn append(&mut self, other: &mut Self) {

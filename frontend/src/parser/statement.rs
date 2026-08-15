@@ -430,7 +430,6 @@ pub enum Type<'i> {
     Generic(&'i str, Vec<Spanned<Type<'i>>>),
     /// an associated type reached through a qualifier, `Self::Foo` or `T::Foo`
     Associated(Box<Type<'i>>, &'i str),
-    #[allow(dead_code)]
     Unit,
     Never,
 }
