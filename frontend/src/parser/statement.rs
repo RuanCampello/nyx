@@ -1344,12 +1344,13 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
 
-        let (body, span) = if parser.consume_token(Punct::Semicolon)? {
-            (None, fn_token.span + parser.last_span().unwrap_or_default())
-        } else {
-            let b = parse_function_body(parser, return_type.is_some())?;
-            let b_span = b.span;
-            (Some(b), fn_token.span + b_span)
+        let (body, span) = match parser.consume_token(Punct::Semicolon)? {
+            true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
+            _ => {
+                let b = parse_function_body(parser, return_type.is_some())?;
+                let b_span = b.span;
+                (Some(b), fn_token.span + b_span)
+            },
         };
 
         Ok(Self {
@@ -1388,10 +1389,6 @@ impl<'i> Parsable<'i> for Block<'i> {
                 _ => {
                     let span = token.map_or(open_brace.span, |token| token.span);
                     let error = ParserError::new(ParseErrorKind::UnexpectedEof, span);
-                    if !parser.is_recovering() {
-                        return Err(error);
-                    }
-
                     parser.record(error);
                     break implicit_close(span.end);
                 },
@@ -1400,7 +1397,6 @@ impl<'i> Parsable<'i> for Block<'i> {
             let mark = parser.mark();
             match parser.parse_node::<Statement>() {
                 Ok(statement) => statements.push(statement),
-                Err(error) if !parser.is_recovering() => return Err(error),
                 Err(error) => {
                     parser.record(error);
                     parser.synchronise_statement(mark);
@@ -1588,6 +1584,14 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
             return Ok(Self::new(Type::Raw(Box::new(inner.value()), mutable), span));
         }
 
+        if parser.consume_token(Punct::And)? {
+            let start = parser.last_span().unwrap_or_default();
+            let inner = parser.parse_node::<Spanned<Type<'i>>>()?;
+            let span = start + inner.span();
+            let inner = shared_reference_type(inner.value());
+            return Ok(Self::new(shared_reference_type(inner), span));
+        }
+
         if parser.consume_token(Punct::Ampersand)? {
             let start = parser.last_span().unwrap_or_default();
             let mutable = parser.consume_token(Keyword::Mut)?;
@@ -1649,6 +1653,14 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
         }
 
         Ok(Self::new(value, type_span))
+    }
+}
+
+fn shared_reference_type(typ: Type<'_>) -> Type<'_> {
+    match typ {
+        Type::Str => Type::Str,
+        Type::SelfType => Type::RefSelf,
+        other => Type::Ref(Box::new(other), false),
     }
 }
 

@@ -24,14 +24,19 @@ pub struct Parser<'i> {
     buffer: VecDeque<Result<Token<'i>, LexError<'i>>>,
     /// Most recently used consumed token, used to place EOF diagnostics.
     last: Option<Span>,
-    /// When set, a failed item or statement is recorded in [errors] and the
-    /// parser resynchronises instead of abandoning the rest of the file
-    ///
-    /// [errors]: Parser::errors
-    recover: bool,
     errors: Vec<ParserError<'i>>,
     /// tokens pulled off the stream so far
     consumed: usize,
+}
+
+/// The complete result of parsing one source file
+///
+/// Sound statements survive syntax errors, allowing later compiler stages and
+/// editor features to proceed while every parser diagnostic is reported
+#[derive(Debug)]
+pub struct ParseOutput<'s> {
+    pub statements: Vec<Statement<'s>>,
+    pub diagnostics: Vec<ParserError<'s>>,
 }
 
 /// Where [Parser::synchronise] stops scanning after an error
@@ -47,28 +52,12 @@ pub trait Parsable<'i>: Sized {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>>;
 }
 
-/// Keywords that can only open a top-level item
-const ITEM_KEYWORDS: &[Keyword] = &[
-    Keyword::Fn,
-    Keyword::Pub,
-    Keyword::Struct,
-    Keyword::Enum,
-    Keyword::Impl,
-    Keyword::Interface,
-    Keyword::Use,
-];
-
-/// Keywords that open a statement but never a top-level item
-const STATEMENT_KEYWORDS: &[Keyword] =
-    &[Keyword::Let, Keyword::If, Keyword::Match, Keyword::Loop, Keyword::Return];
-
 impl<'i> Parser<'i> {
     pub fn new(source: &'i str) -> Self {
         Self {
             cursor: Lexer::new(source),
             buffer: VecDeque::with_capacity(4),
             last: None,
-            recover: false,
             errors: Vec::new(),
             consumed: 0,
         }
@@ -81,36 +70,15 @@ impl<'i> Parser<'i> {
             cursor: Lexer::with_base(source, base),
             buffer: VecDeque::with_capacity(4),
             last: None,
-            recover: false,
             errors: Vec::new(),
             consumed: 0,
         }
     }
 
-    /// Collect every error the file contains instead of stopping at the first
-    #[inline]
-    pub fn recovering(mut self) -> Self {
-        self.recover = true;
-        self.cursor = self.cursor.recovering();
-        self
-    }
-
-    pub fn parse(mut self) -> Result<Vec<Statement<'i>>, ParserError<'i>> {
+    /// Parse every sound statement and collect every diagnostic in one pass.
+    pub fn parse(mut self) -> ParseOutput<'i> {
         let statements = self.parse_items();
-
-        match self.errors.into_iter().next() {
-            Some(error) => Err(error),
-            None => Ok(statements),
-        }
-    }
-
-    /// Parse every item the file yields along with every error found on the way
-    ///
-    /// Only meaningful on a [recovering](Parser::recovering) parser, a strict one
-    /// returns at most one error and whatever it managed to parse before it
-    pub fn parse_recovering(mut self) -> (Vec<Statement<'i>>, Vec<ParserError<'i>>) {
-        let statements = self.parse_items();
-        (statements, self.errors)
+        ParseOutput { statements, diagnostics: self.errors }
     }
 
     fn parse_items(&mut self) -> Vec<Statement<'i>> {
@@ -132,18 +100,10 @@ impl<'i> Parser<'i> {
             };
 
             self.record(error);
-            match self.recover {
-                true => self.synchronise(Boundary::Item, mark),
-                false => break,
-            }
+            self.synchronise(Boundary::Item, mark);
         }
 
         statements
-    }
-
-    #[inline]
-    pub(crate) const fn is_recovering(&self) -> bool {
-        self.recover
     }
 
     /// Whether the `@name` ahead opens a block rather than annotating a declaration
@@ -247,12 +207,8 @@ impl<'i> Parser<'i> {
     }
 
     /// Record and drop the lexical errors at the head of the stream, so the rest
-    /// of a recovering parse only ever sees real tokens and can keep going
+    /// of a parse only ever sees real tokens and can keep going
     fn skip_lexical_errors(&mut self) {
-        if !self.recover {
-            return;
-        }
-
         loop {
             if self.buffer.is_empty() {
                 match self.cursor.next() {
@@ -445,18 +401,53 @@ impl<'i> Parser<'i> {
     }
 }
 
+impl<'i> ParseOutput<'i> {
+    pub fn unwrap(self) -> Vec<Statement<'i>> {
+        self.expect("source did not parse")
+    }
+
+    pub fn expect(self, message: &str) -> Vec<Statement<'i>> {
+        assert!(self.diagnostics.is_empty(), "{message}: {:?}", self.diagnostics);
+        self.statements
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    pub fn unwrap_err(self) -> Vec<ParserError<'i>> {
+        assert!(!self.diagnostics.is_empty(), "source parsed without diagnostics");
+        self.diagnostics
+    }
+}
+
 impl Boundary {
+    /// Keywords that open a statement but never a top-level item
+    const STATEMENT: &[Keyword] =
+        &[Keyword::Let, Keyword::If, Keyword::Match, Keyword::Loop, Keyword::Return];
+
     fn starts_at(self, token: &Token<'_>) -> bool {
         opens_item(token)
             || token.is_fn_start()
             || (self == Self::Statement
-                && STATEMENT_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword)))
+                && Self::STATEMENT.iter().any(|&keyword| token.is_kind(keyword)))
     }
 }
 
 pub(crate) fn opens_item(token: &Token<'_>) -> bool {
+    /// Keywords that can only open a top-level item
+    const ITEM: &[Keyword] = &[
+        Keyword::Fn,
+        Keyword::Pub,
+        Keyword::Struct,
+        Keyword::Enum,
+        Keyword::Impl,
+        Keyword::Interface,
+        Keyword::Use,
+    ];
+
     // `@` only reaches a boundary at depth zero, where a pattern binding cannot appear
-    token.is_kind(Punct::At) || ITEM_KEYWORDS.iter().any(|&keyword| token.is_kind(keyword))
+    token.is_kind(Punct::At) || ITEM.iter().any(|&keyword| token.is_kind(keyword))
 }
 
 #[cfg(test)]
@@ -472,7 +463,8 @@ mod tests {
     use super::*;
 
     fn recovered(source: &str) -> (Vec<Statement<'_>>, Vec<ParserError<'_>>) {
-        Parser::new(source).recovering().parse_recovering()
+        let parsed = Parser::new(source).parse();
+        (parsed.statements, parsed.diagnostics)
     }
 
     #[test]
@@ -496,9 +488,7 @@ mod tests {
 
     #[test]
     fn a_prefix_operator_binds_looser_than_a_cast() {
-        let Ok(statements) = Parser::new("fn main() { let n = *x as u32; }").parse() else {
-            panic!("source must parse")
-        };
+        let statements = Parser::new("fn main() { let n = *x as u32; }").parse().unwrap();
 
         // `*x as u32` is `*(x as u32)`, which is what the formatter re-derives
         // its parentheses from
@@ -602,14 +592,19 @@ mod tests {
     }
 
     #[test]
-    fn strict_parse_still_stops_at_the_first_error() {
-        let err = Parser::new("fn a(: i32 { 2 }\nfn b(] { }").parse().unwrap_err();
-        assert!(matches!(err.kind, ParseErrorKind::ExpectedIdentifier { .. }), "got {err:?}");
+    fn parse_reports_every_error() {
+        let errors = Parser::new("fn a(: i32 { 2 }\nfn b(] { }").parse().unwrap_err();
+        assert_eq!(errors.len(), 2, "got {errors:?}");
+        assert!(
+            errors
+                .iter()
+                .all(|error| matches!(error.kind, ParseErrorKind::ExpectedIdentifier { .. }))
+        );
     }
 
     #[test]
     fn missing_semicolon() {
-        let err = Parser::new("let value = 1").parse().unwrap_err();
+        let err = Parser::new("let value = 1").parse().unwrap_err().remove(0);
 
         assert_eq!(
             err.kind,
@@ -625,7 +620,7 @@ mod tests {
 
     #[test]
     fn missing_expression() {
-        let err = Parser::new("let value = ;").parse().unwrap_err();
+        let err = Parser::new("let value = ;").parse().unwrap_err().remove(0);
         assert_eq!(
             err.kind,
             ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Semicolon) }
@@ -637,7 +632,7 @@ mod tests {
 
     #[test]
     fn invalid_identifier() {
-        let err = Parser::new("let 123: i32 = 1;").parse().unwrap_err();
+        let err = Parser::new("let 123: i32 = 1;").parse().unwrap_err().remove(0);
         assert_eq!(err.kind, ParseErrorKind::ExpectedIdentifier { found: TokenKind::Integer(123) });
 
         assert_eq!(err.span.start.0, 4);
@@ -732,14 +727,15 @@ mod tests {
             "#,
         )
         .parse()
-        .unwrap_err();
+        .unwrap_err()
+        .remove(0);
 
         assert!(matches!(err.kind, ParseErrorKind::ExpectedIdentifier { .. }));
     }
 
     #[test]
     fn invalid_and_valid_return() {
-        let err = Parser::new("return +1;").parse().unwrap_err();
+        let err = Parser::new("return +1;").parse().unwrap_err().remove(0);
         assert_eq!(
             err.kind,
             ParseErrorKind::ExpectedExpression { found: TokenKind::Punct(Punct::Plus) }
@@ -874,7 +870,8 @@ mod tests {
 
     #[test]
     fn expression_body_requires_a_return_type() {
-        let error = Parser::new("fn double(value: i32) = value * 2;").parse().unwrap_err();
+        let error =
+            Parser::new("fn double(value: i32) = value * 2;").parse().unwrap_err().remove(0);
 
         assert_eq!(error.kind, ParseErrorKind::ExpressionBodyNeedsReturnType);
         assert_eq!(error.span, Span::new(BytePos(22), BytePos(23)));
@@ -882,7 +879,7 @@ mod tests {
 
     #[test]
     fn expression_body_requires_a_semicolon() {
-        let error = Parser::new("fn answer(): i32 = 42").parse().unwrap_err();
+        let error = Parser::new("fn answer(): i32 = 42").parse().unwrap_err().remove(0);
 
         assert_eq!(
             error.kind,
@@ -1217,6 +1214,19 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_ampersands_are_nested_references_in_types() {
+        let stmts = Parser::new("fn f(value: &&i32){}").parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &stmts[0] else {
+            panic!("expected fn")
+        };
+        assert!(matches!(
+            function.params[0].typ.value(),
+            Type::Ref(outer, false)
+                if matches!(&*outer, Type::Ref(inner, false) if **inner == Type::I32)
+        ));
+    }
+
+    #[test]
     fn array_literals_and_indexing_parse() {
         let stmts =
             Parser::new("fn f(){let a = [1, 2, 3]; let b = [0; 4]; a[1];}").parse().unwrap();
@@ -1392,7 +1402,7 @@ mod tests {
 
     #[test]
     fn an_unknown_marker_is_rejected() {
-        let err = Parser::new("@fast fn go() {}").parse().unwrap_err();
+        let err = Parser::new("@fast fn go() {}").parse().unwrap_err().remove(0);
         assert!(matches!(err.kind, ParseErrorKind::UnknownMarker { name: "fast" }));
     }
 
@@ -1411,7 +1421,10 @@ mod tests {
 
     #[test]
     fn only_unsafe_opens_a_block() {
-        let err = Parser::new("fn go() { @intrinsic { let x = 1; } }").parse().unwrap_err();
+        let err = Parser::new("fn go() { @intrinsic { let x = 1; } }")
+            .parse()
+            .unwrap_err()
+            .remove(0);
         assert!(matches!(err.kind, ParseErrorKind::MarkerIsNotABlock { name: "intrinsic" }));
     }
 

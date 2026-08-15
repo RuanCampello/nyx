@@ -37,9 +37,6 @@ pub struct Lexer<'src> {
     cursor: Cursor<'src>,
     /// set to `true` once we've emitted [`TokenKind::Eof`].
     finished: bool,
-    /// when set, a [LexError] does not end the stream: every tokeniser leaves
-    /// the cursor past the offending input, so lexing resumes after it
-    recover: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -62,18 +59,7 @@ impl<'src> Lexer<'src> {
     /// [`SourceMap`](crate::source_map::SourceMap) address space
     #[inline]
     pub fn with_base(source: &'src str, base: token::BytePos) -> Self {
-        Self {
-            cursor: Cursor::new(source, base),
-            finished: false,
-            recover: false,
-        }
-    }
-
-    /// Keep lexing after a [`LexError`] instead of ending the stream
-    #[inline]
-    pub const fn recovering(mut self) -> Self {
-        self.recover = true;
-        self
+        Self { cursor: Cursor::new(source, base), finished: false }
     }
 
     /// Produces the next token, or `None` after EOF has been emitted.
@@ -251,11 +237,7 @@ impl<'src> Iterator for Lexer<'src> {
     type Item = Result<Token<'src>, LexError<'src>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_token()
-            .inspect_err(|_e| {
-                self.finished = !self.recover;
-            })
-            .transpose()
+        self.next_token().transpose()
     }
 }
 
@@ -625,16 +607,8 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_char_ends_a_strict_stream() {
-        let items: Vec<_> = Lexer::new("a ` b").collect();
-        assert!(items[0].is_ok());
-        assert!(items[1].is_err());
-        assert_eq!(items.len(), 2, "the stream stops at the error: {items:?}");
-    }
-
-    #[test]
-    fn recovering_lexer_resumes_after_every_bad_char() {
-        let items: Vec<_> = Lexer::new("a ` b $ c").recovering().collect();
+    fn lexer_resumes_after_every_bad_char() {
+        let items: Vec<_> = Lexer::new("a ` b $ c").collect();
         let errors = items.iter().filter(|item| item.is_err()).count();
         let identifiers: Vec<_> = items
             .iter()
@@ -653,8 +627,8 @@ mod tests {
     }
 
     #[test]
-    fn recovering_lexer_terminates_on_an_unterminated_string() {
-        let items: Vec<_> = Lexer::new("let x = \"oops").recovering().collect();
+    fn lexer_terminates_on_an_unterminated_string() {
+        let items: Vec<_> = Lexer::new("let x = \"oops").collect();
         assert!(items.iter().any(|item| item.is_err()));
         assert!(items.len() < 16, "the stream must not spin: {items:?}");
     }
