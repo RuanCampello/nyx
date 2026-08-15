@@ -181,9 +181,12 @@ impl std::fmt::Display for FormatError {
 }
 
 pub fn format(source: &str, options: FormatOptions) -> Result<String, FormatError> {
-    let statements = Parser::new(source)
-        .parse()
-        .map_err(|error| FormatError::Parse { span: error.span() })?;
+    use frontend::parser::ParseOutput;
+
+    let ParseOutput { diagnostics, statements } = Parser::new(source).parse();
+    if let Some(error) = diagnostics.first() {
+        return Err(FormatError::Parse { span: error.span() });
+    }
 
     let document = Printer::new(source, options).into_document(&statements)?;
 
