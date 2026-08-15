@@ -208,7 +208,7 @@ pub enum HirErrorKind<'h> {
         message = "Type mismatch: expected {expected^}, found {found!}",
         primary = "this is of type {found~}"
     )]
-    TypeMismatch { expected: Type, found: Type },
+    TypeMismatch { expected: Type<'h>, found: Type<'h> },
 
     #[diagnostic(
         code = "E146",
@@ -216,7 +216,7 @@ pub enum HirErrorKind<'h> {
         primary = "this is of type {found~}",
         secondary(span_field = "annotation", label = "{expected^} declared here")
     )]
-    TypeAnnotationMismatch { expected: Type, found: Type, annotation: Span },
+    TypeAnnotationMismatch { expected: Type<'h>, found: Type<'h>, annotation: Span },
 
     #[diagnostic(
         code = "E122",
@@ -224,7 +224,7 @@ pub enum HirErrorKind<'h> {
         primary = "{expected^} declared here",
         help = "Return a value from every path, or end the body with an expression of type {expected^}"
     )]
-    MissingReturn { name: &'h str, expected: Type },
+    MissingReturn { name: &'h str, expected: Type<'h> },
 
     #[diagnostic(
         code = "E147",
@@ -252,21 +252,12 @@ pub enum HirErrorKind<'h> {
     UnusedUnsafe,
 
     #[diagnostic(
-        code = "E149",
-        message = "Cannot point at {found^}",
-        primary = "{found~} is already an indirection",
-        note = "Nyx types carry a single level of indirection, so `&&T` and `**T` cannot be spelled",
-        help = "Wrap the inner pointer in a struct"
-    )]
-    NestedIndirection { found: Type },
-
-    #[diagnostic(
         code = "E148",
         message = "Cannot dereference a raw pointer in a safe function",
         primary = "{found~} is a raw pointer",
         help = "Mark the enclosing function @unsafe to take responsibility for the pointer"
     )]
-    UnsafeDeref { found: Type },
+    UnsafeDeref { found: Type<'h> },
 
     #[diagnostic(
         code = "E157",
@@ -274,7 +265,7 @@ pub enum HirErrorKind<'h> {
         primary = "{found~} is not a reference or a raw pointer",
         help = "Only {`&T`}, {`&mut T`}, {`*T`} and {`*mut T`} can be dereferenced"
     )]
-    InvalidDeref { found: Type },
+    InvalidDeref { found: Type<'h> },
 
     #[diagnostic(
         code = "E123",
@@ -295,7 +286,7 @@ pub enum HirErrorKind<'h> {
         primary = "invalid cast",
         note = "Casts are only supported between primitive integer, bool, and char types"
     )]
-    InvalidCast { src: Type, target: Type },
+    InvalidCast { src: Type<'h>, target: Type<'h> },
 
     #[diagnostic(
         code = "E126",
@@ -303,7 +294,7 @@ pub enum HirErrorKind<'h> {
         primary = "not an array, slice, or implementation of {`Index`}",
         help = "Implement {`Index<Idx>`} for {typ!} to use {`value[index]`}"
     )]
-    NotIndexable { typ: Type },
+    NotIndexable { typ: Type<'h> },
 
     #[diagnostic(
         code = "E159",
@@ -311,7 +302,7 @@ pub enum HirErrorKind<'h> {
         primary = "{`IndexMutable`} is not implemented",
         help = "Implement {`IndexMutable<Idx>`} for {typ!} to mutate {`value[index]`}"
     )]
-    NotMutablyIndexable { typ: Type },
+    NotMutablyIndexable { typ: Type<'h> },
 
     #[diagnostic(
         code = "E127",
@@ -326,7 +317,7 @@ pub enum HirErrorKind<'h> {
         primary = "not an integer",
         help = "Use an integer type such as {`i32`} or {`uptr`}"
     )]
-    InvalidRangeType { typ: Type },
+    InvalidRangeType { typ: Type<'h> },
 
     #[diagnostic(
         code = "E129",
@@ -346,7 +337,7 @@ pub enum HirErrorKind<'h> {
         primary = "each element is copied into the loop binding",
         help = "Implement {`Copy`} for {typ}, or iterate by reference once that is supported"
     )]
-    NonCopyLoopItem { typ: Type },
+    NonCopyLoopItem { typ: Type<'h> },
 
     #[diagnostic(
         code = "E131",
@@ -354,7 +345,7 @@ pub enum HirErrorKind<'h> {
         primary = "not an array or slice",
         note = "Loops currently iterate over fixed arrays, slices, and integer ranges"
     )]
-    NotIterable { typ: Type },
+    NotIterable { typ: Type<'h> },
 
     #[diagnostic(
         code = "E132",
@@ -479,7 +470,7 @@ pub enum HirErrorKind<'h> {
         primary = "{type_name~} is used here as {bound_name*}",
         help = "Add {`impl {type_name} with {bound_name} {{ ... }}`}"
     )]
-    UnsatisfiedBound { type_name: Type, bound_name: &'h str },
+    UnsatisfiedBound { type_name: Type<'h>, bound_name: &'h str },
 
     #[diagnostic(
         code = "E143",
@@ -549,8 +540,8 @@ pub enum HirErrorKind<'h> {
         struct_name: &'h str,
         interface_name: &'h str,
         constant_name: &'h str,
-        expected: Type,
-        found: Type,
+        expected: Type<'h>,
+        found: Type<'h>,
         decl: Option<Span>,
     },
 }

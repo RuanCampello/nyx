@@ -11,7 +11,7 @@ use std::fmt;
 
 /// A diagnostic in structured, plain-text form, the same information the CLI
 /// renders through `ariadne`, but consumable across the crate boundary
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RichDiagnostic {
     pub severity: Severity,
     pub code: Option<error_codes::ErrorCode>,
@@ -26,7 +26,7 @@ pub struct RichDiagnostic {
 
 /// A single labelled span within a [`RichDiagnostic`], carrying plain (no ANSI)
 /// text so consumers like the LSP can present it however they wish
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Label {
     pub span: Span,
     pub message: String,
@@ -49,8 +49,7 @@ pub struct Builder {
 
 #[derive(Default)]
 struct TypeNames {
-    structs: Vec<String>,
-    enums: Vec<String>,
+    adts: Vec<String>,
     arrays: Vec<String>,
 }
 
@@ -62,7 +61,7 @@ struct MapCache {
 }
 
 /// Severity of a [`RichDiagnostic`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Severity {
     Error,
     Warning,
@@ -97,8 +96,7 @@ pub fn reset() {
 
 #[derive(Clone, Copy)]
 enum TypeNameKind {
-    Struct,
-    Enum,
+    Adt,
     Array,
 }
 
@@ -114,24 +112,16 @@ pub fn take_source_map() -> SourceMap {
     SOURCE_MAP.with_borrow_mut(std::mem::take)
 }
 
-pub(crate) fn register_struct_name(id: u32, name: &str) {
-    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Struct, id, name));
-}
-
-pub(crate) fn register_enum_name(id: u32, name: &str) {
-    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Enum, id, name));
+pub(crate) fn register_adt_name(id: u32, name: &str) {
+    TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Adt, id, name));
 }
 
 pub(crate) fn register_array_name(id: u32, rendered: &str) {
     TYPE_NAMES.with_borrow_mut(|names| names.register(TypeNameKind::Array, id, rendered));
 }
 
-pub(crate) fn write_struct_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
-    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Struct, id))
-}
-
-pub(crate) fn write_enum_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
-    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Enum, id))
+pub(crate) fn write_adt_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
+    TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Adt, id))
 }
 
 pub(crate) fn write_array_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
@@ -409,8 +399,7 @@ impl Builder {
 impl TypeNames {
     fn register(&mut self, kind: TypeNameKind, id: u32, name: &str) {
         let slot = match kind {
-            TypeNameKind::Struct => &mut self.structs,
-            TypeNameKind::Enum => &mut self.enums,
+            TypeNameKind::Adt => &mut self.adts,
             TypeNameKind::Array => &mut self.arrays,
         };
         let id = id as usize;
@@ -422,8 +411,7 @@ impl TypeNames {
 
     fn write(&self, f: &mut fmt::Formatter<'_>, kind: TypeNameKind, id: u32) -> fmt::Result {
         let (slot, fallback) = match kind {
-            TypeNameKind::Struct => (&self.structs, "struct"),
-            TypeNameKind::Enum => (&self.enums, "enum"),
+            TypeNameKind::Adt => (&self.adts, "adt"),
             TypeNameKind::Array => (&self.arrays, "array"),
         };
         match slot.get(id as usize) {
