@@ -3,61 +3,63 @@
 //! HIR is a tree-structured, fully resolved and typed.
 //! Identifiers are lowered to stable numeric IDs.
 
+use self::def::FnDef;
+#[cfg(test)]
+use crate::hir::error::HirError;
 use crate::{
     diagnostic,
-    hir::{
-        declarations::Declarations,
-        error::HirError,
-        index_vec::{Idx, IndexVec},
-        scope::{FunctionSignature, Scope},
-    },
+    hir::{collect::ItemTable, declarations::Declarations},
     lexer::token::Span,
     parser::{
         expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
-        statement::{self, StructRepr},
+        statement::{self},
     },
 };
 use lasso::{Key, Spur};
-use std::str::FromStr;
 use std::{collections::HashMap, ops::Index};
 
-pub(crate) use scope::SLICE_IMPL_NAME;
-pub use scope::{InterfaceConstSignature, InterfaceMethodSignature, InterfaceSignature};
-pub use structs::struct_field;
-pub use structs::type_layout;
+pub(crate) use collect::SLICE_IMPL_NAME;
+pub use collect::{
+    ArrayTable, InterfaceConstSignature, InterfaceMethodSignature, InterfaceSignature,
+};
+pub use def::*;
+pub use ids::*;
+pub use structs::{enum_payload_offset, struct_field, type_contains_float, type_layout};
 pub use symbols::SymbolTable;
-pub use types::*;
+pub use ty::*;
 
-mod collector;
+mod collect;
 mod constants;
 mod declarations;
+mod def;
 pub mod diagnostics;
 pub mod error;
-pub mod index_vec;
+pub mod ids;
 mod infer;
 mod interfaces;
+pub mod lang;
 mod lower;
 pub mod module;
 mod mono;
 mod overload;
-mod scope;
 mod statics;
 mod structs;
 mod symbols;
+pub mod ty;
 mod type_resolver;
-pub mod types;
+pub mod visit;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Hir<'hir> {
+    pub types: TyInterner<'hir>,
     pub symbols: SymbolTable,
-    pub structs: IndexVec<StructId, Struct>,
-    pub enums: IndexVec<EnumId, Enum>,
-    /// Interned fixed-size array types, keyed by [`ArrayId`]
-    pub arrays: IndexVec<ArrayId, ArrayType>,
+    pub adts: IndexVec<AdtId, AdtDef<'hir>>,
+    /// interned fixed-size array types, keyed by [ArrayId]
+    pub arrays: ArrayTable<'hir>,
     pub functions: IndexVec<FunctionId, Function<'hir>>,
     pub constants: Vec<Constant<'hir>>,
-    pub statics: IndexVec<StaticId, Static>,
-    pub interfaces: Vec<InterfaceSignature>,
+    pub statics: IndexVec<StaticId, Static<'hir>>,
+    pub interfaces: Vec<InterfaceSignature<'hir>>,
     /// Rendered `///` documentation per item, keyed by its `decl_span`
     pub docs: HashMap<Span, Box<str>>,
     /// `(span, item name)` for every item named in a `use` declaration, so an
@@ -65,70 +67,17 @@ pub struct Hir<'hir> {
     pub imports: Vec<(Span, SymbolId)>,
     /// The type every named type annotation resolved to, keyed by the span of
     /// the annotation
-    ///
-    /// Empty outside editor mode
-    pub type_refs: HashMap<Span, Type>,
-    /// Recoverable lowering diagnostics
-    /// Empty unless recovery mode was on
+    pub type_refs: HashMap<Span, Type<'hir>>,
+    /// Diagnostics accumulated while lowering poisoned nodes
     pub diagnostics: Vec<diagnostic::RichDiagnostic>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Struct {
-    id: StructId,
-    pub name: SymbolId,
-    pub decl_span: Span,
-    /// The declared name alone, where goto-definition lands
-    pub name_span: Span,
-    /// Fields in source declaration order
-    pub fields: Vec<StructField>,
-    pub(in crate::hir) repr: StructRepr,
-    /// Cached byte layout, filled once every nominal type is collected
-    pub layout: Layout,
-    /// Declared generic parameter names, indexed by [`TypeKind::GenericParam`]
-    /// Populated only on open (identity) template instances, for display
-    pub generics: Vec<SymbolId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StructField {
-    pub name: SymbolId,
-    pub typ: Type,
-    /// byte offset within the owning struct, filled by layout computation
-    pub offset: u32,
-    /// the declared name alone, also the key its docs are filed under
-    pub name_span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Enum {
-    pub id: EnumId,
-    pub name: SymbolId,
-    pub decl_span: Span,
-    /// The declared name alone, where goto-definition lands
-    pub name_span: Span,
-    pub variants: Vec<EnumVariant>,
-    pub repr: EnumRepr,
-    /// cached byte layout, filled once every nominal type is collected
-    pub layout: Layout,
-    /// byte offset of a variant payload past the discriminant tag
-    pub payload_offset: u32,
-    pub generics: Vec<SymbolId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnumVariant {
-    pub name: SymbolId,
-    pub value: i64,
-    pub payload: Option<Type>,
-    /// the declared name alone, also the key its docs are filed under
-    pub name_span: Span,
+    #[cfg(test)]
+    reported_errors: Vec<HirError<'hir>>,
 }
 
 /// A fixed-size array type `[element; len]`, interned in the [Hir] array table
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ArrayType {
-    pub element: Type,
+pub struct ArrayType<'hir> {
+    pub element: Type<'hir>,
     pub len: u32,
 }
 
@@ -197,18 +146,28 @@ pub struct Expression<'hir> {
 pub enum Res {
     /// A free function, method, or operator-overload target
     Function(FunctionId),
+    /// A compiler-provided operation using ordinary call syntax.
+    Intrinsic(Intrinsic),
+    /// A platform syscall selected from the first argument to `syscall`.
+    Syscall(Syscall),
     /// An enum variant constructor (e.g. `Optional::Some(x)`)
-    Variant { id: EnumId, index: usize },
+    Variant { id: AdtId, index: usize },
+    /// Method selected through a generic interface bound. The concrete target
+    /// is filled by structural monomorphisation.
+    ParamMethod { param: u8, interface: SymbolId, name: SymbolId },
+    /// Associated function selected through a generic interface bound.
+    /// Structural monomorphisation replaces it with the concrete implementation.
+    ParamFunction { param: u8, interface: SymbolId, name: SymbolId },
 }
 
 /// Type-checking results for a body, keyed by [`ExprId`]
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct TypeckResults {
-    node_types: IndexVec<ExprId, Type>,
+pub struct TypeckResults<'hir> {
+    node_types: IndexVec<ExprId, Type<'hir>>,
     /// What each call/method expression resolved to, keyed by the call expression's id
     type_dependent_defs: HashMap<ExprId, Res>,
     /// Generic arguments applied at a node
-    node_args: HashMap<ExprId, Vec<Type>>,
+    node_args: HashMap<ExprId, Vec<Type<'hir>>>,
     /// Constant uses spliced into this body: root expression id -> constant name
     const_uses: HashMap<ExprId, SymbolId>,
 }
@@ -220,16 +179,16 @@ pub struct Function<'hir> {
     pub decl_span: Span,
     /// The declared name alone, where goto-definition lands
     pub name_span: Span,
-    pub kind: FunctionKind,
-    pub owner: Owner,
-    pub params: Vec<Parameter>,
-    pub locals: IndexVec<LocalId, Local>,
-    pub return_type: Type,
+    pub kind: FunctionKind<'hir>,
+    pub owner: Owner<'hir>,
+    pub params: Vec<Parameter<'hir>>,
+    pub locals: IndexVec<LocalId, Local<'hir>>,
+    pub return_type: Type<'hir>,
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
     pub is_unsafe: bool,
-    pub typeck: TypeckResults,
+    pub typeck: TypeckResults<'hir>,
     pub body: Block<'hir>,
     /// Declared generic parameter names, indexed by [TypeKind::GenericParam]
     /// Populated only on open (identity) template instances, for display
@@ -239,10 +198,10 @@ pub struct Function<'hir> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Constant<'hir> {
     pub name: SymbolId,
-    pub typ: Type,
-    pub owner: Owner,
+    pub typ: Type<'hir>,
+    pub owner: Owner<'hir>,
     pub value: &'hir Expression<'hir>,
-    pub typeck: TypeckResults,
+    pub typeck: TypeckResults<'hir>,
     pub is_pub: bool,
     pub decl_span: Span,
     pub name_span: Span,
@@ -253,10 +212,9 @@ pub struct Constant<'hir> {
 /// Where a [Constant] is spliced into each use, a static is storage, which is
 /// what lets `static mut` carry state between calls
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Static {
-    pub id: StaticId,
+pub struct Static<'hir> {
     pub name: SymbolId,
-    pub typ: Type,
+    pub typ: Type<'hir>,
     pub is_mut: bool,
     pub is_pub: bool,
     /// the compile-time value the storage is born holding
@@ -266,25 +224,25 @@ pub struct Static {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Method {
-    pub receiver: Type,
+pub struct Method<'hir> {
+    pub receiver: Type<'hir>,
     pub(in crate::hir) name: SymbolId,
     pub(in crate::hir) mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Parameter {
+pub struct Parameter<'hir> {
     pub id: LocalId,
     name: SymbolId,
     mutable: bool,
-    pub typ: Type,
+    pub typ: Type<'hir>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Local {
+pub struct Local<'hir> {
     pub id: LocalId,
     pub name: SymbolId,
-    pub typ: Type,
+    pub typ: Type<'hir>,
     pub decl_span: Span,
     pub mutable: bool,
 }
@@ -318,9 +276,9 @@ pub enum PatternKind<'hir> {
     /// `name @ sub`, binds the matched value while testing `sub`
     Bind { local: LocalId, sub: &'hir Pattern<'hir> },
     /// Enum variant pattern (e.g. `Some(x)`)
-    Variant { id: EnumId, variant_idx: usize, sub: Option<&'hir Pattern<'hir>> },
+    Variant { id: AdtId, variant_idx: usize, sub: Option<&'hir Pattern<'hir>> },
     /// Struct destructuring (e.g. `Foo { bar, baz: 0 }`), unnamed fields are unchecked
-    Struct { id: StructId, fields: &'hir [(SymbolId, &'hir Pattern<'hir>)] },
+    Struct { id: AdtId, fields: &'hir [(SymbolId, &'hir Pattern<'hir>)] },
     /// Or-pattern `A | B | C`
     Or(&'hir [Pattern<'hir>]),
     /// Literal value
@@ -357,7 +315,7 @@ pub enum ExpressionKind<'hir> {
     },
     /// A struct literal (e.g. `A { x: 1, y: 2 }`)
     Struct {
-        id: StructId,
+        id: AdtId,
         fields: &'hir [(SymbolId, &'hir Expression<'hir>)],
     },
     /// An array literal (e.g. `[1, 2, 3]`)
@@ -384,6 +342,13 @@ pub enum ExpressionKind<'hir> {
     /// The referenced value tree lives in the constant's own [`ExprId`] space,
     /// MIR swaps to its [`TypeckResults`] when lowering through this node
     Const(&'hir Constant<'hir>),
+    /// An associated constant selected through a generic bound. Structural
+    /// monomorphisation resolves it once the parameter has a concrete type.
+    ParamConst {
+        param: u8,
+        interface: SymbolId,
+        name: SymbolId,
+    },
     /// A read of a module-level global, which loads from its address
     Static(StaticId),
     /// A function call
@@ -403,22 +368,14 @@ pub enum ExpressionKind<'hir> {
         receiver: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
-    Syscall {
-        code: Syscall,
-        args: &'hir [&'hir Expression<'hir>],
-    },
-    IntrinsicCall {
-        intrinsic: Intrinsic,
-        args: &'hir [&'hir Expression<'hir>],
-    },
     TypeIntrinsic {
         kind: TypeIntrinsicKind,
-        typ: Type,
+        typ: Type<'hir>,
     },
     /// A cast (e.g. `x as i64`)
     Cast {
         from: &'hir Expression<'hir>,
-        to: Type,
+        to: Type<'hir>,
     },
     /// A `match` block
     Match {
@@ -430,7 +387,6 @@ pub enum ExpressionKind<'hir> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Literal {
     /// Unit value `()`, the zero-sized type
-    #[allow(unused)]
     Unit,
     Int(i64),
     Float(f64),
@@ -440,25 +396,10 @@ pub enum Literal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionKind {
+pub enum FunctionKind<'hir> {
     Free,
-    Method(Method),
+    Method(Method<'hir>),
     Intrinsic(Intrinsic),
-}
-
-/// The block an item was declared in
-///
-/// Mangling flattens this into the name (`nyx::Point::Shape::area`), which is
-/// lossy to read back: keep the structure so no consumer has to re-split it
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Owner {
-    /// declared at module level
-    #[default]
-    Free,
-    /// declared in `impl T`
-    Inherent(Type),
-    /// declared in `impl T with I`
-    Interface { on: Type, interface: SymbolId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,45 +423,14 @@ pub enum Syscall {
     Madvise,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FunctionId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StaticId(pub u32);
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub Spur);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LocalId(pub u32);
-
-/// Index of an [`Expression`] within typechecking results
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExprId(pub u32);
-
-/// Lowers the program AST to a HIR program, aborting on the first error
+/// Lowers the program AST to HIR, retaining every recoverable source error in [Hir::diagnostics]
 pub fn lower<'hir>(
-    statements: Vec<statement::Statement<'hir>>,
-    arena: &'hir bumpalo::Bump,
-) -> Result<Hir<'hir>, HirError<'hir>> {
-    lower_inner(statements, arena, false)
-}
-
-/// Lowers the program AST to a HIR program, collecting every error it finds
-///
-/// The result is poisoned whenever [Hir::diagnostics] is non-empty
-pub fn lower_collecting<'hir>(
-    statements: Vec<statement::Statement<'hir>>,
-    arena: &'hir bumpalo::Bump,
-) -> Result<Hir<'hir>, HirError<'hir>> {
-    lower_inner(statements, arena, true)
-}
-
-fn lower_inner<'hir>(
     mut statements: Vec<statement::Statement<'hir>>,
     arena: &'hir bumpalo::Bump,
-    recover: bool,
-) -> Result<Hir<'hir>, HirError<'hir>> {
+) -> Hir<'hir> {
     let interfaces: std::collections::HashMap<_, _> = statements
         .iter()
         .filter_map(|stmt| match stmt {
@@ -532,63 +442,99 @@ fn lower_inner<'hir>(
         })
         .collect();
 
-    let mut scope = Scope::new(arena);
-    scope.recover = recover;
-
-    let declarations = match recover {
-        true => {
-            statement::inject_default_methods(&mut statements, |name| interfaces.get(name));
-            let (declarations, errors) = Declarations::collect_recovering(&statements);
-            for error in errors {
-                scope.soft(error)?;
-            }
-            declarations
-        },
-        false => Declarations::partition(&mut statements, |name| interfaces.get(name))?,
-    };
-
-    if let Err(err) = scope.extend(&declarations, arena) {
-        scope.soft(err)?;
+    let mut scope = ItemTable::new(arena);
+    statement::inject_default_methods(&mut statements, |name| interfaces.get(name));
+    let (declarations, errors) = Declarations::collect_recovering(&statements);
+    for error in errors {
+        scope.soft(error);
     }
 
-    let functions = scope.lower_matching_functions(&declarations, |_| true, arena)?;
-    let functions = mono::monomorphise(functions, &mut scope, arena)?;
+    scope.extend(&declarations, arena);
+    let functions = scope.lower_matching_functions(&declarations, |_| true, false, arena);
+    let templates = scope.lower_generic_templates(&functions, arena, false);
+    let functions = mono::monomorphise(functions, &templates, &scope);
+    let functions = freeze_function_ids(functions);
 
-    let arrays = scope.arrays.snapshot();
-    structs::compute_layouts(&mut scope.structs, &mut scope.enums, &arrays);
+    let declaration_arrays = scope.arrays.snapshot();
+    structs::compute_layouts(&mut scope.adts.defs, &declaration_arrays);
 
-    let statics = scope.statics_ordered();
-
-    Ok(Hir {
-        symbols: scope.symbols,
-        structs: scope.structs,
-        enums: scope.enums,
-        arrays,
-        functions,
-        statics,
-        constants: scope.constants.into_values().cloned().collect(),
-        interfaces: scope.interfaces.into_values().collect(),
-        docs: scope.docs,
-        imports: scope.imports,
-        type_refs: scope.type_refs,
-        diagnostics: scope.diagnostics.take_errors(),
-    })
+    let diagnostics = scope.diagnostics.get_mut().take_errors();
+    scope.into_hir(functions, diagnostics)
 }
 
-pub fn join_docs(lines: &[&str]) -> Option<Box<str>> {
-    if lines.is_empty() {
-        return None;
+impl<'hir> Hir<'hir> {
+    pub fn unwrap(self) -> Self {
+        self.expect("HIR contains errors")
     }
 
-    let mut out = String::new();
-    for (index, line) in lines.iter().enumerate() {
-        if index > 0 {
-            out.push('\n');
+    pub fn expect(self, message: &str) -> Self {
+        assert!(self.is_ok(), "{message}: {:?}", self.diagnostics);
+        self
+    }
+
+    pub fn is_ok(&self) -> bool {
+        !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error)
+    }
+}
+
+/// The block an item was declared in
+///
+/// Mangling flattens this into the name (`nyx::Point::Shape::area`), which is
+/// lossy to read back: keep the structure so no consumer has to re-split it
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Owner<'hir> {
+    /// declared at module level
+    #[default]
+    Free,
+    /// declared in `impl T`
+    Inherent(Type<'hir>),
+    /// declared in `impl T with I`
+    Interface { on: Type<'hir>, interface: SymbolId },
+}
+
+impl<'hir> Owner<'hir> {
+    /// Rewrites the owning type through `f`, leaving `Free` untouched.
+    pub fn map_type(self, f: impl FnOnce(Type<'hir>) -> Type<'hir>) -> Self {
+        match self {
+            Self::Inherent(on) => Self::Inherent(f(on)),
+            Self::Interface { on, interface } => Self::Interface { on: f(on), interface },
+            Self::Free => Self::Free,
         }
-        out.push_str(line.strip_prefix(' ').unwrap_or(line));
+    }
+}
+
+/// Establish the public HIR invariant that every [FunctionId] is the
+/// function's position in [Hir::functions]
+///
+/// Collection IDs also name signature-only items
+/// (intrinsics and generic templates), so executable
+/// bodies are compacted once, at the HIR freeze boundary, and all body-local
+/// resolutions are rewritten together
+pub(in crate::hir) fn freeze_function_ids<'hir>(
+    mut functions: IndexVec<FunctionId, Function<'hir>>,
+) -> IndexVec<FunctionId, Function<'hir>> {
+    let remap: HashMap<_, _> = functions
+        .iter()
+        .enumerate()
+        .map(|(position, function)| (function.id, FunctionId(position as u32)))
+        .collect();
+
+    for (position, function) in functions.iter_mut().enumerate() {
+        function.id = FunctionId(position as u32);
+        for resolution in function.typeck.type_dependent_defs.values_mut() {
+            let Res::Function(old) = resolution else {
+                continue;
+            };
+            if let Some(&new) = remap.get(old) {
+                *old = new;
+            }
+        }
     }
 
-    Some(out.into_boxed_str())
+    functions
 }
 
 /// Walk a place expression to the local it is rooted at, if any
@@ -597,6 +543,9 @@ pub fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
         ExpressionKind::Local(local) => Some(*local),
         ExpressionKind::Field { base, .. } => place_base_local(base),
         ExpressionKind::Index { base, .. } => place_base_local(base),
+        // place-producing methods (notably the canonical `index[_mut]` call)
+        // borrow storage rooted at their receiver
+        ExpressionKind::MethodCall { receiver, .. } => place_base_local(receiver),
         ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } => place_base_local(expr),
         _ => None,
     }
@@ -612,25 +561,7 @@ impl Layout {
     }
 }
 
-impl Intrinsic {
-    #[inline]
-    pub const fn is_wrapping(self) -> bool {
-        self.binary_operator().is_some()
-    }
-
-    /// the arithmetic operation a wrapping intrinsic lowers to
-    #[inline]
-    pub const fn binary_operator(self) -> Option<BinaryOperator> {
-        match self {
-            Self::WrappingAdd => Some(BinaryOperator::Add),
-            Self::WrappingSub => Some(BinaryOperator::Sub),
-            Self::WrappingMul => Some(BinaryOperator::Mul),
-            _ => None,
-        }
-    }
-}
-
-impl FunctionKind {
+impl FunctionKind<'_> {
     pub fn intrinsic(&self) -> Option<Intrinsic> {
         match self {
             Self::Intrinsic(i) => Some(*i),
@@ -639,9 +570,9 @@ impl FunctionKind {
     }
 }
 
-impl TypeckResults {
+impl<'hir> TypeckResults<'hir> {
     #[inline(always)]
-    pub fn type_of(&self, id: ExprId) -> Type {
+    pub fn type_of(&self, id: ExprId) -> Type<'hir> {
         self.node_types[id]
     }
 
@@ -661,7 +592,11 @@ impl Res {
     pub fn function(self) -> Option<FunctionId> {
         match self {
             Res::Function(id) => Some(id),
-            Res::Variant { .. } => None,
+            Res::Intrinsic(_)
+            | Res::Syscall(_)
+            | Res::Variant { .. }
+            | Res::ParamMethod { .. }
+            | Res::ParamFunction { .. } => None,
         }
     }
 }
@@ -708,71 +643,6 @@ impl Default for Layout {
     }
 }
 
-impl Idx for FunctionId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for StaticId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for ExprId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for LocalId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for StructId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for ArrayId {
-    fn to_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Idx for EnumId {
-    fn to_usize(self) -> usize {
-        self.id() as usize
-    }
-}
-
-impl<'hir> Hir<'hir> {
-    /// A HIR that carries nothing but the reason it could not be built
-    pub(in crate::hir) fn broken(
-        diagnostics: Vec<diagnostic::RichDiagnostic>,
-        symbols: SymbolTable,
-    ) -> Self {
-        Self {
-            symbols,
-            structs: IndexVec::new(),
-            enums: IndexVec::new(),
-            arrays: IndexVec::new(),
-            functions: IndexVec::new(),
-            constants: Vec::new(),
-            statics: IndexVec::new(),
-            interfaces: Vec::new(),
-            docs: HashMap::new(),
-            imports: Vec::new(),
-            type_refs: HashMap::new(),
-            diagnostics,
-        }
-    }
-}
-
 impl<'hir> Index<FunctionId> for Hir<'hir> {
     type Output = Function<'hir>;
     fn index(&self, id: FunctionId) -> &Function<'hir> {
@@ -780,40 +650,17 @@ impl<'hir> Index<FunctionId> for Hir<'hir> {
     }
 }
 
-impl<'hir> Index<StructId> for Hir<'hir> {
-    type Output = Struct;
-    fn index(&self, id: StructId) -> &Struct {
-        &self.structs[id]
-    }
-}
-
-impl<'hir> Index<EnumId> for Hir<'hir> {
-    type Output = Enum;
-    fn index(&self, id: EnumId) -> &Enum {
-        &self.enums[id]
+impl<'hir> Index<AdtId> for Hir<'hir> {
+    type Output = AdtDef<'hir>;
+    fn index(&self, id: AdtId) -> &AdtDef<'hir> {
+        &self.adts[id]
     }
 }
 
 impl<'hir> Index<LocalId> for Function<'hir> {
-    type Output = Local;
-    fn index(&self, id: LocalId) -> &Local {
+    type Output = Local<'hir>;
+    fn index(&self, id: LocalId) -> &Local<'hir> {
         &self.locals[id]
-    }
-}
-
-impl<'hir> From<&Function<'hir>> for FunctionSignature {
-    fn from(value: &Function<'hir>) -> Self {
-        Self {
-            params: value.params.iter().map(|param| param.typ).collect(),
-            return_type: value.return_type,
-            name: value.name,
-            kind: value.kind,
-            owner: value.owner,
-            is_const: value.is_const,
-            is_unsafe: value.is_unsafe,
-            has_receiver: matches!(value.kind, FunctionKind::Method(_)),
-            decl_span: value.decl_span,
-        }
     }
 }
 
@@ -847,38 +694,6 @@ impl From<Layout> for (u32, u32) {
     }
 }
 
-impl FromStr for Intrinsic {
-    type Err = ();
-
-    fn from_str(str: &str) -> Result<Self, Self::Err> {
-        Ok(match str {
-            "println" => Self::PrintLn,
-            "print" => Self::Print,
-            "syscall" => Self::Syscall,
-            "len" => Self::Len,
-
-            _ => return Err(()),
-        })
-    }
-}
-
-impl FromStr for Syscall {
-    type Err = ();
-
-    fn from_str(str: &str) -> Result<Self, Self::Err> {
-        Ok(match str {
-            "SYS_WRITE" => Self::Write,
-            "SYS_EXIT" => Self::Exit,
-            "SYS_MMAP" => Self::Mmap,
-            "SYS_MUNMAP" => Self::Munmap,
-            "SYS_MREMAP" => Self::Mremap,
-            "SYS_MADVISE" => Self::Madvise,
-
-            _ => return Err(()),
-        })
-    }
-}
-
 impl std::fmt::Debug for SymbolId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SymbolId({})", self.0.into_usize())
@@ -886,1965 +701,4 @@ impl std::fmt::Debug for SymbolId {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{hir::error::HirErrorKind, parser::Parser};
-
-    #[test]
-    fn statics_are_laid_out_with_their_initialiser() {
-        let arena = bumpalo::Bump::new();
-        let source =
-            "static LIMIT: i32 = 10;\nstatic mut CURSOR: i32 = 0;\nfn main(): i32 { LIMIT }";
-        let statements = Parser::new(source).parse().unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        assert_eq!(hir.statics.len(), 2);
-
-        let limit = hir.statics[StaticId(0)];
-        assert_eq!(limit.init, Literal::Int(10));
-        assert!(!limit.is_mut);
-
-        let cursor = hir.statics[StaticId(1)];
-        assert_eq!(cursor.init, Literal::Int(0));
-        assert!(cursor.is_mut);
-    }
-
-    #[test]
-    fn mutable_static_needs_an_unsafe_context() {
-        let arena = bumpalo::Bump::new();
-        let source = "static mut CURSOR: i32 = 0;\nfn main(): i32 { CURSOR }";
-        let statements = Parser::new(source).parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::UnsafeStatic { name: "nyx::CURSOR" });
-    }
-
-    #[test]
-    fn mutable_static_is_allowed_inside_unsafe() {
-        let arena = bumpalo::Bump::new();
-        let source = "static mut CURSOR: i32 = 0;\n@unsafe\nfn main(): i32 { CURSOR }";
-        let statements = Parser::new(source).parse().unwrap();
-
-        assert!(super::lower(statements, &arena).is_ok());
-    }
-
-    #[test]
-    fn static_initialiser_must_be_known_at_compile_time() {
-        let arena = bumpalo::Bump::new();
-        let source =
-            "const fn seed(): i32 { 7 }\nstatic mut CURSOR: i32 = seed();\nfn main(): i32 { 0 }";
-        let statements = Parser::new(source).parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::NonConstStaticInit { name: "CURSOR" });
-    }
-
-    #[test]
-    fn unknown_identifier() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { x + 1; }").parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "x" })
-    }
-
-    #[test]
-    fn missing_return() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn answer(): i32 {}").parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::MissingReturn { name: "nyx::answer", expected: TypeKind::I32.into() }
-        );
-
-        let statements = Parser::new(
-            r#"
-            fn sign(x: i32): i32 {
-                if x < 0 {
-                    return -1;
-                }
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::MissingReturn { .. }));
-
-        let statements = Parser::new(
-            r#"
-            fn sign(x: i32): i32 {
-                if x < 0 {
-                    return -1;
-                }
-
-                1
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-        assert!(super::lower(statements, &arena).is_ok());
-    }
-
-    #[test]
-    fn valueless_return_must_match_the_declared_return_type() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn answer(): i32 { return; }").parse().unwrap();
-        let error = super::lower(statements, &arena).unwrap_err();
-
-        assert!(matches!(
-            error.kind,
-            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
-                if expected.kind() == TypeKind::I32 && found.kind() == TypeKind::Unit
-        ));
-
-        let statements = Parser::new("fn discard() { return; }").parse().unwrap();
-        assert!(super::lower(statements, &arena).is_ok());
-    }
-
-    #[test]
-    fn expression_body_is_checked_against_the_declared_return_type() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn answer(): bool = 42;").parse().unwrap();
-        let error = super::lower(statements, &arena).unwrap_err();
-
-        assert!(matches!(
-            error.kind,
-            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
-                if expected.kind() == TypeKind::Bool && found.kind() == TypeKind::I32
-        ));
-    }
-
-    #[test]
-    fn branching_expression_bodies_return_on_every_path() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn absolute(value: i32): i32 = if value < 0 { -value } else { value };
-            fn classify(value: i32): i32 = match value { 0 -> 1, _ -> value, };
-            "#,
-        )
-        .parse()
-        .unwrap();
-
-        assert!(super::lower(statements, &arena).is_ok());
-    }
-
-    #[test]
-    fn mutability() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                let x: i32 = 1;
-                x = 2;
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "x", .. }));
-
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                let mut x: i32 = 1;
-                x = 2;
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        assert!(super::lower(statements, &arena).is_ok());
-    }
-
-    #[test]
-    fn range_endpoints_must_be_integers() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                loop 1.0..2.0 { }
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::InvalidRangeType { typ: TypeKind::F64.into() })
-    }
-
-    #[test]
-    fn loop_over_inferred_array() {
-        let arena = bumpalo::Bump::new();
-
-        let statements = Parser::new(
-            r#"
-            fn main(): i32 {
-                let values = [2, 3, 5];
-                let mut total = 0;
-                loop value in values {
-                    total = total + value;
-                }
-                total
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-        assert_eq!(hir.arrays[0].element, TypeKind::I32.into());
-
-        for (annotation, expected) in [
-            ("u8", TypeKind::U8),
-            ("i16", TypeKind::I16),
-            ("u32", TypeKind::U32),
-            ("i64", TypeKind::I64),
-        ] {
-            let source = format!(
-                r#"
-                fn main() {{
-                    let values = [1, 2, 3];
-                    let mut total: {annotation} = 0;
-                    loop value in values {{
-                        total = total + value;
-                    }}
-                }}
-            "#
-            );
-            let statements = Parser::new(&source).parse().unwrap();
-            let hir = super::lower(statements, &arena).unwrap();
-            assert_eq!(hir.arrays[0].element, expected.into(), "element should be {annotation}");
-        }
-    }
-
-    #[test]
-    fn loop_control_requires_a_loop() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { break; }").parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::LoopControlOutsideLoop { kind: "break" });
-    }
-
-    #[test]
-    fn bitwise_and_shifts_typechecking() {
-        let arena = bumpalo::Bump::new();
-        let source_ok = r#"
-            fn main() {
-                let a: i32 = 1;
-                let b: i32 = 2;
-                let c: i32 = a & b;
-                let d: i32 = a | b;
-                let e: i32 = a ^ b;
-                let f: i32 = !a;
-                let g: i32 = a << b;
-                let h: i32 = a >> b;
-
-                let x: bool = true;
-                let y: bool = false;
-                let z: bool = x & y;
-                let w: bool = x | y;
-                let v: bool = x ^ y;
-                let u: bool = !x;
-            }
-        "#;
-        let statements = Parser::new(source_ok).parse().unwrap();
-        assert!(super::lower(statements, &arena).is_ok());
-
-        let source_err_shift = r#"
-            fn main() {
-                let a: bool = true;
-                let b: i32 = 2;
-                let c: bool = a << b;
-            }
-        "#;
-        let statements = Parser::new(source_err_shift).parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
-
-        let source_err_not = r#"
-            fn main() {
-                let a: f64 = 1.0;
-                let b: f64 = !a;
-            }
-        "#;
-        let statements = Parser::new(source_err_not).parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
-    }
-
-    #[test]
-    fn if_condition_must_be_bool() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                let x: i64 = 1;
-                if x { }
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::Bool.into(),
-                found: TypeKind::I64.into()
-            }
-        )
-    }
-
-    #[test]
-    fn duplicated_function() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn foo(): i32 { 1 }
-            fn foo(): i32 { 2 }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert!(matches!(err.kind, HirErrorKind::DuplicateFunction { name: "foo", .. }));
-    }
-
-    #[test]
-    fn arity_mismatch_too_many() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn add(a: i32, b: i32): i32 { a + b }
-            fn main() { add(1, 2, 3); }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::ArityMismatch { name: "nyx::add", expected: 2, found: 3, .. }
-        ));
-    }
-
-    #[test]
-    fn unknown_function() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { foo(); }").parse().unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::UnknownFunction { name: "foo" });
-    }
-
-    #[test]
-    fn type_mismatch_in_let() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn add(a: i32, b: i32): i32 { a + b }
-            fn main() {
-                let x: i32 = add(1, 2);
-                let y: bool = add(1, 2);
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let err = super::lower(statements, &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
-                if expected.kind() == TypeKind::Bool && found.kind() == TypeKind::I32
-        ))
-    }
-
-    #[test]
-    fn type_inference_from_expr() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let main = &hir.functions[0];
-        assert_eq!(main.locals[0].typ, TypeKind::I32.into());
-    }
-
-    #[test]
-    fn top_level_non_function() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("let x: i64 = 1;").parse().unwrap();
-        let err = super::lower(statements, &arena).unwrap_err();
-
-        assert_eq!(err.kind, HirErrorKind::TopLevelNonFunction)
-    }
-
-    #[test]
-    fn integer_literal_as_function_arg_typed_i64() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn foo(x: i64): i64 { x }
-            fn main() { foo(1); }
-        "#,
-        )
-        .parse()
-        .unwrap();
-
-        let hir = super::lower(statements, &arena).unwrap();
-
-        assert_eq!(hir.functions.len(), 2);
-        let foo = &hir.functions[0];
-        assert_eq!(foo.return_type, TypeKind::I64.into());
-        assert_eq!(foo.params.len(), 1);
-        assert_eq!(foo.params[0].typ, TypeKind::I64.into());
-
-        let main = &hir.functions[1];
-        let call_id = match &main.body.statements[0] {
-            Statement::Expr(expr) => *expr,
-            other => panic!("expected Expr statement, got {other:?}"),
-        };
-        assert_eq!(main.typeck.type_of(call_id.id), TypeKind::I64.into());
-        let arg = match &call_id.kind {
-            ExpressionKind::Call { args, .. } => {
-                assert_eq!(args.len(), 1);
-                args[0]
-            },
-            other => panic!("expected Call expression, got {other:?}"),
-        };
-        assert_eq!(main.typeck.type_of(arg.id), TypeKind::I64.into());
-        assert_eq!(arg.kind, 1.into());
-    }
-
-    #[test]
-    fn float_literal_defaults_to_f64() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { let x = 3.14; }").parse().unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, TypeKind::F64.into());
-    }
-
-    #[test]
-    fn integer_literal_defaults_to_i32_in_binary_expr() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { let x = 1 + 2; }").parse().unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, TypeKind::I32.into());
-
-        let stmt = &func.body.statements[0];
-        assert!(matches!(stmt, Statement::LetInit { id: LocalId(0), .. }));
-    }
-
-    #[test]
-    fn float_literal_widens_to_f32() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new("fn main() { let x: f32 = 3.14; }").parse().unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, TypeKind::F32.into());
-    }
-
-    #[test]
-    fn mutable_assign_widens_literal() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                let mut x: i64 = 0;
-                x = 99;
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals.len(), 1);
-        assert_eq!(func.locals[0].typ, TypeKind::I64.into());
-        assert!(func.locals[0].mutable);
-
-        let assign_id = match &func.body.statements[1] {
-            Statement::Expr(expr) => *expr,
-            other => panic!("expected Expr statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(assign_id.id), TypeKind::I64.into());
-        let (target_id, value) = match &assign_id.kind {
-            ExpressionKind::Assign { target, value } => match &target.kind {
-                ExpressionKind::Local(id) => (*id, *value),
-                _ => panic!("expected local assignment target"),
-            },
-            other => panic!("expected Assign expression, got {other:?}"),
-        };
-
-        assert_eq!(target_id, LocalId(0));
-        assert_eq!(func.typeck.type_of(value.id), TypeKind::I64.into());
-        assert_eq!(value.kind, 99.into());
-    }
-
-    #[test]
-    fn integer_literal_widens_in_binary_with_i64_local() {
-        let arena = bumpalo::Bump::new();
-        let statements = Parser::new(
-            r#"
-            fn main() {
-                let x: i64 = 10;
-                let y = x + 1;
-            }
-        "#,
-        )
-        .parse()
-        .unwrap();
-        let hir = super::lower(statements, &arena).unwrap();
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals.len(), 2);
-        assert_eq!(func.locals[0].typ, TypeKind::I64.into());
-        assert_eq!(func.locals[1].typ, TypeKind::I64.into());
-
-        let y_stmt = &func.body.statements[1];
-        assert!(matches!(y_stmt, Statement::LetInit { id: LocalId(1), .. }));
-    }
-
-    #[test]
-    fn new_integer_types_accepted() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn bytes(a: i8, b: u8, c: i16, d: u16): i32 {
-                0
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn integer_literal_widens() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let x: i16 = 100;
-                let y: u8 = 42;
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn uptr_iptr_type_resolution() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let a: uptr = 10;
-                let b: iptr = 20;
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.locals[0].typ, TypeKind::Uptr.into());
-        assert_eq!(func.locals[1].typ, TypeKind::Iptr.into());
-    }
-
-    #[test]
-    fn uptr_iptr_literal_widening() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let a: uptr = 100;
-                let b: iptr = 200;
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        let init_a = match &func.body.statements[0] {
-            Statement::LetInit { init: e, .. } => *e,
-            other => panic!("expected Let with init, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(init_a.id), TypeKind::Uptr.into());
-        assert_eq!(init_a.kind, 100.into());
-
-        let init_b = match &func.body.statements[1] {
-            Statement::LetInit { init: e, .. } => *e,
-            other => panic!("expected Let with init, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(init_b.id), TypeKind::Iptr.into());
-        assert_eq!(init_b.kind, 200.into());
-    }
-
-    #[test]
-    fn uptr_arithmetic() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn add(a: uptr, b: uptr): uptr { a + b }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.return_type, TypeKind::Uptr.into());
-        assert_eq!(func.params[0].typ, TypeKind::Uptr.into());
-        assert_eq!(func.params[1].typ, TypeKind::Uptr.into());
-    }
-
-    #[test]
-    fn iptr_arithmetic() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn scale(base: iptr, factor: iptr): iptr { base * factor }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.return_type, TypeKind::Iptr.into());
-        assert_eq!(func.params[0].typ, TypeKind::Iptr.into());
-        assert_eq!(func.params[1].typ, TypeKind::Iptr.into());
-    }
-
-    #[test]
-    fn uptr_range() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn triangle(limit: uptr): uptr {
-                let mut acc: uptr = 0;
-                loop i in 1..=limit {
-                    acc = acc + i;
-                }
-                acc
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn uptr_iptr_mixed_type_mismatch() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let a: uptr = 1;
-                let b: iptr = a;
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
-                if expected.kind() == TypeKind::Iptr && found.kind() == TypeKind::Uptr
-        ));
-    }
-
-    #[test]
-    fn bare_int_literal_defaults_to_i32() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let x = 0;
-                let f = 1.0;
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.locals[0].typ, TypeKind::I32.into(), "unconstrained integer falls back");
-        assert_eq!(func.locals[1].typ, TypeKind::F64.into(), "float literal unchanged");
-    }
-
-    #[test]
-    fn int_binding_back_propagates_from_later_annotation() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let x = 0;
-                let y: i64 = x;
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.locals[0].typ, TypeKind::I64.into(), "use against i64 pins the literal");
-        assert_eq!(func.locals[1].typ, TypeKind::I64.into());
-    }
-
-    #[test]
-    fn int_binding_conflicting_uses_report_mismatch() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let x = 0;
-                let y: u8 = x;
-                let z: u32 = x;
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::TypeAnnotationMismatch { expected, found, .. }
-                if expected.kind() == TypeKind::U32 && found.kind() == TypeKind::U8
-        ));
-    }
-
-    #[test]
-    fn mixed_width_arithmetic_still_errors() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn main() {
-                let a: i32 = 1;
-                let b: uptr = 2;
-                let c = a + b;
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(
-            err.kind,
-            HirErrorKind::TypeMismatch {
-                expected: TypeKind::I32.into(),
-                found: TypeKind::Uptr.into()
-            }
-        );
-    }
-
-    #[test]
-    fn struct_fields_remain_in_source_order() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Packed {
-                a: i8,
-                b: i64,
-                c: i32,
-            }
-
-            fn main() {
-                let value: Packed = Packed { a: 1, b: 2, c: 3 };
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-
-        assert_eq!(hir.structs.len(), 1);
-        let field_names: Vec<_> =
-            hir.structs[0].fields.iter().map(|field| hir.symbols.get(field.name)).collect();
-        assert_eq!(field_names, vec!["a", "b", "c"]);
-
-        let func = &hir.functions[0];
-        assert_eq!(func.locals[0].typ, Type::structure(StructId(0)));
-    }
-
-    #[test]
-    fn nested_struct_fields_are_resolved() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Inner {
-                n: i32,
-            }
-
-            struct Outer {
-                inner: Inner,
-                flag: bool,
-            }
-
-            fn main() {
-                let value = Outer {
-                    inner: Inner { n: 1 },
-                    flag: true,
-                };
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        assert_eq!(hir.structs.len(), 2);
-
-        let outer_inner = hir.structs[1]
-            .fields
-            .iter()
-            .find(|field| hir.symbols.get(field.name) == "inner")
-            .unwrap();
-        assert_eq!(outer_inner.typ, Type::structure(StructId(0)));
-    }
-
-    #[test]
-    fn enum_payload_can_reference_a_later_struct() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            enum Msg {
-                ChangeColour(Colour),
-            }
-
-            struct Colour {
-                r: u8,
-                g: u8,
-                b: u8,
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        assert_eq!(hir.enums[0].variants[0].payload, Some(Type::structure(StructId(0))));
-    }
-
-    #[test]
-    fn circular_structs_are_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct A {
-                b: B,
-            }
-
-            struct B {
-                a: A,
-            }
-
-            fn main() { }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::CircularStruct { name: "A" });
-    }
-
-    #[test]
-    fn struct_literal_requires_all_fields() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Point {
-                x: i32,
-                y: i32,
-            }
-
-            fn main() {
-                let point = Point { x: 1 };
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::MissingField { struct_name: "Point", field: "y" });
-    }
-
-    #[test]
-    fn struct_literal_rejects_unknown_field_with_span() {
-        let arena = bumpalo::Bump::new();
-        let src = "struct Point{x:i32}\nfn main(){let p=Point{z:1};}";
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
-        let mut map = crate::source_map::SourceMap::default();
-        map.add_file("t", src);
-        assert_eq!(map.loc(err.span.start).col_utf8, 22);
-        assert_eq!(map.loc(err.span.end).col_utf8, 25);
-    }
-
-    #[test]
-    fn struct_literal_rejects_duplicate_field_with_span() {
-        let arena = bumpalo::Bump::new();
-        let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1,x:2};}";
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::DuplicateField { name: "x" });
-        let mut map = crate::source_map::SourceMap::default();
-        map.add_file("t", src);
-        assert_eq!(map.loc(err.span.start).col_utf8, 26);
-        assert_eq!(map.loc(err.span.end).col_utf8, 29);
-    }
-
-    #[test]
-    fn immutable_field_assignment_reports_assignment_span() {
-        let arena = bumpalo::Bump::new();
-        let src = "struct Point{x:i32}\nfn main(){let p=Point{x:1};p.x=2;}";
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "p", .. }));
-        let mut map = crate::source_map::SourceMap::default();
-        map.add_file("t", src);
-        assert_eq!(map.loc(err.span.start).col_utf8, 27);
-        assert_eq!(map.loc(err.span.end).col_utf8, 30);
-    }
-
-    #[test]
-    fn chained_field_access() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Point { x: i64, y: i64 }
-            struct Rect { top_left: Point, bottom_right: Point }
- 
-            fn main(): i64 {
-                let p1 = Point { x: 0, y: 10 };
-                let p2 = Point { x: 10, y: 0 };
-                let r = Rect { top_left: p1, bottom_right: p2 };
-                r.bottom_right.x
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn impl_blocks_collect_methods_for_same_struct() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            impl Counter {
-                fn value(&self): i32 { self.value }
-            }
-
-            impl Counter {
-                fn add(&mut self, delta: i32) {
-                    self.value = self.value + delta;
-                }
-            }
-
-            fn main(): i32 {
-                let mut counter = Counter { value: 40 };
-                counter.add(2);
-                counter.value()
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        assert_eq!(hir.functions.len(), 3);
-        assert!(hir.functions.iter().any(|f| matches!(f.kind, FunctionKind::Method(_))));
-    }
-
-    #[test]
-    fn duplicate_methods_across_impl_blocks_are_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            impl Counter {
-                fn value(&self): i32 { self.value }
-            }
-
-            impl Counter {
-                fn value(&self): i32 { self.value }
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::DuplicateMethod { struct_name: "Counter", name: "value", .. }
-        ));
-        let mut map = crate::source_map::SourceMap::default();
-        map.add_file("t", src);
-        assert_eq!(map.loc(err.span.start).col_utf8, 16);
-    }
-
-    #[test]
-    fn mut_self_method_requires_mutable_receiver() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            impl Counter {
-                fn add(&mut self, delta: i32) {
-                    self.value = self.value + delta;
-                }
-            }
-
-            fn main() {
-                let counter = Counter { value: 40 };
-                counter.add(2);
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "counter", .. }));
-    }
-
-    #[test]
-    fn mutable_reference_parameters_can_be_written_through() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            fn bump(counter: &mut Counter) {
-                counter.value = 1;
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn shared_reference_parameters_cannot_be_written_through() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            fn bump(counter: &Counter) {
-                counter.value = 1;
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "counter", .. }));
-    }
-
-    #[test]
-    fn a_reference_to_a_reference_reports_nested_indirection() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main(){let mut v:i32=1;let p=&mut v;let pp=&mut p;}";
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(
-            matches!(err.kind, HirErrorKind::NestedIndirection { .. }),
-            "a nested reference must not be reported as a mismatch against a made-up type"
-        );
-    }
-
-    #[test]
-    fn dereferencing_a_non_pointer_names_the_type() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main():i32{let x:i32=1;*x}";
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(
-            matches!(err.kind, HirErrorKind::InvalidDeref { .. }),
-            "dereferencing a non-pointer must not be reported against a made-up reference type"
-        );
-    }
-
-    #[test]
-    fn a_const_requirement_binds_the_implementation() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Bounded { const fn limit(&self): i32; }
-            struct Gauge { n: i32 }
-
-            impl Gauge with Bounded {
-                fn limit(&self): i32 { 100 }
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::NonConstInterfaceMethod { .. }));
-    }
-
-    #[test]
-    fn an_implementation_may_be_const_without_the_interface() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Plain { fn value(&self): i32; }
-            struct Gauge { n: i32 }
-
-            impl Gauge with Plain {
-                const fn value(&self): i32 { 100 }
-            }
-        "#;
-
-        assert!(super::lower(Parser::new(src).parse().unwrap(), &arena).is_ok());
-    }
-
-    #[test]
-    fn shared_self_cannot_assign_fields() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { value: i32 }
-
-            impl Counter {
-                fn set(&self, value: i32) {
-                    self.value = value;
-                }
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "self", .. }));
-    }
-
-    #[test]
-    fn wrong_interface_parameters_impl() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-        interface StorageEngine {
-            fn flush(&self): bool;
-            fn read_page(&self): i64;
-        }
-
-        struct BTreeStorage {
-            page_size: i64,
-        }
-
-        impl BTreeStorage with StorageEngine {
-            fn flush(&self): bool { true }
-            fn read_page(&self, page_id: i64): i64 { self.page_size }
-        }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).expect_err("known bug");
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::InterfaceSignatureMismatch {
-                struct_name,
-                interface_name,
-                method_name,
-                ..
-            } if struct_name == "BTreeStorage"
-                && interface_name == "StorageEngine"
-                && method_name == "read_page"
-        ));
-    }
-
-    #[test]
-    fn interface_requires_its_associated_constants() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Buffer { const SIZE: uptr; }
-            struct Page {}
-            impl Page with Buffer {}
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::MissingInterfaceConstant {
-                struct_name: "Page",
-                interface_name: "Buffer",
-                constant_name: "SIZE",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn interface_associated_constant_type_must_match() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Buffer { const SIZE: uptr; }
-            struct Page {}
-            impl Page with Buffer { const SIZE: i32 = 4096; }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::InterfaceConstantTypeMismatch {
-                struct_name: "Page",
-                interface_name: "Buffer",
-                constant_name: "SIZE",
-                expected,
-                found,
-                ..
-            } if expected == TypeKind::Uptr.into() && found == TypeKind::I32.into()
-        ));
-    }
-
-    #[test]
-    fn generic_bound_resolves_its_associated_constant() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface HasValue { const VALUE: i32; }
-            struct Number {}
-            impl Number with HasValue { const VALUE: i32 = 42; }
-
-            fn value<T: HasValue>(): i32 { T::VALUE }
-            fn main(): i32 { value::<Number>() }
-        "#;
-
-        super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-    }
-
-    #[test]
-    fn primitive_orphan_rule_is_enforced() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            impl i64 {
-                fn val(&self): i64 { *self }
-            }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::OrphanImpl { name: "i64" });
-    }
-
-    fn const_value<'hir>(expr: &Expression<'hir>) -> &'hir Expression<'hir> {
-        match expr.kind {
-            ExpressionKind::Const(constant) => constant.value,
-            ref other => panic!("expected Const node, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn const_top_level() {
-        let src = r#"
-            const ANSWER: i32 = 42;
-            fn main(): i32 {
-                ANSWER
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert_eq!(const_value(ret_expr).kind, 42.into());
-    }
-
-    #[test]
-    fn const_scoped_and_qualified() {
-        let src = r#"
-            struct Dummy {}
-            impl Dummy {
-                pub const VALUE: uptr = 127;
-            }
-            fn main(): uptr {
-                Dummy::VALUE
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
-        assert_eq!(const_value(ret_expr).kind, 127.into());
-    }
-
-    #[test]
-    fn const_primitive_scoped_in_std() {
-        let src = r#"
-            impl i8 {
-                pub const MAX: uptr = 127;
-            }
-            fn main(): uptr {
-                i8::MAX
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let mut statements = Parser::new(src).parse().unwrap();
-        let declarations = Declarations::partition(&mut statements, |_| None).unwrap();
-        let mut scope = Scope::new(&arena);
-        scope.in_std = true;
-        scope.extend(&declarations, &arena).unwrap();
-        let functions = scope.lower_matching_functions(&declarations, |_| true, &arena).unwrap();
-        let main_func = &functions[0];
-        let ret_expr = match &main_func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(main_func.typeck.type_of(ret_expr.id), TypeKind::Uptr.into());
-        assert_eq!(const_value(ret_expr).kind, 127.into());
-    }
-
-    #[test]
-    fn const_nested_evaluation() {
-        let src = r#"
-            const A: i32 = 10;
-            const B: i32 = A + 2;
-            fn main(): i32 {
-                B
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        match &const_value(ret_expr).kind {
-            ExpressionKind::Binary { left, operator, right } => {
-                assert_eq!(*operator, BinaryOperator::Add);
-                assert_eq!(const_value(left).kind, 10.into());
-                assert_eq!(right.kind, 2.into());
-            },
-            other => panic!("expected Binary expression, got {other:?}"),
-        };
-    }
-
-    #[test]
-    fn const_circular_dependency() {
-        let src = r#"
-            const A: i32 = B;
-            const B: i32 = A;
-            fn main() {}
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(
-            err.kind,
-            HirErrorKind::CircularConstant { name } if name == "A" || name == "B"
-        ));
-    }
-
-    #[test]
-    fn const_duplicate_declaration() {
-        let src = r#"
-            const X: i32 = 1;
-            const X: i32 = 2;
-            fn main() {}
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "X", .. }));
-    }
-
-    #[test]
-    fn const_scoped_duplicate_declaration() {
-        let src = r#"
-            struct Dummy {}
-            impl Dummy {
-                pub const VALUE: i32 = 1;
-                pub const VALUE: i32 = 2;
-            }
-            fn main() {}
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "Dummy::VALUE", .. }));
-    }
-
-    #[test]
-    fn const_undefined_reference() {
-        let src = r#"
-            const A: i32 = UNDEFINED;
-            fn main() {}
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::UndeclaredIdentifier { name: "UNDEFINED" });
-    }
-
-    #[test]
-    fn const_shadowing() {
-        let src = r#"
-            const ANSWER: i32 = 42;
-            fn main(): i32 {
-                let ANSWER: i32 = 100;
-                ANSWER
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let ret_expr = match &func.body.statements[1] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert!(matches!(ret_expr.kind, ExpressionKind::Local(_)));
-    }
-
-    #[test]
-    fn const_in_function_body_is_a_const_use_not_a_local() {
-        let src = r#"
-            fn main(): i32 {
-                const ANSWER: i32 = 42;
-                ANSWER
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        assert_eq!(func.body.statements.len(), 1);
-        assert!(func.locals.is_empty());
-
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        assert_eq!(const_value(ret_expr).kind, 42.into());
-    }
-
-    #[test]
-    fn const_in_function_body_folds_binary_use() {
-        let src = r#"
-            fn main(): i32 {
-                const BASE: i32 = 10;
-                BASE + 2
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        match &ret_expr.kind {
-            ExpressionKind::Binary { left, right, .. } => {
-                assert_eq!(const_value(left).kind, 10.into());
-                assert_eq!(right.kind, 2.into());
-            },
-            other => panic!("expected Binary expression, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn const_in_function_body_references_earlier_const() {
-        let src = r#"
-            fn main(): i32 {
-                const A: i32 = 10;
-                const B: i32 = A + 5;
-                B
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-
-        let ret_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected Return statement, got {other:?}"),
-        };
-        assert_eq!(func.typeck.type_of(ret_expr.id), TypeKind::I32.into());
-        // B's value is `A + 5`, with A itself a nested constant reference
-        match &const_value(ret_expr).kind {
-            ExpressionKind::Binary { left, right, .. } => {
-                assert_eq!(const_value(left).kind, 10.into());
-                assert_eq!(right.kind, 5.into());
-            },
-            other => panic!("expected Binary expression, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn const_in_function_body_cannot_capture_local() {
-        let src = r#"
-            fn main(): i32 {
-                let x: i32 = 5;
-                const BAD: i32 = x;
-                0
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::NonConstValue { name: "x" });
-    }
-
-    #[test]
-    fn const_in_function_body_rejects_duplicate() {
-        let src = r#"
-            fn main(): i32 {
-                const N: i32 = 1;
-                const N: i32 = 2;
-                N
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::DuplicateConstant { name: "N", .. }));
-    }
-
-    #[test]
-    fn nested_non_const_item_is_rejected() {
-        let src = r#"
-            fn main() {
-                struct Inner {}
-            }
-        "#;
-        let arena = bumpalo::Bump::new();
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::NestedItem { kind: "struct" });
-    }
-
-    #[test]
-    fn literal_pattern_integer() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn classify(x: i32): i32 {
-                match x {
-                    0 -> 10,
-                    1 -> 20,
-                    _ -> 30,
-                }
-            }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let match_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected return, got {other:?}"),
-        };
-        let arms = match &match_expr.kind {
-            ExpressionKind::Match { arms, .. } => *arms,
-            other => panic!("expected Match, got {other:?}"),
-        };
-        assert_eq!(arms.len(), 3);
-        assert!(matches!(arms[0].pattern.kind, PatternKind::Literal(Literal::Int(0))));
-        assert!(matches!(arms[1].pattern.kind, PatternKind::Literal(Literal::Int(1))));
-        assert!(matches!(arms[2].pattern.kind, PatternKind::Wildcard));
-    }
-
-    #[test]
-    fn literal_pattern_bool() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn negate(b: bool): bool {
-                match b {
-                    true -> false,
-                    false -> true,
-                }
-            }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let match_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected return, got {other:?}"),
-        };
-        let arms = match &match_expr.kind {
-            ExpressionKind::Match { arms, .. } => *arms,
-            other => panic!("expected Match, got {other:?}"),
-        };
-        assert!(matches!(arms[0].pattern.kind, PatternKind::Literal(Literal::Bool(true))));
-        assert!(matches!(arms[1].pattern.kind, PatternKind::Literal(Literal::Bool(false))));
-    }
-
-    #[test]
-    fn or_pattern_folds_into_single_or_node() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            enum Dir { N = 0, S = 1, E = 2, W = 3 } as u8
-            fn is_horizontal(d: Dir): bool {
-                match d {
-                    Dir::E | Dir::W -> true,
-                    _ -> false,
-                }
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let match_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected return, got {other:?}"),
-        };
-        let arms = match &match_expr.kind {
-            ExpressionKind::Match { arms, .. } => *arms,
-            other => panic!("expected Match, got {other:?}"),
-        };
-        assert_eq!(arms.len(), 2);
-        assert!(matches!(arms[0].pattern.kind, PatternKind::Or(pats) if pats.len() == 2));
-        assert!(matches!(arms[1].pattern.kind, PatternKind::Wildcard));
-    }
-
-    #[test]
-    fn match_arm_guard_attached() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn sign(x: i32): i32 {
-                match x {
-                    n if n > 0 -> 1,
-                    _ -> 0,
-                }
-            }
-        "#;
-
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let func = &hir.functions[0];
-        let match_expr = match &func.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected return, got {other:?}"),
-        };
-        let arms = match &match_expr.kind {
-            ExpressionKind::Match { arms, .. } => *arms,
-            other => panic!("expected Match, got {other:?}"),
-        };
-        assert_eq!(arms.len(), 2);
-        assert!(arms[0].guard.is_some(), "first arm must have a guard");
-        assert!(arms[1].guard.is_none(), "wildcard arm must have no guard");
-    }
-
-    #[test]
-    fn generic_free_function_is_monomorphised() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn pick<T>(a: T, b: T): T { a }
-            fn main(): i32 { pick(7, 9) }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-
-        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
-
-        let pick = hir
-            .functions
-            .iter()
-            .find(|f| name(f).contains("pick$i32"))
-            .expect("specialised pick$i32 instance");
-        assert_eq!(pick.params[0].typ, TypeKind::I32.into());
-        assert_eq!(pick.return_type, TypeKind::I32.into());
-        assert!(
-            hir.functions.iter().all(|f| !name(f).ends_with("pick")),
-            "the open template body must not be emitted"
-        );
-
-        let main = hir.functions.iter().find(|f| name(f) == "nyx::main").unwrap();
-        let call = match &main.body.statements[0] {
-            Statement::Return(Some(expr)) => *expr,
-            other => panic!("expected return, got {other:?}"),
-        };
-        assert!(matches!(call.kind, ExpressionKind::Call { .. }));
-        assert_eq!(main.typeck.type_dependent_def(call.id), Some(Res::Function(pick.id)));
-    }
-
-    #[test]
-    fn an_unsafe_function_is_only_callable_from_an_unsafe_one() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn danger(): i32 { 1 }
-            fn main(): i32 { danger() }
-        "#;
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::UnsafeCall { name: "nyx::danger", .. }));
-
-        let src = r#"
-            @unsafe fn danger(): i32 { 1 }
-            @unsafe fn main(): i32 { danger() }
-        "#;
-        let arena = bumpalo::Bump::new();
-        super::lower(Parser::new(src).parse().unwrap(), &arena)
-            .expect("an unsafe caller may reach an unsafe callee");
-    }
-
-    #[test]
-    fn an_unsafe_block_lets_safe_code_wrap_an_unsafe_operation() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn danger(): i32 { 1 }
-            fn wrapper(p: *i32): i32 { @unsafe { danger() + *p } }
-            fn main(): i32 { 0 }
-        "#;
-        let hir = super::lower_collecting(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    }
-
-    #[test]
-    fn an_unsafe_block_that_grants_nothing_warns() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn danger(): i32 { 1 }
-            fn pointless(): i32 { @unsafe { 5 } }
-            @unsafe fn redundant(): i32 { @unsafe { danger() } }
-            fn main(): i32 { 0 }
-        "#;
-        let hir = super::lower_collecting(Parser::new(src).parse().unwrap(), &arena).unwrap();
-
-        assert_eq!(hir.diagnostics.len(), 2, "{:?}", hir.diagnostics);
-        for diagnostic in &hir.diagnostics {
-            assert_eq!(diagnostic.severity, crate::diagnostic::Severity::Warning);
-            assert_eq!(diagnostic.lint, Some(crate::lints::Lint::UnusedUnsafe));
-            assert!(diagnostic.code.is_none(), "a lint carries no error code");
-        }
-    }
-
-    #[test]
-    fn a_raw_pointer_is_only_dereferenceable_in_an_unsafe_function() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn read(p: *i32): i32 { *p }
-            fn main(): i32 { 0 }
-        "#;
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::UnsafeDeref { .. }));
-
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn read(p: *i32): i32 { *p }
-            fn main(): i32 { 0 }
-        "#;
-        super::lower(Parser::new(src).parse().unwrap(), &arena)
-            .expect("an unsafe function may dereference a raw pointer");
-    }
-
-    #[test]
-    fn a_reference_stands_in_for_a_raw_pointer_but_not_the_reverse() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn main(): i32 {
-                let v: i32 = 7;
-                let p: *i32 = &v;
-                *p
-            }
-        "#;
-        super::lower(Parser::new(src).parse().unwrap(), &arena).expect("&T coerces to *T");
-
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @unsafe fn main(): i32 {
-                let v: i32 = 7;
-                let p: *i32 = &v;
-                let r: &i32 = p;
-                *r
-            }
-        "#;
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::TypeAnnotationMismatch { .. }));
-    }
-
-    #[test]
-    fn an_intrinsic_the_compiler_does_not_implement_is_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            @intrinsic
-            fn reversed(): i32 {}
-            fn main() { }
-        "#;
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::UnknownIntrinsic { name: "reversed" }));
-    }
-
-    #[test]
-    fn an_intrinsic_body_is_empty_by_design() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Counter { n: i32 }
-            impl Counter {
-                @intrinsic
-                pub const fn wrapping_add(&self, rhs: i32): i32 {}
-            }
-            fn main() { }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena)
-            .expect("an empty @intrinsic body needs no return");
-        assert!(
-            !hir.functions.iter().any(|f| matches!(f.kind, FunctionKind::Intrinsic(_))),
-            "a batch compile lowers no body for an intrinsic"
-        );
-    }
-
-    #[test]
-    fn an_indirection_cannot_point_at_another_one() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn read(p: **i32): i32 { 0 }";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::NestedIndirection { .. }));
-    }
-
-    #[test]
-    fn a_signature_instantiating_a_generic_keeps_its_own_id() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            enum Res<S, F> { Ok(S), Bad(F) }
-            impl Res<S, F> {
-                fn first(self): S { self.second() }
-                fn second(self): S { self.first() }
-            }
-
-            struct Layout { size: uptr }
-            struct Failed {}
-            impl Layout {
-                fn make(size: uptr): Res<Layout, Failed> { Res::Ok(Layout { size: size }) }
-            }
-
-            fn main(): i32 { Layout::make(1); 0 }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
-
-        let make = hir
-            .functions
-            .iter()
-            .find(|f| name(f) == "nyx::Layout::make")
-            .expect("Layout::make must keep the id it registered");
-        assert_eq!(make.params.len(), 1, "the size parameter must survive");
-        assert!(matches!(make.return_type.kind(), TypeKind::Enum(_)));
-    }
-
-    #[test]
-    fn generic_turbofish_selects_instance() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            fn id<T>(x: T): T { x }
-            fn main(): i64 { id::<i64>(5) }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
-
-        let instance = hir
-            .functions
-            .iter()
-            .find(|f| name(f).contains("id$i64"))
-            .expect("specialised id$i64 instance");
-        assert_eq!(instance.params[0].typ, TypeKind::I64.into());
-    }
-
-    #[test]
-    fn generic_free_fn_resolves_generic_method() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            struct Box<T> { val: T }
-            impl Box<T> { fn get(&self): T { self.val } }
-            fn unwrap<T>(b: &Box<T>): T { b.get() }
-            fn main(): i64 { unwrap::<i64>(&Box::<i64> { val: 7 }) }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let name = |f: &Function| hir.symbols.get(f.name).to_owned();
-
-        assert!(
-            hir.functions
-                .iter()
-                .any(|f| name(f).contains("Box$i64") && name(f).contains("get")),
-            "expected a specialised get method on Box$i64"
-        );
-    }
-
-    fn span_text(src: &str, span: Span) -> &str {
-        &src[span.start.0 as usize..span.end.0 as usize]
-    }
-
-    #[test]
-    fn array_constant_index_out_of_bounds() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main(){let a:[i32;3]=[1,2,3];a[5];}";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::IndexOutOfBounds { index: 5, len: 3 });
-        assert_eq!(span_text(src, err.span), "a[5]");
-    }
-
-    #[test]
-    fn indexing_a_non_indexable_type_is_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main(){let x:i32=1;x[0];}";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::NotIndexable { .. }));
-        assert_eq!(span_text(src, err.span), "x[0]");
-    }
-
-    #[test]
-    fn a_non_integer_index_is_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main(){let a:[i32;2]=[1,2];let b:bool=true;a[b];}";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }));
-    }
-
-    #[test]
-    fn overloaded_indexing_normalises_to_contextual_method_calls() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Index<Idx> {
-                type Output;
-                fn index(&self, index: Idx): &Self::Output;
-            }
-            interface IndexMutable<Idx>: Index {
-                fn index_mut(&mut self, index: Idx): &mut Self::Output;
-            }
-            struct Bag { value: i32 }
-            impl Bag with Index<bool> {
-                type Output = i32;
-                fn index(&self, index: bool): &Self::Output { &self.value }
-            }
-            impl Bag with IndexMutable<bool> {
-                fn index_mut(&mut self, index: bool): &mut Self::Output { &mut self.value }
-            }
-            fn read(bag: &Bag): i32 { bag[false] }
-            fn write(bag: &mut Bag) { bag[true] = 9; }
-        "#;
-        let hir = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap();
-        let function = |name| {
-            hir.functions
-                .iter()
-                .find(|function| hir.symbols.get(function.name).ends_with(name))
-                .expect("function must be lowered")
-        };
-        fn index_call<'hir>(expr: &'hir Expression<'hir>) -> &'hir Expression<'hir> {
-            let ExpressionKind::Unary { operator: UnaryOperator::Deref, expr: call } = expr.kind
-            else {
-                panic!("overloaded indexing must normalise to a dereferenced call")
-            };
-            assert!(matches!(call.kind, ExpressionKind::MethodCall { .. }));
-            call
-        }
-        let resolved_name = |owner: &Function, call: &Expression| {
-            let id = owner
-                .typeck
-                .type_dependent_def(call.id)
-                .and_then(Res::function)
-                .expect("normalised call must have a resolved method");
-            hir.symbols.get(hir.functions[id].name)
-        };
-
-        let read = function("read");
-        let Statement::Return(Some(read_index)) = read.body.statements[0] else {
-            panic!("read must return its index expression")
-        };
-        assert!(resolved_name(read, index_call(read_index)).ends_with("Index::index"));
-
-        let write = function("write");
-        let Statement::Expr(assign) = write.body.statements[0] else {
-            panic!("write must contain an assignment")
-        };
-        let ExpressionKind::Assign { target: write_index, .. } = assign.kind else {
-            panic!("write expression must be an assignment")
-        };
-        assert!(resolved_name(write, index_call(write_index)).ends_with("IndexMutable::index_mut"));
-    }
-
-    #[test]
-    fn mutable_indexing_requires_index_mutable() {
-        let arena = bumpalo::Bump::new();
-        let src = r#"
-            interface Index<Idx> {
-                type Output;
-                fn index(&self, index: Idx): &Self::Output;
-            }
-            struct Bag { value: i32 }
-            impl Bag with Index<i32> {
-                type Output = i32;
-                fn index(&self, index: i32): &Self::Output { &self.value }
-            }
-            fn write(bag: &mut Bag) { bag[0] = 9; }
-        "#;
-
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::NotMutablyIndexable { .. }));
-    }
-
-    #[test]
-    fn writing_an_immutable_array_element_is_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn main(){let a:[i32;2]=[1,2];a[0]=9;}";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert!(matches!(err.kind, HirErrorKind::ImmutableBind { name: "a", .. }));
-        assert_eq!(span_text(src, err.span), "a[0]");
-    }
-
-    #[test]
-    fn writing_through_a_shared_slice_is_rejected() {
-        let arena = bumpalo::Bump::new();
-        let src = "fn set(s:&[i32]){s[0]=9;}";
-        let err = super::lower(Parser::new(src).parse().unwrap(), &arena).unwrap_err();
-        assert_eq!(err.kind, HirErrorKind::AssignBehindSharedRef);
-        assert_eq!(span_text(src, err.span), "s[0]");
-    }
-}
+mod tests;

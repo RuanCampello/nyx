@@ -1,7 +1,7 @@
 use crate::hir::{
     Arm, Block, Constant, Expression, ExpressionKind as ExprKind, Function, FunctionKind, Local,
-    LoopKind, Method, Owner, Parameter, Pattern, PatternKind as PattKind, Res, Statement as Stmt,
-    Type, TypeckResults,
+    LoopKind, Method, Parameter, Pattern, PatternKind as PattKind, Res, Statement as Stmt, Type,
+    TypeckResults,
 };
 
 pub trait Visitor<'hir>: Sized {
@@ -213,13 +213,7 @@ pub fn fold_function<'hir, F: Folder<'hir>>(
         },
         other => other,
     };
-    let owner = match function.owner {
-        Owner::Inherent(on) => Owner::Inherent(folder.fold_type(on)),
-        Owner::Interface { on, interface } => {
-            Owner::Interface { on: folder.fold_type(on), interface }
-        },
-        Owner::Free => Owner::Free,
-    };
+    let owner = function.owner.map_type(|on| folder.fold_type(on));
 
     Function {
         id: function.id,
@@ -248,13 +242,7 @@ pub fn fold_constant<'hir, F: Folder<'hir>>(
     Constant {
         name: constant.name,
         typ: folder.fold_type(constant.typ),
-        owner: match constant.owner {
-            Owner::Inherent(on) => Owner::Inherent(folder.fold_type(on)),
-            Owner::Interface { on, interface } => {
-                Owner::Interface { on: folder.fold_type(on), interface }
-            },
-            Owner::Free => Owner::Free,
-        },
+        owner: constant.owner.map_type(|on| folder.fold_type(on)),
         value: folder.fold_expression(constant.value),
         typeck: fold_typeck(folder, &constant.typeck),
         is_pub: constant.is_pub,
@@ -309,60 +297,52 @@ pub fn fold_expression<'hir, F: Folder<'hir>>(
     folder: &mut F,
     expression: &'hir Expression<'hir>,
 ) -> &'hir Expression<'hir> {
+    use ExprKind::*;
+
     let kind = match expression.kind {
-        ExprKind::Unary { operator, expr } => {
-            ExprKind::Unary { operator, expr: folder.fold_expression(expr) }
-        },
-        ExprKind::Binary { operator, left, right } => ExprKind::Binary {
+        Unary { operator, expr } => Unary { operator, expr: folder.fold_expression(expr) },
+        Binary { operator, left, right } => Binary {
             operator,
             left: folder.fold_expression(left),
             right: folder.fold_expression(right),
         },
-        ExprKind::Field { base, field } => {
-            ExprKind::Field { base: folder.fold_expression(base), field }
-        },
-        ExprKind::Assign { target, value } => ExprKind::Assign {
+        Field { base, field } => Field { base: folder.fold_expression(base), field },
+        Assign { target, value } => Assign {
             target: folder.fold_expression(target),
             value: folder.fold_expression(value),
         },
-        ExprKind::Struct { id, fields } => {
+        Struct { id, fields } => {
             let fields = fields
                 .iter()
                 .map(|(name, value)| (*name, folder.fold_expression(value)))
                 .collect::<Vec<_>>();
-            ExprKind::Struct { id, fields: folder.arena().alloc_slice_copy(&fields) }
+            Struct { id, fields: folder.arena().alloc_slice_copy(&fields) }
         },
-        ExprKind::Array { elements } => {
+        Array { elements } => {
             let elements = elements
                 .iter()
                 .map(|element| folder.fold_expression(element))
                 .collect::<Vec<_>>();
-            ExprKind::Array { elements: folder.arena().alloc_slice_copy(&elements) }
+            Array { elements: folder.arena().alloc_slice_copy(&elements) }
         },
-        ExprKind::ArrayRepeat { value, count } => {
-            ExprKind::ArrayRepeat { value: folder.fold_expression(value), count }
-        },
-        ExprKind::Index { base, index } => ExprKind::Index {
+        ArrayRepeat { value, count } => ArrayRepeat { value: folder.fold_expression(value), count },
+        Index { base, index } => Index {
             base: folder.fold_expression(base),
             index: folder.fold_expression(index),
         },
-        ExprKind::Call { callee, args } => ExprKind::Call {
+        Call { callee, args } => Call {
             callee: folder.fold_expression(callee),
             args: fold_expressions(folder, args),
         },
-        ExprKind::MethodCall { name, receiver, args } => ExprKind::MethodCall {
+        MethodCall { name, receiver, args } => MethodCall {
             name,
             receiver: folder.fold_expression(receiver),
             args: fold_expressions(folder, args),
         },
-        ExprKind::TypeIntrinsic { kind, typ } => {
-            ExprKind::TypeIntrinsic { kind, typ: folder.fold_type(typ) }
-        },
-        ExprKind::Cast { from, to } => {
-            ExprKind::Cast { from: folder.fold_expression(from), to: folder.fold_type(to) }
-        },
-        ExprKind::Match { scrutinee, arms } => {
-            let arms = arms
+        TypeIntrinsic { kind, typ } => TypeIntrinsic { kind, typ: folder.fold_type(typ) },
+        Cast { from, to } => Cast { from: folder.fold_expression(from), to: folder.fold_type(to) },
+        Match { scrutinee, arms } => {
+            let arms: Vec<_> = arms
                 .iter()
                 .map(|arm| Arm {
                     pattern: folder.fold_pattern(arm.pattern),
@@ -370,14 +350,15 @@ pub fn fold_expression<'hir, F: Folder<'hir>>(
                     body: folder.fold_expression(arm.body),
                     span: arm.span,
                 })
-                .collect::<Vec<_>>();
-            ExprKind::Match {
+                .collect();
+            Match {
                 scrutinee: folder.fold_expression(scrutinee),
                 arms: folder.arena().alloc_slice_copy(&arms),
             }
         },
         other => other,
     };
+
     folder
         .arena()
         .alloc(Expression { id: expression.id, kind, span: expression.span })

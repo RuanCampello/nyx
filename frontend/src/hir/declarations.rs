@@ -2,7 +2,7 @@ use crate::{
     hir::error::HirError,
     lexer::token::Span,
     parser::statement::{
-        self, Const, Enum, Function, Impl, Interface, ItemKind, Statement, Static, Struct, UseDecl,
+        Const, Enum, Function, Impl, Interface, ItemKind, Statement, Static, Struct, UseDecl,
     },
 };
 
@@ -20,29 +20,8 @@ pub(in crate::hir) struct Declarations<'d, 'src> {
 }
 
 impl<'d, 'src> Declarations<'d, 'src> {
-    pub fn partition<'b>(
-        statements: &'d mut [Statement<'src>],
-        lookup_interface: impl Fn(&str) -> Option<&'b Interface<'src>>,
-    ) -> Result<Self, HirError<'src>>
-    where
-        'src: 'b,
-    {
-        statement::inject_default_methods(statements, lookup_interface);
-        Self::collect(statements)
-    }
-
-    /// categorise already-injected top-level items by kind, gathering doc comments
-    pub fn collect(statements: &'d [Statement<'src>]) -> Result<Self, HirError<'src>> {
-        let (declarations, errors) = Self::collect_recovering(statements);
-
-        match errors.into_iter().next() {
-            Some(error) => Err(error),
-            None => Ok(declarations),
-        }
-    }
-
-    /// As [Declarations::collect], but skipping and reporting every statement
-    /// that is not an item instead of stopping at the first one
+    /// Categorise already-injected top-level items by kind, gathering doc
+    /// comments and reporting every statement that is not an item
     pub fn collect_recovering(statements: &'d [Statement<'src>]) -> (Self, Vec<HirError<'src>>) {
         let mut errors = Vec::new();
         let mut declarations = Self {

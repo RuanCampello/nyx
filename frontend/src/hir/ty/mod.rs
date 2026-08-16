@@ -1,4 +1,5 @@
 use crate::diagnostic;
+use crate::hir::collect::ItemTable;
 use crate::hir::diagnostics::ErrorGuaranteed;
 use crate::hir::ids::{AdtId, ArrayId};
 use crate::parser::statement;
@@ -47,33 +48,6 @@ pub struct CommonTypes<'hir> {
     pub self_type: Type<'hir>,
     pub never: Type<'hir>,
     pub error: Type<'hir>,
-}
-
-impl CommonTypes<'_> {
-    const fn new() -> Self {
-        Self {
-            unit: Type(&UNIT),
-            i8: Type(&I8),
-            u8: Type(&U8),
-            i16: Type(&I16),
-            u16: Type(&U16),
-            i32: Type(&I32),
-            u32: Type(&U32),
-            i64: Type(&I64),
-            u64: Type(&U64),
-            f32: Type(&F32),
-            f64: Type(&F64),
-            bool: Type(&BOOL),
-            uptr: Type(&UPTR),
-            iptr: Type(&IPTR),
-            char: Type(&CHAR),
-            str: Type(&STR),
-            string: Type(&STRING),
-            self_type: Type(&SELF_TYPE),
-            never: Type(&NEVER),
-            error: Type(&ERROR),
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -170,11 +144,6 @@ impl<'hir> TyInterner<'hir> {
         self.intern(TypeKind::Raw { mutable, to })
     }
 
-    #[inline]
-    pub fn receiver_ref(&self, receiver: Type<'hir>, mutable: bool) -> Type<'hir> {
-        self.refer(receiver, mutable)
-    }
-
     pub fn from_primitive_ast(&self, typ: &statement::Type<'_>) -> Option<Type<'hir>> {
         use statement::Type as AstType;
         Some(match typ {
@@ -207,32 +176,6 @@ impl<'hir> TyInterner<'hir> {
             | AstType::Associated(_, _) => return None,
         })
     }
-
-    fn primitive(&self, kind: TypeKind<'hir>) -> Option<Type<'hir>> {
-        Some(match kind {
-            TypeKind::Unit => self.common.unit,
-            TypeKind::I8 => self.common.i8,
-            TypeKind::U8 => self.common.u8,
-            TypeKind::I16 => self.common.i16,
-            TypeKind::U16 => self.common.u16,
-            TypeKind::I32 => self.common.i32,
-            TypeKind::U32 => self.common.u32,
-            TypeKind::I64 => self.common.i64,
-            TypeKind::U64 => self.common.u64,
-            TypeKind::F32 => self.common.f32,
-            TypeKind::F64 => self.common.f64,
-            TypeKind::Bool => self.common.bool,
-            TypeKind::Uptr => self.common.uptr,
-            TypeKind::Iptr => self.common.iptr,
-            TypeKind::Char => self.common.char,
-            TypeKind::Str => self.common.str,
-            TypeKind::String => self.common.string,
-            TypeKind::SelfType => self.common.self_type,
-            TypeKind::Never => self.common.never,
-            TypeKind::Error => self.common.error,
-            _ => return None,
-        })
-    }
 }
 
 impl Clone for TyInterner<'_> {
@@ -252,34 +195,6 @@ impl PartialEq for TyInterner<'_> {
 }
 
 impl<'hir> Type<'hir> {
-    /// Constructs one of the globally canonical primitive types.
-    /// Structural types must be created by [`TyInterner`].
-    const fn new(kind: TypeKind<'hir>) -> Self {
-        match kind {
-            TypeKind::Unit => Type(&UNIT),
-            TypeKind::I8 => Type(&I8),
-            TypeKind::U8 => Type(&U8),
-            TypeKind::I16 => Type(&I16),
-            TypeKind::U16 => Type(&U16),
-            TypeKind::I32 => Type(&I32),
-            TypeKind::U32 => Type(&U32),
-            TypeKind::I64 => Type(&I64),
-            TypeKind::U64 => Type(&U64),
-            TypeKind::F32 => Type(&F32),
-            TypeKind::F64 => Type(&F64),
-            TypeKind::Bool => Type(&BOOL),
-            TypeKind::Uptr => Type(&UPTR),
-            TypeKind::Iptr => Type(&IPTR),
-            TypeKind::Char => Type(&CHAR),
-            TypeKind::Str => Type(&STR),
-            TypeKind::String => Type(&STRING),
-            TypeKind::SelfType => Type(&SELF_TYPE),
-            TypeKind::Never => Type(&NEVER),
-            TypeKind::Error => Type(&ERROR),
-            _ => panic!("structural types must be created by TyInterner"),
-        }
-    }
-
     #[inline]
     pub const fn kind(self) -> TypeKind<'hir> {
         *self.0
@@ -316,12 +231,12 @@ impl<'hir> Type<'hir> {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_number(self) -> bool {
         self.is_integer() || self.is_float()
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_integer(self) -> bool {
         matches!(
             self.kind(),
@@ -338,22 +253,22 @@ impl<'hir> Type<'hir> {
         )
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_float(self) -> bool {
         matches!(self.kind(), TypeKind::F32 | TypeKind::F64)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_32_bit(self) -> bool {
         matches!(self.kind(), TypeKind::F32 | TypeKind::I32 | TypeKind::U32)
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) const fn is_primitive_castable(self) -> bool {
         self.is_integer() || matches!(self.kind(), TypeKind::Bool | TypeKind::Char)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_aggregate(self) -> bool {
         matches!(
             self.kind(),
@@ -361,29 +276,39 @@ impl<'hir> Type<'hir> {
         )
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_slice(self) -> bool {
         matches!(self.kind(), TypeKind::Slice { .. })
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn diverges(self) -> bool {
         matches!(self.kind(), TypeKind::Never)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_ref(self) -> bool {
         matches!(self.kind(), TypeKind::Ref { .. })
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_raw(self) -> bool {
         matches!(self.kind(), TypeKind::Raw { .. })
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_pointer(self) -> bool {
         matches!(self.kind(), TypeKind::Ref { .. } | TypeKind::Raw { .. })
+    }
+
+    pub(in crate::hir) fn is_copy(self, scope: &ItemTable<'hir>) -> bool {
+        self.is_number()
+            || matches!(self.kind(), TypeKind::Bool | TypeKind::Char)
+            || self.is_pointer()
+            || scope
+                .symbols
+                .get_id("Copy")
+                .is_some_and(|copy| scope.implements_interface(self, copy))
     }
 }
 
@@ -446,6 +371,7 @@ impl EnumRepr {
         if variants.iter().any(|variant| variant.payload.is_some()) {
             return Self::default();
         }
+
         let mut next = 0i64;
         let (mut min, mut max) = (0i64, 0i64);
         for variant in variants {
@@ -457,6 +383,7 @@ impl EnumRepr {
         Self::fitting(min, max)
     }
 
+    #[inline]
     const fn fitting(min: i64, max: i64) -> Self {
         match min >= 0 {
             true if max <= u8::MAX as i64 => Self::U8,
@@ -592,30 +519,56 @@ impl TryFrom<statement::Type<'_>> for EnumRepr {
 }
 
 macro_rules! primitive_kinds {
-    ($($name:ident: $kind:ident),* $(,)?) => {
+    ($($name:ident: $kind:ident => $field:ident),* $(,)?) => {
         $(static $name: TypeKind<'static> = TypeKind::$kind;)*
+
+        impl CommonTypes<'_> {
+            const fn new() -> Self {
+                Self {
+                    $($field: Type(&$name),)*
+                }
+            }
+        }
+
+        impl<'hir> TyInterner<'hir> {
+            fn primitive(&self, kind: TypeKind<'hir>) -> Option<Type<'hir>> {
+                Some(match kind {
+                    $(TypeKind::$kind => self.common.$field,)*
+                    _ => return None,
+                })
+            }
+        }
+
+        impl<'hir> Type<'hir> {
+            const fn new(kind: TypeKind<'hir>) -> Self {
+                match kind {
+                    $(TypeKind::$kind => Type(&$name),)*
+                    _ => panic!("structural types must be created by TyInterner"),
+                }
+            }
+        }
     };
 }
 
 primitive_kinds! {
-    UNIT: Unit,
-    I8: I8,
-    U8: U8,
-    I16: I16,
-    U16: U16,
-    I32: I32,
-    U32: U32,
-    I64: I64,
-    U64: U64,
-    F32: F32,
-    F64: F64,
-    BOOL: Bool,
-    UPTR: Uptr,
-    IPTR: Iptr,
-    CHAR: Char,
-    STR: Str,
-    STRING: String,
-    SELF_TYPE: SelfType,
-    NEVER: Never,
-    ERROR: Error,
+    UNIT: Unit => unit,
+    I8: I8 => i8,
+    U8: U8 => u8,
+    I16: I16 => i16,
+    U16: U16 => u16,
+    I32: I32 => i32,
+    U32: U32 => u32,
+    I64: I64 => i64,
+    U64: U64 => u64,
+    F32: F32 => f32,
+    F64: F64 => f64,
+    BOOL: Bool => bool,
+    UPTR: Uptr => uptr,
+    IPTR: Iptr => iptr,
+    CHAR: Char => char,
+    STR: Str => str,
+    STRING: String => string,
+    SELF_TYPE: SelfType => self_type,
+    NEVER: Never => never,
+    ERROR: Error => error,
 }

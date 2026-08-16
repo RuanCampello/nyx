@@ -53,8 +53,8 @@ struct TypeNames {
     arrays: Vec<String>,
 }
 
-/// An [`ariadne::Cache`] over the per-thread [`SourceMap`], building one
-/// [`Source`] per file on first use so a single report can span many files
+/// An [ariadne::Cache] over the per-thread [SourceMap], building one
+/// [Source] per file on first use so a single report can span many files
 struct MapCache {
     sources: HashMap<FileId, Source<String>>,
     names: HashMap<FileId, String>,
@@ -100,14 +100,10 @@ enum TypeNameKind {
     Array,
 }
 
-/// Register a file in the per-thread source map and return its id and the base
-/// offset its spans must be relative to
 pub fn add_file(name: impl Into<std::path::PathBuf>, src: impl Into<String>) -> (FileId, BytePos) {
     SOURCE_MAP.with_borrow_mut(|map| map.add_file(name, src))
 }
 
-/// Move the per-thread source map out, leaving an empty one behind
-/// The caller (e.g. the LSP) takes ownership to resolve spans after a run completes
 pub fn take_source_map() -> SourceMap {
     SOURCE_MAP.with_borrow_mut(std::mem::take)
 }

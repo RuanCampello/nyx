@@ -1,57 +1,46 @@
-//! Struct lowering: AST -> HIR with topological field-type resolution
-
-use crate::hir::{
-    ArrayId, ArrayType, Enum, EnumId, Layout, Struct, StructField, StructId, SymbolId, SymbolTable,
-    Type, TypeKind,
-    diagnostics::Diagnostics,
-    error::{HirError, hir_error},
-    index_vec::IndexVec,
-    scope::{ArrayTable, Enums, Structs},
-    type_resolver,
+use crate::{
+    hir::{
+        AdtDef, AdtId, AdtKind, ArrayId, ArrayType, FieldDef, GenericParamDef, Layout, SymbolId,
+        SymbolTable, TyInterner, Type, TypeKind,
+        collect::{ArrayTable, Enums, GenericEnv, Structs},
+        diagnostics::Diagnostics,
+        error::{HirError, hir_error},
+        ids::IndexVec,
+        type_resolver,
+    },
+    parser::statement::{self, StructRepr, StructReprKind},
 };
-use crate::parser::statement::{self, StructRepr, StructReprKind};
 use std::collections::{HashMap, HashSet};
 
-/// One module's struct batch being lowered in topological field order
-struct Lowering<'a, 'h> {
+struct Lowering<'a, 'h, 'hir> {
     declarations: &'a [(SymbolId, &'a statement::Struct<'h>)],
-    map: &'a Structs,
+    struct_map: &'a Structs,
     enum_map: &'a Enums,
-    arrays: &'a ArrayTable,
+    adts: &'a IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &'a ArrayTable<'hir>,
+    types: &'a TyInterner<'hir>,
     symbols: &'a SymbolTable,
-    local_ids: HashMap<StructId, usize>,
+    local_ids: HashMap<AdtId, usize>,
     states: Vec<Visit>,
 }
 
-/// Lays out every struct and enum together, resolving their mutual
-/// dependencies in a single topological walk
-struct LayoutEngine<'s> {
-    structs: &'s IndexVec<StructId, Struct>,
-    enums: &'s IndexVec<EnumId, Enum>,
-    arrays: &'s IndexVec<ArrayId, ArrayType>,
-    struct_layouts: Vec<Option<StructLayout>>,
-    enum_layouts: Vec<Option<EnumLayout>>,
-    struct_states: Vec<Visit>,
-    enum_states: Vec<Visit>,
+struct LayoutEngine<'a, 'hir> {
+    adts: &'a IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &'a IndexVec<ArrayId, ArrayType<'hir>>,
+    layouts: Vec<Option<ComputedLayout>>,
+    states: Vec<Visit>,
 }
 
 #[derive(Clone)]
-struct StructLayout {
+struct ComputedLayout {
     summary: Layout,
-    /// field offsets in source declaration order
-    // TODO: this can probably be a slice so it could be copy
     offsets: Vec<u32>,
-}
-
-#[derive(Clone, Copy)]
-struct EnumLayout {
-    summary: Layout,
     payload_offset: u32,
 }
 
 #[derive(Clone, Copy)]
-struct PendingField {
-    typ: Type,
+struct PendingField<'hir> {
+    typ: Type<'hir>,
     declared_index: usize,
 }
 
@@ -62,21 +51,16 @@ pub(crate) enum Visit {
     Visited,
 }
 
-/// Lower every struct in `declarations`, writing the result into `lowered`
-/// at the matching index
-///
-/// Resolves field types and recurses on by-value struct fields so the dependency graph is laid out in
-/// topological order. Fails on cycles or duplicate fields, unless a recovery `sink`
-/// is given, then offending fields are poisoned (or skipped) and every struct still lowers,
-/// keeping the id <-> index relation dense
-pub(in crate::hir) fn lower_structs<'h>(
+pub(in crate::hir) fn lower_structs<'h, 'hir>(
     declarations: &[(SymbolId, &statement::Struct<'h>)],
-    map: &Structs,
+    struct_map: &Structs,
     enum_map: &Enums,
-    arrays: &ArrayTable,
-    symbols: &mut SymbolTable,
-    lowered: &mut [Option<Struct>],
-    mut sink: Option<&mut Diagnostics>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+    types: &TyInterner<'hir>,
+    symbols: &SymbolTable,
+    lowered: &mut [Option<AdtDef<'hir>>],
+    sink: &mut Diagnostics,
 ) -> Result<(), HirError<'h>> {
     for (_, declaration) in declarations {
         for field in &declaration.fields {
@@ -86,104 +70,281 @@ pub(in crate::hir) fn lower_structs<'h>(
 
     let mut lowering = Lowering {
         declarations,
-        map,
+        struct_map,
         enum_map,
+        adts,
         arrays,
+        types,
         symbols,
         local_ids: declarations
             .iter()
             .enumerate()
-            .map(|(index, (symbol, _))| (map[symbol], index))
+            .map(|(index, (symbol, _))| (struct_map[symbol], index))
             .collect(),
         states: vec![Visit::Unvisited; declarations.len()],
     };
 
     for id in 0..declarations.len() {
-        lowering.lower_struct(id, lowered, sink.as_deref_mut())?;
+        lowering.lower_struct(id, lowered, sink)?;
     }
-
     Ok(())
 }
 
-/// compute and cache the byte layout of every nominal type
-pub(in crate::hir) fn compute_layouts(
-    structs: &mut IndexVec<StructId, Struct>,
-    enums: &mut IndexVec<EnumId, Enum>,
-    arrays: &IndexVec<ArrayId, ArrayType>,
+pub(in crate::hir) fn compute_layouts<'hir>(
+    adts: &mut IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &IndexVec<ArrayId, ArrayType<'hir>>,
 ) {
-    let (struct_layouts, enum_layouts) = LayoutEngine::new(structs, enums, arrays).compute();
-
-    for (definition, computed) in structs.iter_mut().zip(struct_layouts) {
+    let computed = LayoutEngine::new(adts, arrays).compute();
+    for (definition, computed) in adts.iter_mut().zip(computed) {
         definition.layout = computed.summary;
-        for (field, offset) in definition.fields.iter_mut().zip(computed.offsets) {
-            field.offset = offset;
+        match &mut definition.kind {
+            AdtKind::Struct { fields, .. } => {
+                for (field, offset) in fields.iter_mut().zip(computed.offsets) {
+                    field.offset = offset;
+                }
+            },
+            AdtKind::Enum { payload_offset, .. } => *payload_offset = computed.payload_offset,
         }
     }
-
-    for (definition, computed) in enums.iter_mut().zip(enum_layouts) {
-        definition.layout = computed.summary;
-        definition.payload_offset = computed.payload_offset;
-    }
 }
 
-/// size and alignment of any runtime type, reading the cached nominal layouts
-pub fn type_layout(
-    typ: Type,
-    structs: &IndexVec<StructId, Struct>,
-    enums: &IndexVec<EnumId, Enum>,
-    arrays: &IndexVec<ArrayId, ArrayType>,
+pub fn type_layout<'hir>(
+    typ: Type<'hir>,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
 ) -> (u32, u32) {
-    match scalar_layout(typ) {
-        Some(layout) => layout,
-        None => match typ.kind() {
-            TypeKind::Struct(id) => structs[id].layout.into(),
-            TypeKind::Enum(id) => enums[id].layout.into(),
-            TypeKind::Array(id) => {
-                let array = arrays[id];
-                let (size, align) = type_layout(array.element, structs, enums, arrays);
-                (size * array.len, align)
-            },
-            TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1),
-            _ => unreachable!("type has no runtime layout"),
-        },
-    }
+    let (size, align, _) = type_field_info(typ, types, adts, arrays);
+    (size, align)
 }
 
-/// the field named `field` of `origin`, following a single reference
-pub fn struct_field(
-    origin: Type,
+pub fn struct_field<'hir>(
+    origin: Type<'hir>,
     field: SymbolId,
-    structs: &IndexVec<StructId, Struct>,
-) -> &StructField {
-    let id = match origin.kind() {
-        TypeKind::Struct(id) => id,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+) -> FieldDef<'hir> {
+    let (id, args) = match origin.kind() {
+        TypeKind::Adt(id, args) => (id, args),
         TypeKind::Ref { to, .. } => match to.kind() {
-            TypeKind::Struct(id) => id,
+            TypeKind::Adt(id, args) => (id, args),
             _ => unreachable!("field projection on non-struct"),
         },
         _ => unreachable!("field projection on non-struct"),
     };
-
-    structs[id]
-        .fields
+    let index = adts[id]
+        .fields()
         .iter()
-        .find(|candidate| candidate.name == field)
-        .expect("field must exist after HIR validation")
+        .position(|candidate| candidate.name == field)
+        .expect("field must exist after HIR validation");
+    if args.is_empty() {
+        return adts[id].fields()[index];
+    }
+    let layout = concrete_adt_layout(id, args, types, adts, arrays);
+    let mut field = adts[id].fields()[index];
+    field.typ = field.typ.subst(types, arrays, args);
+    field.offset = layout.offsets[index];
+    field
 }
 
-#[inline]
-const fn scalar_layout(typ: Type) -> Option<(u32, u32)> {
-    match typ.kind() {
-        TypeKind::I8 | TypeKind::U8 | TypeKind::Bool => Some((1, 1)),
-        TypeKind::I16 | TypeKind::U16 => Some((2, 2)),
-        TypeKind::I32 | TypeKind::U32 | TypeKind::F32 | TypeKind::Char => Some((4, 4)),
-        TypeKind::I64 | TypeKind::U64 | TypeKind::Iptr | TypeKind::Uptr | TypeKind::F64 => {
-            Some((8, 8))
+pub fn enum_payload_offset<'hir>(
+    typ: Type<'hir>,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+) -> u32 {
+    let (id, args) = match typ.kind() {
+        TypeKind::Adt(id, args) => (id, args),
+        TypeKind::Ref { to, .. } => match to.kind() {
+            TypeKind::Adt(id, args) => (id, args),
+            _ => unreachable!("payload offset requested for non-enum"),
         },
-        TypeKind::Ref { .. } | TypeKind::Raw { .. } => Some((8, 8)),
-        TypeKind::Str | TypeKind::Slice { .. } => Some((16, 8)),
-        TypeKind::String => Some((24, 8)),
-        TypeKind::Unit | TypeKind::Never => Some((0, 1)),
+        _ => unreachable!("payload offset requested for non-enum"),
+    };
+    match args.is_empty() {
+        true => adts[id].payload_offset(),
+        false => concrete_adt_layout(id, args, types, adts, arrays).payload_offset,
+    }
+}
+
+pub fn type_contains_float<'hir>(
+    typ: Type<'hir>,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+) -> bool {
+    type_field_info(typ, types, adts, arrays).2
+}
+
+fn type_field_info<'hir>(
+    typ: Type<'hir>,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+) -> (u32, u32, bool) {
+    if let Some((size, align)) = scalar_layout(typ) {
+        return (size, align, matches!(typ.kind(), TypeKind::F32 | TypeKind::F64));
+    }
+    match typ.kind() {
+        TypeKind::Adt(id, args) if args.is_empty() => {
+            let layout = adts[id].layout;
+            let (size, align) = layout.into();
+            (size, align, layout.contains_float())
+        },
+        TypeKind::Adt(id, args) => {
+            let layout = concrete_adt_layout(id, args, types, adts, arrays).summary;
+            let (size, align) = layout.into();
+            (size, align, layout.contains_float())
+        },
+        TypeKind::Array(id) => {
+            let array = arrays.get(id);
+            let (size, align, contains_float) = type_field_info(array.element, types, adts, arrays);
+            (size * array.len, align, contains_float)
+        },
+        TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1, false),
+        _ => unreachable!("type has no runtime layout"),
+    }
+}
+
+fn concrete_adt_layout<'hir>(
+    id: AdtId,
+    args: &[Type<'hir>],
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<AdtId, AdtDef<'hir>>,
+    arrays: &ArrayTable<'hir>,
+) -> ComputedLayout {
+    match &adts[id].kind {
+        AdtKind::Struct { fields, repr } => {
+            let field_types: Vec<_> =
+                fields.iter().map(|field| field.typ.subst(types, arrays, args)).collect();
+            layout_struct_fields(&field_types, *repr, |typ| {
+                type_field_info(typ, types, adts, arrays)
+            })
+        },
+
+        AdtKind::Enum { variants, repr, .. } => {
+            let payloads: Vec<_> = variants
+                .iter()
+                .filter_map(|variant| variant.payload)
+                .map(|payload| payload.subst(types, arrays, args))
+                .collect();
+            layout_enum_variants(&payloads, *repr, |typ| type_field_info(typ, types, adts, arrays))
+        },
+    }
+}
+
+fn layout_struct_fields<'hir>(
+    types: &[Type<'hir>],
+    repr: StructRepr,
+    mut field_info: impl FnMut(Type<'hir>) -> (u32, u32, bool),
+) -> ComputedLayout {
+    use StructReprKind::*;
+
+    let mut fields: Vec<_> = types
+        .iter()
+        .enumerate()
+        .map(|(declared_index, &typ)| PendingField { typ, declared_index })
+        .collect();
+    order_fields_by(&mut fields, repr, &mut field_info);
+
+    let mut offset = 0;
+    let mut alignment = 1;
+    let mut contains_float = false;
+    let mut offsets = vec![0; fields.len()];
+
+    for field in fields {
+        let (size, natural_align, has_float) = field_info(field.typ);
+        let align = match repr.kind {
+            Packed => natural_align.min(repr.align.map(|align| align.get()).unwrap_or(1)),
+            Default | Extern => natural_align,
+        };
+        alignment = alignment.max(align);
+        contains_float |= has_float;
+        offset = align_to(offset, align);
+        offsets[field.declared_index] = offset;
+        offset += size;
+    }
+
+    if repr.kind != Packed
+        && let Some(explicit) = repr.align
+    {
+        alignment = alignment.max(explicit.get());
+    }
+
+    ComputedLayout {
+        summary: Layout::new(align_to(offset, alignment), alignment, contains_float),
+        offsets,
+        payload_offset: 0,
+    }
+}
+
+fn layout_enum_variants<'hir>(
+    payloads: &[Type<'hir>],
+    repr: crate::hir::EnumRepr,
+    mut field_info: impl FnMut(Type<'hir>) -> (u32, u32, bool),
+) -> ComputedLayout {
+    let (tag_size, tag_align) = repr.layout();
+    let (mut payload_size, mut payload_align) = (0, 1);
+    let mut contains_float = false;
+
+    for &payload in payloads {
+        let (size, align, has_float) = field_info(payload);
+        payload_size = payload_size.max(size);
+        payload_align = payload_align.max(align);
+        contains_float |= has_float;
+    }
+
+    let alignment = tag_align.max(payload_align);
+    let payload_offset = align_to(tag_size, payload_align);
+    ComputedLayout {
+        summary: Layout::new(
+            align_to(payload_offset + payload_size, alignment),
+            alignment,
+            contains_float,
+        ),
+        offsets: Vec::new(),
+        payload_offset,
+    }
+}
+
+fn order_fields_by<'hir>(
+    fields: &mut [PendingField<'hir>],
+    repr: StructRepr,
+    field_info: &mut impl FnMut(Type<'hir>) -> (u32, u32, bool),
+) {
+    if repr.kind == StructReprKind::Extern {
+        return;
+    }
+
+    let max_align = repr.align.map(|align| align.get()).unwrap_or(1);
+    fields.sort_unstable_by(|a, b| {
+        let (a_size, mut a_align, _) = field_info(a.typ);
+        let (b_size, mut b_align, _) = field_info(b.typ);
+        if repr.kind == StructReprKind::Packed {
+            a_align = a_align.min(max_align);
+            b_align = b_align.min(max_align);
+        }
+
+        b_align
+            .cmp(&a_align)
+            .then_with(|| b_size.cmp(&a_size))
+            .then_with(|| a.declared_index.cmp(&b.declared_index))
+    });
+}
+
+#[inline(always)]
+const fn scalar_layout(typ: Type<'_>) -> Option<(u32, u32)> {
+    use TypeKind::*;
+    match typ.kind() {
+        I8 | U8 | Bool => Some((1, 1)),
+        I16 | U16 => Some((2, 2)),
+        I32 | U32 | F32 | Char => Some((4, 4)),
+        I64 | U64 | Iptr | Uptr | F64 => Some((8, 8)),
+        Ref { .. } | Raw { .. } => Some((8, 8)),
+        Str | Slice { .. } => Some((16, 8)),
+        String => Some((24, 8)),
+        Unit | Never => Some((0, 1)),
         _ => None,
     }
 }
@@ -193,15 +354,16 @@ const fn align_to(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }
 
-impl<'a, 'h> Lowering<'a, 'h> {
+impl<'a, 'h, 'hir> Lowering<'a, 'h, 'hir> {
     fn lower_struct(
         &mut self,
         id: usize,
-        lowered: &mut [Option<Struct>],
-        mut sink: Option<&mut Diagnostics>,
+        lowered: &mut [Option<AdtDef<'hir>>],
+        sink: &mut Diagnostics,
     ) -> Result<(), HirError<'h>> {
         match self.states[id] {
             Visit::Visited => return Ok(()),
+            Visit::Unvisited => {},
             Visit::Visiting => {
                 let (_, declaration) = self.declarations[id];
                 return Err(hir_error!(
@@ -209,7 +371,6 @@ impl<'a, 'h> Lowering<'a, 'h> {
                     CircularStruct { name: declaration.name }
                 ));
             },
-            Visit::Unvisited => {},
         }
 
         self.states[id] = Visit::Visiting;
@@ -218,43 +379,47 @@ impl<'a, 'h> Lowering<'a, 'h> {
         let mut fields = Vec::with_capacity(declaration.fields.len());
 
         for field in &declaration.fields {
-            let field_symbol = self.symbols.get_id(field.name).unwrap();
+            let field_symbol = self.symbols.get_id(field.name).expect("field name is interned");
             if !seen.insert(field_symbol) {
-                let error = hir_error!(field.span, DuplicateField { name: field.name });
-                match sink.as_deref_mut() {
-                    Some(sink) => {
-                        sink.emit(error.into());
-                        continue;
-                    },
-                    None => return Err(error),
-                }
+                sink.emit(hir_error!(field.span, DuplicateField { name: field.name }).into());
+                continue;
             }
 
-            let ctx =
-                type_resolver::ResolveCtx::root(self.symbols, self.map, self.enum_map, self.arrays);
-            let mut typ =
-                match type_resolver::resolve_annotation(&ctx, &field.typ.value(), field.typ.span())
-                {
-                    Ok(typ) => typ,
-                    Err(error) => match sink.as_deref_mut() {
-                        Some(sink) => Type::error(sink.emit(error.into())),
-                        None => return Err(error),
-                    },
-                };
+            let env: GenericEnv<'hir> = declaration
+                .generics
+                .iter()
+                .enumerate()
+                .map(|(index, generic)| {
+                    (generic.name.to_owned(), self.types.generic_param(index as u8))
+                })
+                .collect();
 
-            if let TypeKind::Struct(dep) = typ.kind()
-                && let Some(&local_id) = self.local_ids.get(&dep)
-                && let Err(error) = self.lower_struct(local_id, lowered, sink.as_deref_mut())
+            let mut context = type_resolver::ResolveCtx::root(
+                self.symbols,
+                self.struct_map,
+                self.enum_map,
+                self.adts,
+                self.arrays,
+                self.types,
+            );
+            context.env = Some(&env);
+
+            let mut typ = match type_resolver::resolve_annotation(
+                &context,
+                &field.typ.value(),
+                field.typ.span(),
+            ) {
+                Ok(typ) => typ,
+                Err(error) => Type::error(sink.emit(error.into())),
+            };
+
+            if let TypeKind::Adt(dependency, _) = typ.kind()
+                && let Some(&local_id) = self.local_ids.get(&dependency)
+                && let Err(error) = self.lower_struct(local_id, lowered, sink)
             {
-                // poisoning the back-edge field breaks the by-value cycle, so the
-                // layout engine never recurses through it
-                match sink.as_deref_mut() {
-                    Some(sink) => typ = Type::error(sink.emit(error.into())),
-                    None => return Err(error),
-                }
+                typ = Type::error(sink.emit(error.into()));
             }
-
-            fields.push(StructField {
+            fields.push(FieldDef {
                 name: field_symbol,
                 typ,
                 offset: 0,
@@ -262,254 +427,106 @@ impl<'a, 'h> Lowering<'a, 'h> {
             });
         }
 
-        let repr = StructRepr { kind: declaration.repr.kind, align: declaration.repr.align };
-        let decl_span = declaration.span;
-        lowered[id] = Some(Struct {
-            id: self.map[&name],
+        lowered[id] = Some(AdtDef {
             name,
-            decl_span,
+            decl_span: declaration.span,
             name_span: declaration.name_span,
-            fields,
-            repr,
+            kind: AdtKind::Struct { fields, repr: declaration.repr },
             layout: Layout::default(),
-            generics: Vec::new(),
+            generics: declaration
+                .generics
+                .iter()
+                .map(|generic| GenericParamDef {
+                    name: self.symbols.get_id(generic.name).expect("generic is interned"),
+                    bounds: generic
+                        .bounds
+                        .iter()
+                        .filter_map(|bound| match bound.value_ref() {
+                            statement::Type::Named(name) | statement::Type::Generic(name, _) => {
+                                self.symbols.get_id(name)
+                            },
+                            _ => None,
+                        })
+                        .collect(),
+                })
+                .collect(),
         });
+
         self.states[id] = Visit::Visited;
 
         Ok(())
     }
 }
 
-impl<'s> LayoutEngine<'s> {
+impl<'a, 'hir> LayoutEngine<'a, 'hir> {
     fn new(
-        structs: &'s IndexVec<StructId, Struct>,
-        enums: &'s IndexVec<EnumId, Enum>,
-        arrays: &'s IndexVec<ArrayId, ArrayType>,
+        adts: &'a IndexVec<AdtId, AdtDef<'hir>>,
+        arrays: &'a IndexVec<ArrayId, ArrayType<'hir>>,
     ) -> Self {
         Self {
-            structs,
-            enums,
+            adts,
             arrays,
-            struct_layouts: vec![None; structs.len()],
-            enum_layouts: vec![None; enums.len()],
-            struct_states: vec![Visit::Unvisited; structs.len()],
-            enum_states: vec![Visit::Unvisited; enums.len()],
+            layouts: vec![None; adts.len()],
+            states: vec![Visit::Unvisited; adts.len()],
         }
     }
 
-    fn compute(mut self) -> (Vec<StructLayout>, Vec<EnumLayout>) {
-        for id in 0..self.structs.len() {
-            self.compute_struct(StructId(id as u32));
+    fn compute(mut self) -> Vec<ComputedLayout> {
+        for index in 0..self.adts.len() {
+            self.compute_adt(AdtId(index as u32));
         }
-        for id in 0..self.enums.len() {
-            let enum_id = self.enums[id].id;
-            self.compute_enum(enum_id);
-        }
-
-        let structs = self
-            .struct_layouts
+        self.layouts
             .into_iter()
-            .map(|layout| layout.expect("struct layout must be computed"))
-            .collect();
-        let enums = self
-            .enum_layouts
-            .into_iter()
-            .map(|layout| layout.expect("enum layout must be computed"))
-            .collect();
-
-        (structs, enums)
+            .map(|layout| layout.expect("ADT layout must be computed"))
+            .collect()
     }
 
-    fn compute_struct(&mut self, id: StructId) {
-        let idx = id.0 as usize;
-        match self.struct_states[idx] {
+    fn compute_adt(&mut self, id: AdtId) {
+        match self.states[id.0 as usize] {
             Visit::Visited => return,
-            Visit::Visiting => unreachable!("HIR rejects recursive by-value struct layout"),
+            Visit::Visiting => unreachable!("HIR rejects recursive by-value ADT layout"),
             Visit::Unvisited => {},
         }
+        self.states[id.0 as usize] = Visit::Visiting;
 
-        self.struct_states[idx] = Visit::Visiting;
-        let definition = &self.structs[id];
-        for field in &definition.fields {
-            if let TypeKind::Struct(dep) = field.typ.kind() {
-                self.compute_struct(dep);
-            }
-        }
-
-        let layout = self.layout_struct(definition);
-        self.struct_layouts[idx] = Some(layout);
-        self.struct_states[idx] = Visit::Visited;
-    }
-
-    fn compute_enum(&mut self, id: EnumId) {
-        let idx = id.id() as usize;
-        match self.enum_states[idx] {
-            Visit::Visited => return,
-            Visit::Visiting => unreachable!("HIR rejects recursive by-value enum layout"),
-            Visit::Unvisited => {},
-        }
-
-        self.enum_states[idx] = Visit::Visiting;
-        let definition = &self.enums[idx];
-        let (tag_size, tag_align) = definition.repr.layout();
-
-        let mut max_payload_size = 0;
-        let mut max_payload_align = 1;
-        let mut contains_float = false;
-
-        for variant in &definition.variants {
-            if let Some(payload) = variant.payload {
-                let (size, align) = self.layout_of(payload);
-                max_payload_size = max_payload_size.max(size);
-                max_payload_align = max_payload_align.max(align);
-                contains_float |= self.contains_float(payload);
-            }
-        }
-
-        let alignment = tag_align.max(max_payload_align);
-        let payload_offset = align_to(tag_size, max_payload_align);
-        let size = align_to(payload_offset + max_payload_size, alignment);
-
-        self.enum_layouts[idx] = Some(EnumLayout {
-            summary: Layout::new(size, alignment, contains_float),
-            payload_offset,
-        });
-        self.enum_states[idx] = Visit::Visited;
-    }
-
-    fn layout_struct(&mut self, definition: &Struct) -> StructLayout {
-        let mut fields: Vec<_> = definition
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(declared_index, field)| PendingField { typ: field.typ, declared_index })
-            .collect();
-
-        self.order_fields(&mut fields, definition.repr);
-        self.assign_offsets(fields, definition.repr)
-    }
-
-    fn order_fields(&mut self, fields: &mut [PendingField], repr: StructRepr) {
-        match repr.kind {
-            StructReprKind::Default => {
-                fields.sort_unstable_by(|a, b| {
-                    let (a_size, a_align) = self.layout_of(a.typ);
-                    let (b_size, b_align) = self.layout_of(b.typ);
-
-                    b_align
-                        .cmp(&a_align)
-                        .then_with(|| b_size.cmp(&a_size))
-                        .then_with(|| a.declared_index.cmp(&b.declared_index))
-                });
+        let computed = match &self.adts[id].kind {
+            AdtKind::Struct { fields, repr } => {
+                let field_types: Vec<_> = fields.iter().map(|field| field.typ).collect();
+                layout_struct_fields(&field_types, *repr, |typ| self.field_info(typ))
             },
-            StructReprKind::Packed => {
-                let max_align = repr.align.map(|align| align.get()).unwrap_or(1);
-                fields.sort_unstable_by(|a, b| {
-                    let (a_size, a_align) = self.layout_of(a.typ);
-                    let (b_size, b_align) = self.layout_of(b.typ);
-
-                    b_align
-                        .min(max_align)
-                        .cmp(&a_align.min(max_align))
-                        .then_with(|| b_size.cmp(&a_size))
-                        .then_with(|| a.declared_index.cmp(&b.declared_index))
-                });
+            AdtKind::Enum { variants, repr, .. } => {
+                let payloads: Vec<_> =
+                    variants.iter().filter_map(|variant| variant.payload).collect();
+                layout_enum_variants(&payloads, *repr, |typ| self.field_info(typ))
             },
-            StructReprKind::Extern => {},
-        }
+        };
+
+        self.layouts[id.0 as usize] = Some(computed);
+        self.states[id.0 as usize] = Visit::Visited;
     }
 
-    fn assign_offsets(&mut self, fields: Vec<PendingField>, repr: StructRepr) -> StructLayout {
-        let mut offset = 0;
-        let mut struct_align = 1;
-        let mut contains_float = false;
-        let mut offsets = vec![0u32; fields.len()];
-
-        for field in fields {
-            let (size, align) = self.field_layout(field.typ, repr);
-            struct_align = struct_align.max(align);
-            contains_float |= self.contains_float(field.typ);
-            offset = align_to(offset, align);
-            offsets[field.declared_index] = offset;
-            offset += size;
+    fn field_info(&mut self, typ: Type<'hir>) -> (u32, u32, bool) {
+        if let Some((size, align)) = scalar_layout(typ) {
+            return (size, align, matches!(typ.kind(), TypeKind::F32 | TypeKind::F64));
         }
 
-        if repr.kind != StructReprKind::Packed
-            && let Some(align) = repr.align
-        {
-            struct_align = struct_align.max(align.get());
-        }
-
-        let size = align_to(offset, struct_align);
-        StructLayout {
-            summary: Layout::new(size, struct_align, contains_float),
-            offsets,
-        }
-    }
-
-    fn field_layout(&mut self, typ: Type, repr: StructRepr) -> (u32, u32) {
-        let (size, align) = self.layout_of(typ);
-        match repr.kind {
-            StructReprKind::Packed => {
-                let max_align = repr.align.map(|align| align.get()).unwrap_or(1);
-                (size, align.min(max_align))
-            },
-            StructReprKind::Default | StructReprKind::Extern => (size, align),
-        }
-    }
-
-    fn layout_of(&mut self, typ: Type) -> (u32, u32) {
-        match scalar_layout(typ) {
-            Some(layout) => layout,
-            None => match typ.kind() {
-                TypeKind::Struct(id) => {
-                    self.compute_struct(id);
-                    self.struct_layouts[id.0 as usize]
-                        .as_ref()
-                        .expect("dependent struct layout must be computed")
-                        .summary
-                        .into()
-                },
-                TypeKind::Enum(id) => {
-                    self.compute_enum(id);
-                    self.enum_layouts[id.id() as usize]
-                        .as_ref()
-                        .expect("dependent enum layout must be computed")
-                        .summary
-                        .into()
-                },
-                TypeKind::Array(id) => {
-                    let array = self.arrays[id];
-                    let (size, align) = self.layout_of(array.element);
-                    (size * array.len, align)
-                },
-                TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1),
-                _ => unreachable!("type has no runtime layout"),
-            },
-        }
-    }
-
-    fn contains_float(&mut self, typ: Type) -> bool {
         match typ.kind() {
-            TypeKind::F32 | TypeKind::F64 => true,
-            TypeKind::Array(id) => self.contains_float(self.arrays[id].element),
-            TypeKind::Struct(id) => {
-                self.compute_struct(id);
-                self.struct_layouts[id.0 as usize]
+            TypeKind::Adt(id, _) => {
+                self.compute_adt(id);
+                let layout = self.layouts[id.0 as usize]
                     .as_ref()
-                    .expect("dependent struct layout must be computed")
-                    .summary
-                    .contains_float()
+                    .expect("dependent ADT layout must be computed")
+                    .summary;
+                let (size, align) = layout.into();
+                (size, align, layout.contains_float())
             },
-            TypeKind::Enum(id) => {
-                self.compute_enum(id);
-                self.enum_layouts[id.id() as usize]
-                    .as_ref()
-                    .expect("dependent enum layout must be computed")
-                    .summary
-                    .contains_float()
+            TypeKind::Array(id) => {
+                let array = self.arrays[id];
+                let (size, align, contains_float) = self.field_info(array.element);
+                (size * array.len, align, contains_float)
             },
-            _ => false,
+            TypeKind::SelfType | TypeKind::GenericParam(_) | TypeKind::Error => (0, 1, false),
+            _ => unreachable!("type has no runtime layout"),
         }
     }
 }

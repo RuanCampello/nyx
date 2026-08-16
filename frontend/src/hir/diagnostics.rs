@@ -6,6 +6,7 @@
 //! It mirrors rustc's `DiagCtxt` + `ErrorGuaranteed`, the only way to mint the proof token is to actually report a diagnostic
 
 use crate::diagnostic::{RichDiagnostic, Severity};
+use std::collections::HashSet;
 
 /// A zero-sized proof that a diagnostic has been reported
 ///
@@ -23,19 +24,12 @@ pub(crate) struct ErrorGuaranteed(());
 #[derive(Debug, Default)]
 pub(crate) struct Diagnostics {
     errors: Vec<RichDiagnostic>,
+    seen: HashSet<RichDiagnostic>,
 }
 
 impl Diagnostics {
     pub(crate) fn emit(&mut self, diagnostic: RichDiagnostic) -> ErrorGuaranteed {
-        // PERFORMANCE: linear search in this case is mostly fine
-        // but I need to do a more robust benchmark on that :D
-
-        // the same source error can surface through several recovery paths
-        // (e.g. inference and lowering of one initialiser), report it once
-        if !self.errors.contains(&diagnostic) {
-            self.errors.push(diagnostic);
-        }
-
+        self.record(diagnostic);
         ErrorGuaranteed(())
     }
 
@@ -44,17 +38,23 @@ impl Diagnostics {
     /// Takes no [ErrorGuaranteed] out, so a warning can never poison a type
     pub(crate) fn warn(&mut self, mut diagnostic: RichDiagnostic) {
         diagnostic.severity = Severity::Warning;
-        if !self.errors.contains(&diagnostic) {
+        self.record(diagnostic);
+    }
+
+    fn record(&mut self, diagnostic: RichDiagnostic) {
+        if self.seen.insert(diagnostic.clone()) {
             self.errors.push(diagnostic);
         }
     }
 
-    #[inline]
-    pub(crate) fn has_errors(&self) -> bool {
-        self.errors.iter().any(|d| d.severity == Severity::Error)
+    pub(crate) fn extend(&mut self, diagnostics: impl IntoIterator<Item = RichDiagnostic>) {
+        for diagnostic in diagnostics {
+            self.record(diagnostic);
+        }
     }
 
     pub(crate) fn take_errors(&mut self) -> Vec<RichDiagnostic> {
+        self.seen.clear();
         let mut errors = std::mem::take(&mut self.errors);
         errors.sort_by_key(|error| {
             error.primary.as_ref().map_or(u32::MAX, |label| label.span.start.0)

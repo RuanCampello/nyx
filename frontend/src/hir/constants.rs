@@ -6,11 +6,11 @@
 
 use crate::{
     hir::{
-        Constant, Owner, SymbolId, SymbolTable, collector,
+        Constant, Owner, SymbolId, SymbolTable, collect,
+        collect::ItemTable,
         declarations::Declarations,
         error::{HirError, hir_error},
         lower,
-        scope::Scope,
         symbols::{Mangler, qualified},
         type_resolver,
     },
@@ -18,9 +18,9 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
-struct ConstDecl<'d, 's> {
+struct ConstDecl<'d, 's, 'hir> {
     typ: Option<&'d str>,
-    owner: Owner,
+    owner: Owner<'hir>,
     ast: &'d statement::Const<'s>,
 }
 
@@ -31,14 +31,14 @@ struct DepVisitor<'a, 'd, 'i, 'sc> {
     current_impl: Option<&'a str>,
     mangler: &'a Mangler<'sc>,
     symbols: &'a SymbolTable,
-    decls: &'a HashMap<SymbolId, ConstDecl<'d, 'i>>,
+    decls: &'a HashMap<SymbolId, ConstDecl<'d, 'i, 'sc>>,
     deps: &'a mut Vec<SymbolId>,
 }
 
 struct Dfs<'a, 'hir, 'd, 's> {
     mangler: &'a Mangler<'a>,
     symbols: &'a SymbolTable,
-    decls: &'a HashMap<SymbolId, ConstDecl<'d, 's>>,
+    decls: &'a HashMap<SymbolId, ConstDecl<'d, 's, 'hir>>,
     arena: &'hir bumpalo::Bump,
     visiting: HashSet<SymbolId>,
     visited: HashSet<SymbolId>,
@@ -48,7 +48,7 @@ struct Dfs<'a, 'hir, 'd, 's> {
 /// Collect every top-level and impl-scoped constant, topologically sort by
 /// dependency, then lower each initialiser and insert it into `scope`
 pub(in crate::hir) fn extend<'hir, 'd, 's>(
-    scope: &mut Scope<'hir>,
+    scope: &mut ItemTable<'hir>,
     declarations: &Declarations<'d, 's>,
     arena: &'hir bumpalo::Bump,
 ) -> Result<(), HirError<'hir>>
@@ -58,24 +58,34 @@ where
     let decls = collect(scope, declarations)?;
     let sorted = match topo_sort(&decls, &scope.mangler, &scope.symbols, arena) {
         Ok(sorted) => sorted,
-        // a dependency cycle leaves no usable order, skip the whole batch
-        Err(error) => return scope.soft(error),
+        Err(error) => {
+            scope.soft(error);
+            return Ok(());
+        },
     };
 
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
         let resolved = {
-            let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
-            let ctx = type_resolver::ResolveCtx::root(&scope.symbols, structs, enums, arrays);
+            let (structs, enums, arrays) =
+                (&scope.adts.struct_map, &scope.adts.enum_map, &scope.arrays);
+            let ctx = type_resolver::ResolveCtx::root(
+                &scope.symbols,
+                structs,
+                enums,
+                &scope.adts.defs,
+                arrays,
+                &scope.types,
+            );
             type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())
         };
-        let expected_type = resolved.or_else(|error| scope.poison(error))?;
+        let expected_type = resolved.unwrap_or_else(|error| scope.poison(error));
 
         let (value, typeck) = match lower::lower_const(scope, &decl.ast.value, expected_type, arena)
         {
             Ok(lowered) => lowered,
             Err(error) => {
-                scope.soft(error)?;
+                scope.soft(error);
                 continue;
             },
         };
@@ -90,26 +100,26 @@ where
             decl_span: decl.ast.span,
             name_span: decl.ast.name_span,
         });
-        scope.constants.insert(symbol_id, constant);
+        scope.values.constants.insert(symbol_id, constant);
     }
 
     Ok(())
 }
 
 fn collect<'hir, 'd, 's>(
-    scope: &mut Scope<'hir>,
+    scope: &mut ItemTable<'hir>,
     declarations: &Declarations<'d, 's>,
-) -> Result<HashMap<SymbolId, ConstDecl<'d, 's>>, HirError<'hir>>
+) -> Result<HashMap<SymbolId, ConstDecl<'d, 's, 'hir>>, HirError<'hir>>
 where
     's: 'hir,
 {
-    let mut decls: HashMap<SymbolId, ConstDecl<'d, 's>> = HashMap::new();
+    let mut decls: HashMap<SymbolId, ConstDecl<'d, 's, 'hir>> = HashMap::new();
 
     for c in &declarations.constants {
         let symbol_id = scope.symbols.insert(&scope.mangler.item(c.name));
         if let Some(existing) = decls.get(&symbol_id) {
-            let previous = collector::source_span(existing.ast.span);
-            scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name, previous }))?;
+            let previous = collect::source_span(existing.ast.span);
+            scope.soft(hir_error!(c.span, DuplicateConstant { name: c.name, previous }));
             continue;
         }
         decls.insert(symbol_id, ConstDecl { typ: None, owner: Owner::Free, ast: c });
@@ -120,8 +130,8 @@ where
             let symbol_id = scope.symbols.insert(&scope.mangler.scoped_item(imp.name, c.name));
             if let Some(existing) = decls.get(&symbol_id) {
                 let name = qualified(scope.arena, imp.name, c.name);
-                let previous = collector::source_span(existing.ast.span);
-                scope.soft(hir_error!(c.span, DuplicateConstant { name, previous }))?;
+                let previous = collect::source_span(existing.ast.span);
+                scope.soft(hir_error!(c.span, DuplicateConstant { name, previous }));
                 continue;
             }
 
@@ -141,7 +151,7 @@ where
 }
 
 fn topo_sort<'hir, 'd, 's>(
-    decls: &HashMap<SymbolId, ConstDecl<'d, 's>>,
+    decls: &HashMap<SymbolId, ConstDecl<'d, 's, 'hir>>,
     mangler: &Mangler<'_>,
     symbols: &SymbolTable,
     arena: &'hir bumpalo::Bump,

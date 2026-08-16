@@ -1,23 +1,24 @@
 //! Static-declaration analysis
 //!
 //! A [constant] is a value spliced into each of its uses, so it never needs an
-//! address. A static is the opposite: one piece of storage the compiler lays out
-//! in the executable, which is what lets `static mut` carry state between calls.
+//! address
+//! A static is the opposite: one piece of storage the compiler lays out
+//! in the executable, which is what lets `static mut` carry state between calls
 //!
-//! That makes the initialiser a build-time question. It is lowered exactly like a
-//! constant initialiser and then folded to the single [Literal] the storage is
-//! born holding, so the backend only ever has to write one scalar.
+//! That makes the initialiser a build-time question
+//! It is lowered exactly like a constant initialiser and then folded
+//! to the single [Literal] the storage is born holding, so the backend only
+//! ever has to write one scalar
 //!
 //! [constant]: crate::hir::Constant
 
 use crate::{
     hir::{
-        self, Literal, Static, StaticId,
+        self, Literal, Static,
+        collect::ItemTable,
         declarations::Declarations,
         error::{HirError, hir_error},
-        lower,
-        scope::Scope,
-        type_resolver,
+        lower, type_resolver,
     },
     parser::expression::UnaryOperator,
 };
@@ -28,7 +29,7 @@ use crate::{
 ///
 /// [constants]: crate::hir::constants::extend
 pub(in crate::hir) fn extend<'hir, 'd, 's>(
-    scope: &mut Scope<'hir>,
+    scope: &mut ItemTable<'hir>,
     declarations: &Declarations<'d, 's>,
     arena: &'hir bumpalo::Bump,
 ) -> Result<(), HirError<'hir>>
@@ -40,45 +41,50 @@ where
         let symbol = scope.symbols.insert(&mangled);
 
         let resolved = {
-            let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
-            let ctx = type_resolver::ResolveCtx::root(&scope.symbols, structs, enums, arrays);
+            let (structs, enums, arrays) =
+                (&scope.adts.struct_map, &scope.adts.enum_map, &scope.arrays);
+
+            let ctx = type_resolver::ResolveCtx::root(
+                &scope.symbols,
+                structs,
+                enums,
+                &scope.adts.defs,
+                arrays,
+                &scope.types,
+            );
             type_resolver::resolve_annotation(
                 &ctx,
                 &declaration.typ.value(),
                 declaration.typ.span(),
             )
         };
-        let typ = resolved.or_else(|error| scope.poison(error))?;
+        let typ = resolved.unwrap_or_else(|error| scope.poison(error));
 
         let lowered = lower::lower_const(scope, &declaration.value, typ, arena);
         let (value, _) = match lowered {
             Ok(lowered) => lowered,
             Err(error) => {
-                scope.soft(error)?;
+                scope.soft(error);
                 continue;
             },
         };
 
         let Some(init) = fold_literal(value) else {
             let name = arena.alloc_str(declaration.name);
-            scope.soft(hir_error!(declaration.value.span(), NonConstStaticInit { name }))?;
+            scope.soft(hir_error!(declaration.value.span(), NonConstStaticInit { name }));
             continue;
         };
 
-        let id = StaticId(scope.statics.len() as u32);
-        scope.statics.insert(
-            symbol,
-            Static {
-                id,
-                name: symbol,
-                typ,
-                is_mut: declaration.is_mut,
-                is_pub: declaration.is_pub,
-                init,
-                decl_span: declaration.span,
-                name_span: declaration.name_span,
-            },
-        );
+        let id = scope.values.statics.push(Static {
+            name: symbol,
+            typ,
+            is_mut: declaration.is_mut,
+            is_pub: declaration.is_pub,
+            init,
+            decl_span: declaration.span,
+            name_span: declaration.name_span,
+        });
+        scope.values.static_map.insert(symbol, id);
     }
 
     Ok(())

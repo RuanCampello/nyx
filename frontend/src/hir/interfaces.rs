@@ -1,32 +1,32 @@
 //! Interface-impl validation.
 //!
-//! After signatures are extended into `Scope`, this pass checks that every
+//! After fn_defs are extended into `ItemTable`, this pass checks that every
 //! `impl T with Interface` actually satisfies the interface: all required
-//! methods are present, signatures match (after `Self` and generic-param
-//! substitution), and every superinterface is implemented.
+//! methods are present, fn_defs match (after `Self` and generic-param
+//! substitution), and every superinterface is implemented
 //!
-//! The pass is read-only against `Scope`, it never mutates the namespace
+//! The pass is read-only against `ItemTable`, it never mutates the namespace
 
 use crate::{
     hir::{
-        RefTarget, Type, TypeKind, collector,
+        TyInterner, Type, TypeKind, collect,
+        collect::ItemTable,
         declarations::Declarations,
         error::{HirError, HirErrorKind, hir_error},
-        scope::Scope,
         type_resolver,
     },
     parser::statement,
 };
 use std::collections::HashMap;
 
-/// Run all interface-related validation against a fully-extended `Scope`.
+/// Run all interface-related validation against a fully-extended `ItemTable`.
 /// Composes the per-impl signature check with the inheritance check; either
 /// can fail independently.
 ///
 /// Every violation is collected, then either softened into the scope's
-/// diagnostics (recovery) or the first one aborts the pass (fail-fast)
+/// diagnostics while validation continues across independent requirements
 pub(in crate::hir) fn validate<'hir, 'd, 'h>(
-    scope: &mut Scope<'hir>,
+    scope: &ItemTable<'hir>,
     declarations: &Declarations<'d, 'h>,
 ) -> Result<(), HirError<'hir>>
 where
@@ -36,11 +36,14 @@ where
     validate_impls(scope, declarations, &mut errors);
     validate_hierarchy(scope, declarations, &mut errors);
 
-    errors.into_iter().try_for_each(|error| scope.soft(error))
+    for error in errors {
+        scope.soft(error);
+    }
+    Ok(())
 }
 
 fn validate_hierarchy<'hir, 'd, 'h>(
-    scope: &Scope<'hir>,
+    scope: &ItemTable<'hir>,
     declarations: &Declarations<'d, 'h>,
     errors: &mut Vec<HirError<'hir>>,
 ) where
@@ -51,7 +54,7 @@ fn validate_hierarchy<'hir, 'd, 'h>(
             let known = scope
                 .symbols
                 .get_id(superinterface)
-                .is_some_and(|symbol| scope.interfaces.contains_key(&symbol));
+                .is_some_and(|symbol| scope.interfaces.defs.contains_key(&symbol));
 
             if !known {
                 errors.push(hir_error!(interface.span, UnknownInterface { name: superinterface }));
@@ -61,7 +64,7 @@ fn validate_hierarchy<'hir, 'd, 'h>(
 }
 
 fn validate_impls<'hir, 'd, 'h>(
-    scope: &Scope<'hir>,
+    scope: &ItemTable<'hir>,
     declarations: &Declarations<'d, 'h>,
     errors: &mut Vec<HirError<'hir>>,
 ) where
@@ -75,7 +78,7 @@ fn validate_impls<'hir, 'd, 'h>(
         let interface = scope
             .symbols
             .get_id(interface_name)
-            .and_then(|symbol| scope.interfaces.get(&symbol));
+            .and_then(|symbol| scope.interfaces.defs.get(&symbol));
         let Some(interface) = interface else {
             errors.push(hir_error!(implementation.span, UnknownInterface { name: interface_name }));
             continue;
@@ -90,9 +93,17 @@ fn validate_impls<'hir, 'd, 'h>(
             implementation.interface_type.as_ref().map(|s| s.value()),
         ) {
             (false, Some(statement::Type::Generic(_, args))) => {
-                let (structs, enums, arrays) = (&scope.struct_map, &scope.enum_map, &scope.arrays);
-                let ctx = type_resolver::ResolveCtx::root(&scope.symbols, structs, enums, arrays)
-                    .with_self(receiver_type);
+                let (structs, enums, arrays) =
+                    (&scope.adts.struct_map, &scope.adts.enum_map, &scope.arrays);
+                let ctx = type_resolver::ResolveCtx::root(
+                    &scope.symbols,
+                    structs,
+                    enums,
+                    &scope.adts.defs,
+                    arrays,
+                    &scope.types,
+                )
+                .with_self(receiver_type);
                 match args
                     .iter()
                     .map(|arg| type_resolver::resolve_annotation(&ctx, &arg.value(), arg.span()))
@@ -108,16 +119,18 @@ fn validate_impls<'hir, 'd, 'h>(
             _ => Vec::new(),
         };
 
-        concrete_args.resize(interface.generic_params.len(), TypeKind::SelfType.into());
+        concrete_args.resize(interface.generic_params.len(), scope.types.common.self_type);
+
         for &associated in &interface.associated_types {
-            let bound = scope.associated_types.get(&(receiver_type, associated)).copied();
+            let bound =
+                scope.interfaces.associated_types.get(&(receiver_type, associated)).copied();
             match bound {
                 Some(typ) => concrete_args.push(typ),
                 None => {
                     let name = scope.arena.alloc_str(scope.symbols.get(associated));
                     let span = implementation.span;
                     errors.push(hir_error!(span, UnboundAssociatedType { name, interface_name }));
-                    concrete_args.push(TypeKind::Error.into());
+                    concrete_args.push(scope.types.common.error);
                 },
             }
         }
@@ -131,13 +144,13 @@ fn validate_impls<'hir, 'd, 'h>(
             .collect();
 
         for &required in &interface.superinterfaces {
-            if !scope.interfaces.contains_key(&required) {
+            if !scope.interfaces.defs.contains_key(&required) {
                 let name = scope.arena.alloc_str(scope.symbols.get(required));
                 errors.push(hir_error!(implementation.span, UnknownInterface { name }));
                 continue;
             }
 
-            if !scope.interface_impls.contains(&(receiver_type, required)) {
+            if !scope.implements_interface(receiver_type, required) {
                 errors.push(hir_error!(
                     implementation.span,
                     MissingSuperinterfaceImpl {
@@ -158,7 +171,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         method_name,
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 ));
                 continue;
@@ -171,7 +184,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         method_name: impl_method.name,
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 }) {
                     Ok(id) => id,
@@ -181,18 +194,31 @@ fn validate_impls<'hir, 'd, 'h>(
                     },
                 };
 
-            let signature = &scope.signatures[function_id];
+            let signature = &scope.functions.defs[function_id];
             let impl_receiver_mut = signature.receiver_mutable();
             let impl_explicit_params = signature.explicit_params();
 
-            let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
+            let subst_table = build_subst_table(
+                &concrete_args,
+                interface.generic_params.len(),
+                scope.types.common.self_type,
+            );
             let required_params: Vec<_> = required
                 .params
                 .iter()
-                .map(|&t| substitute_self(t.subst(&subst_table), receiver_type))
+                .map(|&t| {
+                    substitute_self(
+                        &scope.types,
+                        t.subst(&scope.types, &scope.arrays, &subst_table),
+                        receiver_type,
+                    )
+                })
                 .collect();
-            let required_return_type =
-                substitute_self(required.return_type.subst(&subst_table), receiver_type);
+            let required_return_type = substitute_self(
+                &scope.types,
+                required.return_type.subst(&scope.types, &scope.arrays, &subst_table),
+                receiver_type,
+            );
 
             let signature_ok = impl_has_receiver == required.has_receiver
                 && (!required.has_receiver || required.receiver_mut == impl_receiver_mut)
@@ -206,7 +232,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         method_name,
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 ));
             }
@@ -235,7 +261,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         method_name,
                         expected: scope.arena.alloc_str(&expected),
                         found: scope.arena.alloc_str(&found),
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 ));
             }
@@ -250,7 +276,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         struct_name: implementation.name,
                         interface_name,
                         constant_name,
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 ));
                 continue;
@@ -260,13 +286,22 @@ fn validate_impls<'hir, 'd, 'h>(
             let Some(found) = scope
                 .symbols
                 .get_id(&symbol_name)
-                .and_then(|symbol| scope.constants.get(&symbol).copied())
+                .and_then(|symbol| scope.values.constants.get(&symbol).copied())
                 .map(|constant| constant.typ)
             else {
                 continue;
             };
-            let subst_table = build_subst_table(&concrete_args, interface.generic_params.len());
-            let expected = substitute_self(required.typ.subst(&subst_table), receiver_type);
+
+            let subst_table = build_subst_table(
+                &concrete_args,
+                interface.generic_params.len(),
+                scope.types.common.self_type,
+            );
+            let expected = substitute_self(
+                &scope.types,
+                required.typ.subst(&scope.types, &scope.arrays, &subst_table),
+                receiver_type,
+            );
 
             if found != expected {
                 errors.push(hir_error!(
@@ -277,7 +312,7 @@ fn validate_impls<'hir, 'd, 'h>(
                         constant_name,
                         expected,
                         found,
-                        decl: collector::source_span(required.decl_span),
+                        decl: collect::source_span(required.decl_span),
                     }
                 ));
             }
@@ -287,11 +322,15 @@ fn validate_impls<'hir, 'd, 'h>(
 
 /// Replace `Self` (and `&Self`) with the concrete receiver type
 #[inline]
-fn substitute_self(typ: Type, self_type: Type) -> Type {
+fn substitute_self<'hir>(
+    types: &TyInterner<'hir>,
+    typ: Type<'hir>,
+    self_type: Type<'hir>,
+) -> Type<'hir> {
     match typ.kind() {
         TypeKind::SelfType => self_type,
         TypeKind::Ref { mutable, to } if to.kind() == TypeKind::SelfType => {
-            RefTarget::try_from(self_type).map(|to| Type::refer(to, mutable)).unwrap_or(typ)
+            types.refer(self_type, mutable)
         },
         _ => typ,
     }
@@ -299,12 +338,16 @@ fn substitute_self(typ: Type, self_type: Type) -> Type {
 
 /// Pad `concrete` with `SelfType` up to `arity` so any declared `GenericParam`
 /// index missing a concrete type rewrites to `SelfType`, which the subsequent
-/// [`substitute_self`] pass then resolves against the receiver type
+/// [substitute_self] pass then resolves against the receiver type
 #[inline]
-fn build_subst_table(concrete: &[Type], arity: usize) -> Vec<Type> {
-    let mut table: Vec<Type> = concrete.to_vec();
+fn build_subst_table<'hir>(
+    concrete: &[Type<'hir>],
+    arity: usize,
+    self_type: Type<'hir>,
+) -> Vec<Type<'hir>> {
+    let mut table: Vec<Type<'hir>> = concrete.to_vec();
     if table.len() < arity {
-        table.resize(arity, TypeKind::SelfType.into());
+        table.resize(arity, self_type);
     }
     table
 }
@@ -313,8 +356,8 @@ fn format_signature(
     name: &str,
     has_receiver: bool,
     receiver_mut: bool,
-    params: &[Type],
-    return_type: Type,
+    params: &[Type<'_>],
+    return_type: Type<'_>,
 ) -> String {
     let mut parameters: Vec<_> = has_receiver
         .then_some(vec![

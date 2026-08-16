@@ -564,7 +564,6 @@ pub enum CmpInterface {
 }
 
 impl<'h> HirError<'h> {
-    #[inline(always)]
     pub(in crate::hir) fn new(kind: HirErrorKind<'h>, span: Span) -> Self {
         Self { kind, span }
     }

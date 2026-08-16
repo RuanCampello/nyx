@@ -1,7 +1,9 @@
-use super::{FileSystem, ModuleError, resolver::ModuleResolver};
 use crate::{
     diagnostic::{self, AsDiagnostic, RichDiagnostic},
-    hir::Declarations,
+    hir::{
+        Declarations,
+        module::{FileSystem, ModuleError, resolver::ModuleResolver},
+    },
     lexer::token::Span,
     parser::{
         Parser,
@@ -55,7 +57,6 @@ struct GraphBuilder<'a, 'src, F> {
     by_path: HashMap<PathBuf, usize>,
     edges: Vec<(usize, usize)>,
     in_flight: HashSet<PathBuf>,
-    recover: bool,
     editor: bool,
     diagnostics: Vec<RichDiagnostic>,
 }
@@ -64,12 +65,11 @@ struct QualifiedCallCollector<'src> {
     calls: Vec<(Vec<&'src str>, &'src str, Span)>,
 }
 
-pub(super) fn build_graph<'src, F: FileSystem>(
+pub(in crate::hir::module) fn build_graph<'src, F: FileSystem>(
     entries: &[PathBuf],
     resolver: &ModuleResolver,
     fs: &F,
     arena: &'src bumpalo::Bump,
-    recover: bool,
     editor: bool,
 ) -> Result<ModuleGraph<'src>, ModuleError> {
     let mut builder = GraphBuilder {
@@ -80,7 +80,6 @@ pub(super) fn build_graph<'src, F: FileSystem>(
         by_path: HashMap::new(),
         edges: Vec::new(),
         in_flight: HashSet::new(),
-        recover,
         editor,
         diagnostics: Vec::new(),
     };
@@ -110,7 +109,7 @@ pub(super) fn build_graph<'src, F: FileSystem>(
 }
 
 impl<'src> ModuleGraph<'src> {
-    pub(super) fn all_nodes_order(&self) -> Vec<usize> {
+    pub(in crate::hir::module) fn all_nodes_order(&self) -> Vec<usize> {
         let mut adjacency = vec![Vec::new(); self.nodes.len()];
         for &(from, to) in &self.edges {
             adjacency[from].push(to);
@@ -139,25 +138,19 @@ impl<'src> ModuleGraph<'src> {
     ///
     /// the returned declarations borrow the graph, so all later passes
     /// share a single categorisation instead of re-scanning the ast per pass
-    pub(super) fn collect_declarations(
+    pub(in crate::hir::module) fn collect_declarations(
         &self,
-        recover: bool,
-    ) -> Result<(Vec<Declarations<'_, 'src>>, Vec<RichDiagnostic>), ModuleError> {
+    ) -> (Vec<Declarations<'_, 'src>>, Vec<RichDiagnostic>) {
         let mut all = Vec::with_capacity(self.nodes.len());
         let mut diagnostics = Vec::new();
 
         for node in &self.nodes {
-            match recover {
-                true => {
-                    let (declarations, errors) = Declarations::collect_recovering(&node.statements);
-                    diagnostics.extend(errors.into_iter().map(|error| error.kind.rich(error.span)));
-                    all.push(declarations);
-                },
-                false => all.push(Declarations::collect(&node.statements)?),
-            }
+            let (declarations, errors) = Declarations::collect_recovering(&node.statements);
+            diagnostics.extend(errors.into_iter().map(|error| error.kind.rich(error.span)));
+            all.push(declarations);
         }
 
-        Ok((all, diagnostics))
+        (all, diagnostics)
     }
 
     fn visit(
@@ -194,23 +187,16 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             if self.fs.read(&canonical).is_ok()
                 && let Err(error) = self.discover(canonical, None)
             {
-                self.soft(error)?;
+                self.soft(error);
             }
         }
 
         Ok(())
     }
 
-    /// Record `error` and carry on when recovering, otherwise hand it back
-    fn soft(&mut self, error: ModuleError) -> Result<(), ModuleError> {
-        match self.recover {
-            true => {
-                let span = error.span().unwrap_or_default();
-                self.diagnostics.push(error.rich(span));
-                Ok(())
-            },
-            false => Err(error),
-        }
+    fn soft(&mut self, error: ModuleError) {
+        let span = error.span().unwrap_or_default();
+        self.diagnostics.push(error.rich(span));
     }
 
     fn discover(
@@ -249,16 +235,11 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         let source = self.arena.alloc_str(&source);
 
         let (_, base) = diagnostic::add_file(canonical.to_path_buf(), source as &str);
-        let parser = Parser::with_base(source, base);
-        let statements = match self.recover {
-            true => {
-                let (statements, errors) = parser.recovering().parse_recovering();
-                self.diagnostics
-                    .extend(errors.into_iter().map(|error| error.kind.rich(error.span)));
-                statements
-            },
-            false => parser.parse()?,
-        };
+        let parsed = Parser::with_base(source, base).parse();
+        for error in parsed.diagnostics {
+            self.diagnostics.push(error.kind.clone().rich(error.span));
+        }
+        let statements = parsed.statements;
 
         let idx = self.nodes.len();
         let in_std = canonical.starts_with(self.resolver.std_root());
@@ -286,15 +267,18 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
                 continue;
             };
 
-            if let UseItems::Named(items) = declaration.items {
-                for item in items {
-                    if !self.nodes[import_idx].exports.contains(item.name) {
-                        self.soft(ModuleError::UnknownExport {
-                            path: import.clone(),
-                            name: item.name.into(),
-                            span: item.span,
-                        })?;
-                    }
+            let items = match declaration.items {
+                UseItems::Named(items) => items,
+                _ => Vec::new(),
+            };
+
+            for item in items {
+                if !self.nodes[import_idx].exports.contains(item.name) {
+                    self.soft(ModuleError::UnknownExport {
+                        path: import.clone(),
+                        name: item.name.into(),
+                        span: item.span,
+                    });
                 }
             }
         }
@@ -309,7 +293,7 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             };
 
             if !self.nodes[import_idx].exports.contains(name) {
-                self.soft(ModuleError::UnknownExport { path: import, name: name.into(), span })?;
+                self.soft(ModuleError::UnknownExport { path: import, name: name.into(), span });
             }
         }
 
@@ -324,11 +308,16 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
     ) -> Result<Option<(PathBuf, usize)>, ModuleError> {
         let resolved = match self.resolver.resolve_path(path, span) {
             Ok(resolved) => resolved,
-            Err(error) => return self.soft(error).map(|()| None),
+            Err(error) => {
+                self.soft(error);
+                return Ok(None);
+            },
         };
+
         if self.fs.read(&resolved).is_err() {
             let error = ModuleError::FileNotFound { path: resolved, span: Some(span) };
-            return self.soft(error).map(|()| None);
+            self.soft(error);
+            return Ok(None);
         }
 
         let import = self.fs.canonicalise(&resolved).unwrap_or(resolved);
@@ -337,7 +326,10 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
                 self.edges.push((from, idx));
                 Ok(Some((import, idx)))
             },
-            Err(error) => self.soft(error).map(|()| None),
+            Err(error) => {
+                self.soft(error);
+                Ok(None)
+            },
         }
     }
 }
@@ -382,6 +374,7 @@ fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
         let Statement::Item(item) = statement else {
             continue;
         };
+
         match &item.kind {
             ItemKind::Struct(s) if s.is_pub => exports.insert(s.name.to_string()),
             ItemKind::Enum(e) if e.is_pub => exports.insert(e.name.to_string()),

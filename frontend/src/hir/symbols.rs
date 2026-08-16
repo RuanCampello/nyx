@@ -1,11 +1,11 @@
 use crate::hir::SymbolId;
-use lasso::Rodeo;
+use lasso::ThreadedRodeo;
 
 /// Interns all identifiers strings encountered during compilation and maps them
-/// to stable numeric [`SymbolId`]s
-#[derive(Clone, Debug, Default, PartialEq)]
+/// to stable numeric [SymbolId]s
+#[derive(Debug, Default, PartialEq)]
 pub struct SymbolTable {
-    interner: Rodeo,
+    interner: ThreadedRodeo,
 }
 
 /// Constructs the canonical fully-qualified names used throughout the [HIR](crate::hir)
@@ -25,7 +25,7 @@ impl SymbolTable {
     }
 
     #[inline(always)]
-    pub(in crate::hir) fn insert(&mut self, name: &str) -> SymbolId {
+    pub(in crate::hir) fn insert(&self, name: &str) -> SymbolId {
         SymbolId(self.interner.get_or_intern(name))
     }
 
@@ -43,7 +43,7 @@ impl SymbolTable {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.interner.iter().map(|(_, s)| s)
+        self.interner.iter().map(|(_, symbol)| symbol)
     }
 }
 
@@ -55,15 +55,24 @@ impl<'m> Mangler<'m> {
     }
 
     pub fn item(&self, name: &str) -> String {
-        format!("{}::{name}", self.module)
+        self.compose(&[name])
     }
 
     pub fn scoped_item(&self, scope: &str, name: &str) -> String {
-        format!("{}::{scope}::{name}", self.module)
+        self.compose(&[scope, name])
     }
 
     pub fn interface_item(&self, scope: &str, interface: &str, name: &str) -> String {
-        format!("{}::{scope}::{interface}::{name}", self.module)
+        self.compose(&[scope, interface, name])
+    }
+
+    fn compose(&self, segments: &[&str]) -> String {
+        let mut mangled = self.module.to_owned();
+        for segment in segments {
+            mangled.push_str("::");
+            mangled.push_str(segment);
+        }
+        mangled
     }
 }
 

@@ -31,9 +31,10 @@ const INTRINSICS: &[(&str, Intrinsic)] = &[
     ("len", Intrinsic::Len),
 ];
 
-const INDEX_OVERLOADS: &[(bool, IndexOverload)] = &[
-    (false, IndexOverload { interface: "Index", method: "index" }),
-    (true, IndexOverload { interface: "IndexMutable", method: "index_mut" }),
+/// indexed by `mutable as usize`: `Index`/`index` then `IndexMutable`/`index_mut`
+const INDEX_OVERLOADS: [IndexOverload<'static>; 2] = [
+    IndexOverload { interface: "Index", method: "index" },
+    IndexOverload { interface: "IndexMutable", method: "index_mut" },
 ];
 
 const SYSCALLS: &[(&str, Syscall)] = &[
@@ -45,7 +46,7 @@ const SYSCALLS: &[(&str, Syscall)] = &[
     ("SYS_MADVISE", Syscall::Madvise),
 ];
 
-#[inline(always)]
+#[inline]
 pub fn comparison<'s>(operator: BinOp) -> Option<&'s Comparison<'s>> {
     COMPARISONS
         .iter()
@@ -53,16 +54,12 @@ pub fn comparison<'s>(operator: BinOp) -> Option<&'s Comparison<'s>> {
         .map(|(_, entry)| entry)
 }
 
-#[inline(always)]
-pub fn index_overload<'s>(mutable: bool) -> &'s IndexOverload<'s> {
-    INDEX_OVERLOADS
-        .iter()
-        .find(|(candidate, _)| *candidate == mutable)
-        .map(|(_, entry)| entry)
-        .expect("INDEX_OVERLOADS covers both mutability cases")
+#[inline]
+pub fn index_overload(mutable: bool) -> &'static IndexOverload<'static> {
+    &INDEX_OVERLOADS[mutable as usize]
 }
 
-#[inline(always)]
+#[inline]
 pub fn intrinsic_method(receiver: &str, method: &str) -> Option<Intrinsic> {
     match (receiver, method) {
         ("str" | "[]", "len") => Some(Intrinsic::Len),
@@ -74,12 +71,12 @@ pub fn intrinsic_method(receiver: &str, method: &str) -> Option<Intrinsic> {
 }
 
 impl Intrinsic {
-    #[inline(always)]
+    #[inline]
     pub const fn is_wrapping(self) -> bool {
         self.binary_operator().is_some()
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn binary_operator(self) -> Option<BinOp> {
         match self {
             Self::WrappingAdd => Some(BinOp::Add),
