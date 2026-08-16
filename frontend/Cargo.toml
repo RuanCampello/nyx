@@ -9,5 +9,5 @@ bench = false
 [dependencies]
 ariadne = "0.6.0"
 bumpalo = "3"
-lasso = "0.7.3"
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
 macros = { path = "../macros" }
