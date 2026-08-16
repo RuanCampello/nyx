@@ -31,7 +31,6 @@ pub enum A64Operand {
 /// ADD Xd, Xn, Xm -> Xd = Xn + Xm
 /// ```
 #[derive(Debug, Clone)]
-#[allow(unused)]
 #[rustfmt::skip]
 pub enum A64Instr {
     // integer movs
@@ -198,7 +197,6 @@ impl A64Cond {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(unused)]
 #[rustfmt::skip]
 pub enum A64Reg {
     // integer caller-saved

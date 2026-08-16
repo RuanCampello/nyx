@@ -1,5 +1,5 @@
 use crate::{
-    hir::{FunctionId, Intrinsic, SymbolTable, Syscall, Type, TypeKind},
+    hir::{EnumRepr, FunctionId, Intrinsic, SymbolTable, Syscall, Type, TypeKind},
     lir::{self, BlockId, Layouts, MachineType, Term, TypeExt, VReg, assembly_label, regalloc},
     mir::{self, Const, Function, Operand, ValueId},
 };
@@ -58,8 +58,8 @@ pub trait Lowerable: Target {
         function: &mir::Function,
         symbols: &SymbolTable,
         all_functions: &[mir::Function],
-        struct_layouts: &[mir::Layout],
-        enum_layouts: &[mir::Layout],
+        adt_layouts: &mir::AdtLayouts<'_>,
+        adt_reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self>;
 }
@@ -70,7 +70,7 @@ pub trait Lowerable: Target {
 /// The emitter just looks up locations and writes mnemonics
 pub trait Emittable<T: Target> {
     fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
-    fn start(out: &mut String, main: &str);
+    fn start(out: &mut String, main: &str, returns_value: bool);
     fn emit_panic_handlers(out: &mut String);
 }
 
@@ -230,14 +230,14 @@ where
 }
 
 /// MIR -> LIR lowering context, generic over the target architecture
-pub(crate) struct Lower<'f, T: Target> {
-    pub(crate) function: &'f Function,
+pub(crate) struct Lower<'f, 'hir, T: Target> {
+    pub(crate) function: &'f Function<'hir>,
     pub(crate) lir: lir::Function<T>,
     /// maps a MIR [ValueId] to its LIR [VReg]
     pub(crate) value: Vec<VReg>,
     pub(crate) symbols: &'f SymbolTable,
-    pub(crate) all_functions: &'f [Function],
-    pub(crate) layouts: Layouts<'f>,
+    pub(crate) all_functions: &'f [Function<'hir>],
+    pub(crate) layouts: Layouts<'f, 'hir>,
     pub(crate) sret_ptr: Option<VReg>,
 }
 
@@ -365,16 +365,16 @@ impl<Reg: Copy + Eq> ParallelMove<Reg> {
     }
 }
 
-impl<'f, T: Target> Lower<'f, T> {
+impl<'f, 'hir, T: Target> Lower<'f, 'hir, T> {
     pub(crate) fn new(
-        function: &'f Function,
+        function: &'f Function<'hir>,
         symbols: &'f SymbolTable,
-        all_functions: &'f [Function],
-        structs: &'f [mir::Layout],
-        enums: &'f [mir::Layout],
+        all_functions: &'f [Function<'hir>],
+        adts: &'f mir::AdtLayouts<'hir>,
+        adt_reprs: &'f [Option<EnumRepr>],
         arrays: &'f [mir::Layout],
     ) -> Self {
-        let layouts = Layouts { structs, enums, arrays };
+        let layouts = Layouts { adts, adt_reprs, arrays };
         let name = assembly_label(symbols.get(function.name_symbol));
         let mut lir = lir::Function::<T>::new(name);
 
@@ -400,7 +400,7 @@ impl<'f, T: Target> Lower<'f, T> {
     }
 }
 
-impl<'f, T: TargetOps> Lower<'f, T>
+impl<'f, 'hir, T: TargetOps> Lower<'f, 'hir, T>
 where
     T::Operand: TargetOperand,
 {
@@ -773,8 +773,7 @@ pub fn small_aggregate_chunks<R: Copy>(
 ) -> Option<Vec<(i32, u8, R)>> {
     let size = typ.machine_type(layouts).stack_size() as u32;
     let contains_float = match typ.kind() {
-        TypeKind::Struct(sid) => layouts.structs[sid.0 as usize].contains_float(),
-        TypeKind::Enum(eid) => layouts.enums[eid.id() as usize].contains_float(),
+        TypeKind::Adt(_, _) => layouts.adts[&typ].contains_float(),
         _ => false,
     };
     if size == 0 || size > 16 || contains_float {

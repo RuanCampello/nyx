@@ -10,7 +10,7 @@
 //!
 //! The coalescer eliminates the Mov when v2 and v0 don't interfere
 
-use crate::hir::{SymbolTable, TypeKind};
+use crate::hir::{EnumRepr, SymbolTable, TypeKind};
 use crate::lir::{
     self, BlockId, MachineType, TypeExt, VReg,
     target::{
@@ -25,16 +25,16 @@ impl Lowerable for X86_64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
-        struct_layouts: &[mir::Layout],
-        enum_layouts: &[mir::Layout],
+        adt_layouts: &mir::AdtLayouts<'_>,
+        adt_reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
         let mut lower = Lower::<X86_64>::new(
             function,
             symbols,
             all_functions,
-            struct_layouts,
-            enum_layouts,
+            adt_layouts,
+            adt_reprs,
             array_layouts,
         );
 
@@ -48,7 +48,7 @@ impl Lowerable for X86_64 {
     }
 }
 
-impl<'f> Lower<'f, X86_64> {
+impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
         use crate::mir::InstructionKind;
 

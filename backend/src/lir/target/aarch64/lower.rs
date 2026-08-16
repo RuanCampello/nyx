@@ -13,7 +13,7 @@
 //! registers: unlike x86_64's `idiv` which clobbers `rax`/`rdx`.
 
 use crate::{
-    hir::{SymbolTable, Type, TypeKind},
+    hir::{EnumRepr, SymbolTable, Type, TypeKind},
     lir::{
         self, BlockId, TypeExt, VReg,
         target::{
@@ -30,16 +30,16 @@ impl Lowerable for AArch64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
-        struct_layouts: &[mir::Layout],
-        enum_layouts: &[mir::Layout],
+        adt_layouts: &mir::AdtLayouts<'_>,
+        adt_reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
         let mut lower = Lower::<AArch64>::new(
             function,
             symbols,
             all_functions,
-            struct_layouts,
-            enum_layouts,
+            adt_layouts,
+            adt_reprs,
             array_layouts,
         );
 
@@ -53,7 +53,7 @@ impl Lowerable for AArch64 {
     }
 }
 
-impl<'f> Lower<'f, AArch64> {
+impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
     fn lower_block(&mut self, id: &BlockId, block: &mir::Block) {
         for instruction in &block.instructions {
             self.lower_instruction(id, instruction);

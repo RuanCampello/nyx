@@ -7,13 +7,13 @@
 //! physical registers or stack slots.
 
 #![allow(clippy::too_many_arguments)]
-
 use crate::{
-    hir::{Static, Type, TypeKind},
+    hir::{EnumRepr, Static, Type, TypeKind},
     lir::target::{CondCode, Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
-use std::collections::BTreeMap;
+use frontend::hir::StaticId;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 mod opt;
@@ -48,6 +48,13 @@ pub struct Block<I> {
     id: BlockId,
     instructions: Vec<I>,
     term: Term,
+}
+
+#[derive(Clone, Copy)]
+pub struct Layouts<'a, 'hir> {
+    pub adts: &'a HashMap<Type<'hir>, Layout>,
+    pub adt_reprs: &'a [Option<EnumRepr>],
+    pub arrays: &'a [Layout],
 }
 
 /// All control-flow terminators
@@ -106,6 +113,11 @@ pub enum Panic {
     IndexOutOfBounds,
 }
 
+pub trait TypeExt {
+    fn is_aggregate_lir(self, layouts: Layouts) -> bool;
+    fn machine_type(&self, layouts: Layouts) -> MachineType;
+}
+
 thread_local! {
     static PANIC_HANDLERS: std::cell::Cell<u8> = Default::default();
 }
@@ -142,8 +154,8 @@ where
             function,
             &mir.symbols,
             &mir.functions,
-            &mir.struct_layouts,
-            &mir.enum_layouts,
+            &mir.adt_layouts,
+            &mir.adt_reprs,
             &mir.array_layouts,
         );
         opt::combine(&mut lir);
@@ -159,12 +171,20 @@ where
     // this allows the binary to be linked with `ld` directly
     // `_start` calls `nyx_main`, passes its return value to the exit syscall
     let main = mir
-        .symbols
+        .functions
         .iter()
-        .find(|name| *name == "main" || name.ends_with("::main"))
-        .map(assembly_label);
-    if let Some(main) = main {
-        Function::<T>::start(&mut out, &main);
+        .find(|function| {
+            let name = mir.symbols.get(function.name_symbol);
+            name == "main" || name.ends_with("::main")
+        })
+        .map(|function| {
+            (
+                assembly_label(mir.symbols.get(function.name_symbol)),
+                !matches!(function.return_type.kind(), TypeKind::Unit),
+            )
+        });
+    if let Some((main, returns_value)) = main {
+        Function::<T>::start(&mut out, &main, returns_value);
     }
 
     if !mir.strings.is_empty() {
@@ -177,8 +197,8 @@ where
     }
 
     let layouts = Layouts {
-        structs: &mir.struct_layouts,
-        enums: &mir.enum_layouts,
+        adts: &mir.adt_layouts,
+        adt_reprs: &mir.adt_reprs,
         arrays: &mir.array_layouts,
     };
     emit_statics(&mir.statics, layouts, &mut out);
@@ -191,8 +211,9 @@ where
 /// a zero initialiser costs nothing in the image, so those go to `.bss` and the
 /// loader zeroes them, everything else has to carry its bytes in `.data`
 fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
-    let (zeroed, initialised): (Vec<&Static>, Vec<&Static>) =
-        statics.iter().partition(|item| item.init.is_zero());
+    let entries = statics.iter().enumerate().map(|(id, item)| (StaticId(id as u32), item));
+    let (zeroed, initialised): (Vec<_>, Vec<_>) =
+        entries.partition(|(_, item)| item.init.is_zero());
 
     for (section, items) in [(".bss", zeroed), (".data", initialised)] {
         if items.is_empty() {
@@ -200,13 +221,13 @@ fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
         }
 
         label!(out, ".section {}", section);
-        for item in items {
+        for (id, item) in items {
             let (size, align) = match item.typ.machine_type(layouts) {
                 MachineType::Struct { size, align } => (size, align),
                 scalar => (u32::from(scalar.bytes()), u32::from(scalar.bytes())),
             };
             label!(out, ".align {align}");
-            label!(out, "{}:", static_label(item.id));
+            label!(out, "{}:", static_label(id));
 
             match section {
                 ".bss" => label!(out, "    .zero {size}"),
@@ -373,29 +394,19 @@ impl MachineType {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Layouts<'a> {
-    pub structs: &'a [Layout],
-    pub enums: &'a [Layout],
-    pub arrays: &'a [Layout],
-}
-
-pub trait TypeExt {
-    fn is_aggregate_lir(self, layouts: Layouts) -> bool;
-    fn machine_type(&self, layouts: Layouts) -> MachineType;
-}
-
-impl TypeExt for Type {
+impl TypeExt for Type<'_> {
     #[inline(always)]
     fn is_aggregate_lir(self, layouts: Layouts) -> bool {
-        if self.is_aggregate() {
-            return true;
+        if let TypeKind::Adt(id, _) = self.kind() {
+            return match layouts.adt_reprs[id.0 as usize] {
+                Some(repr) => {
+                    let (enum_size, _) = layouts.adts[&self].into();
+                    enum_size > repr.layout().0
+                },
+                None => true,
+            };
         }
-        if let TypeKind::Enum(id) = self.kind() {
-            let (enum_size, _) = layouts.enums[id.id() as usize].into();
-            return enum_size > id.repr().layout().0;
-        }
-        false
+        self.is_aggregate()
     }
 
     #[inline(always)]
@@ -415,23 +426,26 @@ impl TypeExt for Type {
             TypeKind::String => MachineType::Struct { size: 24, align: 8 },
             TypeKind::F32 => MachineType::Float { bytes: 4 },
             TypeKind::F64 => MachineType::Float { bytes: 8 },
-            TypeKind::Struct(id) => {
-                let (size, align) = layouts.structs[id.0 as usize].into();
-                MachineType::Struct { size, align }
+            TypeKind::Adt(id, _) => {
+                let layout = layouts.adts[self];
+                match layouts.adt_reprs[id.0 as usize] {
+                    None => {
+                        let (size, align) = layout.into();
+                        MachineType::Struct { size, align }
+                    },
+                    Some(repr) => {
+                        let tag_size = repr.layout().0;
+                        let (size, align) = layout.into();
+                        match size > tag_size {
+                            true => MachineType::Struct { size, align },
+                            false => repr.typ().machine_type(layouts),
+                        }
+                    },
+                }
             },
             TypeKind::Array(id) => {
                 let (size, align) = layouts.arrays[id.0 as usize].into();
                 MachineType::Struct { size, align }
-            },
-            TypeKind::Enum(id) => {
-                let enum_layout = layouts.enums[id.id() as usize];
-                let tag_size = id.repr().layout().0;
-                let (enum_size, enum_align) = enum_layout.into();
-                if enum_size > tag_size {
-                    MachineType::Struct { size: enum_size, align: enum_align }
-                } else {
-                    id.repr().typ().machine_type(layouts)
-                }
             },
             TypeKind::Unit => unreachable!("unit does not have a machine type"),
             TypeKind::SelfType => unreachable!("Self type does not have a machine type"),
