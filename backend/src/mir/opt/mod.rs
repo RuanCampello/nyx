@@ -29,10 +29,10 @@ mod unroll;
 pub(crate) use panics::known_panics;
 
 /// The whole program, with `FunctionId` lookup resolved once.
-pub(crate) struct Program<'a> {
-    mir: &'a Mir,
+pub(crate) struct Program<'a, 'hir> {
+    mir: &'a Mir<'hir>,
     by_id: HashMap<FunctionId, usize>,
-    cache: &'a Cache,
+    cache: &'a Cache<'hir>,
 }
 
 /// One memoised compile-time evaluation.
@@ -40,15 +40,15 @@ pub(crate) struct Program<'a> {
 /// `Const` cannot key a map directly: `f64` is neither `Eq` nor `Hash`, and under IEEE
 /// comparison a `NaN` argument would never match itself. Both halves therefore work on
 /// the bit pattern, for the same reason [identical] does
-struct Key {
+struct Key<'hir> {
     callee: FunctionId,
-    args: Box<[Const]>,
+    args: Box<[Const<'hir>]>,
 }
 
 /// A rewrite the analysis justified, applied once its borrow of the program ends
-enum Edit {
-    Instruction { block: usize, index: usize, kind: InstructionKind },
-    Terminator { block: usize, terminator: Terminator },
+enum Edit<'hir> {
+    Instruction { block: usize, index: usize, kind: InstructionKind<'hir> },
+    Terminator { block: usize, terminator: Terminator<'hir> },
 }
 
 /// passes re-enable each other, but in practice everything settles in two or three
@@ -57,9 +57,9 @@ const MAX_ROUNDS: u32 = 4;
 
 /// evaluating a `const fn` is a pure function of the callee and its arguments, so rustc
 /// models it as a memoised query rather than a fresh interpretation each time.
-type Cache = RefCell<HashMap<Key, Option<Const>>>;
+type Cache<'hir> = RefCell<HashMap<Key<'hir>, Option<Const<'hir>>>>;
 
-pub fn optimise(mir: &mut Mir, target: TargetArch) {
+pub fn optimise<'hir>(mir: &mut Mir<'hir>, target: TargetArch) {
     let level = optimisation::get();
     if level < Level::Sane {
         return;
@@ -98,7 +98,7 @@ pub fn optimise(mir: &mut Mir, target: TargetArch) {
     if_convert::run(mir, target, level);
 }
 
-fn apply(function: &mut Function, edits: Vec<Edit>) -> bool {
+fn apply<'hir>(function: &mut Function<'hir>, edits: Vec<Edit<'hir>>) -> bool {
     let changed = !edits.is_empty();
 
     for edit in edits {
@@ -126,36 +126,36 @@ fn identical(a: Const, b: Const) -> bool {
     }
 }
 
-impl<'a> Program<'a> {
-    fn new(mir: &'a Mir, cache: &'a Cache) -> Self {
+impl<'a, 'hir> Program<'a, 'hir> {
+    fn new(mir: &'a Mir<'hir>, cache: &'a Cache<'hir>) -> Self {
         let by_id = mir.functions.iter().enumerate().map(|(index, f)| (f.id, index)).collect();
         Self { mir, by_id, cache }
     }
 
-    fn function(&self, id: FunctionId) -> Option<&'a Function> {
+    fn function(&self, id: FunctionId) -> Option<&'a Function<'hir>> {
         self.by_id.get(&id).map(|&index| &self.mir.functions[index])
     }
 
-    fn at(&self, index: usize) -> &'a Function {
+    fn at(&self, index: usize) -> &'a Function<'hir> {
         &self.mir.functions[index]
     }
 
-    fn cached(&self, key: &Key) -> Option<Option<Const>> {
+    fn cached(&self, key: &Key<'hir>) -> Option<Option<Const<'hir>>> {
         self.cache.borrow().get(key).copied()
     }
 
-    fn memoise(&self, key: Key, result: Option<Const>) {
+    fn memoise(&self, key: Key<'hir>, result: Option<Const<'hir>>) {
         self.cache.borrow_mut().insert(key, result);
     }
 }
 
-impl Key {
-    fn new(callee: FunctionId, args: &[Const]) -> Self {
+impl<'hir> Key<'hir> {
+    fn new(callee: FunctionId, args: &[Const<'hir>]) -> Self {
         Self { callee, args: args.into() }
     }
 }
 
-impl PartialEq for Key {
+impl PartialEq for Key<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.callee == other.callee
             && self.args.len() == other.args.len()
@@ -163,9 +163,9 @@ impl PartialEq for Key {
     }
 }
 
-impl Eq for Key {}
+impl Eq for Key<'_> {}
 
-impl Hash for Key {
+impl Hash for Key<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.callee.hash(state);
         for argument in &self.args {

@@ -12,7 +12,7 @@ use crate::{
     hir::{Type, TypeKind},
     mir::{
         Block, BlockId, Function, Instruction, InstructionKind, Mir, Operand, Place,
-        Terminator as Term, ValueId,
+        Terminator as Term, ValueId, cfg,
     },
     optimisation::Level,
     parser::expression::BinaryOperator,
@@ -20,11 +20,11 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A branch whose two arms rejoin immediately and belong to nobody else
-struct Diamond {
+struct Diamond<'hir> {
     then_arm: usize,
     else_arm: usize,
     join: usize,
-    condition: Operand,
+    condition: Operand<'hir>,
 }
 
 /// What a target is willing to pay to lose a branch
@@ -53,7 +53,7 @@ const X86_64: Budget = Budget { speculated: 2, selects: 1, reject_loop_carried: 
 /// from `sane` upwards
 const AARCH64: Budget = Budget { speculated: 4, selects: 2, reject_loop_carried: false };
 
-pub(super) fn run(mir: &mut Mir, target: TargetArch, level: Level) -> bool {
+pub(super) fn run(mir: &mut Mir<'_>, target: TargetArch, level: Level) -> bool {
     let Some(budget) = Budget::for_target(target, level) else {
         return false;
     };
@@ -79,7 +79,12 @@ impl Budget {
     }
 
     /// the values the diamond would have to select, when it is worth selecting them at all
-    fn affords(&self, function: &Function, diamond: &Diamond, head: usize) -> Option<Vec<ValueId>> {
+    fn affords(
+        &self,
+        function: &Function<'_>,
+        diamond: &Diamond<'_>,
+        head: usize,
+    ) -> Option<Vec<ValueId>> {
         let count = function.blocks[diamond.then_arm].instructions.len()
             + function.blocks[diamond.else_arm].instructions.len();
         if count > self.speculated {
@@ -111,8 +116,8 @@ impl Budget {
     }
 }
 
-impl Function {
-    fn fresh_local(&mut self, typ: Type) -> Place {
+impl<'hir> Function<'hir> {
+    fn fresh_local(&mut self, typ: Type<'hir>) -> Place<'hir> {
         let id = ValueId(self.locals.len() as u32);
         assert!(
             self.locals.last().is_none_or(|(last, _)| last.0 + 1 == id.0),
@@ -123,13 +128,13 @@ impl Function {
         Place { id, typ }
     }
 
-    fn local(&self, id: ValueId) -> Place {
+    fn local(&self, id: ValueId) -> Place<'hir> {
         let (_, typ) = self.locals[id.0 as usize];
         Place { id, typ }
     }
 }
 
-impl Block {
+impl Block<'_> {
     fn borrowed_span(&self, head: &Self) -> Span {
         self.instructions
             .first()
@@ -139,9 +144,11 @@ impl Block {
 }
 
 /// rewrite one convertible diamond, or report that the function holds none
-fn convert_one(function: &mut Function, budget: &Budget) -> bool {
+fn convert_one(function: &mut Function<'_>, budget: &Budget) -> bool {
+    let predecessors = cfg::predecessors(function, None);
+
     for head in 0..function.blocks.len() {
-        let Some(diamond) = match_diamond(function, head) else {
+        let Some(diamond) = match_diamond(function, head, &predecessors) else {
             continue;
         };
 
@@ -179,7 +186,11 @@ fn convert_one(function: &mut Function, budget: &Budget) -> bool {
     false
 }
 
-fn match_diamond(function: &Function, head: usize) -> Option<Diamond> {
+fn match_diamond<'hir>(
+    function: &Function<'hir>,
+    head: usize,
+    predecessors: &[Vec<usize>],
+) -> Option<Diamond<'hir>> {
     let Term::Branch { condition, then_block, else_block } = &function.blocks[head].terminator
     else {
         return None;
@@ -204,8 +215,8 @@ fn match_diamond(function: &Function, head: usize) -> Option<Diamond> {
     // and a join that lands back on the head or on an arm
     // is a loop wearing a diamond's shape
     if [head, then_arm, else_arm].contains(&join)
-        || predecessors(function, then_arm) > 1
-        || predecessors(function, else_arm) > 1
+        || predecessors[then_arm].len() > 1
+        || predecessors[else_arm].len() > 1
     {
         return None;
     }
@@ -232,12 +243,12 @@ fn match_diamond(function: &Function, head: usize) -> Option<Diamond> {
 }
 
 /// copy an arm's instructions onto `into`, renaming every destination to a fresh local
-fn speculate(
-    function: &mut Function,
+fn speculate<'hir>(
+    function: &mut Function<'hir>,
     arm: usize,
     selected: &[ValueId],
-    into: &mut Vec<Instruction>,
-) -> BTreeMap<ValueId, Operand> {
+    into: &mut Vec<Instruction<'hir>>,
+) -> BTreeMap<ValueId, Operand<'hir>> {
     let mut renamed = BTreeMap::new();
 
     for index in 0..function.blocks[arm].instructions.len() {
@@ -267,7 +278,7 @@ fn speculate(
 }
 
 /// every value read anywhere but inside the two arms
-fn read_outside(function: &Function, then_arm: usize, else_arm: usize) -> HashSet<ValueId> {
+fn read_outside(function: &Function<'_>, then_arm: usize, else_arm: usize) -> HashSet<ValueId> {
     let mut read = HashSet::new();
 
     for (index, block) in function.blocks.iter().enumerate() {
@@ -302,7 +313,7 @@ fn read_outside(function: &Function, then_arm: usize, else_arm: usize) -> HashSe
 
 /// instructions that may run on a path that would not have reached then
 #[inline(always)]
-const fn speculatable(kind: &InstructionKind) -> bool {
+const fn speculatable(kind: &InstructionKind<'_>) -> bool {
     match kind {
         InstructionKind::Assign(_)
         | InstructionKind::Unary { .. }
@@ -324,7 +335,7 @@ const fn speculatable(kind: &InstructionKind) -> bool {
 /// and an aggregate lives on the stack, where selecting it would mean
 /// a conditional `memcpy`
 #[inline(always)]
-const fn selectable(typ: Type) -> bool {
+const fn selectable(typ: Type<'_>) -> bool {
     matches!(
         typ.kind(),
         TypeKind::I32
@@ -338,7 +349,7 @@ const fn selectable(typ: Type) -> bool {
     )
 }
 
-fn assigned(function: &Function, arm: usize) -> BTreeSet<ValueId> {
+fn assigned(function: &Function<'_>, arm: usize) -> BTreeSet<ValueId> {
     function.blocks[arm]
         .instructions
         .iter()
@@ -346,21 +357,13 @@ fn assigned(function: &Function, arm: usize) -> BTreeSet<ValueId> {
         .collect()
 }
 
-fn predecessors(function: &Function, block: usize) -> usize {
-    function
-        .blocks
-        .iter()
-        .filter(|other| successors(other).contains(&block))
-        .count()
-}
-
 /// whether `head` is reachable from `join`, for exmaple the diamond sits inside a loop
-fn cyclic(function: &Function, head: usize, join: usize) -> bool {
+fn cyclic(function: &Function<'_>, head: usize, join: usize) -> bool {
     let mut seen = HashSet::from([join]);
     let mut queue = vec![join];
 
     while let Some(block) = queue.pop() {
-        for successor in successors(&function.blocks[block]) {
+        for successor in cfg::successors(&function.blocks[block].terminator) {
             if successor == head {
                 return true;
             }
@@ -373,16 +376,6 @@ fn cyclic(function: &Function, head: usize, join: usize) -> bool {
     false
 }
 
-fn successors(block: &Block) -> Vec<usize> {
-    match &block.terminator {
-        Term::Jump(target) => vec![target.0 as usize],
-        Term::Branch { then_block, else_block, .. } => {
-            vec![then_block.0 as usize, else_block.0 as usize]
-        },
-        Term::Return(_) => Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,10 +386,10 @@ mod tests {
         parser::Parser,
     };
 
-    fn lower(source: &str, target: TargetArch, level: Level) -> Mir {
-        let arena = bumpalo::Bump::new();
+    fn lower(source: &'static str, target: TargetArch, level: Level) -> Mir<'static> {
+        let arena = Box::leak(Box::new(bumpalo::Bump::new()));
         let statements = Parser::new(source).parse().unwrap();
-        let hir = hir::lower(statements, &arena).unwrap();
+        let hir = hir::lower(statements, arena).unwrap();
         let mut mir = mir::lower(hir).unwrap();
 
         optimisation::set(level);
@@ -414,7 +407,7 @@ mod tests {
         assembly
     }
 
-    fn selects_in(mir: &Mir, name: &str) -> Vec<InstructionKind> {
+    fn selects_in<'hir>(mir: &Mir<'hir>, name: &str) -> Vec<InstructionKind<'hir>> {
         mir.functions
             .iter()
             .find(|function| mir.symbols.get(function.name_symbol) == name)
@@ -492,7 +485,7 @@ mod tests {
             panic!("expected exactly one select");
         };
 
-        assert_eq!(*then_value, Operand::Const(mir::Const::Int(0, Type::new(TypeKind::I32))));
+        assert_eq!(*then_value, Operand::Const(mir::Const::Int(0, Type::from(TypeKind::I32))));
         assert!(matches!(else_value, Operand::Place(_)), "the else side reads `r` back");
     }
 
@@ -574,7 +567,7 @@ mod tests {
         let selects = selects_in(&mir, "nyx::cross");
         assert_eq!(selects.len(), 2);
 
-        let sources: Vec<(Operand, Operand)> = selects
+        let sources: Vec<_> = selects
             .iter()
             .map(|kind| match kind {
                 InstructionKind::Select { then_value, else_value, .. } => {

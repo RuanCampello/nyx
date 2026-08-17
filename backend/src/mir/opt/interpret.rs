@@ -9,8 +9,8 @@ use crate::{
     optimisation::Level,
 };
 
-struct Interpreter<'a> {
-    program: &'a Program<'a>,
+struct Interpreter<'p, 'a, 'hir> {
+    program: &'p Program<'a, 'hir>,
     fuel: u32,
     depth: u32,
 }
@@ -23,12 +23,12 @@ const STEP_BUDGET: u32 = 100_000;
 /// host stack long before the step budget
 const DEPTH_BUDGET: u32 = 128;
 
-pub(super) fn call(
-    program: &Program<'_>,
+pub(super) fn call<'hir>(
+    program: &Program<'_, 'hir>,
     callee: FunctionId,
-    args: &[Const],
+    args: &[Const<'hir>],
     level: Level,
-) -> Option<Const> {
+) -> Option<Const<'hir>> {
     let function = program.function(callee)?;
     if !function.is_const {
         return None;
@@ -48,8 +48,8 @@ pub(super) fn call(
     result
 }
 
-impl Interpreter<'_> {
-    fn run(&mut self, function: &Function, args: &[Const]) -> Option<Const> {
+impl<'hir> Interpreter<'_, '_, 'hir> {
+    fn run(&mut self, function: &Function<'hir>, args: &[Const<'hir>]) -> Option<Const<'hir>> {
         // an intrinsic is lowered by the backend, so there is no body to execute
         if function.intrinsic.is_some() || function.blocks.is_empty() {
             return None;
@@ -59,7 +59,7 @@ impl Interpreter<'_> {
             return None;
         }
 
-        let mut env: Vec<Option<Const>> = vec![None; function.locals.len()];
+        let mut env: Vec<Option<Const<'hir>>> = vec![None; function.locals.len()];
         for ((id, _), &value) in function.params.iter().zip(args) {
             env[id.0 as usize] = Some(value);
         }
@@ -90,7 +90,11 @@ impl Interpreter<'_> {
         }
     }
 
-    fn evaluate(&mut self, kind: &InstructionKind, env: &[Option<Const>]) -> Option<Const> {
+    fn evaluate(
+        &mut self,
+        kind: &InstructionKind<'hir>,
+        env: &[Option<Const<'hir>>],
+    ) -> Option<Const<'hir>> {
         match kind {
             InstructionKind::Assign(operand) => self.operand(*operand, env),
             InstructionKind::Unary { operation, rhs } => {
@@ -129,7 +133,7 @@ impl Interpreter<'_> {
         }
     }
 
-    fn operand(&self, operand: Operand, env: &[Option<Const>]) -> Option<Const> {
+    fn operand(&self, operand: Operand<'hir>, env: &[Option<Const<'hir>>]) -> Option<Const<'hir>> {
         match operand {
             Operand::Const(value) => Some(value),
             Operand::Place(place) => env[place.id.0 as usize],

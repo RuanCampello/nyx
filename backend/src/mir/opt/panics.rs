@@ -37,8 +37,11 @@ pub(crate) fn known_panics(mir: &Mir) -> Vec<RichDiagnostic> {
     diagnostics
 }
 
-fn examine(instruction: &Instruction, state: &[propagate::Lattice]) -> Option<RichDiagnostic> {
-    let resolve = |operand: Operand| match operand {
+fn examine<'hir>(
+    instruction: &Instruction<'hir>,
+    state: &[propagate::Lattice<'hir>],
+) -> Option<RichDiagnostic> {
+    let resolve = |operand: Operand<'hir>| match operand {
         Operand::Const(value) => Some(value),
         Operand::Place(place) => state[place.id.0 as usize].constant(),
     };

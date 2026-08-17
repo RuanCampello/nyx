@@ -21,10 +21,12 @@
 use crate::{
     Span,
     hir::{
-        FunctionId, Intrinsic, Static, StaticId, SymbolId, SymbolTable, Syscall, Type, TypeKind,
+        EnumRepr, FunctionId, Intrinsic, Static, StaticId, SymbolId, SymbolTable, Syscall,
+        TyInterner, Type, TypeKind,
     },
     parser::expression::{BinaryOperator, UnaryOperator},
 };
+use std::collections::HashMap;
 
 pub use crate::hir::Layout;
 pub(crate) use dce::eliminate_dead;
@@ -32,22 +34,24 @@ pub use lower::lower;
 pub(crate) use opt::known_panics;
 pub use opt::optimise;
 
+mod cfg;
 mod dce;
 pub mod error;
 mod lower;
 mod opt;
 
-/// Complete MIR program.
-/// That's a flat list of functions.
+/// Complete MIR program
+/// That's a flat list of functions
 #[derive(Debug, PartialEq)]
-pub struct Mir {
+pub struct Mir<'hir> {
+    pub(in crate::mir) types: TyInterner<'hir>,
     pub(crate) symbols: SymbolTable,
     pub(crate) strings: Vec<String>,
     /// module-level globals, in [StaticId] order, laid out by the backend
-    pub(crate) statics: Vec<Static>,
-    pub(crate) functions: Vec<Function>,
-    pub(crate) struct_layouts: Vec<Layout>,
-    pub(crate) enum_layouts: Vec<Layout>,
+    pub(crate) statics: Vec<Static<'hir>>,
+    pub(crate) functions: Vec<Function<'hir>>,
+    pub(crate) layouts: Layouts<'hir>,
+    pub(crate) reprs: Vec<Option<EnumRepr>>,
     pub(crate) array_layouts: Vec<Layout>,
 }
 
@@ -57,27 +61,27 @@ pub struct Mir {
 /// where `dest` is the [place](self::Place) that receives the result.
 /// Instructions never nest.
 #[derive(Debug, PartialEq, Clone)]
-pub struct Instruction {
-    pub(crate) dest: Place,
-    pub(crate) kind: InstructionKind,
-    pub(crate) span: Span,
+pub struct Instruction<'hir> {
+    pub(crate) dest: Place<'hir>,
+    pub(crate) kind: InstructionKind<'hir>,
+    pub(in crate::mir) span: Span,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Function {
+pub struct Function<'hir> {
     pub(crate) id: FunctionId,
     pub(crate) intrinsic: Option<Intrinsic>,
-    pub(crate) is_const: bool,
+    pub(in crate::mir) is_const: bool,
     /// key into `Mir::symbols` giving function's source name
     pub(crate) name_symbol: SymbolId,
-    pub(crate) return_type: Type,
+    pub(crate) return_type: Type<'hir>,
     /// params in declaration order.
     /// these are the first entries of `locals` but are kept separated
     /// so that codegen can emit the correct argument-register moves without
     /// having to guess which locals were params
-    pub(crate) params: Vec<(ValueId, Type)>,
-    pub(crate) locals: Vec<(ValueId, Type)>,
-    pub(crate) blocks: Vec<Block>,
+    pub(crate) params: Vec<(ValueId, Type<'hir>)>,
+    pub(crate) locals: Vec<(ValueId, Type<'hir>)>,
+    pub(crate) blocks: Vec<Block<'hir>>,
 }
 
 /// A single-entry, single-exit sequence of instructions.
@@ -86,27 +90,25 @@ pub struct Function {
 /// Only one [terminator](self::Terminator) can transfer the control.
 /// This invariant allow code generation to translate blocks independently.
 #[derive(Debug, PartialEq)]
-pub struct Block {
+pub struct Block<'hir> {
     id: BlockId,
-    pub(crate) instructions: Vec<Instruction>,
-    pub(crate) terminator: Terminator,
+    pub(crate) instructions: Vec<Instruction<'hir>>,
+    pub(crate) terminator: Terminator<'hir>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 #[rustfmt::skip]
-pub enum InstructionKind {
+pub enum InstructionKind<'hir> {
     /// `dest = operand` (copy or constant load)
-    Assign(Operand),
-
+    Assign(Operand<'hir>),
     Unary {
         operation: UnaryOperator,
-        rhs: Operand,
+        rhs: Operand<'hir>,
     },
-
     Binary {
         operation: BinaryOperator,
-        rhs: Operand,
-        lhs: Operand,
+        rhs: Operand<'hir>,
+        lhs: Operand<'hir>,
         /// emit a runtime overflow check: set by the optimisation level, read by the
         /// backends. It says nothing about intent — below `sane` *every* arithmetic
         /// instruction is unchecked
@@ -117,108 +119,119 @@ pub enum InstructionKind {
         /// lint stay silent about an overflow that was deliberate
         wrapping: bool,
     },
-
     /// load `typ` bytes from an aggregate place at byte `offset`
-    FieldLoad { src: Operand, offset: u32, typ: Type },
-
+    FieldLoad { src: Operand<'hir>, offset: u32, typ: Type<'hir> },
     /// load `typ` from `base[index]` in a row-major aggregate of `stride`-byte elements
     ///
     /// `bound` is the element count the index is checked against, the bounds check and
     /// its panic are materialised entirely by the backend
-    ElementLoad { base: Operand, index: Operand, bound: Operand, stride: u32, typ: Type },
-
+    ElementLoad {
+        base: Operand<'hir>,
+        index: Operand<'hir>,
+        bound: Operand<'hir>,
+        stride: u32,
+        typ: Type<'hir>,
+    },
     /// store `value` into the destination aggregate at byte `offset`
-    FieldStore { value: Operand, offset: u32 },
-
+    FieldStore { value: Operand<'hir>, offset: u32 },
     /// store `value` into `dest[index]` of a row-major aggregate of `stride`-byte elements
     ///
     /// the destination aggregate is the instruction's `dest` place, `bound` drives the
     /// same backend-only bounds check as [InstructionKind::ElementLoad]
-    ElementStore { index: Operand, bound: Operand, value: Operand, stride: u32 },
-
+    ElementStore {
+        index: Operand<'hir>,
+        bound: Operand<'hir>,
+        value: Operand<'hir>,
+        stride: u32,
+    },
     /// the address of `base[index]` (i.e. `&base[index]`): like [InstructionKind::ElementLoad]
     /// but yields the element pointer instead of loading it, with the same bounds check
-    ElementAddr { base: Operand, index: Operand, bound: Operand, stride: u32 },
-
-    AddressOf { src: Place, offset: u32 },
-
+    ElementAddr {
+        base: Operand<'hir>,
+        index: Operand<'hir>,
+        bound: Operand<'hir>,
+        stride: u32,
+    },
+    AddressOf { src: Place<'hir>, offset: u32 },
     /// the address of a module-level global
     ///
     /// Reads and writes of a static go through this, so they reuse the same
     /// [InstructionKind::FieldLoad]/[InstructionKind::FieldStore] pair a raw
     /// pointer dereference already uses
     StaticAddr { id: StaticId },
-
     Call {
         callee: FunctionId,
-        args: Vec<Operand>,
+        args: Vec<Operand<'hir>>,
     },
-
     Syscall {
         code: Syscall,
-        args: Vec<Operand>,
+        args: Vec<Operand<'hir>>,
         returns: bool,
     },
-
-    Cast { src: Operand, typ: Type },
-
+    Cast { src: Operand<'hir>, typ: Type<'hir> },
     /// `dest = condition ? then_value : else_value`, with both values already computed
-    Select { condition: Operand, then_value: Operand, else_value: Operand },
+    Select {
+        condition: Operand<'hir>,
+        then_value: Operand<'hir>,
+        else_value: Operand<'hir>,
+    },
 }
 
-/// This is a *input* of a instruction.
+/// This is a *input* of a instruction
 ///
-/// Instructions consume operands.
-/// Operands are atomic: either a named local/temporary or inlined constant.
+/// Instructions consume operands
+/// Operands are atomic: either a named local/temporary or inlined constant
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Operand {
-    Place(Place),
-    Const(Const),
+pub enum Operand<'hir> {
+    Place(Place<'hir>),
+    Const(Const<'hir>),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub struct Place {
+pub struct Place<'hir> {
     pub id: ValueId,
-    pub typ: Type,
+    pub typ: Type<'hir>,
 }
 
-/// An inlined constant.
+/// An inlined constant
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Const {
-    Int(i64, Type),
-    Float(f64, Type),
+pub enum Const<'hir> {
+    Int(i64, Type<'hir>),
+    Float(f64, Type<'hir>),
     Bool(bool),
     // A string literal interned into the function's string pool
     Str { id: usize, len: usize },
     Unit,
 }
 
-/// The last instruction of a [basic block](self::Block). Always exactly one per block.
-/// Terminator's are the *only* place where control flow is expressed.
+/// The last instruction of a [basic block](self::Block)
+///
+/// Always exactly one per block
+/// Terminator's are the *only* place where control flow is expressed
 #[derive(Debug, PartialEq, Clone)]
-pub enum Terminator {
+pub enum Terminator<'hir> {
     /// Unconditional jump
     Jump(BlockId),
-
     /// Conditional branch: if `condition` is true
-    Branch { condition: Operand, then_block: BlockId, else_block: BlockId },
-
+    Branch { condition: Operand<'hir>, then_block: BlockId, else_block: BlockId },
     /// Return from the function, optionally carrying a returned value
-    Return(Option<Operand>),
+    Return(Option<Operand<'hir>>),
 }
 
-/// An assigned unique value id.
-/// This covers both source locals (LocalId) and fresh temporaries
-/// introduced during expresion lowering.
+/// An assigned unique value id
+/// This covers both source locals [local id](frontend::hir::LocalId) and fresh temporaries
+/// introduced during expresion lowering
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct ValueId(pub u32);
 
-/// Stable index into a function's `blocks` vec.
+/// Stable index into a function's [blocks](Function::blocks) vec
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BlockId(pub u32);
 
-impl Operand {
-    pub const fn typ(&self) -> Type {
+pub(crate) type Layouts<'hir> = HashMap<Type<'hir>, Layout>;
+
+impl<'hir> Operand<'hir> {
+    pub fn typ(&self) -> Type<'hir> {
         match self {
             Self::Place(p) => p.typ,
             Self::Const(c) => c.typ(),
@@ -226,26 +239,25 @@ impl Operand {
     }
 }
 
-impl Const {
-    pub const fn typ(&self) -> Type {
+impl<'hir> Const<'hir> {
+    pub fn typ(&self) -> Type<'hir> {
         match self {
             Self::Int(_, typ) => *typ,
             Self::Float(_, typ) => *typ,
-            Self::Bool(_) => Type::new(TypeKind::Bool),
-            Self::Str { .. } => Type::new(TypeKind::Str),
-            Self::Unit => Type::new(TypeKind::Unit),
+            Self::Bool(_) => Type::from(TypeKind::Bool),
+            Self::Str { .. } => Type::from(TypeKind::Str),
+            Self::Unit => Type::from(TypeKind::Unit),
         }
     }
 
-    pub fn to_general_string(self) -> String {
+    pub fn to_string(self) -> String {
         match self {
             Const::Int(n, _) => format!("${n}"),
             Const::Bool(b) => format!(
                 "${}",
-                if b {
-                    1
-                } else {
-                    0
+                match b {
+                    true => 1,
+                    _ => 0,
                 }
             ),
             Const::Unit => unreachable!("Unit constant has no runtime representation"),
@@ -255,10 +267,10 @@ impl Const {
     }
 }
 
-impl std::fmt::Display for Const {
+impl std::fmt::Display for Const<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", (*self).to_general_string()),
+            Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", (*self).to_string()),
             Const::Float(v, _) => write!(f, "{v:?}"),
             Const::Str { id, .. } => write!(f, "<str:{id}>"),
             Const::Unit => unreachable!(),
@@ -268,13 +280,15 @@ impl std::fmt::Display for Const {
 
 #[cfg(test)]
 mod tests {
+    use frontend::hir::AdtId;
+
     use super::*;
     use crate::{hir, mir, parser::Parser};
 
-    fn parse_and_lower(src: &str) -> Mir {
-        let arena = bumpalo::Bump::new();
+    fn parse_and_lower(src: &'static str) -> Mir<'static> {
+        let arena = Box::leak(Box::new(bumpalo::Bump::new()));
         let statements = Parser::new(src).parse().unwrap();
-        let hir = hir::lower(statements, &arena).unwrap();
+        let hir = hir::lower(statements, arena).unwrap();
 
         mir::lower(hir).unwrap()
     }
@@ -407,7 +421,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(offsets, vec![12, 0, 8]);
-        let layout: (u32, u32) = mir.struct_layouts[0].into();
+        let typ = mir.types.adt(AdtId(0), &[]);
+        let layout: (u32, u32) = mir.layouts[&typ].into();
         assert_eq!(layout, (16, 8));
     }
 
@@ -525,7 +540,7 @@ mod tests {
             })
             .expect("expected a call instruction");
 
-        assert_eq!(call, (Type::structure(crate::hir::StructId(0)), 1));
+        assert_eq!(call, (mir.types.adt(AdtId(0), &[]), 1));
     }
 
     #[test]
@@ -547,7 +562,7 @@ mod tests {
                 matches!(
                     &instr.kind,
                     InstructionKind::Binary {
-                        operation: crate::parser::expression::BinaryOperator::Eq,
+                        operation: BinaryOperator::Eq,
                         rhs: Operand::Const(Const::Int(0, _)),
                         ..
                     }
@@ -600,13 +615,7 @@ mod tests {
         let has_guard_branch = func.blocks.iter().any(|b| {
             matches!(b.terminator, Terminator::Branch { .. })
                 && b.instructions.iter().any(|i| {
-                    matches!(
-                        &i.kind,
-                        InstructionKind::Binary {
-                            operation: crate::parser::expression::BinaryOperator::Gt,
-                            ..
-                        }
-                    )
+                    matches!(&i.kind, InstructionKind::Binary { operation: BinaryOperator::Gt, .. })
                 })
         });
         assert!(has_guard_branch, "expected a Branch from guard evaluating n > 0");

@@ -4,7 +4,7 @@
 //! operation cannot be folded *without changing observable behaviour*
 
 use crate::{
-    hir::{EnumRepr, Type, TypeKind},
+    hir::{Type, TypeKind},
     mir::Const,
     parser::expression::{BinaryOperator, UnaryOperator},
 };
@@ -29,7 +29,11 @@ pub(super) enum Panic {
     ShiftOutOfRange,
 }
 
-pub(super) fn diagnose(operation: BinaryOperator, lhs: Const, rhs: Const) -> Option<Panic> {
+pub(super) fn diagnose<'hir>(
+    operation: BinaryOperator,
+    lhs: Const<'hir>,
+    rhs: Const<'hir>,
+) -> Option<Panic> {
     use BinaryOperator as Op;
 
     let (Const::Int(a, typ), Const::Int(b, _)) = (lhs, rhs) else {
@@ -54,7 +58,10 @@ pub(super) fn diagnose(operation: BinaryOperator, lhs: Const, rhs: Const) -> Opt
     }
 }
 
-pub(super) fn diagnose_unary(operation: UnaryOperator, operand: Const) -> Option<Panic> {
+pub(super) fn diagnose_unary<'hir>(
+    operation: UnaryOperator,
+    operand: Const<'hir>,
+) -> Option<Panic> {
     let (UnaryOperator::Neg, Const::Int(value, typ)) = (operation, operand) else {
         return None;
     };
@@ -66,7 +73,11 @@ pub(super) fn diagnose_unary(operation: UnaryOperator, operand: Const) -> Option
     }
 }
 
-pub(super) fn binary(operation: BinaryOperator, lhs: Const, rhs: Const) -> Option<Const> {
+pub(super) fn binary<'hir>(
+    operation: BinaryOperator,
+    lhs: Const<'hir>,
+    rhs: Const<'hir>,
+) -> Option<Const<'hir>> {
     match (lhs, rhs) {
         (Const::Int(a, typ), Const::Int(b, _)) => integer(operation, a, b, typ),
         (Const::Float(a, typ), Const::Float(b, _)) => float(operation, a, b, typ),
@@ -75,7 +86,7 @@ pub(super) fn binary(operation: BinaryOperator, lhs: Const, rhs: Const) -> Optio
     }
 }
 
-pub(super) fn unary(operation: UnaryOperator, operand: Const) -> Option<Const> {
+pub(super) fn unary<'hir>(operation: UnaryOperator, operand: Const<'hir>) -> Option<Const<'hir>> {
     match (operation, operand) {
         (UnaryOperator::Neg, Const::Int(value, typ)) => {
             let repr = IntRepr::of(typ)?;
@@ -92,7 +103,7 @@ pub(super) fn unary(operation: UnaryOperator, operand: Const) -> Option<Const> {
 }
 
 /// fold a `Cast` between primitive types
-pub(super) fn cast(value: Const, target: Type) -> Option<Const> {
+pub(super) fn cast<'hir>(value: Const<'hir>, target: Type<'hir>) -> Option<Const<'hir>> {
     match (value, target.kind()) {
         (_, TypeKind::Bool) => None,
 
@@ -117,7 +128,12 @@ pub(super) fn cast(value: Const, target: Type) -> Option<Const> {
     }
 }
 
-fn integer(operation: BinaryOperator, a: i64, b: i64, typ: Type) -> Option<Const> {
+fn integer<'hir>(
+    operation: BinaryOperator,
+    a: i64,
+    b: i64,
+    typ: Type<'hir>,
+) -> Option<Const<'hir>> {
     use BinaryOperator as Op;
 
     let repr = IntRepr::of(typ)?;
@@ -163,7 +179,7 @@ fn integer(operation: BinaryOperator, a: i64, b: i64, typ: Type) -> Option<Const
     }
 }
 
-fn float(operation: BinaryOperator, a: f64, b: f64, typ: Type) -> Option<Const> {
+fn float<'hir>(operation: BinaryOperator, a: f64, b: f64, typ: Type<'hir>) -> Option<Const<'hir>> {
     use BinaryOperator as Op;
 
     let single = matches!(typ.kind(), TypeKind::F32);
@@ -193,7 +209,7 @@ fn float(operation: BinaryOperator, a: f64, b: f64, typ: Type) -> Option<Const> 
 }
 
 #[inline]
-const fn boolean(operation: BinaryOperator, a: bool, b: bool) -> Option<Const> {
+const fn boolean<'hir>(operation: BinaryOperator, a: bool, b: bool) -> Option<Const<'hir>> {
     match operation {
         BinaryOperator::And => Some(Const::Bool(a && b)),
         BinaryOperator::Or => Some(Const::Bool(a || b)),
@@ -219,16 +235,9 @@ impl IntRepr {
             TypeKind::U64 => (64, false),
             TypeKind::Iptr => (64, true),
             TypeKind::Uptr => (64, false),
-            TypeKind::Enum(id) => match id.repr() {
-                EnumRepr::I8 => (8, true),
-                EnumRepr::U8 => (8, false),
-                EnumRepr::I16 => (16, true),
-                EnumRepr::U16 => (16, false),
-                EnumRepr::I32 => (32, true),
-                EnumRepr::U32 => (32, false),
-                EnumRepr::I64 | EnumRepr::Iptr => (64, true),
-                EnumRepr::U64 | EnumRepr::Uptr => (64, false),
-            },
+            // the representation belongs to the enum definition, which this
+            // context-free folder does not carry
+            TypeKind::Adt(_, _) => return None,
             _ => return None,
         };
 
@@ -301,8 +310,8 @@ impl IntRepr {
 mod tests {
     use super::*;
 
-    const fn int(value: i64, kind: TypeKind) -> Const {
-        Const::Int(value, Type::new(kind))
+    fn int(value: i64, kind: TypeKind) -> Const {
+        Const::Int(value, Type::from(kind))
     }
 
     #[test]
@@ -379,7 +388,7 @@ mod tests {
 
     #[test]
     fn f32_arithmetic_rounds_at_f32() {
-        let typ = Type::new(TypeKind::F32);
+        let typ = Type::from(TypeKind::F32);
         let tenth = Const::Float(0.1f32 as f64, typ);
         let folded = binary(BinaryOperator::Add, tenth, tenth);
         assert_eq!(folded, Some(Const::Float((0.1f32 + 0.1f32) as f64, typ)));
@@ -387,7 +396,7 @@ mod tests {
 
     #[test]
     fn nan_comparisons_follow_ieee() {
-        let typ = Type::new(TypeKind::F64);
+        let typ = Type::from(TypeKind::F64);
         let nan = Const::Float(f64::NAN, typ);
         assert_eq!(binary(BinaryOperator::Eq, nan, nan), Some(Const::Bool(false)));
         assert_eq!(binary(BinaryOperator::Ne, nan, nan), Some(Const::Bool(true)));
@@ -397,30 +406,30 @@ mod tests {
 
     #[test]
     fn float_division_by_zero_folds_to_infinity() {
-        let typ = Type::new(TypeKind::F64);
+        let typ = Type::from(TypeKind::F64);
         let folded = binary(BinaryOperator::Div, Const::Float(1.0, typ), Const::Float(0.0, typ));
         assert_eq!(folded, Some(Const::Float(f64::INFINITY, typ)));
     }
 
     #[test]
     fn narrowing_cast_truncates() {
-        let folded = cast(int(300, TypeKind::I32), Type::new(TypeKind::U8));
+        let folded = cast(int(300, TypeKind::I32), Type::from(TypeKind::U8));
         assert_eq!(folded, Some(int(44, TypeKind::U8)));
     }
 
     #[test]
     fn widening_cast_extends_with_the_source_sign() {
-        let folded = cast(int(-1, TypeKind::I8), Type::new(TypeKind::I32));
+        let folded = cast(int(-1, TypeKind::I8), Type::from(TypeKind::I32));
         assert_eq!(folded, Some(int(-1, TypeKind::I32)));
 
-        let folded = cast(int(-1, TypeKind::U8), Type::new(TypeKind::I32));
+        let folded = cast(int(-1, TypeKind::U8), Type::from(TypeKind::I32));
         assert_eq!(folded, Some(int(255, TypeKind::I32)));
     }
 
     #[test]
     fn float_to_int_cast_is_refused() {
-        let value = Const::Float(1.5, Type::new(TypeKind::F64));
-        assert_eq!(cast(value, Type::new(TypeKind::I32)), None);
+        let value = Const::Float(1.5, Type::from(TypeKind::F64));
+        assert_eq!(cast(value, Type::from(TypeKind::I32)), None);
     }
 
     #[test]

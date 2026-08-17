@@ -6,7 +6,7 @@
 
 use crate::{
     hir::FunctionId,
-    mir::{BlockId, Const, Function, InstructionKind, Mir, Operand, Terminator as Term},
+    mir::{BlockId, Const, Function, InstructionKind, Mir, Operand, Terminator as Term, cfg},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -88,18 +88,7 @@ impl Body for Blocks {
     /// drop blocks no path from the entry reaches, renumbering the survivors
     fn sweep(&self, function: &mut Function) -> bool {
         let count = function.blocks.len();
-        let mut reachable = vec![false; count];
-        let mut stack = vec![0];
-        reachable[0] = true;
-
-        while let Some(block) = stack.pop() {
-            for successor in successors(&function.blocks[block].terminator) {
-                if !reachable[successor] {
-                    reachable[successor] = true;
-                    stack.push(successor);
-                }
-            }
-        }
+        let reachable = cfg::reachable(function);
 
         if reachable.iter().all(|live| *live) {
             return false;
@@ -238,13 +227,13 @@ impl Program for Strings {
     }
 }
 
-impl InstructionKind {
+impl<'hir> InstructionKind<'hir> {
     #[inline(always)]
     pub(in crate::mir) const fn writes_through_dest(&self) -> bool {
         matches!(self, InstructionKind::FieldStore { .. } | InstructionKind::ElementStore { .. })
     }
 
-    pub(in crate::mir) fn each_operand(&self, mut visit: impl FnMut(&Operand)) {
+    pub(in crate::mir) fn each_operand(&self, mut visit: impl FnMut(&Operand<'hir>)) {
         use InstructionKind::*;
         match self {
             Assign(operand)
@@ -276,7 +265,7 @@ impl InstructionKind {
         }
     }
 
-    pub(in crate::mir) fn each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand)) {
+    pub(in crate::mir) fn each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand<'hir>)) {
         use InstructionKind::*;
 
         match self {
@@ -320,7 +309,7 @@ fn entry(mir: &Mir) -> Option<FunctionId> {
         .map(|function| function.id)
 }
 
-fn callees(function: &Function) -> impl Iterator<Item = FunctionId> + '_ {
+fn callees<'a>(function: &'a Function<'_>) -> impl Iterator<Item = FunctionId> + 'a {
     function
         .blocks
         .iter()
@@ -333,7 +322,7 @@ fn callees(function: &Function) -> impl Iterator<Item = FunctionId> + '_ {
 
 /// whether dropping the instruction can change what the program does
 #[inline(always)]
-const fn pure(kind: &InstructionKind) -> bool {
+const fn pure(kind: &InstructionKind<'_>) -> bool {
     matches!(
         kind,
         InstructionKind::Assign(_)
@@ -348,7 +337,7 @@ const fn pure(kind: &InstructionKind) -> bool {
 }
 
 #[inline(always)]
-const fn terminator_operand(terminator: &Term) -> Option<&Operand> {
+const fn terminator_operand<'a, 'hir>(terminator: &'a Term<'hir>) -> Option<&'a Operand<'hir>> {
     match terminator {
         Term::Branch { condition: operand, .. } | Term::Return(Some(operand)) => Some(operand),
         Term::Jump(_) | Term::Return(None) => None,
@@ -356,20 +345,12 @@ const fn terminator_operand(terminator: &Term) -> Option<&Operand> {
 }
 
 #[inline(always)]
-const fn terminator_operand_mut(terminator: &mut Term) -> Option<&mut Operand> {
+const fn terminator_operand_mut<'a, 'hir>(
+    terminator: &'a mut Term<'hir>,
+) -> Option<&'a mut Operand<'hir>> {
     match terminator {
         Term::Branch { condition: operand, .. } | Term::Return(Some(operand)) => Some(operand),
         Term::Jump(_) | Term::Return(None) => None,
-    }
-}
-
-fn successors(terminator: &Term) -> Vec<usize> {
-    match terminator {
-        Term::Jump(target) => vec![target.0 as usize],
-        Term::Branch { then_block, else_block, .. } => {
-            vec![then_block.0 as usize, else_block.0 as usize]
-        },
-        Term::Return(_) => Vec::new(),
     }
 }
 

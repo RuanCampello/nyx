@@ -17,26 +17,26 @@
 use crate::{
     hir::FunctionId,
     mir::{
-        Block, BlockId, Const, Function, Instruction, InstructionKind, Operand, Terminator,
+        Block, BlockId, Const, Function, Instruction, InstructionKind, Operand, Terminator, cfg,
         opt::{Edit, Program, fold, identical, interpret},
     },
     optimisation::Level,
 };
 
-struct Solver<'a> {
-    program: &'a Program<'a>,
-    function: &'a Function,
+struct Solver<'a, 'hir> {
+    program: &'a Program<'a, 'hir>,
+    function: &'a Function<'hir>,
     level: Level,
-    entry: Vec<Vec<Lattice>>,
+    entry: Vec<Vec<Lattice<'hir>>>,
     reachable: Vec<bool>,
     escaped: Vec<bool>,
     worklist: Vec<BlockId>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum Lattice {
+pub(super) enum Lattice<'hir> {
     Top,
-    Const(Const),
+    Const(Const<'hir>),
     Bottom,
 }
 
@@ -46,7 +46,11 @@ pub(super) enum Lattice {
 /// `blocks * values` per round, rustc's equivalent pass caps the same product
 const VALUE_LIMIT: usize = 4096;
 
-pub(super) fn analyse(program: &Program<'_>, index: usize, level: Level) -> Vec<Edit> {
+pub(super) fn analyse<'hir>(
+    program: &Program<'_, 'hir>,
+    index: usize,
+    level: Level,
+) -> Vec<Edit<'hir>> {
     let function = program.at(index);
     match function.blocks.is_empty() || function.locals.len() > VALUE_LIMIT {
         true => Vec::new(),
@@ -58,11 +62,11 @@ pub(super) fn analyse(program: &Program<'_>, index: usize, level: Level) -> Vec<
     }
 }
 
-pub(super) fn walk(
-    program: &Program<'_>,
+pub(super) fn walk<'hir>(
+    program: &Program<'_, 'hir>,
     index: usize,
     level: Level,
-    mut visit: impl FnMut(&Instruction, &[Lattice]),
+    mut visit: impl FnMut(&Instruction<'hir>, &[Lattice<'hir>]),
 ) {
     let function = program.at(index);
     if function.blocks.is_empty() || function.locals.len() > VALUE_LIMIT {
@@ -86,11 +90,11 @@ pub(super) fn walk(
 }
 
 /// the environment each block leaves behind, `None` where the block is unreachable
-pub(super) fn exit_states(
-    program: &Program<'_>,
+pub(super) fn exit_states<'hir>(
+    program: &Program<'_, 'hir>,
     index: usize,
     level: Level,
-) -> Vec<Option<Vec<Lattice>>> {
+) -> Vec<Option<Vec<Lattice<'hir>>>> {
     let function = program.at(index);
     if function.blocks.is_empty() || function.locals.len() > VALUE_LIMIT {
         return Vec::new();
@@ -115,8 +119,8 @@ pub(super) fn exit_states(
         .collect()
 }
 
-impl<'a> Solver<'a> {
-    fn new(program: &'a Program<'a>, function: &'a Function, level: Level) -> Self {
+impl<'a, 'hir> Solver<'a, 'hir> {
+    fn new(program: &'a Program<'a, 'hir>, function: &'a Function<'hir>, level: Level) -> Self {
         let values = function.locals.len();
         let blocks = function.blocks.len();
 
@@ -170,7 +174,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn step(&self, instruction: &Instruction, state: &mut [Lattice]) {
+    fn step(&self, instruction: &Instruction<'hir>, state: &mut [Lattice<'hir>]) {
         let dest = instruction.dest.id.0 as usize;
         state[dest] = match self.escaped[dest] {
             true => Lattice::Bottom,
@@ -178,7 +182,7 @@ impl<'a> Solver<'a> {
         };
     }
 
-    fn evaluate(&self, kind: &InstructionKind, state: &[Lattice]) -> Lattice {
+    fn evaluate(&self, kind: &InstructionKind<'hir>, state: &[Lattice<'hir>]) -> Lattice<'hir> {
         use InstructionKind::*;
         match kind {
             Assign(operand) => self.resolve(*operand, state),
@@ -196,7 +200,12 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn call(&self, callee: FunctionId, args: &[Operand], state: &[Lattice]) -> Lattice {
+    fn call(
+        &self,
+        callee: FunctionId,
+        args: &[Operand<'hir>],
+        state: &[Lattice<'hir>],
+    ) -> Lattice<'hir> {
         if self.level < Level::Sane {
             return Lattice::Bottom;
         }
@@ -216,14 +225,14 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn resolve(&self, operand: Operand, state: &[Lattice]) -> Lattice {
+    fn resolve(&self, operand: Operand<'hir>, state: &[Lattice<'hir>]) -> Lattice<'hir> {
         match operand {
             Operand::Const(value) => Lattice::Const(value),
             Operand::Place(place) => state[place.id.0 as usize],
         }
     }
 
-    fn merge_into(&mut self, BlockId(id): BlockId, incoming: &[Lattice]) {
+    fn merge_into(&mut self, BlockId(id): BlockId, incoming: &[Lattice<'hir>]) {
         let id = id as usize;
         let first = !self.reachable[id];
         self.reachable[id] = true;
@@ -245,7 +254,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn rewrite(&self) -> Vec<Edit> {
+    fn rewrite(&self) -> Vec<Edit<'hir>> {
         let mut edits = Vec::new();
 
         for (id, block) in self.function.blocks.iter().enumerate() {
@@ -269,7 +278,11 @@ impl<'a> Solver<'a> {
         edits
     }
 
-    fn rewritten(&self, instruction: &Instruction, state: &[Lattice]) -> Option<InstructionKind> {
+    fn rewritten(
+        &self,
+        instruction: &Instruction<'hir>,
+        state: &[Lattice<'hir>],
+    ) -> Option<InstructionKind<'hir>> {
         let foldable = !matches!(instruction.kind, InstructionKind::Assign(Operand::Const(_)));
         if foldable
             && !self.escaped[instruction.dest.id.0 as usize]
@@ -281,11 +294,15 @@ impl<'a> Solver<'a> {
         self.substituted(&instruction.kind, state)
     }
 
-    fn substituted(&self, kind: &InstructionKind, state: &[Lattice]) -> Option<InstructionKind> {
+    fn substituted(
+        &self,
+        kind: &InstructionKind<'hir>,
+        state: &[Lattice<'hir>],
+    ) -> Option<InstructionKind<'hir>> {
         use InstructionKind::*;
 
         let mut changed = false;
-        let mut operand = |operand: Operand| match self.resolve(operand, state) {
+        let mut operand = |operand: Operand<'hir>| match self.resolve(operand, state) {
             Lattice::Const(value) if matches!(operand, Operand::Place(_)) => {
                 changed = true;
                 Operand::Const(value)
@@ -341,8 +358,8 @@ impl<'a> Solver<'a> {
     }
 }
 
-impl Lattice {
-    pub(super) const fn constant(self) -> Option<Const> {
+impl<'hir> Lattice<'hir> {
+    pub(super) const fn constant(self) -> Option<Const<'hir>> {
         match self {
             Self::Const(value) => Some(value),
             _ => None,
@@ -369,7 +386,10 @@ impl Lattice {
     }
 }
 
-fn lift1(value: Lattice, fold: impl Fn(Const) -> Option<Const>) -> Lattice {
+fn lift1<'hir>(
+    value: Lattice<'hir>,
+    fold: impl Fn(Const<'hir>) -> Option<Const<'hir>>,
+) -> Lattice<'hir> {
     match value {
         Lattice::Top => Lattice::Top,
         Lattice::Bottom => Lattice::Bottom,
@@ -380,7 +400,11 @@ fn lift1(value: Lattice, fold: impl Fn(Const) -> Option<Const>) -> Lattice {
     }
 }
 
-fn lift2(lhs: Lattice, rhs: Lattice, fold: impl Fn(Const, Const) -> Option<Const>) -> Lattice {
+fn lift2<'hir>(
+    lhs: Lattice<'hir>,
+    rhs: Lattice<'hir>,
+    fold: impl Fn(Const<'hir>, Const<'hir>) -> Option<Const<'hir>>,
+) -> Lattice<'hir> {
     match (lhs, rhs) {
         (Lattice::Bottom, _) | (_, Lattice::Bottom) => Lattice::Bottom,
         (Lattice::Top, _) | (_, Lattice::Top) => Lattice::Top,
@@ -391,25 +415,28 @@ fn lift2(lhs: Lattice, rhs: Lattice, fold: impl Fn(Const, Const) -> Option<Const
     }
 }
 
-fn successors(terminator: &Terminator, state: &[Lattice]) -> Vec<BlockId> {
-    match terminator {
-        Terminator::Jump(target) => vec![*target],
-        Terminator::Return(_) => Vec::new(),
-        Terminator::Branch { condition, then_block, else_block } => match condition {
-            Operand::Const(Const::Bool(true)) => vec![*then_block],
-            Operand::Const(Const::Bool(false)) => vec![*else_block],
-            Operand::Place(place) => match state[place.id.0 as usize] {
-                Lattice::Const(Const::Bool(true)) => vec![*then_block],
-                Lattice::Const(Const::Bool(false)) => vec![*else_block],
-                Lattice::Top => Vec::new(),
-                _ => vec![*then_block, *else_block],
-            },
+fn successors(terminator: &Terminator<'_>, state: &[Lattice<'_>]) -> Vec<BlockId> {
+    let Terminator::Branch { condition, then_block, else_block } = terminator else {
+        return cfg::successors(terminator).into_iter().map(|b| BlockId(b as u32)).collect();
+    };
+
+    match condition {
+        Operand::Const(Const::Bool(true)) => vec![*then_block],
+        Operand::Const(Const::Bool(false)) => vec![*else_block],
+        Operand::Place(place) => match state[place.id.0 as usize] {
+            Lattice::Const(Const::Bool(true)) => vec![*then_block],
+            Lattice::Const(Const::Bool(false)) => vec![*else_block],
+            Lattice::Top => Vec::new(),
             _ => vec![*then_block, *else_block],
         },
+        _ => vec![*then_block, *else_block],
     }
 }
 
-fn rewritten_terminator(block: &Block, state: &[Lattice]) -> Option<Terminator> {
+fn rewritten_terminator<'hir>(
+    block: &Block<'hir>,
+    state: &[Lattice<'hir>],
+) -> Option<Terminator<'hir>> {
     match &block.terminator {
         Terminator::Branch { condition: Operand::Place(place), then_block, else_block } => {
             match state[place.id.0 as usize] {

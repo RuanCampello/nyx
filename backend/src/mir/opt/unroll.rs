@@ -8,7 +8,7 @@ use crate::{
     Span,
     mir::{
         BlockId, Const, Function, Instruction, InstructionKind, Operand, Place, Terminator,
-        ValueId,
+        ValueId, cfg,
         opt::{fold, propagate::Lattice},
     },
 };
@@ -23,22 +23,25 @@ struct Loop {
 
 /// what running the loop produced: where control left, and the final value of everything
 /// the loop assigned
-struct Evaluated {
+struct Evaluated<'hir> {
     exit: BlockId,
-    writes: Vec<(ValueId, Const, Span)>,
+    writes: Vec<(ValueId, Const<'hir>, Span)>,
 }
 
 /// a loop is evaluated only if it finishes inside this many instructions, one that runs
 /// longer is left alone
 const STEP_BUDGET: u32 = 100_000;
 
-pub(super) fn run(function: &mut Function, exits: &[Option<Vec<Lattice>>]) -> bool {
+pub(super) fn run<'hir>(
+    function: &mut Function<'hir>,
+    exits: &[Option<Vec<Lattice<'hir>>>],
+) -> bool {
     if exits.len() != function.blocks.len() {
         return false;
     }
 
     let reachable: Vec<_> = exits.iter().map(Option::is_some).collect();
-    let predecessors = predecessors(function, &reachable);
+    let predecessors = cfg::predecessors(function, Some(&reachable));
     let dominators = dominators(function, &predecessors);
 
     for candidate in loops(function, &predecessors, &dominators, &reachable) {
@@ -56,7 +59,11 @@ pub(super) fn run(function: &mut Function, exits: &[Option<Vec<Lattice>>]) -> bo
     false
 }
 
-fn evaluate(function: &Function, target: &Loop, state: &[Lattice]) -> Option<Evaluated> {
+fn evaluate<'hir>(
+    function: &Function<'hir>,
+    target: &Loop,
+    state: &[Lattice<'hir>],
+) -> Option<Evaluated<'hir>> {
     let mut env: Vec<_> = state.iter().map(|value| value.constant()).collect();
     let mut written: Vec<_> = vec![None; env.len()];
     let mut fuel = STEP_BUDGET;
@@ -93,7 +100,7 @@ fn evaluate(function: &Function, target: &Loop, state: &[Lattice]) -> Option<Eva
     Some(Evaluated { exit: BlockId(block as u32), writes })
 }
 
-fn step(kind: &InstructionKind, env: &[Option<Const>]) -> Option<Const> {
+fn step<'hir>(kind: &InstructionKind<'hir>, env: &[Option<Const<'hir>>]) -> Option<Const<'hir>> {
     match kind {
         InstructionKind::Assign(operand) => resolve(*operand, env),
         InstructionKind::Unary { operation, rhs } => fold::unary(*operation, resolve(*rhs, env)?),
@@ -105,14 +112,14 @@ fn step(kind: &InstructionKind, env: &[Option<Const>]) -> Option<Const> {
     }
 }
 
-fn resolve(operand: Operand, env: &[Option<Const>]) -> Option<Const> {
+fn resolve<'hir>(operand: Operand<'hir>, env: &[Option<Const<'hir>>]) -> Option<Const<'hir>> {
     match operand {
         Operand::Const(value) => Some(value),
         Operand::Place(place) => env[place.id.0 as usize],
     }
 }
 
-fn replace(function: &mut Function, target: &Loop, evaluated: Evaluated) {
+fn replace<'hir>(function: &mut Function<'hir>, target: &Loop, evaluated: Evaluated<'hir>) {
     let settled: Vec<_> = evaluated
         .writes
         .into_iter()
@@ -129,7 +136,7 @@ fn replace(function: &mut Function, target: &Loop, evaluated: Evaluated) {
 }
 
 fn loops(
-    function: &Function,
+    function: &Function<'_>,
     predecessors: &[Vec<usize>],
     dominators: &[Vec<bool>],
     reachable: &[bool],
@@ -138,7 +145,9 @@ fn loops(
     let mut found = Vec::new();
 
     for (latch, block) in function.blocks.iter().enumerate().filter(|(id, _)| reachable[*id]) {
-        for header in successors(&block.terminator).into_iter().filter(|&h| dominators[latch][h]) {
+        for header in
+            cfg::successors(&block.terminator).into_iter().filter(|&h| dominators[latch][h])
+        {
             let blocks = natural_loop(header, latch, predecessors, count);
 
             let mut outside = predecessors[header].iter().filter(|&&block| !blocks[block]);
@@ -152,7 +161,7 @@ fn loops(
 
             let breached =
                 (0..count).filter(|&block| reachable[block] && !blocks[block]).any(|block| {
-                    successors(&function.blocks[block].terminator)
+                    cfg::successors(&function.blocks[block].terminator)
                         .iter()
                         .any(|&edge| edge != header && blocks[edge])
                 });
@@ -193,7 +202,7 @@ fn natural_loop(
     blocks
 }
 
-fn dominators(function: &Function, predecessors: &[Vec<usize>]) -> Vec<Vec<bool>> {
+fn dominators(function: &Function<'_>, predecessors: &[Vec<usize>]) -> Vec<Vec<bool>> {
     let count = function.blocks.len();
 
     let mut dominators = vec![vec![true; count]; count];
@@ -224,28 +233,6 @@ fn dominators(function: &Function, predecessors: &[Vec<usize>]) -> Vec<Vec<bool>
     }
 
     dominators
-}
-
-fn predecessors(function: &Function, reachable: &[bool]) -> Vec<Vec<usize>> {
-    let mut predecessors = vec![Vec::new(); function.blocks.len()];
-
-    for (id, block) in function.blocks.iter().enumerate().filter(|(id, _)| reachable[*id]) {
-        for successor in successors(&block.terminator) {
-            predecessors[successor].push(id);
-        }
-    }
-
-    predecessors
-}
-
-fn successors(terminator: &Terminator) -> Vec<usize> {
-    match terminator {
-        Terminator::Jump(target) => vec![target.0 as usize],
-        Terminator::Branch { then_block, else_block, .. } => {
-            vec![then_block.0 as usize, else_block.0 as usize]
-        },
-        Terminator::Return(_) => Vec::new(),
-    }
 }
 
 #[cfg(test)]

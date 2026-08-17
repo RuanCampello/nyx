@@ -3,8 +3,8 @@
 use crate::{
     Span,
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, RefTarget, Statement,
-        SymbolId, SymbolTable, Type, TypeKind, index_vec::IndexVec,
+        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, Statement, SymbolId,
+        SymbolTable, TyInterner, Type, TypeKind, ids::IndexVec,
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
@@ -14,42 +14,41 @@ use crate::{
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
 use std::collections::HashMap;
-
 struct FunctionLower<'a, 'hir> {
-    blocks: Vec<PartialBlock>,
+    blocks: Vec<PartialBlock<'hir>>,
     current: usize,
     next: u32,
     local_map: IndexVec<LocalId, ValueId>,
-    locals: Vec<(ValueId, Type)>,
+    locals: Vec<(ValueId, Type<'hir>)>,
+    types: &'a TyInterner<'hir>,
     symbols: &'a SymbolTable,
     strings: &'a mut Vec<String>,
-    structs: &'a IndexVec<hir::StructId, hir::Struct>,
-    enums: &'a IndexVec<hir::EnumId, hir::Enum>,
-    arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
-    typeck: &'a hir::TypeckResults,
+    adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
+    arrays: &'a hir::ArrayTable<'hir>,
+    typeck: &'a hir::TypeckResults<'hir>,
     local_symbols: IndexVec<LocalId, SymbolId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
-    functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
-    runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
-    inlined_return_target: Option<(BlockId, Option<Place>)>,
+    functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
+    runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
+    inlined_return_target: Option<(BlockId, Option<Place<'hir>>)>,
     loop_targets: Vec<LoopTargets>,
     span: Span,
 }
 
-struct InlineContext<'a> {
+struct InlineContext<'a, 'hir> {
     local_map: IndexVec<LocalId, ValueId>,
     constant_locals: IndexVec<LocalId, Option<String>>,
     runtime_local_uses: IndexVec<LocalId, bool>,
     local_symbols: IndexVec<LocalId, SymbolId>,
-    inlined_return_target: Option<(BlockId, Option<Place>)>,
-    typeck: &'a hir::TypeckResults,
+    inlined_return_target: Option<(BlockId, Option<Place<'hir>>)>,
+    typeck: &'a hir::TypeckResults<'hir>,
 }
 
-struct PartialBlock {
+struct PartialBlock<'hir> {
     id: BlockId,
-    instructions: Vec<Instruction>,
-    terminator: Option<Terminator>,
+    instructions: Vec<Instruction<'hir>>,
+    terminator: Option<Terminator<'hir>>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +57,7 @@ struct LoopTargets {
     continue_target: BlockId,
 }
 
-pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
+pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
     debug_assert!(
         !hir.functions.iter().any(has_open_generic),
         r#"MIR lowering received HIR containing unresolved GenericParam
@@ -67,70 +66,128 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir, MirError> {
 
     let mut functions = Vec::with_capacity(hir.functions.len());
     let mut strings = Vec::new();
-    let structs = &hir.structs;
-    let enums = &hir.enums;
+    let adts = &hir.adts;
     let arrays = &hir.arrays;
     let symbols = hir.symbols;
+    let types = &hir.types;
 
-    let functions_map = hir.functions.iter().map(|f| (f.id, f)).collect();
-
-    let mut runtime_uses_map = HashMap::new();
+    let mut runtime_uses = IndexVec::with_capacity(hir.functions.len());
     for f in &hir.functions {
-        runtime_uses_map.insert(f.id, collect_runtime_local_uses(f));
+        let id = runtime_uses.push(collect_runtime_local_uses(f));
+        debug_assert_eq!(id, f.id);
     }
 
     for function in &hir.functions {
         functions.push(FunctionLower::run(
             function,
+            types,
             &symbols,
-            structs,
-            enums,
+            adts,
             arrays,
             &mut strings,
-            &functions_map,
-            &runtime_uses_map,
+            &hir.functions,
+            &runtime_uses,
         )?);
     }
 
-    let array_layouts = hir
-        .arrays
+    let mut adt_layouts = HashMap::new();
+    for function in &functions {
+        collect_adt_layout(function.return_type, types, adts, arrays, &mut adt_layouts);
+        for &(_, typ) in &function.locals {
+            collect_adt_layout(typ, types, adts, arrays, &mut adt_layouts);
+        }
+    }
+    for item in hir.statics.iter() {
+        collect_adt_layout(item.typ, types, adts, arrays, &mut adt_layouts);
+    }
+
+    // taken last: substituting a generic array field above may have minted
+    // fresh entries in `arrays`, so this snapshot must see the final table
+    let array_layouts = arrays
+        .snapshot()
         .iter()
         .map(|array| {
-            let (size, align) = hir::type_layout(array.element, structs, enums, arrays);
-            let contains_float = element_contains_float(array.element, structs, enums, arrays);
+            let (size, align) = hir::type_layout(array.element, types, adts, arrays);
+            let contains_float = hir::type_contains_float(array.element, types, adts, arrays);
             Layout::new(size * array.len, align, contains_float)
         })
         .collect();
 
     Ok(Mir {
+        types: hir.types,
         functions,
         symbols,
         strings,
         statics: hir.statics.iter().copied().collect(),
-        struct_layouts: hir.structs.iter().map(|s| s.layout).collect(),
-        enum_layouts: hir.enums.iter().map(|e| e.layout).collect(),
+        layouts: adt_layouts,
+        reprs: hir
+            .adts
+            .iter()
+            .map(|adt| match adt.kind {
+                hir::AdtKind::Enum { repr, .. } => Some(repr),
+                hir::AdtKind::Struct { .. } => None,
+            })
+            .collect(),
         array_layouts,
     })
 }
 
-fn element_contains_float(
-    typ: Type,
-    structs: &IndexVec<hir::StructId, hir::Struct>,
-    enums: &IndexVec<hir::EnumId, hir::Enum>,
-    arrays: &IndexVec<hir::ArrayId, hir::ArrayType>,
-) -> bool {
+fn collect_adt_layout<'hir>(
+    typ: Type<'hir>,
+    types: &TyInterner<'hir>,
+    adts: &IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
+    arrays: &hir::ArrayTable<'hir>,
+    layouts: &mut HashMap<Type<'hir>, Layout>,
+) {
     match typ.kind() {
-        TypeKind::F32 | TypeKind::F64 => true,
-        TypeKind::Struct(id) => structs[id].layout.contains_float(),
-        TypeKind::Enum(id) => enums[id].layout.contains_float(),
-        TypeKind::Array(id) => element_contains_float(arrays[id].element, structs, enums, arrays),
-        _ => false,
+        TypeKind::Adt(id, args) => {
+            if layouts.contains_key(&typ) {
+                return;
+            }
+            let (size, align) = hir::type_layout(typ, types, adts, arrays);
+            let contains_float = hir::type_contains_float(typ, types, adts, arrays);
+            layouts.insert(typ, Layout::new(size, align, contains_float));
+            match &adts[id].kind {
+                hir::AdtKind::Struct { fields, .. } => {
+                    for field in fields {
+                        collect_adt_layout(
+                            field.typ.subst(types, arrays, args),
+                            types,
+                            adts,
+                            arrays,
+                            layouts,
+                        );
+                    }
+                },
+                hir::AdtKind::Enum { variants, .. } => {
+                    for payload in variants.iter().filter_map(|variant| variant.payload) {
+                        collect_adt_layout(
+                            payload.subst(types, arrays, args),
+                            types,
+                            adts,
+                            arrays,
+                            layouts,
+                        );
+                    }
+                },
+            }
+        },
+        TypeKind::Array(id) => {
+            collect_adt_layout(arrays.get(id).element, types, adts, arrays, layouts);
+        },
+        TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => {
+            collect_adt_layout(Type::from(to), types, adts, arrays, layouts);
+        },
+        TypeKind::Slice { element, .. } => {
+            collect_adt_layout(Type::from(element), types, adts, arrays, layouts);
+        },
+        _ => {},
     }
 }
 
-const fn temp_value_type(typ: Type) -> Type {
+fn temp_value_type<'hir>(typ: Type<'hir>) -> Type<'hir> {
     match typ.kind() {
-        TypeKind::Unit | TypeKind::Never => Type::new(TypeKind::I32),
+        TypeKind::Unit | TypeKind::Never => Type::from(TypeKind::I32),
         _ => typ,
     }
 }
@@ -138,14 +195,14 @@ const fn temp_value_type(typ: Type) -> Type {
 impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn run(
         function: &hir::Function<'hir>,
+        types: &'a TyInterner<'hir>,
         symbols: &'a SymbolTable,
-        structs: &'a IndexVec<hir::StructId, hir::Struct>,
-        enums: &'a IndexVec<hir::EnumId, hir::Enum>,
-        arrays: &'a IndexVec<hir::ArrayId, hir::ArrayType>,
+        adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
+        arrays: &'a hir::ArrayTable<'hir>,
         strings: &'a mut Vec<String>,
-        functions_map: &'a HashMap<FunctionId, &'a hir::Function<'hir>>,
-        runtime_uses_map: &'a HashMap<FunctionId, IndexVec<LocalId, bool>>,
-    ) -> Result<mir::Function, MirError> {
+        functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
+        runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
+    ) -> Result<mir::Function<'hir>, MirError> {
         let id = function.id;
         let intrinsic = function.kind.intrinsic();
         let name_symbol = function.name;
@@ -172,17 +229,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             local_map,
             locals,
             next,
+            types,
             symbols,
             strings,
-            structs,
-            enums,
+            adts,
             arrays,
             typeck: &function.typeck,
             local_symbols,
             constant_locals: IndexVec::from_elem(None, n_hir_locals),
-            runtime_local_uses: runtime_uses_map.get(&id).cloned().unwrap(),
-            functions_map,
-            runtime_uses_map,
+            runtime_local_uses: runtime_uses[id].clone(),
+            functions,
+            runtime_uses,
             inlined_return_target: None,
             loop_targets: Vec::new(),
             span: function.decl_span,
@@ -462,9 +519,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     fn lower_range_step(
         &mut self,
-        counter: Place,
-        end: Place,
-        typ: Type,
+        counter: Place<'hir>,
+        end: Place<'hir>,
+        typ: Type<'hir>,
         inclusive: bool,
         operation: BinaryOperator,
         header: BlockId,
@@ -549,23 +606,29 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn binary_temporary(
         &mut self,
         operation: BinaryOperator,
-        lhs: Operand,
-        rhs: Operand,
-    ) -> Operand {
+        lhs: Operand<'hir>,
+        rhs: Operand<'hir>,
+    ) -> Operand<'hir> {
         let destination = self.fresh_temporary(TypeKind::Bool.into());
         self.emit_binary(destination, operation, lhs, rhs);
         Operand::Place(destination)
     }
 
     #[inline]
-    fn emit_binary(&mut self, dest: Place, operation: BinaryOperator, lhs: Operand, rhs: Operand) {
+    fn emit_binary(
+        &mut self,
+        dest: Place<'hir>,
+        operation: BinaryOperator,
+        lhs: Operand<'hir>,
+        rhs: Operand<'hir>,
+    ) {
         self.emit(
             dest,
             InstructionKind::Binary { operation, lhs, rhs, checked: false, wrapping: false },
         );
     }
 
-    fn lower_expr(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand, MirError> {
+    fn lower_expr(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand<'hir>, MirError> {
         let outer = std::mem::replace(&mut self.span, expr.span);
         let lowered = self.lower_expr_inner(expr);
         self.span = outer;
@@ -573,7 +636,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         lowered
     }
 
-    fn lower_expr_inner(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand, MirError> {
+    fn lower_expr_inner(
+        &mut self,
+        expr: &'hir Expression<'hir>,
+    ) -> Result<Operand<'hir>, MirError> {
         use InstructionKind as Kind;
 
         let typ = self.typeck.type_of(expr.id);
@@ -607,6 +673,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let value = self.lower_expr(constant.value);
                 self.typeck = outer;
                 value
+            },
+
+            ExpressionKind::ParamConst { .. } => {
+                unreachable!("generic associated constant must be resolved before MIR lowering")
             },
 
             ExpressionKind::Static(id) => {
@@ -690,7 +760,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             // `&array` builds a (ptr, len) fat pointer
                             true => {
                                 let (_, _, len) = self.array_info(self.typeck.type_of(inner.id));
-                                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                                let pointer = self.types.refer(self.types.common.u8, false);
                                 let ptr = self.fresh_temporary(pointer);
                                 self.emit(ptr, Kind::AddressOf { src, offset: 0 });
 
@@ -850,6 +920,77 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
                         self.emit_call(function, lowered_args, typ)
                     },
+                    hir::Res::Intrinsic(intrinsic) => {
+                        use crate::hir::Intrinsic;
+
+                        match intrinsic {
+                            Intrinsic::PrintLn | Intrinsic::Print => {
+                                let mut output = String::new();
+                                for arg in *args {
+                                    self.push_print_arg(&mut output, arg);
+                                }
+                                if intrinsic == Intrinsic::PrintLn {
+                                    output.push('\n');
+                                }
+                                if !output.is_empty() {
+                                    self.emit_write_string(output);
+                                }
+                                Ok(Operand::Const(Const::Unit))
+                            },
+                            Intrinsic::Syscall => {
+                                unreachable!("syscall must carry Res::Syscall")
+                            },
+                            Intrinsic::Len => match self.lower_expr(args[0])? {
+                                Operand::Const(Const::Str { len, .. }) => {
+                                    Ok(Operand::Const(Const::Int(len as i64, typ)))
+                                },
+                                Operand::Place(place) => {
+                                    let dest = self.fresh_temporary(typ);
+                                    let instr = InstructionKind::FieldLoad {
+                                        src: Operand::Place(place),
+                                        offset: 8,
+                                        typ,
+                                    };
+                                    self.emit(dest, instr);
+                                    Ok(Operand::Place(dest))
+                                },
+                                other => {
+                                    unreachable!("str length of a non-str operand: {other:?}")
+                                },
+                            },
+                            Intrinsic::WrappingAdd
+                            | Intrinsic::WrappingSub
+                            | Intrinsic::WrappingMul => {
+                                let operation = intrinsic
+                                    .binary_operator()
+                                    .expect("wrapping intrinsic must map to a binary operator");
+                                let lhs = self.lower_expr(args[0])?;
+                                let rhs = self.lower_expr(args[1])?;
+                                let dest = self.fresh_temporary(typ);
+                                let op = InstructionKind::Binary {
+                                    operation,
+                                    lhs,
+                                    rhs,
+                                    checked: false,
+                                    wrapping: true,
+                                };
+                                self.emit(dest, op);
+                                Ok(Operand::Place(dest))
+                            },
+                        }
+                    },
+                    hir::Res::Syscall(code) => {
+                        let lowered_args = args
+                            .iter()
+                            .map(|arg| self.lower_expr(arg))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let dest = self.fresh_temporary(typ);
+                        self.emit(dest, Kind::Syscall { code, args: lowered_args, returns: true });
+                        Ok(Operand::Place(dest))
+                    },
+                    hir::Res::ParamMethod { .. } | hir::Res::ParamFunction { .. } => unreachable!(
+                        "generic interface dispatch must be resolved before MIR lowering"
+                    ),
                 }
             },
 
@@ -878,68 +1019,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.emit_call(function, lowered_args, typ)
             },
 
-            ExpressionKind::IntrinsicCall { intrinsic, args } => {
-                use crate::hir::Intrinsic;
-
-                // the return value is ignored for those functions
-                match intrinsic {
-                    Intrinsic::PrintLn | Intrinsic::Print => {
-                        let mut output = String::new();
-                        for arg in *args {
-                            self.push_print_arg(&mut output, arg);
-                        }
-
-                        if *intrinsic == Intrinsic::PrintLn {
-                            output.push('\n');
-                        }
-
-                        if !output.is_empty() {
-                            self.emit_write_string(output);
-                        }
-
-                        Ok(Operand::Const(Const::Unit))
-                    },
-
-                    Intrinsic::Syscall => {
-                        unreachable!("syscall intrinsic lowers through ExpressionKind::Syscall")
-                    },
-
-                    Intrinsic::Len => match self.lower_expr(args[0])? {
-                        Operand::Const(Const::Str { len, .. }) => {
-                            Ok(Operand::Const(Const::Int(len as i64, typ)))
-                        },
-                        Operand::Place(place) => {
-                            let dest = self.fresh_temporary(typ);
-                            let instr = InstructionKind::FieldLoad {
-                                src: Operand::Place(place),
-                                offset: 8,
-                                typ,
-                            };
-                            self.emit(dest, instr);
-                            Ok(Operand::Place(dest))
-                        },
-                        other => unreachable!("str length of a non-str operand: {other:?}"),
-                    },
-
-                    Intrinsic::WrappingAdd | Intrinsic::WrappingSub | Intrinsic::WrappingMul => {
-                        let operation = intrinsic
-                            .binary_operator()
-                            .expect("wrapping intrinsic must maps to a binary operator");
-                        let lhs = self.lower_expr(args[0])?;
-                        let rhs = self.lower_expr(args[1])?;
-
-                        let dest = self.fresh_temporary(typ);
-                        let (checked, wrapping) = (false, true);
-                        let op = InstructionKind::Binary { operation, lhs, rhs, checked, wrapping };
-                        self.emit(dest, op);
-                        Ok(Operand::Place(dest))
-                    },
-                }
-            },
-
             ExpressionKind::TypeIntrinsic { kind, typ: target } => {
-                let (size, align) =
-                    hir::type_layout(*target, self.structs, self.enums, self.arrays);
+                let (size, align) = hir::type_layout(*target, self.types, self.adts, self.arrays);
                 let value = match kind {
                     TypeIntrinsicKind::SizeOf => size as i64,
                     TypeIntrinsicKind::AlignOf => align as i64,
@@ -948,23 +1029,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(Operand::Const(Const::Int(value, typ)))
             },
 
-            ExpressionKind::Syscall { code, args } => {
-                let code = *code;
-                let lowered_args =
-                    args.iter().map(|a| self.lower_expr(a)).collect::<Result<Vec<_>, _>>()?;
+            ExpressionKind::Struct { fields, .. } => {
                 let dest = self.fresh_temporary(typ);
 
-                self.emit(dest, Kind::Syscall { code, args: lowered_args, returns: true });
-
-                Ok(Operand::Place(dest))
-            },
-
-            ExpressionKind::Struct { id, fields } => {
-                let id = *id;
-                let dest = self.fresh_temporary(Type::structure(id));
-
                 for (sym, value) in *fields {
-                    let layout = hir::struct_field(Type::structure(id), *sym, self.structs);
+                    let layout = hir::struct_field(typ, *sym, self.types, self.adts, self.arrays);
                     let value_operand = self.lower_expr(value)?;
 
                     self.emit(
@@ -1102,8 +1171,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         operator: BinaryOperator,
         left: &'hir Expression<'hir>,
         right: &'hir Expression<'hir>,
-        typ: Type,
-    ) -> Result<Operand, MirError> {
+        typ: Type<'hir>,
+    ) -> Result<Operand<'hir>, MirError> {
         debug_assert_eq!(
             typ,
             TypeKind::Bool.into(),
@@ -1142,20 +1211,19 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn lower_call_argument(
         &mut self,
         left: &'hir Expression,
-        typ: Type,
-    ) -> Result<Place, MirError> {
+        typ: Type<'hir>,
+    ) -> Result<Place<'hir>, MirError> {
         let place = self.fresh_temporary(typ);
 
         if let Some(array_id) = self.array_coerced_to_slice(left, typ) {
             let TypeKind::Slice { mutable, .. } = typ.kind() else {
                 unreachable!("array_coerced_to_slice only returns Some for slice targets")
             };
-            let (_, _, len) = self.array_info(Type::array(array_id));
+            let (_, _, len) = self.array_info(self.types.array(array_id));
             let src = match self.is_place_expr(left) {
                 true => {
                     let (origin, offset, _) = self.place_info(left);
-                    let ptr =
-                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    let ptr = self.fresh_temporary(self.types.refer(self.types.common.u8, mutable));
                     self.emit(ptr, InstructionKind::AddressOf { src: origin, offset });
                     ptr
                 },
@@ -1164,8 +1232,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     let value = self.fresh_temporary(self.typeck.type_of(left.id));
                     self.emit(value, InstructionKind::Assign(lowered));
 
-                    let ptr =
-                        self.fresh_temporary(Type::refer(RefTarget::new(TypeKind::U8), mutable));
+                    let ptr = self.fresh_temporary(self.types.refer(self.types.common.u8, mutable));
                     self.emit(ptr, InstructionKind::AddressOf { src: value, offset: 0 });
                     ptr
                 },
@@ -1221,18 +1288,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline]
-    fn array_coerced_to_slice(&self, expr: &'hir Expression, target: Type) -> Option<hir::ArrayId> {
+    fn array_coerced_to_slice(
+        &self,
+        expr: &'hir Expression,
+        target: Type<'hir>,
+    ) -> Option<hir::ArrayId> {
         let TypeKind::Slice { element, .. } = target.kind() else {
             return None;
         };
         let TypeKind::Array(id) = self.typeck.type_of(expr.id).kind() else {
             return None;
         };
-        (self.arrays[id].element == element.into()).then_some(id)
+        (self.arrays.get(id).element == element.into()).then_some(id)
     }
 
     #[inline(always)]
-    fn local_type(&self, id: LocalId) -> Type {
+    fn local_type(&self, id: LocalId) -> Type<'hir> {
         self.locals[self.local_map[id].0 as usize].1
     }
 
@@ -1247,17 +1318,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     /// A temporary holding the address of `id`, typed as a mutable raw pointer
     /// so the LIR picks pointer addressing rather than a frame-slot offset
-    fn static_address(&mut self, id: hir::StaticId, typ: Type) -> Place {
-        let to = hir::RefTarget::try_from(typ)
-            .expect("a static's declared type is never an indirection");
-        let dest = self.fresh_temporary(Type::raw(to, true));
+    fn static_address(&mut self, id: hir::StaticId, typ: Type<'hir>) -> Place<'hir> {
+        let dest = self.fresh_temporary(self.types.raw(typ, true));
 
         self.emit(dest, InstructionKind::StaticAddr { id });
 
         dest
     }
 
-    fn place_info(&self, expr: &Expression<'hir>) -> (Place, u32, Type) {
+    fn place_info(&self, expr: &Expression<'hir>) -> (Place<'hir>, u32, Type<'hir>) {
         match &expr.kind {
             ExpressionKind::Local(local_id) => {
                 let origin = self.place_for_local(*local_id, self.local_type(*local_id));
@@ -1265,7 +1334,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
             ExpressionKind::Field { base, field } => {
                 let (origin, base_offset, base_type) = self.place_info(base);
-                let layout = hir::struct_field(base_type, *field, self.structs);
+                let layout =
+                    hir::struct_field(base_type, *field, self.types, self.adts, self.arrays);
                 (origin, base_offset + layout.offset, layout.typ)
             },
             _ => panic!("place_info called on non-place expression: {:?}", expr),
@@ -1276,13 +1346,14 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn place_parts(
         &mut self,
         expr: &'hir Expression<'hir>,
-    ) -> Result<(Place, u32, Type), MirError> {
+    ) -> Result<(Place<'hir>, u32, Type<'hir>), MirError> {
         match &expr.kind {
             ExpressionKind::Local(_) => Ok(self.place_info(expr)),
 
             ExpressionKind::Field { base, field } => {
                 let (origin, base_offset, base_type) = self.place_parts(base)?;
-                let layout = hir::struct_field(base_type, *field, self.structs);
+                let layout =
+                    hir::struct_field(base_type, *field, self.types, self.adts, self.arrays);
 
                 Ok((origin, base_offset + layout.offset, layout.typ))
             },
@@ -1298,12 +1369,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     /// `(element, element_size, length)` of a fixed-size array type
-    fn array_info(&self, array_type: Type) -> (Type, u32, u32) {
+    fn array_info(&self, array_type: Type<'hir>) -> (Type<'hir>, u32, u32) {
         match array_type.kind() {
             TypeKind::Array(id) => {
-                let array = self.arrays[id];
-                let (size, _) =
-                    hir::type_layout(array.element, self.structs, self.enums, self.arrays);
+                let array = self.arrays.get(id);
+                let (size, _) = hir::type_layout(array.element, self.types, self.adts, self.arrays);
                 (array.element, size, array.len)
             },
             _ => unreachable!("array_info on a non-array type"),
@@ -1311,18 +1381,21 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     /// `(element, element_size)` of an indexable type (array or slice)
-    fn element_info(&self, typ: Type) -> (Type, u32) {
+    fn element_info(&self, typ: Type<'hir>) -> (Type<'hir>, u32) {
         let element = match typ.kind() {
-            TypeKind::Array(id) => self.arrays[id].element,
+            TypeKind::Array(id) => self.arrays.get(id).element,
             TypeKind::Slice { element, .. } => element.into(),
-            _ => unreachable!("element_info on a non-indexable type"),
+            _ => unreachable!("element_info on a non-indexable type: {typ}"),
         };
-        let (stride, _) = hir::type_layout(element, self.structs, self.enums, self.arrays);
+        let (stride, _) = hir::type_layout(element, self.types, self.adts, self.arrays);
         (element, stride)
     }
 
-    fn place_address(&mut self, expr: &'hir Expression<'hir>) -> Result<Option<Place>, MirError> {
-        let pointer = Type::refer(RefTarget::new(TypeKind::U8), true);
+    fn place_address(
+        &mut self,
+        expr: &'hir Expression<'hir>,
+    ) -> Result<Option<Place<'hir>>, MirError> {
+        let pointer = self.types.refer(self.types.common.u8, true);
 
         match &expr.kind {
             ExpressionKind::Local(_) | ExpressionKind::Field { .. } => {
@@ -1357,7 +1430,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn array_base_place(
         &mut self,
         base: &'hir Expression<'hir>,
-    ) -> Result<Option<Place>, MirError> {
+    ) -> Result<Option<Place<'hir>>, MirError> {
         if self.is_place_expr(base) {
             let (origin, offset, _) = self.place_info(base);
             if offset == 0 && !origin.typ.is_pointer() {
@@ -1371,8 +1444,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn index_operands(
         &mut self,
         base: &'hir Expression<'hir>,
-        base_type: Type,
-    ) -> Result<(Operand, Operand, Type, u32), MirError> {
+        base_type: Type<'hir>,
+    ) -> Result<(Operand<'hir>, Operand<'hir>, Type<'hir>, u32), MirError> {
         let (element, stride) = self.element_info(base_type);
 
         match base_type.kind() {
@@ -1381,7 +1454,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     Operand::Place(place) => place,
                     Operand::Const(_) => unreachable!("indexing a constant slice"),
                 };
-                let pointer = Type::refer(RefTarget::new(TypeKind::U8), false);
+                let pointer = self.types.refer(self.types.common.u8, false);
                 let ptr = self.fresh_temporary(pointer);
                 let instr = InstructionKind::FieldLoad {
                     src: Operand::Place(slice),
@@ -1412,7 +1485,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
     }
 
-    fn terminate(&mut self, term: Terminator) {
+    fn terminate(&mut self, term: Terminator<'hir>) {
         debug_assert!(
             !self.blocks[self.current].is_terminated(),
             "double-termination of block {:?}",
@@ -1423,12 +1496,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline(always)]
-    fn place_for_local(&self, local_id: LocalId, typ: Type) -> Place {
+    fn place_for_local(&self, local_id: LocalId, typ: Type<'hir>) -> Place<'hir> {
         Place { id: self.local_map[local_id], typ }
     }
 
     #[inline(always)]
-    fn fresh_temporary(&mut self, typ: Type) -> Place {
+    fn fresh_temporary(&mut self, typ: Type<'hir>) -> Place<'hir> {
         assert!(
             !matches!(typ.kind(), TypeKind::Unit),
             "internal error: unit type temporary created"
@@ -1456,7 +1529,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     fn lower_pattern_match(
         &mut self,
-        place: Place,
+        place: Place<'hir>,
         pattern: &hir::Pattern<'hir>,
         success_block: BlockId,
         fail_block: BlockId,
@@ -1539,7 +1612,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
 
                 for (i, (field, sub)) in fields.iter().enumerate() {
-                    let layout = hir::struct_field(place.typ, *field, self.structs);
+                    let layout =
+                        hir::struct_field(place.typ, *field, self.types, self.adts, self.arrays);
                     let (offset, typ) = (layout.offset, layout.typ);
 
                     let field_place = self.fresh_temporary(typ);
@@ -1575,10 +1649,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(())
             },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
-                let enum_def = &self.enums[*enum_id];
-                let variant = enum_def.variants[*variant_idx];
+                let enum_def = &self.adts[*enum_id];
+                let variant = enum_def.variants()[*variant_idx];
                 let tag_val = variant.value;
-                let tag_ty = enum_id.repr().typ();
+                let tag_ty = enum_def.enum_repr().typ();
 
                 // load discriminant tag from offset 0
                 let tag_place = self.fresh_temporary(tag_ty);
@@ -1597,10 +1671,20 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         self.emit_eq_branch(tag_place, tag_const, sub_block, fail_block);
                         self.switch_to(sub_block);
 
-                        let offset = self.enums[*enum_id].payload_offset;
+                        let offset =
+                            hir::enum_payload_offset(place.typ, self.types, self.adts, self.arrays);
                         let typ = variant
                             .payload
                             .expect("variant must have payload type since it has subpattern");
+                        let args = match place.typ.kind() {
+                            TypeKind::Adt(_, args) => args,
+                            TypeKind::Ref { to, .. } => match to.kind() {
+                                TypeKind::Adt(_, args) => args,
+                                _ => unreachable!("variant pattern place must be an enum"),
+                            },
+                            _ => unreachable!("variant pattern place must be an enum"),
+                        };
+                        let typ = typ.subst(self.types, self.arrays, args);
                         let payload_place = self.fresh_temporary(typ);
                         let instr = Kind::FieldLoad { src: Operand::Place(place), offset, typ };
                         self.emit(payload_place, instr);
@@ -1624,8 +1708,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     #[inline]
     fn emit_eq_branch(
         &mut self,
-        lhs: Operand,
-        rhs: Const,
+        lhs: Operand<'hir>,
+        rhs: Const<'hir>,
         then_block: BlockId,
         else_block: BlockId,
     ) {
@@ -1637,8 +1721,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn emit_cmp_branch(
         &mut self,
         operation: BinaryOperator,
-        lhs: Operand,
-        rhs: Const,
+        lhs: Operand<'hir>,
+        rhs: Const<'hir>,
         then_block: BlockId,
         else_block: BlockId,
     ) {
@@ -1656,7 +1740,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline(always)]
-    fn emit(&mut self, dest: Place, kind: InstructionKind) {
+    fn emit(&mut self, dest: Place<'hir>, kind: InstructionKind<'hir>) {
         let span = self.span;
         self.blocks[self.current].instructions.push(Instruction { dest, kind, span });
     }
@@ -1750,9 +1834,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline]
-    fn get_fn_unchecked<'f>(&'f self, id: &FunctionId) -> &'f hir::Function<'f> {
-        self.functions_map
-            .get(id)
+    fn get_fn_unchecked(&self, id: &FunctionId) -> &'a hir::Function<'hir> {
+        self.functions
+            .get(*id)
             .unwrap_or_else(|| panic!("callee function {:?} not found", id))
     }
 
@@ -1789,15 +1873,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     fn emit_variant(
         &mut self,
-        id: hir::EnumId,
+        id: hir::AdtId,
         index: usize,
         payload: Option<&'hir Expression<'hir>>,
-        typ: Type,
-    ) -> Result<Operand, MirError> {
+        typ: Type<'hir>,
+    ) -> Result<Operand<'hir>, MirError> {
         let dest = self.fresh_temporary(typ);
 
-        let tag_ty = id.repr().typ();
-        let tag = self.enums[id].variants[index].value;
+        let tag_ty = self.adts[id].enum_repr().typ();
+        let tag = self.adts[id].variants()[index].value;
         self.emit(
             dest,
             InstructionKind::FieldStore {
@@ -1807,7 +1891,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         );
 
         if let Some(payload) = payload {
-            let offset = self.enums[id].payload_offset;
+            let offset = hir::enum_payload_offset(typ, self.types, self.adts, self.arrays);
             let value = self.lower_expr(payload)?;
             self.emit(dest, InstructionKind::FieldStore { value, offset });
         }
@@ -1818,9 +1902,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn emit_call(
         &mut self,
         callee_id: FunctionId,
-        lowered_args: Vec<Operand>,
-        return_type: Type,
-    ) -> Result<Operand, MirError> {
+        lowered_args: Vec<Operand<'hir>>,
+        return_type: Type<'hir>,
+    ) -> Result<Operand<'hir>, MirError> {
         let callee = self.get_fn_unchecked(&callee_id);
         match callee.inline {
             true => self.inline_call(callee_id, lowered_args),
@@ -1837,9 +1921,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn inline_call(
         &mut self,
         callee_id: FunctionId,
-        lowered_args: Vec<Operand>,
-    ) -> Result<Operand, MirError> {
-        let callee = self.functions_map.get(&callee_id).unwrap();
+        lowered_args: Vec<Operand<'hir>>,
+    ) -> Result<Operand<'hir>, MirError> {
+        let callee = &self.functions[callee_id];
 
         let inline_ret_place = match callee.return_type.kind() != TypeKind::Unit {
             true => Some(self.fresh_temporary(callee.return_type)),
@@ -1850,6 +1934,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let callee_n_locals = callee.locals.len();
         let mut callee_local_map = IndexVec::from_elem(ValueId(0), callee_n_locals);
         for local in &callee.locals {
+            assert!(
+                local.typ.kind() != TypeKind::Unit,
+                "internal error: inline callee {} has unit local {:?}",
+                self.symbols.get(callee.name),
+                local.id
+            );
             let place = self.fresh_temporary(local.typ);
             callee_local_map[local.id] = place.id;
         }
@@ -1886,8 +1976,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         callee: &'a hir::Function<'hir>,
         local_map: IndexVec<LocalId, ValueId>,
         exit_block_id: BlockId,
-        return_place: Option<Place>,
-    ) -> InlineContext<'a> {
+        return_place: Option<Place<'hir>>,
+    ) -> InlineContext<'a, 'hir> {
         use std::mem::replace;
 
         InlineContext {
@@ -1898,10 +1988,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ),
             runtime_local_uses: replace(
                 &mut self.runtime_local_uses,
-                self.runtime_uses_map
-                    .get(&callee.id)
-                    .expect("runtime use map must contain inlined function")
-                    .clone(),
+                self.runtime_uses[callee.id].clone(),
             ),
             local_symbols: replace(
                 &mut self.local_symbols,
@@ -1914,7 +2001,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
     }
 
-    fn restore_inline_context(&mut self, context: InlineContext<'a>) {
+    fn restore_inline_context(&mut self, context: InlineContext<'a, 'hir>) {
         self.local_map = context.local_map;
         self.constant_locals = context.constant_locals;
         self.runtime_local_uses = context.runtime_local_uses;
@@ -1929,7 +2016,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 }
 
-impl PartialBlock {
+impl<'hir> PartialBlock<'hir> {
     fn new(id: BlockId) -> Self {
         Self { id, instructions: Vec::new(), terminator: None }
     }
@@ -1939,7 +2026,7 @@ impl PartialBlock {
         self.terminator.is_some()
     }
 
-    fn finalise(self) -> Block {
+    fn finalise(self) -> Block<'hir> {
         Block {
             id: self.id,
             instructions: self.instructions,
@@ -2000,7 +2087,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         Local(id) => uses[*id] = true,
         // a constant's tree has its own local space, nothing here can
         // reference the enclosing body's locals
-        Const(_) | Static(_) => {},
+        Const(_) | ParamConst { .. } | Static(_) => {},
         Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
         Cast { from, .. } => visit_expr_runtime_uses(from, uses),
         Binary { left, right, .. } => {
@@ -2018,7 +2105,7 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
                 visit_expr_runtime_uses(value, uses);
             }
         },
-        Call { args, .. } | IntrinsicCall { args, .. } | Syscall { args, .. } => {
+        Call { args, .. } => {
             for arg in *args {
                 visit_expr_runtime_uses(arg, uses);
             }
