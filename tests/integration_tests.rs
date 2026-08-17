@@ -5,361 +5,87 @@ use std::{
     process::Command,
 };
 
-struct Case<'c> {
-    name: &'c str,
-    file: &'c str,
+struct Case<'o> {
+    name: String,
+    file: PathBuf,
     exit_code: Option<i32>,
+    stdout: &'o str,
 }
 
-// TODO: make this auto generated and derived from the actual files
-const CASES: &[Case] = &[
-    Case { name: "add", file: "tests/single/add.nyx", exit_code: None },
-    Case {
-        name: "associative_const",
-        file: "tests/single/associative_const.nyx",
-        exit_code: None,
-    },
-    Case {
-        name: "inference",
-        file: "tests/single/inference.nyx",
-        exit_code: None,
-    },
-    Case {
-        name: "fibonacci",
-        file: "tests/single/fibonacci.nyx",
-        exit_code: Some(55),
-    },
-    Case {
-        name: "collatz",
-        file: "tests/single/collatz.nyx",
-        exit_code: Some(111),
-    },
-    Case {
-        name: "const_eval",
-        file: "tests/single/const_eval.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "factorial",
-        file: "tests/single/factorial.nyx",
-        exit_code: Some(120),
-    },
-    Case {
-        name: "math",
-        file: "tests/single/math.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "nth_prime",
-        file: "tests/single/nth_prime.nyx",
-        exit_code: Some(229),
-    },
-    Case {
-        name: "add_with_main",
-        file: "tests/single/add_with_main.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "call_stack",
-        file: "tests/single/call_stack.nyx",
-        exit_code: Some(49),
-    },
-    Case {
-        name: "mixed_stack_args",
-        file: "tests/single/mixed_stack_args.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "mandelbrot",
-        file: "tests/single/mandelbrot.nyx",
-        exit_code: Some(232),
-    },
-    Case {
-        name: "if_conversion",
-        file: "tests/single/if_conversion.nyx",
-        exit_code: Some(75),
-    },
-    Case {
-        name: "binary_search",
-        file: "tests/single/binary_search.nyx",
-        exit_code: Some(11),
-    },
-    Case {
-        name: "floats",
-        file: "tests/single/floats.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "exit",
-        file: "tests/single/exit.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "hello_world",
-        file: "tests/single/hello_world.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "target_dependent",
-        file: "tests/single/target_dependent.nyx",
-        exit_code: Some(77),
-    },
-    Case {
-        name: "loops",
-        file: "tests/single/loops.nyx",
-        exit_code: Some(165),
-    },
-    Case {
-        name: "basic_struct",
-        file: "tests/single/basic_struct.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "nested_structs",
-        file: "tests/single/nested_structs.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "impl_methods",
-        file: "tests/single/impl_methods.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "inlined_add",
-        file: "tests/single/inlined_add.nyx",
-        exit_code: Some(3),
-    },
-    Case {
-        name: "inline_complex",
-        file: "tests/single/inline_complex.nyx",
-        exit_code: Some(38),
-    },
-    Case {
-        name: "inline_methods",
-        file: "tests/single/inline_methods.nyx",
-        exit_code: Some(30),
-    },
-    Case {
-        name: "interfaces",
-        file: "tests/single/interfaces.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "char_tests",
-        file: "tests/single/char_tests.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "regalloc_terminator",
-        file: "tests/single/regalloc_terminator.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "div_sizes",
-        file: "tests/single/div_sizes.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "bitwise",
-        file: "tests/single/bitwise.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "signum",
-        file: "tests/single/signum.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "cast",
-        file: "tests/single/cast.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "char_ext_tests",
-        file: "tests/single/char_ext_tests.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "iptr_uptr_tests",
-        file: "tests/single/iptr_uptr_tests.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "std_interfaces",
-        file: "tests/single/std_interfaces.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "enums",
-        file: "tests/single/enums.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "match",
-        file: "tests/single/match.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "cmp_overload",
-        file: "tests/single/cmp_overload.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "overflow",
-        file: "tests/single/overflow.nyx",
-        exit_code: Some(101),
-    },
-    Case {
-        name: "mul_overflow",
-        file: "tests/single/mul_overflow.nyx",
-        exit_code: Some(101),
-    },
-    Case {
-        name: "mul_widths",
-        file: "tests/single/mul_widths.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "branch_fusion",
-        file: "tests/single/branch_fusion.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "unsigned_arithmetic",
-        file: "tests/single/unsigned_arithmetic.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "small_int_mul",
-        file: "tests/single/small_int_mul.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "narrow_overflow",
-        file: "tests/single/narrow_overflow.nyx",
-        exit_code: Some(101),
-    },
-    Case {
-        name: "register_pressure",
-        file: "tests/single/register_pressure.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "string_len",
-        file: "tests/single/string_len.nyx",
-        exit_code: Some(11),
-    },
-    Case {
-        name: "generics_monomorphization",
-        file: "tests/single/generics_monomorphization.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "array_features",
-        file: "tests/single/array_features.nyx",
-        exit_code: Some(36),
-    },
-    Case {
-        name: "array_layout",
-        file: "tests/single/array_layout.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "array_oob_panic",
-        file: "tests/single/array_oob_panic.nyx",
-        exit_code: Some(101),
-    },
-    Case {
-        name: "array_sorting",
-        file: "tests/single/array_sorting.nyx",
-        exit_code: Some(12),
-    },
-    Case {
-        name: "slice_basics",
-        file: "tests/single/slice_basics.nyx",
-        exit_code: Some(22),
-    },
-    Case {
-        name: "slice_std_methods",
-        file: "tests/single/slice_std_methods.nyx",
-        exit_code: Some(19),
-    },
-    Case {
-        name: "slice_mut",
-        file: "tests/single/slice_mut.nyx",
-        exit_code: Some(12),
-    },
-    Case {
-        name: "slice_oob_panic",
-        file: "tests/single/slice_oob_panic.nyx",
-        exit_code: Some(101),
-    },
-    Case {
-        name: "hash",
-        file: "tests/single/hash.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "wrapping_arithmetic",
-        file: "tests/single/wrapping_arithmetic.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "generic_methods",
-        file: "tests/single/generic_methods.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "raw_pointers",
-        file: "tests/single/raw_pointers.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "place_addresses",
-        file: "tests/single/place_addresses.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "index",
-        file: "tests/single/index.nyx",
-        exit_code: Some(0),
-    },
-    Case {
-        name: "expression_bodies",
-        file: "tests/single/expression_bodies.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "statics",
-        file: "tests/single/statics.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "mmap_alloc",
-        file: "tests/single/mmap_alloc.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "heap_classes",
-        file: "tests/single/heap_classes.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "page_align",
-        file: "tests/single/page_align.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "heap_alloc",
-        file: "tests/single/heap_alloc.nyx",
-        exit_code: Some(42),
-    },
-    Case {
-        name: "heap_reclaim",
-        file: "tests/single/heap_reclaim.nyx",
-        exit_code: Some(42),
-    },
-];
+fn cases<'o>() -> Vec<Case<'o>> {
+    let mut cases: Vec<_> = fs::read_dir("tests/single")
+        .expect("integration fixture directory must exist")
+        .map(|entry| entry.expect("integration fixture must be readable").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "nyx"))
+        .map(|file| {
+            let name = file
+                .file_stem()
+                .expect("fixture must have a stem")
+                .to_string_lossy()
+                .into_owned();
+            let (exit_code, stdout) = expectation(&name);
+
+            Case { name, file, exit_code, stdout }
+        })
+        .collect();
+
+    cases.sort_unstable_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+    cases
+}
+
+fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
+    let exit_code = match name {
+        "add" | "max" => None,
+        "fibonacci" => Some(55),
+        "collatz" => Some(111),
+        "const_eval"
+        | "floats"
+        | "exit"
+        | "impl_methods"
+        | "bitwise"
+        | "regalloc_terminator"
+        | "cast"
+        | "cmp_overload"
+        | "generic_methods"
+        | "raw_pointers"
+        | "expression_bodies"
+        | "statics"
+        | "mmap_alloc"
+        | "heap_classes"
+        | "page_align"
+        | "heap_alloc"
+        | "heap_reclaim" => Some(42),
+        "factorial" | "const_factorial" => Some(120),
+        "math" => Some(42),
+        "nth_prime" => Some(229),
+        "call_stack" => Some(49),
+        "mixed_stack_args" => Some(42),
+        "mandelbrot" => Some(232),
+        "if_conversion" => Some(75),
+        "binary_search" => Some(11),
+        "target_dependent" => Some(77),
+        "loops" => Some(165),
+        "inlined_add" => Some(3),
+        "inline_complex" => Some(38),
+        "inline_methods" => Some(30),
+        "overflow" | "mul_overflow" | "narrow_overflow" | "array_oob_panic" | "slice_oob_panic" => {
+            Some(101)
+        },
+        "string_len" => Some(11),
+        "array_features" => Some(36),
+        "array_sorting" | "slice_mut" => Some(12),
+        "slice_basics" => Some(22),
+        "slice_std_methods" => Some(19),
+        _ => Some(0),
+    };
+
+    let stdout = match name {
+        "hello_world" => "hello, world!\nJohn Doe is 42 years old!",
+        "modules" => "Initialising...\nDone.\n",
+        _ => "",
+    };
+    (exit_code, stdout)
+}
 
 fn compile_and_assemble(path: &Path) -> Result<PathBuf, String> {
     compile_and_assemble_at(path, Level::Debug)
@@ -396,11 +122,11 @@ fn compile_and_assemble_at(path: &Path, level: Level) -> Result<PathBuf, String>
     Ok(obj_path)
 }
 
-fn compile_and_run(path: &Path) -> Result<i32, String> {
+fn compile_and_run(path: &Path) -> Result<(i32, String), String> {
     compile_and_run_at(path, Level::Debug)
 }
 
-fn compile_and_run_at(path: &Path, level: Level) -> Result<i32, String> {
+fn compile_and_run_at(path: &Path, level: Level) -> Result<(i32, String), String> {
     let obj_path = compile_and_assemble_at(path, level)?;
     let test_name = format!("{}-{level:?}", path.file_stem().unwrap().to_string_lossy());
     let temp_dir = std::env::temp_dir();
@@ -417,13 +143,15 @@ fn compile_and_run_at(path: &Path, level: Level) -> Result<i32, String> {
         return Err(format!("`ld` exited with code {}", ld_status.code().unwrap_or(-1)));
     }
 
-    let run_status = Command::new(&exe_path)
-        .status()
+    let output = Command::new(&exe_path)
+        .output()
         .map_err(|e| format!("failed to run executable: {e}"))?;
 
     fs::remove_file(&exe_path).ok();
 
-    Ok(run_status.code().unwrap_or(-1))
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("program printed invalid UTF-8: {error}"))?;
+    Ok((output.status.code().unwrap_or(-1), stdout))
 }
 
 #[test]
@@ -432,22 +160,20 @@ fn run_integration_tests() {
     let mut failed = 0;
     let mut errors = Vec::new();
 
-    for test in CASES {
-        let src = PathBuf::from(test.file);
-
+    for test in cases() {
         match test.exit_code {
-            Some(expected_code) => match compile_and_run(&src) {
-                Ok(code) if code == expected_code => {
+            Some(expected_code) => match compile_and_run(&test.file) {
+                Ok((code, stdout)) if code == expected_code && stdout == test.stdout => {
                     passed += 1;
                     println!("{}: exit code {}", test.name, code);
                 },
 
-                Ok(code) => {
+                Ok((code, stdout)) => {
                     failed += 1;
 
                     let msg = format!(
-                        "{}: expected exit code {}, got {}",
-                        test.name, expected_code, code
+                        "{}: expected exit code {} and stdout {:?}, got {} and {:?}",
+                        test.name, expected_code, test.stdout, code, stdout
                     );
 
                     eprintln!("{msg}");
@@ -463,7 +189,7 @@ fn run_integration_tests() {
                 },
             },
 
-            None => match compile_and_assemble(&src) {
+            None => match compile_and_assemble(&test.file) {
                 Ok(obj_path) => {
                     passed += 1;
                     fs::remove_file(&obj_path).ok();
@@ -510,12 +236,12 @@ fn run_aarch64_integration_tests() {
     let mut failed = 0;
     let mut errors = Vec::new();
 
-    for test in CASES {
-        let src = PathBuf::from(test.file);
+    for test in cases() {
+        let src = &test.file;
         let project = src.file_stem().unwrap().to_string_lossy().to_string();
 
-        let compile_res = (|| -> Result<i32, String> {
-            let asm = backend::compile_project_for(&src, &project, backend::TargetArch::AArch64)
+        let compile_res = (|| -> Result<(i32, String), String> {
+            let asm = backend::compile_project_for(src, &project, backend::TargetArch::AArch64)
                 .map_err(|e| e.to_string())?;
 
             let temp_dir = std::env::temp_dir();
@@ -539,6 +265,11 @@ fn run_aarch64_integration_tests() {
                 ));
             }
 
+            if test.exit_code.is_none() {
+                fs::remove_file(&obj_path).ok();
+                return Ok((0, String::new()));
+            }
+
             let ld_status = Command::new("aarch64-linux-gnu-ld")
                 .args(["-o", exe_path.to_str().unwrap(), obj_path.to_str().unwrap()])
                 .status()
@@ -554,26 +285,32 @@ fn run_aarch64_integration_tests() {
             }
 
             if let Some(expected_code) = test.exit_code {
-                let run_status = Command::new(qemu)
+                let output = Command::new(qemu)
                     .arg(&exe_path)
-                    .status()
+                    .output()
                     .map_err(|e| format!("{qemu} failed to run: {e}"))?;
 
                 fs::remove_file(&exe_path).ok();
 
-                let code = run_status.code().unwrap_or(-1);
-                match code == expected_code {
-                    true => Ok(code),
-                    _ => Err(format!("expected exit code {}, got {}", expected_code, code)),
+                let code = output.status.code().unwrap_or(-1);
+                let stdout = String::from_utf8(output.stdout)
+                    .map_err(|error| format!("program printed invalid UTF-8: {error}"))?;
+
+                match code == expected_code && stdout == test.stdout {
+                    true => Ok((code, stdout)),
+                    _ => Err(format!(
+                        "expected exit code {} and stdout {:?}, got {} and {:?}",
+                        expected_code, test.stdout, code, stdout
+                    )),
                 }
             } else {
                 fs::remove_file(&exe_path).ok();
-                Ok(0)
+                Ok((0, String::new()))
             }
         })();
 
         match compile_res {
-            Ok(code) => {
+            Ok((code, _)) => {
                 passed += 1;
                 println!("{}: passed (exit code {})", test.name, code);
             },
@@ -602,7 +339,7 @@ fn optimisation_levels_agree_with_debug() {
     let mut errors = Vec::new();
     let mut checked = 0;
 
-    for test in CASES {
+    for test in cases() {
         let Some(baseline) = test.exit_code else {
             continue;
         };
@@ -613,12 +350,14 @@ fn optimisation_levels_agree_with_debug() {
             .map_or(baseline, |(_, code)| *code);
 
         for level in [Level::Sane, Level::Max] {
-            match compile_and_run_at(&PathBuf::from(test.file), level) {
-                Ok(code) if code == expected => checked += 1,
-                Ok(code) => errors.push(format!(
-                    "{} at {level:?}: expected exit code {expected}, got {code}",
-                    test.name
-                )),
+            match compile_and_run_at(&test.file, level) {
+                Ok((code, stdout)) if code == expected && stdout == test.stdout => checked += 1,
+                Ok((code, stdout)) => errors.push(
+                    format!(
+                        "{} at {level:?}: expected exit code {expected}, got {code}",
+                        test.name
+                    ) + &format!("; expected stdout {:?}, got {:?}", test.stdout, stdout),
+                ),
                 Err(err) => errors.push(format!("{} at {level:?}: {err}", test.name)),
             }
         }
