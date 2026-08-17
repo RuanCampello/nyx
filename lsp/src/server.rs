@@ -236,16 +236,9 @@ impl LanguageServer for Lsp {
             return Ok(None);
         };
 
-        let hit = analysis
-            .hover_types
-            .iter()
-            .filter(|(span, _)| {
-                map.span_data(*span).file == file && span.start <= pos && pos < span.end
-            })
-            .min_by_key(|(span, _)| span.end.0 - span.start.0);
+        let hit = analysis.hover_at(map, file, pos);
 
-        Ok(hit.and_then(|(span, target)| {
-            let info = analysis.index.hover(*target, map)?;
+        Ok(hit.map(|(span, info)| {
             let mut value = String::new();
             if let Some(path) = &info.path {
                 value.push_str(&format!("{}\n\n", fenced_text(path)));
@@ -265,10 +258,7 @@ impl LanguageServer for Lsp {
             let contents =
                 HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value });
 
-            Some(Hover {
-                contents,
-                range: Some(convert::span_to_range(map, *span, encoding)),
-            })
+            Hover { contents, range: Some(convert::span_to_range(map, span, encoding)) }
         }))
     }
 
@@ -287,21 +277,13 @@ impl LanguageServer for Lsp {
             return Ok(None);
         };
 
-        let hit = analysis
-            .goto_definitions
-            .iter()
-            .filter(|(use_span, _)| {
-                map.span_data(**use_span).file == file
-                    && use_span.start <= pos
-                    && pos < use_span.end
-            })
-            .min_by_key(|(use_span, _)| use_span.end.0 - use_span.start.0);
+        let hit = analysis.goto_definition_at(map, file, pos);
 
-        Ok(hit.and_then(|(_, def)| {
-            let def_file = map.span_data(*def).file;
+        Ok(hit.and_then(|def| {
+            let def_file = map.span_data(def).file;
             Some(GotoDefinitionResponse::Scalar(Location {
                 uri: convert::url_for_file(map, def_file)?,
-                range: convert::span_to_range(map, *def, encoding),
+                range: convert::span_to_range(map, def, encoding),
             }))
         }))
     }
@@ -326,19 +308,14 @@ impl LanguageServer for Lsp {
         };
 
         let hints = analysis
-            .inlay_hints
-            .iter()
-            .filter(|(span, ..)| {
-                map.span_data(*span).file == file && !already_annotated(map, *span)
-            })
-            .filter_map(|&(span, typ, function)| {
+            .inlay_hints_in(map, file)
+            .into_iter()
+            .filter(|(span, _)| !already_annotated(map, *span))
+            .filter_map(|(span, label)| {
                 let position = convert::span_to_range(map, span, encoding).end;
                 (position >= range.start && position <= range.end).then(|| InlayHint {
                     position,
-                    label: InlayHintLabel::String(format!(
-                        ": {}",
-                        analysis.index.hint(typ, function)
-                    )),
+                    label: InlayHintLabel::String(format!(": {label}")),
                     kind: Some(InlayHintKind::TYPE),
                     text_edits: None,
                     tooltip: None,
@@ -370,18 +347,14 @@ impl LanguageServer for Lsp {
         };
 
         let symbols = analysis
-            .document_symbols
-            .iter()
-            .filter(|symbol| map.span_data(symbol.span).file == file)
-            .map(|symbol| {
+            .document_symbols_in(map, file)
+            .into_iter()
+            .map(|(name, kind, span)| {
                 #[allow(deprecated)]
                 SymbolInformation {
-                    name: symbol.name.clone(),
-                    kind: symbol_kind(symbol.kind),
-                    location: Location {
-                        uri: url.clone(),
-                        range: convert::span_to_range(map, symbol.span, encoding),
-                    },
+                    name,
+                    kind: symbol_kind(kind),
+                    location: Location { uri: url.clone(), range: convert::span_to_range(map, span, encoding) },
                     tags: None,
                     deprecated: None,
                     container_name: None,
@@ -405,15 +378,12 @@ impl LanguageServer for Lsp {
 
         let offset = convert::position_to_offset(&text, position, encoding);
         let context = completion::context_at(&text, offset);
+        let position = self.locate(&analysis.source_map, url, position).await.map(|(_, pos)| pos);
 
-        let scope = match self.locate(&analysis.source_map, url, position).await {
-            Some((_, pos)) => completion::scope_at(&analysis, pos),
-            None => None,
-        };
-
-        let mut items: Vec<_> = completion::candidates(&analysis, &context, scope)
+        let mut items: Vec<_> = analysis
+            .completion_candidates(&context, position)
             .into_iter()
-            .map(completion_item)
+            .map(|candidate| completion_item(&candidate))
             .collect();
 
         if context == completion::Context::Open {
@@ -753,32 +723,26 @@ mod tests {
     use super::*;
 
     fn analysis(ok: bool, hints: usize) -> SemanticAnalysis {
-        SemanticAnalysis {
-            ok,
-            inlay_hints: (0..hints)
-                .map(|_| (frontend::Span::default(), frontend::hir::Type::default(), 0))
-                .collect(),
-            ..Default::default()
-        }
+        SemanticAnalysis::synthetic(ok, hints)
     }
 
     #[test]
     fn failed_reanalysis_keeps_last_good_hints() {
         let kept = latest_good(Some(analysis(true, 2)), analysis(false, 0));
         assert!(kept.ok, "should retain the previous good analysis");
-        assert_eq!(kept.inlay_hints.len(), 2, "hints must survive the broken edit");
+        assert_eq!(kept.inlay_hint_count(), 2, "hints must survive the broken edit");
     }
 
     #[test]
     fn successful_reanalysis_replaces() {
         let kept = latest_good(Some(analysis(true, 2)), analysis(true, 3));
-        assert_eq!(kept.inlay_hints.len(), 3, "fresh hints replace the old ones");
+        assert_eq!(kept.inlay_hint_count(), 3, "fresh hints replace the old ones");
     }
 
     #[test]
     fn first_result_is_kept_even_when_broken() {
         let kept = latest_good(None, analysis(false, 0));
         assert!(!kept.ok);
-        assert!(kept.inlay_hints.is_empty());
+        assert_eq!(kept.inlay_hint_count(), 0);
     }
 }

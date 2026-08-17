@@ -1,7 +1,7 @@
 //! Completion: read what the cursor is qualified by, then answer from the
 //! index [crate::analysis] built while the HIR was alive
 
-use crate::analysis::{Completion, Completions, SemanticAnalysis};
+use crate::analysis::{Completion, Completions};
 use frontend::lexer::token::Keyword;
 
 /// What qualifies the position being completed
@@ -15,8 +15,7 @@ pub enum Context<'s> {
     Open,
     /// directly inside an interface implementation, offering its required items
     InterfaceImpl { interface: String },
-    /// inside a comment or a literal, where prose is not code and nothing is
-    /// nameable
+    /// inside a comment or a literal, where prose is not code and nothing is nameable
     Inert,
 }
 
@@ -62,18 +61,16 @@ pub fn context_at(text: &str, offset: usize) -> Context<'_> {
 }
 
 pub fn candidates<'a>(
-    analysis: &'a SemanticAnalysis,
+    index: &'a Completions,
     context: &Context<'_>,
     scope: Option<&'a [Completion]>,
 ) -> Vec<&'a Completion> {
-    let index = &analysis.completions;
-
     match context {
         Context::Member { receiver } => match receiver_type(index, scope, receiver) {
             Some(key) => {
                 index.members.get(&key).map(Vec::as_slice).unwrap_or_default().iter().collect()
             },
-            None => Vec::new(),
+            _ => Vec::new(),
         },
         Context::Path { qualifier } => index
             .associated
@@ -94,17 +91,9 @@ pub fn candidates<'a>(
     }
 }
 
+#[inline(always)]
 pub fn keywords() -> impl Iterator<Item = &'static str> {
     Keyword::ALL.iter().map(|keyword| keyword.as_str())
-}
-
-pub fn scope_at(analysis: &SemanticAnalysis, position: frontend::BytePos) -> Option<&[Completion]> {
-    analysis
-        .scopes
-        .iter()
-        .filter(|(body, _)| body.start <= position && position < body.end)
-        .min_by_key(|(body, _)| body.end.0 - body.start.0)
-        .map(|(_, locals)| locals.as_slice())
 }
 
 /// replay the cursor's own line to see what it is still inside of
@@ -150,8 +139,7 @@ fn receiver_type(
 }
 
 fn interface_impl_at(before: &str) -> Option<String> {
-    let mut braces = Vec::new();
-    let mut mode = Mode::Code;
+    let (mut braces, mut mode) = (Vec::new(), Mode::Code);
     let bytes = before.as_bytes();
     let mut i = 0;
 
@@ -209,7 +197,7 @@ fn path_before(text: &str) -> String {
 
         match rest.strip_suffix("::") {
             Some(head) => rest = head,
-            None => break,
+            _ => break,
         }
     }
 
@@ -224,11 +212,11 @@ fn tail_name(text: &str) -> &str {
 
     match name.starts_with(|c: char| c.is_ascii_digit()) {
         true => "",
-        false => name,
+        _ => name,
     }
 }
 
-#[inline]
+#[inline(always)]
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
