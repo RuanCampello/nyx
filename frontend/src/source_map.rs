@@ -1,9 +1,9 @@
 //! Maps the global byte-offset address space back to concrete files
 //!
 //! Every source file occupies a contiguous, non-overlapping range of the
-//! global address space. A [`Span`] therefore needs to store only its byte
-//! offsets ([`BytePos`]), the owning [`FileId`], line and column are recovered
-//! on demand from the [`SourceMap`]
+//! global address space. A [Span] therefore needs to store only its byte
+//! offsets ([BytePos]), the owning [FileId], line and column are recovered
+//! on demand from the [SourceMap]
 
 use crate::lexer::token::{BytePos, Span};
 use std::path::{Path, PathBuf};
