@@ -1,0 +1,3 @@
+fn accepts_nested_refs(value: &&i32, values: &[&str]) { }
+
+fn main() { }
