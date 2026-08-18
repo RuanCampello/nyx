@@ -201,8 +201,7 @@ pub struct Function<'i> {
     pub is_const: bool,
     pub is_pub: bool,
     pub inline: bool,
-    // TODO: make it a bitset instead
-    pub markers: Vec<Marker>,
+    pub markers: Markers,
     pub span: Span,
 }
 
@@ -215,6 +214,11 @@ pub enum Marker {
     /// code is ever lowered from it
     Intrinsic,
 }
+
+/// The set of [Marker]s a declaration carries, as a bitset: there are only ever
+/// a handful of marker kinds, so we can fit in a byte
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub struct Markers(u8);
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Receiver {
@@ -349,7 +353,7 @@ pub struct InterfaceMethod<'i> {
     pub params: Vec<Parameter<'i>>,
     pub return_type: Option<Spanned<Type<'i>>>,
     pub body: Option<Block<'i>>,
-    pub markers: Vec<Marker>,
+    pub markers: Markers,
     pub span: Span,
 }
 
@@ -439,6 +443,8 @@ pub const MODIFIER_ORDER: [Keyword; 3] = [Keyword::Pub, Keyword::Inline, Keyword
 
 impl<'i> Parsable<'i> for Statement<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        use TokenKind as T;
+
         let docs = parser.parse_outer_docs();
 
         let (kind, is_fn_start) = match parser.peek() {
@@ -461,42 +467,32 @@ impl<'i> Parsable<'i> for Statement<'i> {
 
         // non-item statements return directly
         let kind = match kind {
-            TokenKind::Keyword(Keyword::Let) => return Ok(Statement::Let(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::If) => return Ok(Statement::If(parser.parse_node()?)),
-            TokenKind::Keyword(Keyword::Match) => {
-                return Ok(Statement::Match(parser.parse_node()?));
-            },
-            TokenKind::Keyword(Keyword::Loop) => {
-                return Ok(Statement::Loop(parser.parse_node()?));
-            },
-            TokenKind::Keyword(Keyword::Break) => {
+            T::Keyword(Keyword::Let) => return Ok(Statement::Let(parser.parse_node()?)),
+            T::Keyword(Keyword::If) => return Ok(Statement::If(parser.parse_node()?)),
+            T::Keyword(Keyword::Match) => return Ok(Statement::Match(parser.parse_node()?)),
+            T::Keyword(Keyword::Loop) => return Ok(Statement::Loop(parser.parse_node()?)),
+            T::Keyword(Keyword::Break) => {
                 let keyword = parser.expect_token(Keyword::Break)?;
                 let semicolon = parser.expect_token(Punct::Semicolon)?;
                 return Ok(Statement::Break(keyword.span + semicolon.span));
             },
-            TokenKind::Keyword(Keyword::Continue) => {
+            T::Keyword(Keyword::Continue) => {
                 let keyword = parser.expect_token(Keyword::Continue)?;
                 let semicolon = parser.expect_token(Punct::Semicolon)?;
                 return Ok(Statement::Continue(keyword.span + semicolon.span));
             },
-            TokenKind::Keyword(Keyword::Return) => {
-                return Ok(Statement::Return(parser.parse_node()?));
-            },
-            TokenKind::Punct(Punct::OpenBrace) => {
-                return Ok(Statement::Block(parser.parse_node()?));
-            },
-
-            TokenKind::Keyword(Keyword::Use) => ItemKind::Use(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::Impl) => ItemKind::Impl(parser.parse_node()?),
-            TokenKind::Keyword(Keyword::Interface) => ItemKind::Interface(parser.parse_node()?),
-
-            TokenKind::Keyword(Keyword::Pub) => {
+            T::Keyword(Keyword::Return) => return Ok(Statement::Return(parser.parse_node()?)),
+            T::Punct(Punct::OpenBrace) => return Ok(Statement::Block(parser.parse_node()?)),
+            T::Keyword(Keyword::Use) => ItemKind::Use(parser.parse_node()?),
+            T::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
+            T::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
+            T::Keyword(Keyword::Impl) => ItemKind::Impl(parser.parse_node()?),
+            T::Keyword(Keyword::Interface) => ItemKind::Interface(parser.parse_node()?),
+            T::Keyword(Keyword::Pub) => {
                 let next_token = match parser.peek_nth(1) {
                     Some(Ok(t)) => t,
                     Some(Err(e)) => return Err((&e).into()),
-                    None => {
+                    _ => {
                         return Err(ParserError::new(
                             ParseErrorKind::UnexpectedEof,
                             Span::default(),
@@ -505,16 +501,14 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 };
 
                 match next_token.kind {
-                    TokenKind::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
-                    TokenKind::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
-                    TokenKind::Keyword(Keyword::Interface) => {
-                        ItemKind::Interface(parser.parse_node()?)
-                    },
+                    T::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
+                    T::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
+                    T::Keyword(Keyword::Interface) => ItemKind::Interface(parser.parse_node()?),
                     _ if next_token.is_fn_start() => ItemKind::Fn(parser.parse_node()?),
                     found_kind => {
                         return Err(ParserError::new(
                             ParseErrorKind::Expected {
-                                expected: TokenKind::Keyword(Keyword::Fn),
+                                expected: T::Keyword(Keyword::Fn),
                                 found: found_kind,
                             },
                             next_token.span,
@@ -522,20 +516,15 @@ impl<'i> Parsable<'i> for Statement<'i> {
                     },
                 }
             },
-
-            TokenKind::Punct(Punct::At) if parser.at_marked_block() => {
-                return parse_unsafe_block(parser);
-            },
-            TokenKind::Punct(Punct::At) | TokenKind::Keyword(_) if is_fn_start => {
+            T::Punct(Punct::At) if parser.at_marked_block() => return parse_unsafe_block(parser),
+            T::Punct(Punct::At) | TokenKind::Keyword(_) if is_fn_start => {
                 ItemKind::Fn(parser.parse_node()?)
             },
-            TokenKind::Eof => {
-                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default()));
-            },
+            T::Eof => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
                 let end_position = match parser.peek() {
-                    Some(Ok(t)) if t.is_kind(Punct::CloseBrace) | t.is_kind(TokenKind::Eof) => {
+                    Some(Ok(t)) if t.is_kind(Punct::CloseBrace) | t.is_kind(T::Eof) => {
                         expr.span().end
                     },
                     Some(Err(err)) => return Err(err.into()),
@@ -765,7 +754,7 @@ impl<'i> Parsable<'i> for Loop<'i> {
                 LoopHeader::Iterable { binding, iterable: start }
             },
             Some(Err(error)) => return Err(error.into()),
-            None => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, start.span())),
+            _ => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, start.span())),
         };
         let body = Block::parse(parser)?;
         let span = loop_token.span + body.span;
@@ -899,12 +888,12 @@ impl<'i> Parsable<'i> for Spanned<Pattern<'i>> {
 impl Function<'_> {
     #[inline]
     pub fn is_unsafe(&self) -> bool {
-        self.markers.contains(&Marker::Unsafe)
+        self.markers.contains(Marker::Unsafe)
     }
 
     #[inline]
     pub fn is_intrinsic(&self) -> bool {
-        self.markers.contains(&Marker::Intrinsic)
+        self.markers.contains(Marker::Intrinsic)
     }
 }
 
@@ -924,12 +913,35 @@ impl Marker {
         }
     }
 
+    #[inline]
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "unsafe" => Some(Self::Unsafe),
             "intrinsic" => Some(Self::Intrinsic),
             _ => None,
         }
+    }
+}
+
+impl Markers {
+    #[inline]
+    pub const fn contains(self, marker: Marker) -> bool {
+        self.0 & marker.bit() != 0
+    }
+
+    #[inline]
+    const fn insert(&mut self, marker: Marker) {
+        self.0 |= marker.bit();
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = Marker> {
+        [Marker::Unsafe, Marker::Intrinsic]
+            .into_iter()
+            .filter(move |&marker| self.contains(marker))
     }
 }
 
@@ -1083,7 +1095,7 @@ impl<'i> Impl<'i> {
                     is_const: m.is_const,
                     is_pub: false,
                     inline: m.inline,
-                    markers: m.markers.clone(),
+                    markers: m.markers,
                     span: m.span,
                 })
             })
@@ -1702,17 +1714,15 @@ fn parse_modifiers<'i>(
     Ok(present)
 }
 
-fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Vec<Marker>, ParserError<'i>> {
-    let mut markers = Vec::new();
+fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Markers, ParserError<'i>> {
+    let mut markers = Markers::default();
 
     while parser.consume_token(Punct::At)? {
         let (name, span) = parser.expect_identifier()?;
         let marker = Marker::from_name(name)
             .ok_or_else(|| ParserError::new(ParseErrorKind::UnknownMarker { name }, span))?;
 
-        if !markers.contains(&marker) {
-            markers.push(marker);
-        }
+        markers.insert(marker);
     }
 
     Ok(markers)

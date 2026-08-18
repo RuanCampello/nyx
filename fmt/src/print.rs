@@ -211,7 +211,7 @@ impl<'src> Printer<'src> {
     fn function(&mut self, function: &Function<'src>) -> Result<Doc<'src>, FormatError> {
         let mut parts = Vec::new();
 
-        for marker in &function.markers {
+        for marker in function.markers.iter() {
             parts.push(Doc::text(Punct::At.as_str()));
             parts.push(Doc::text(marker.as_str()));
             parts.push(Doc::hard_line());
@@ -342,7 +342,7 @@ impl<'src> Printer<'src> {
     ) -> Result<Doc<'src>, FormatError> {
         let mut parts = Vec::new();
 
-        for marker in &method.markers {
+        for marker in method.markers.iter() {
             parts.push(Doc::text(Punct::At.as_str()));
             parts.push(Doc::text(marker.as_str()));
             parts.push(Doc::hard_line());
