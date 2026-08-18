@@ -153,6 +153,7 @@ impl<'hir> ItemTable<'hir> {
         for function in roots {
             self.collect_generic_callees(function, &mut worklist);
         }
+
         if include_unreachable {
             worklist.extend(self.functions.defs.iter().enumerate().filter_map(
                 |(index, definition)| definition.body.as_ref().map(|_| FunctionId(index as u32)),
@@ -178,10 +179,11 @@ impl<'hir> ItemTable<'hir> {
             };
 
             let impl_type = impl_type.as_deref().map(|name| &*arena.alloc_str(name));
+            let function =
+                lower::FunctionBuilder::new_instance(self, id, &function, arena, env, impl_type)
+                    .lower();
 
-            match lower::FunctionBuilder::new_instance(self, id, &function, arena, env, impl_type)
-                .lower()
-            {
+            match function {
                 Ok(function) => {
                     self.collect_generic_callees(&function, &mut worklist);
                     lowered.insert(id, function);
@@ -189,55 +191,41 @@ impl<'hir> ItemTable<'hir> {
                 Err(error) => self.soft(error),
             }
         }
+
         lowered
     }
 
     fn collect_generic_callees(&self, function: &Function<'hir>, out: &mut Vec<FunctionId>) {
-        use hir::Res;
+        use hir::Res::*;
 
         for resolution in function.typeck.type_dependent_defs.values() {
             match *resolution {
-                Res::Function(id) if self.functions.defs[id].body.is_some() => out.push(id),
-                Res::ParamMethod { interface, name, .. } => {
-                    out.extend(self.functions.methods.iter().filter_map(
-                        |(&(_, candidate_name), &id)| {
-                            let fn_def = &self.functions.defs[id];
-
-                            let same_name = candidate_name == name;
-                            let has_body = fn_def.body.is_some();
-                            let matches_interface = matches!(
-                                fn_def.owner,
-                                Owner::Interface { interface: cand, .. } if cand == interface
-                            );
-
-                            (same_name && has_body && matches_interface).then_some(id)
-                        },
-                    ));
+                Function(id) if self.functions.defs[id].body.is_some() => out.push(id),
+                ParamMethod { interface, name, .. } => {
+                    let methods = &self.functions.interface_methods;
+                    self.extend_interface_callees(methods, interface, name, out);
                 },
-                Res::ParamFunction { interface, name, .. } => {
-                    out.extend(self.functions.defs.iter().enumerate().filter_map(
-                        |(index, definition)| {
-                            let has_body = definition.body.is_some();
-                            let is_standalone = !definition.has_receiver;
-                            let same_name = self.symbols.get(definition.name).rsplit("::").next()
-                                == Some(self.symbols.get(name));
-                            let matches_interface = matches!(
-                                definition.owner,
-                                Owner::Interface {
-                                    interface: candidate,
-                                    ..
-                                } if candidate == interface
-                            );
-
-                            let is_valid_callee =
-                                has_body && is_standalone && same_name && matches_interface;
-                            is_valid_callee.then_some(FunctionId(index as u32))
-                        },
-                    ));
+                ParamFunction { interface, name, .. } => {
+                    let functions = &self.functions.interface_functions;
+                    self.extend_interface_callees(functions, interface, name, out);
                 },
                 _ => {},
             }
         }
+    }
+
+    fn extend_interface_callees(
+        &self,
+        index: &InterfaceItems,
+        interface: SymbolId,
+        name: SymbolId,
+        out: &mut Vec<FunctionId>,
+    ) {
+        let Some(candidates) = index.get(&(interface, name)) else {
+            return;
+        };
+
+        out.extend(candidates.iter().copied().filter(|&id| self.functions.defs[id].body.is_some()));
     }
 
     fn nominal_decl_span(&self, symbol: SymbolId) -> Option<Span> {

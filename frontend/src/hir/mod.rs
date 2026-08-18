@@ -29,6 +29,7 @@ pub use symbols::SymbolTable;
 pub use ty::*;
 
 mod collect;
+mod const_check;
 mod constants;
 mod declarations;
 mod def;
@@ -454,6 +455,7 @@ pub fn lower<'hir>(
     let templates = scope.lower_generic_templates(&functions, arena, false);
     let functions = mono::monomorphise(functions, &templates, &scope);
     let functions = freeze_function_ids(functions);
+    const_check::check(&scope, &functions);
 
     let declaration_arrays = scope.arrays.snapshot();
     structs::compute_layouts(&mut scope.adts.defs, &declaration_arrays);

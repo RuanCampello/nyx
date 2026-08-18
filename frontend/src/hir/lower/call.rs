@@ -1,15 +1,15 @@
 use crate::{
     hir::{
-        Expression, ExpressionKind, FnDef, FunctionId, InterfaceMethodSignature, Intrinsic, Owner,
-        Res, SymbolId, Syscall, TyInterner, Type, TypeKind, collect,
-        error::{ConstFnViolationKind, HirError, hir_error},
+        Expression, ExpressionKind, FunctionId, InterfaceMethodSignature, Intrinsic, Res, SymbolId,
+        Syscall, TyInterner, Type, TypeKind, collect,
+        error::{HirError, hir_error},
         lower::{FunctionBuilder, Lowered},
         type_resolver::{self, resolve_annotation},
     },
     lexer::{Spanned, token::Span},
     parser::{
         expression::{self, UnaryOperator},
-        statement::{self},
+        statement::{self, GenericBound},
     },
 };
 use std::str::FromStr;
@@ -42,30 +42,37 @@ where
         let TypeKind::GenericParam(param) = concrete.kind() else {
             return None;
         };
-        let generic = self.generics.iter().find(|generic| generic.name == qualifier)?;
+        let generic = self.resolve_generic(qualifier)?;
         let (interface, signature) = self.find_bound_signature(generic, |candidate| {
             !candidate.has_receiver && candidate.name == name
         })?;
         Some((param, interface, signature))
     }
 
-    fn find_bound_signature(
+    pub(super) fn resolve_generic(&self, qualifier: &str) -> Option<&GenericBound<'src>> {
+        self.generics.iter().find(|generic| generic.name == qualifier)
+    }
+
+    /// find the first of `generic`'s bounds whose interface has an item `project` selects
+    pub(super) fn find_bound_item<T>(
         &self,
-        generic: &statement::GenericBound<'src>,
-        predicate: impl Fn(&InterfaceMethodSignature<'hir>) -> bool,
-    ) -> Option<(SymbolId, InterfaceMethodSignature<'hir>)> {
+        generic: &GenericBound<'src>,
+        project: impl Fn(&collect::InterfaceSignature<'hir>) -> Option<T>,
+    ) -> Option<(SymbolId, T)> {
         generic.bounds.iter().find_map(|bound| {
             let interface = self.bound_interface(bound)?;
-            let signature = self
-                .scope
-                .interfaces
-                .defs
-                .get(&interface)?
-                .methods
-                .iter()
-                .find(|candidate| predicate(candidate))?
-                .clone();
-            Some((interface, signature))
+            let item = project(self.scope.interfaces.defs.get(&interface)?)?;
+            Some((interface, item))
+        })
+    }
+
+    fn find_bound_signature(
+        &self,
+        generic: &GenericBound<'src>,
+        predicate: impl Fn(&InterfaceMethodSignature<'hir>) -> bool,
+    ) -> Option<(SymbolId, InterfaceMethodSignature<'hir>)> {
+        self.find_bound_item(generic, |interface| {
+            interface.methods.iter().find(|candidate| predicate(candidate)).cloned()
         })
     }
 
@@ -78,18 +85,11 @@ where
         if matches!(concrete.kind(), TypeKind::GenericParam(_)) {
             return None;
         }
-        let generic = self.generics.iter().find(|generic| generic.name == qualifier)?;
+        let generic = self.resolve_generic(qualifier)?;
 
         generic.bounds.iter().find_map(|bound| {
             let interface = self.bound_interface(bound)?;
-            let short_name = self.scope.symbols.get(name);
-            self.scope.functions.defs.iter().enumerate().find_map(|(index, definition)| {
-                (definition.owner == Owner::Interface { on: concrete, interface }
-                    && !definition.has_receiver
-                    && self.scope.symbols.get(definition.name).rsplit("::").next()
-                        == Some(short_name))
-                .then_some(FunctionId(index as u32))
-            })
+            self.scope.free_impl_function(concrete, interface, name)
         })
     }
 
@@ -250,22 +250,6 @@ where
         Ok(lowered)
     }
 
-    pub(in crate::hir) fn check_const_call(
-        &self,
-        signature: &FnDef<'hir>,
-        intrinsic: Option<Intrinsic>,
-        span: Span,
-    ) -> Result<(), HirError<'hir>> {
-        if self.is_const && !signature.is_const && intrinsic.is_none() {
-            let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
-            return Err(hir_error!(
-                span,
-                ConstFnViolation(ConstFnViolationKind::NonConstCall { name })
-            ));
-        }
-        Ok(())
-    }
-
     pub(super) fn lower_direct_call(
         &mut self,
         function_id: FunctionId,
@@ -275,7 +259,6 @@ where
     ) -> Result<Lowered<'hir>, HirError<'hir>> {
         let signature = self.scope.functions.defs[function_id].clone();
         let intrinsic = signature.kind.intrinsic();
-        self.check_const_call(&signature, intrinsic, span)?;
 
         if intrinsic == Some(Intrinsic::Syscall) {
             return self.lower_syscall(args, signature.name, signature.return_type, span);
@@ -538,7 +521,7 @@ where
 
     fn check_bounds(
         &self,
-        generics: &[statement::GenericBound<'src>],
+        generics: &[GenericBound<'src>],
         args: &[Type<'hir>],
         span: Span,
     ) -> Result<(), HirError<'hir>> {

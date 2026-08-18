@@ -8,7 +8,6 @@ use crate::{
     lexer::token::Span,
     parser::statement::{self, PatternLit},
 };
-use std::collections::HashSet;
 
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
 where
@@ -107,58 +106,27 @@ where
                     };
                 }
 
-                let definition_name = self.scope[id].name;
-                let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
-
-                let mut seen = HashSet::with_capacity(fields.len());
-                let mut lowered = Vec::with_capacity(fields.len());
-
-                for field in fields {
-                    let field_symbol = self.scope.symbols.insert(field.name);
-                    if !seen.insert(field_symbol) {
-                        return Err(hir_error!(field.span, DuplicateField { name: field.name }));
-                    }
-
-                    let expected =
-                        self.scope[id].fields().iter().find(|f| f.name == field_symbol).copied();
-                    let Some(expected) = expected else {
-                        return Err(hir_error!(
-                            field.span,
-                            UnknownField { struct_name, field: field.name }
-                        ));
-                    };
-
-                    let expected_type =
-                        expected.typ.subst(&self.scope.types, &self.scope.arrays, generic_args);
-                    let sub = match &field.pattern {
-                        Some(sub) => {
-                            self.lower_pattern(expected_type, sub.value_ref(), sub.span())?
-                        },
-                        _ => {
-                            let local =
-                                self.declare_local(field_symbol, expected_type, false, field.span)?;
-                            Pattern { kind: PatternKind::Binding(local), span: field.span }
-                        },
-                    };
-
-                    lowered.push((field_symbol, &*self.arena.alloc(sub)));
-                }
-
-                if !rest
-                    && let Some(missing) = self.scope[id]
-                        .fields()
-                        .iter()
-                        .find(|f| !seen.contains(&f.name))
-                        .map(|f| f.name)
-                {
-                    return Err(hir_error!(
-                        span,
-                        MissingField {
-                            struct_name,
-                            field: self.arena.alloc_str(self.scope.symbols.get(missing)),
-                        }
-                    ));
-                }
+                let lowered = self.lower_struct_fields(
+                    id,
+                    generic_args,
+                    fields,
+                    span,
+                    *rest,
+                    |this, field_symbol, expected, field| {
+                        let sub = match &field.pattern {
+                            Some(sub) => {
+                                let (value, span) = (sub.value_ref(), sub.span());
+                                this.lower_pattern(expected, value, span)?
+                            },
+                            _ => {
+                                let local =
+                                    this.declare_local(field_symbol, expected, false, field.span)?;
+                                Pattern { kind: PatternKind::Binding(local), span: field.span }
+                            },
+                        };
+                        Ok(&*this.arena.alloc(sub))
+                    },
+                )?;
 
                 let fields = self.arena.alloc_slice_copy(&lowered);
                 Ok(Pattern { kind: PatternKind::Struct { id, fields }, span })

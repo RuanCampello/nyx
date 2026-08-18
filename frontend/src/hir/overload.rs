@@ -89,7 +89,7 @@ where
             ));
         };
 
-        self.check_overload_call(function, span)?;
+        self.check_call_safety(function, span);
         let lowered = self.alloc(
             ExpressionKind::Binary { operator, left: left.expr, right: right.expr },
             self.scope.types.common.bool,
@@ -202,17 +202,7 @@ where
             _ => panic!("index method must return a reference"),
         };
 
-        self.check_overload_call(function, span)?;
+        self.check_call_safety(function, span);
         Ok(IndexMethod { function, index, output })
-    }
-
-    fn check_overload_call(
-        &mut self,
-        function: FunctionId,
-        span: Span,
-    ) -> Result<(), HirError<'hir>> {
-        let signature = self.scope.functions.defs[function].clone();
-        self.check_const_call(&signature, None, span)?;
-        Ok(self.check_call_safety(function, span))
     }
 }

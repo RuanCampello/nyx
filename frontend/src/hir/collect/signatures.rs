@@ -430,6 +430,9 @@ impl<'hir> ItemTable<'hir> {
             generic_env: env.cloned().unwrap_or_default(),
         });
         self.functions.methods.insert((ctx.receiver_type, method_symbol), id);
+        if let Owner::Interface { interface, .. } = ctx.owner {
+            self.functions.interface_methods.entry((interface, method_symbol)).or_default().push(id);
+        }
         Ok(())
     }
 
@@ -475,6 +478,10 @@ impl<'hir> ItemTable<'hir> {
             generic_env: env.cloned().unwrap_or_default(),
         });
         self.functions.by_name.insert(mangled, id);
+        if let Owner::Interface { interface, .. } = ctx.owner {
+            let short_name = self.symbols.insert(method.name);
+            self.functions.interface_functions.entry((interface, short_name)).or_default().push(id);
+        }
         Ok(())
     }
 

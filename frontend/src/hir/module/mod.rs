@@ -221,11 +221,11 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             lower_all(&graph, &declarations, &order, &scope, arena, self.retain_templates);
         let templates = scope.lower_generic_templates(&functions, arena, self.retain_templates);
         let functions = mono::monomorphise(functions, &templates, &scope);
-
-        let diagnostics = scope.diagnostics.get_mut().take_errors();
-
         let functions = with_editor_templates(functions, templates, self.retain_templates);
         let functions = hir::freeze_function_ids(functions);
+        hir::const_check::check(&scope, &functions);
+
+        let diagnostics = scope.diagnostics.get_mut().take_errors();
 
         Ok(scope.into_hir(functions, diagnostics))
     }

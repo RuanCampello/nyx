@@ -1,5 +1,8 @@
 use super::*;
-use crate::{hir::error::HirErrorKind, parser::Parser};
+use crate::{
+    hir::error::{ConstFnViolationKind, HirErrorKind},
+    parser::Parser,
+};
 
 fn with_lowered<R>(src: &str, f: impl for<'a> FnOnce(Hir<'a>) -> R) -> R {
     let arena = bumpalo::Bump::new();
@@ -1413,6 +1416,51 @@ fn nested_non_const_item_is_rejected() {
         "#;
     with_lowered_err(src, |err| {
         assert_eq!(err.kind, HirErrorKind::NestedItem { kind: "struct" });
+    });
+}
+
+#[test]
+fn const_fn_calling_non_const_fn_is_rejected() {
+    let src = "fn helper(): i32 { 1 }\nconst fn seed(): i32 { helper() }\nfn main(): i32 { 0 }";
+    with_lowered_err(src, |err| {
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                name: "nyx::helper"
+            })
+        ));
+    });
+}
+
+#[test]
+fn const_calling_non_const_fn_in_its_initialiser_is_rejected() {
+    let src = "fn helper(): i32 { 1 }\nconst SEED: i32 = helper();\nfn main(): i32 { SEED }";
+    with_lowered_err(src, |err| {
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                name: "nyx::helper"
+            })
+        ));
+    });
+}
+
+#[test]
+fn body_local_const_calling_non_const_fn_is_rejected() {
+    let src = r#"
+            fn helper(): i32 { 1 }
+            fn main(): i32 {
+                const LOCAL: i32 = helper();
+                LOCAL
+            }
+        "#;
+    with_lowered_err(src, |err| {
+        assert!(matches!(
+            err.kind,
+            HirErrorKind::ConstFnViolation(ConstFnViolationKind::NonConstCall {
+                name: "nyx::helper"
+            })
+        ));
     });
 }
 

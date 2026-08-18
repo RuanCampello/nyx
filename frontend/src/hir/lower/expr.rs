@@ -1,6 +1,6 @@
 use crate::{
     hir::{
-        Arm, Constant, Expression, ExpressionKind, Literal, LocalId, Owner, Res, Statement, Static,
+        Arm, Constant, Expression, ExpressionKind, Literal, LocalId, Res, Statement, Static,
         StaticId, SymbolId, Type, TypeKind, collect,
         error::{HirError, hir_error},
         lower::{FunctionBuilder, Lowered},
@@ -13,7 +13,7 @@ use crate::{
         statement::{self},
     },
 };
-use std::{borrow::Cow, collections::HashSet};
+use std::borrow::Cow;
 
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
 where
@@ -219,29 +219,19 @@ where
         name: &str,
     ) -> Option<&'hir Constant<'hir>> {
         let concrete = *self.generic_env.get(qualifier)?;
-        let generic = self.generics.iter().find(|generic| generic.name == qualifier)?;
+        let generic = self.resolve_generic(qualifier)?;
 
-        let required_interface = generic.bounds.iter().find_map(|bound| {
-            let interface = self.bound_interface(bound)?;
-            self.scope
-                .interfaces
-                .defs
-                .get(&interface)?
+        let (required_interface, ()) = self.find_bound_item(generic, |interface| {
+            interface
                 .constants
                 .iter()
                 .any(|constant| {
                     self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
                 })
-                .then_some(interface)
+                .then_some(())
         })?;
 
-        self.scope.values.constants.values().copied().find(|constant| {
-            matches!(
-                constant.owner,
-                Owner::Interface { on, interface }
-                    if on == concrete && interface == required_interface
-            ) && self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
-        })
+        self.scope.interface_constant(concrete, required_interface, name)
     }
 
     fn generic_associated_constant_param(
@@ -254,15 +244,18 @@ where
             return None;
         };
 
-        let generic = self.generics.iter().find(|generic| generic.name == qualifier)?;
-        generic.bounds.iter().find_map(|bound| {
-            let interface = self.bound_interface(bound)?;
-            let signature = self.scope.interfaces.defs.get(&interface)?;
-            let constant = signature.constants.iter().find(|constant| {
-                self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
-            })?;
-            Some((param, interface, constant.name, constant.typ))
-        })
+        let generic = self.resolve_generic(qualifier)?;
+        let (interface, constant) = self.find_bound_item(generic, |interface| {
+            interface
+                .constants
+                .iter()
+                .find(|constant| {
+                    self.scope.symbols.get(constant.name).rsplit("::").next() == Some(name)
+                })
+                .cloned()
+        })?;
+
+        Some((param, interface, constant.name, constant.typ))
     }
 
     pub(in crate::hir) fn lower_expr(
@@ -590,51 +583,18 @@ where
                     unreachable!("struct literal type must be an ADT")
                 };
 
-                let definition_name = self.scope[id].name;
-                let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
-
-                let mut seen = HashSet::with_capacity(fields.len());
-                let mut lowered = Vec::with_capacity(fields.len());
-
-                for field in fields {
-                    let field_symbol = self.scope.symbols.insert(field.name);
-                    if !seen.insert(field_symbol) {
-                        return Err(hir_error!(field.span, DuplicateField { name: field.name }));
-                    }
-
-                    let expected =
-                        self.scope[id].fields().iter().find(|f| f.name == field_symbol).map(
-                            |field| {
-                                field.typ.subst(&self.scope.types, &self.scope.arrays, generic_args)
-                            },
-                        );
-
-                    let Some(expected) = expected else {
-                        return Err(hir_error!(
-                            field.span,
-                            UnknownField { struct_name, field: field.name }
-                        ));
-                    };
-
-                    let value = self.lower_expr(&field.value, Some(expected))?;
-                    self.assert_type(expected, value.typ, value.span)?;
-                    lowered.push((field_symbol, value.expr));
-                }
-
-                let missing = self.scope[id]
-                    .fields()
-                    .iter()
-                    .find(|f| !seen.contains(&f.name))
-                    .map(|f| f.name);
-                if let Some(name) = missing {
-                    return Err(hir_error!(
-                        *span,
-                        MissingField {
-                            struct_name,
-                            field: self.arena.alloc_str(self.scope.symbols.get(name)),
-                        }
-                    ));
-                }
+                let lowered = self.lower_struct_fields(
+                    id,
+                    generic_args,
+                    fields,
+                    *span,
+                    false,
+                    |this, _field_symbol, expected, field| {
+                        let value = this.lower_expr(&field.value, Some(expected))?;
+                        this.assert_type(expected, value.typ, value.span)?;
+                        Ok(value.expr)
+                    },
+                )?;
 
                 let fields = self.arena.alloc_slice_copy(&lowered);
                 Ok(self.alloc(ExpressionKind::Struct { id, fields }, typ, *span))
@@ -1334,7 +1294,7 @@ where
         let def = &self.scope[sid];
         let struct_name = self.arena.alloc_str(self.scope.symbols.get(def.name));
 
-        let field = def.fields().iter().find(|field| field.name == sym).ok_or_else(|| {
+        let field = def.field(sym).ok_or_else(|| {
             let field = self.arena.alloc_str(name);
             hir_error!(span, UnknownField { struct_name, field })
         })?;

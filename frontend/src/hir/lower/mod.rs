@@ -96,6 +96,11 @@ pub(in crate::hir) struct Lowered<'hir> {
     pub(super) span: Span,
 }
 
+trait NamedField<'src> {
+    fn name(&self) -> &'src str;
+    fn field_span(&self) -> Span;
+}
+
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
 where
     'src: 'hir,
@@ -493,6 +498,52 @@ where
         self.scope.symbols.get_id(name)
     }
 
+    fn lower_struct_fields<F, T>(
+        &mut self,
+        id: AdtId,
+        generic_args: &'hir [Type<'hir>],
+        fields: &[F],
+        span: Span,
+        allow_missing: bool,
+        mut lower_field: impl FnMut(&mut Self, SymbolId, Type<'hir>, &F) -> Result<T, HirError<'hir>>,
+    ) -> Result<Vec<(SymbolId, T)>, HirError<'hir>>
+    where
+        F: NamedField<'src>,
+    {
+        let definition_name = self.scope[id].name;
+        let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
+
+        let mut seen = HashSet::with_capacity(fields.len());
+        let mut lowered = Vec::with_capacity(fields.len());
+
+        for field in fields {
+            let field_symbol = self.scope.symbols.insert(field.name());
+            if !seen.insert(field_symbol) {
+                return Err(hir_error!(field.field_span(), DuplicateField { name: field.name() }));
+            }
+
+            let expected = self.scope[id]
+                .field(field_symbol)
+                .map(|f| f.typ.subst(&self.scope.types, &self.scope.arrays, generic_args))
+                .ok_or_else(|| {
+                    let (field, span) = (field.name(), field.field_span());
+                    hir_error!(span, UnknownField { struct_name, field })
+                })?;
+
+            lowered.push((field_symbol, lower_field(self, field_symbol, expected, field)?));
+        }
+
+        if !allow_missing
+            && let Some(name) =
+                self.scope[id].fields().iter().find(|f| !seen.contains(&f.name)).map(|f| f.name)
+        {
+            let field = self.arena.alloc_str(self.scope.symbols.get(name));
+            return Err(hir_error!(span, MissingField { struct_name, field }));
+        }
+
+        Ok(lowered)
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new())
     }
@@ -572,6 +623,26 @@ where
 
     fn types(&self) -> &TyInterner<'hir> {
         &self.scope.types
+    }
+}
+
+impl<'src> NamedField<'src> for expression::StructField<'src> {
+    fn name(&self) -> &'src str {
+        self.name
+    }
+
+    fn field_span(&self) -> Span {
+        self.span
+    }
+}
+
+impl<'src> NamedField<'src> for statement::PatternField<'src> {
+    fn name(&self) -> &'src str {
+        self.name
+    }
+
+    fn field_span(&self) -> Span {
+        self.span
     }
 }
 

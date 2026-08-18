@@ -5,8 +5,7 @@
 //! [Folder], and recursively substitutes the requested arguments
 
 use crate::hir::{
-    self, Expression, ExpressionKind, Function, FunctionId, FunctionKind, ItemTable, Owner, Res,
-    Type,
+    self, Expression, ExpressionKind, Function, FunctionId, FunctionKind, ItemTable, Res, Type,
     ids::IndexVec,
     visit::{self, Folder},
 };
@@ -40,20 +39,10 @@ impl<'hir> Folder<'hir> for SubstFolder<'_, 'hir> {
     fn fold_expression(&mut self, expression: &'hir Expression<'hir>) -> &'hir Expression<'hir> {
         if let ExpressionKind::ParamConst { param, interface, name } = expression.kind {
             let concrete = self.args[param as usize];
+            let short_name = self.scope.symbols.get(name);
             let constant = self
                 .scope
-                .values
-                .constants
-                .values()
-                .copied()
-                .find(|constant| {
-                    matches!(
-                        constant.owner,
-                        Owner::Interface { on, interface: candidate }
-                            if on == concrete && candidate == interface
-                    ) && self.scope.symbols.get(constant.name).rsplit("::").next()
-                        == Some(self.scope.symbols.get(name))
-                })
+                .interface_constant(concrete, interface, short_name)
                 .expect("generic bound guarantees an associated constant implementation");
             return self.scope.arena.alloc(Expression {
                 id: expression.id,
@@ -83,20 +72,9 @@ impl<'hir> Folder<'hir> for SubstFolder<'_, 'hir> {
             },
             Res::ParamFunction { param, interface, name } => {
                 let receiver = self.args[param as usize];
-                let short_name = self.scope.symbols.get(name);
                 let function = self
                     .scope
-                    .functions
-                    .defs
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, definition)| {
-                        (definition.owner == Owner::Interface { on: receiver, interface }
-                            && !definition.has_receiver
-                            && self.scope.symbols.get(definition.name).rsplit("::").next()
-                                == Some(short_name))
-                        .then_some(FunctionId(index as u32))
-                    })
+                    .free_impl_function(receiver, interface, name)
                     .expect("generic bound guarantees an associated function implementation");
                 Res::Function(function)
             },

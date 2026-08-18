@@ -1,8 +1,8 @@
 use crate::{
     diagnostic,
     hir::{
-        self, AdtDef, AdtId, ArrayId, ArrayType, Constant, FnDef, FunctionId, Static, StaticId,
-        SymbolId, SymbolTable, TyInterner, Type, TypeKind,
+        self, AdtDef, AdtId, ArrayId, ArrayType, Constant, FnDef, FunctionId, Owner, Static,
+        StaticId, SymbolId, SymbolTable, TyInterner, Type, TypeKind,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
         ids::IndexVec,
@@ -69,6 +69,8 @@ pub(in crate::hir) struct FunctionNamespace<'hir> {
     pub defs: IndexVec<FunctionId, FnDef<'hir>>,
     pub by_name: Functions,
     pub methods: Methods<'hir>,
+    pub interface_methods: InterfaceItems,
+    pub interface_functions: InterfaceItems,
 }
 
 /// The interface namespace: declared interfaces, which types implement which
@@ -165,6 +167,10 @@ pub(in crate::hir) type Structs = HashMap<SymbolId, AdtId>;
 pub(in crate::hir) type Enums = HashMap<SymbolId, AdtId>;
 pub(in crate::hir) type EnumVariants = HashMap<(SymbolId, SymbolId), (AdtId, i64)>;
 pub(in crate::hir) type Methods<'hir> = HashMap<(Type<'hir>, SymbolId), FunctionId>;
+/// `(interface, short item name) -> every FunctionId implementing it, across all impls`
+/// one interface+name pair legitimately has one implementor per concrete type, so this
+/// stays a filtered list rather than a single winner
+pub(in crate::hir) type InterfaceItems = HashMap<(SymbolId, SymbolId), Vec<FunctionId>>;
 pub(in crate::hir) type Interfaces<'hir> = HashMap<SymbolId, InterfaceSignature<'hir>>;
 pub(in crate::hir) type InterfaceImpls<'hir> = HashSet<(Type<'hir>, SymbolId)>;
 /// Maps a generic parameter name (`T`) to the concrete type it was instantiated
@@ -219,6 +225,36 @@ impl<'hir> ItemTable<'hir> {
             || self.interfaces.impls.iter().any(|&(pattern, candidate)| {
                 candidate == interface && type_pattern_matches(pattern, typ)
             })
+    }
+
+    pub(in crate::hir) fn free_impl_function(
+        &self,
+        concrete: Type<'hir>,
+        interface: SymbolId,
+        name: SymbolId,
+    ) -> Option<FunctionId> {
+        let short_name = self.symbols.get(name);
+        self.functions.defs.iter().enumerate().find_map(|(index, definition)| {
+            (definition.owner == Owner::Interface { on: concrete, interface }
+                && !definition.has_receiver
+                && self.symbols.get(definition.name).rsplit("::").next() == Some(short_name))
+            .then_some(FunctionId(index as u32))
+        })
+    }
+
+    pub(in crate::hir) fn interface_constant(
+        &self,
+        concrete: Type<'hir>,
+        interface: SymbolId,
+        name: &str,
+    ) -> Option<&'hir Constant<'hir>> {
+        self.values.constants.values().copied().find(|constant| {
+            matches!(
+                constant.owner,
+                Owner::Interface { on, interface: candidate }
+                    if on == concrete && candidate == interface
+            ) && self.symbols.get(constant.name).rsplit("::").next() == Some(name)
+        })
     }
 
     /// Assembles the final [Hir](hir::Hir), consuming everything this
