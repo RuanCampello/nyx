@@ -110,6 +110,11 @@ impl<'hir> AdtDef<'hir> {
     }
 
     #[inline]
+    pub fn field(&self, name: SymbolId) -> Option<&FieldDef<'hir>> {
+        self.fields().iter().find(|field| field.name == name)
+    }
+
+    #[inline]
     pub fn variants(&self) -> &[VariantDef<'hir>] {
         kind_field!(&self.kind, Enum, variants, "variants requested from struct definition")
     }
