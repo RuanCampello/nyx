@@ -58,8 +58,8 @@ pub trait Lowerable: Target {
         function: &mir::Function,
         symbols: &SymbolTable,
         all_functions: &[mir::Function],
-        adt_layouts: &mir::AdtLayouts<'_>,
-        adt_reprs: &[Option<EnumRepr>],
+        layouts: &mir::Layouts<'_>,
+        reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self>;
 }
@@ -370,7 +370,7 @@ impl<'f, 'hir, T: Target> Lower<'f, 'hir, T> {
         function: &'f Function<'hir>,
         symbols: &'f SymbolTable,
         all_functions: &'f [Function<'hir>],
-        adts: &'f mir::AdtLayouts<'hir>,
+        adts: &'f mir::Layouts<'hir>,
         adt_reprs: &'f [Option<EnumRepr>],
         arrays: &'f [mir::Layout],
     ) -> Self {

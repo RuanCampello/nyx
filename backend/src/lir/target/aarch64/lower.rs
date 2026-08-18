@@ -30,7 +30,7 @@ impl Lowerable for AArch64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
-        adt_layouts: &mir::AdtLayouts<'_>,
+        adt_layouts: &mir::Layouts<'_>,
         adt_reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {

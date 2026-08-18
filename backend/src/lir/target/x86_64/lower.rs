@@ -25,18 +25,12 @@ impl Lowerable for X86_64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
-        adt_layouts: &mir::AdtLayouts<'_>,
-        adt_reprs: &[Option<EnumRepr>],
+        layouts: &mir::Layouts<'_>,
+        reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let mut lower = Lower::<X86_64>::new(
-            function,
-            symbols,
-            all_functions,
-            adt_layouts,
-            adt_reprs,
-            array_layouts,
-        );
+        let mut lower =
+            Lower::<X86_64>::new(function, symbols, all_functions, layouts, reprs, array_layouts);
 
         lower.lower_param_moves();
 

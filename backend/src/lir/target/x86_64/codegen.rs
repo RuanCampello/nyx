@@ -829,24 +829,6 @@ impl Function<X86_64> {
     }
 
     #[inline(always)]
-    fn reg_bytes(&self, vreg: &VReg) -> u8 {
-        self.vreg_types.get(vreg.0 as usize).map(|typ| typ.bytes()).unwrap_or(4)
-    }
-
-    #[inline(always)]
-    fn is_float(&self, vreg: &VReg) -> bool {
-        matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
-    }
-
-    #[inline(always)]
-    fn is_signed(&self, vreg: &VReg) -> bool {
-        matches!(
-            self.vreg_types.get(vreg.0 as usize),
-            Some(MachineType::Int { signed: true, .. })
-        )
-    }
-
-    #[inline(always)]
     fn operand<'s>(
         &self,
         alloc: &Allocation<X86_64>,

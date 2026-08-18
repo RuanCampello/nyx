@@ -154,8 +154,8 @@ where
             function,
             &mir.symbols,
             &mir.functions,
-            &mir.adt_layouts,
-            &mir.adt_reprs,
+            &mir.layouts,
+            &mir.reprs,
             &mir.array_layouts,
         );
         opt::combine(&mut lir);
@@ -197,8 +197,8 @@ where
     }
 
     let layouts = Layouts {
-        adts: &mir.adt_layouts,
-        adt_reprs: &mir.adt_reprs,
+        adts: &mir.layouts,
+        adt_reprs: &mir.reprs,
         arrays: &mir.array_layouts,
     };
     emit_statics(&mir.statics, layouts, &mut out);
@@ -350,6 +350,24 @@ impl<T: Target> Function<T> {
         self.floats.insert(bits, label.clone());
         label
     }
+
+    #[inline(always)]
+    pub(in crate::lir) fn reg_bytes(&self, vreg: &VReg) -> u8 {
+        self.vreg_types.get(vreg.0 as usize).map(|typ| typ.bytes()).unwrap_or(4)
+    }
+
+    #[inline(always)]
+    pub(in crate::lir) fn is_float(&self, vreg: &VReg) -> bool {
+        matches!(self.vreg_types.get(vreg.0 as usize), Some(MachineType::Float { .. }))
+    }
+
+    #[inline(always)]
+    pub(in crate::lir) fn is_signed(&self, vreg: &VReg) -> bool {
+        matches!(
+            self.vreg_types.get(vreg.0 as usize),
+            Some(MachineType::Int { signed: true, .. })
+        )
+    }
 }
 
 impl MachineType {
@@ -411,52 +429,52 @@ impl TypeExt for Type<'_> {
 
     #[inline(always)]
     fn machine_type(&self, layouts: Layouts) -> MachineType {
+        use {MachineType::*, TypeKind::*};
+
         match self.kind() {
-            TypeKind::I8 => MachineType::Int { bytes: 1, signed: true },
-            TypeKind::U8 | TypeKind::Bool => MachineType::Int { bytes: 1, signed: false },
-            TypeKind::I16 => MachineType::Int { bytes: 2, signed: true },
-            TypeKind::U16 => MachineType::Int { bytes: 2, signed: false },
-            TypeKind::I32 => MachineType::Int { bytes: 4, signed: true },
-            TypeKind::U32 | TypeKind::Char => MachineType::Int { bytes: 4, signed: false },
-            TypeKind::I64 | TypeKind::Iptr => MachineType::Int { bytes: 8, signed: true },
-            TypeKind::U64 | TypeKind::Uptr | TypeKind::Ref { .. } | TypeKind::Raw { .. } => {
-                MachineType::Int { bytes: 8, signed: false }
-            },
-            TypeKind::Str | TypeKind::Slice { .. } => MachineType::Struct { size: 16, align: 8 },
-            TypeKind::String => MachineType::Struct { size: 24, align: 8 },
-            TypeKind::F32 => MachineType::Float { bytes: 4 },
-            TypeKind::F64 => MachineType::Float { bytes: 8 },
-            TypeKind::Adt(id, _) => {
+            I8 => Int { bytes: 1, signed: true },
+            U8 | Bool => Int { bytes: 1, signed: false },
+            I16 => Int { bytes: 2, signed: true },
+            U16 => Int { bytes: 2, signed: false },
+            I32 => Int { bytes: 4, signed: true },
+            U32 | Char => Int { bytes: 4, signed: false },
+            I64 | Iptr => Int { bytes: 8, signed: true },
+            U64 | Uptr | Ref { .. } | Raw { .. } => Int { bytes: 8, signed: false },
+            Str | Slice { .. } => Struct { size: 16, align: 8 },
+            String => Struct { size: 24, align: 8 },
+            F32 => Float { bytes: 4 },
+            F64 => Float { bytes: 8 },
+            Adt(id, _) => {
                 let layout = layouts.adts[self];
                 match layouts.adt_reprs[id.0 as usize] {
-                    None => {
-                        let (size, align) = layout.into();
-                        MachineType::Struct { size, align }
-                    },
                     Some(repr) => {
                         let tag_size = repr.layout().0;
                         let (size, align) = layout.into();
                         match size > tag_size {
-                            true => MachineType::Struct { size, align },
+                            true => Struct { size, align },
                             false => repr.typ().machine_type(layouts),
                         }
                     },
+                    _ => {
+                        let (size, align) = layout.into();
+                        Struct { size, align }
+                    },
                 }
             },
-            TypeKind::Array(id) => {
+            Array(id) => {
                 let (size, align) = layouts.arrays[id.0 as usize].into();
-                MachineType::Struct { size, align }
+                Struct { size, align }
             },
-            TypeKind::Unit => unreachable!("unit does not have a machine type"),
-            TypeKind::SelfType => unreachable!("Self type does not have a machine type"),
-            TypeKind::GenericParam(_) => {
+            Never => Int { bytes: 4, signed: true },
+            Unit => unreachable!("unit does not have a machine type"),
+            SelfType => unreachable!("Self type does not have a machine type"),
+            GenericParam(_) => {
                 unreachable!("GenericParam must be resolved before LIR lowering")
             },
-            TypeKind::Never => MachineType::Int { bytes: 4, signed: true },
-            TypeKind::Infer(_) => {
+            Infer(_) => {
                 unreachable!("integer inference variables must be resolved before LIR lowering")
             },
-            TypeKind::Error => unreachable!("poisoned types must not reach LIR lowering"),
+            Error => unreachable!("poisoned types must not reach LIR lowering"),
         }
     }
 }
