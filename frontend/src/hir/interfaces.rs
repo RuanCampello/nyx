@@ -143,6 +143,12 @@ fn validate_impls<'hir, 'd, 'h>(
             .map(|constant| (constant.name, constant))
             .collect();
 
+        let subst_table = build_subst_table(
+            &concrete_args,
+            interface.generic_params.len(),
+            scope.types.common.self_type,
+        );
+
         for &required in &interface.superinterfaces {
             if !scope.interfaces.defs.contains_key(&required) {
                 let name = scope.arena.alloc_str(scope.symbols.get(required));
@@ -198,11 +204,6 @@ fn validate_impls<'hir, 'd, 'h>(
             let impl_receiver_mut = signature.receiver_mutable();
             let impl_explicit_params = signature.explicit_params();
 
-            let subst_table = build_subst_table(
-                &concrete_args,
-                interface.generic_params.len(),
-                scope.types.common.self_type,
-            );
             let required_params: Vec<_> = required
                 .params
                 .iter()
@@ -292,11 +293,6 @@ fn validate_impls<'hir, 'd, 'h>(
                 continue;
             };
 
-            let subst_table = build_subst_table(
-                &concrete_args,
-                interface.generic_params.len(),
-                scope.types.common.self_type,
-            );
             let expected = substitute_self(
                 &scope.types,
                 required.typ.subst(&scope.types, &scope.arrays, &subst_table),
