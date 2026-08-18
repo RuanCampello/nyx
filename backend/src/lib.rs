@@ -73,21 +73,19 @@ pub fn compile(src: &str) -> Result<String, NyxError> {
 /// Run the full single-file nyx compilation pipeline for a specific target
 pub fn compile_for(src: &str, target: TargetArch) -> Result<String, NyxError> {
     diagnostic::reset();
-    // Single file: it gets base 0, so the plain constructor produces global spans.
     diagnostic::add_file("<source>", src);
 
     let arena = bumpalo::Bump::new();
-    let (statements, errors) = parser::Parser::new(src).recovering().parse_recovering();
+    let parsed = parser::Parser::new(src).parse();
 
-    // a dropped item makes every use of it look undeclared: stop before that
-    // cascade buries the syntax errors that caused it
-    if !errors.is_empty() {
-        let rendered = errors.into_iter().map(|error| error.rich(Span::default()));
-        return Err(diagnostic::render_batch(rendered).into());
-    }
-
-    let mut hir = hir::lower_collecting(statements, &arena)?;
-    report(std::mem::take(&mut hir.diagnostics))?;
+    let mut hir = hir::lower(parsed.statements, &arena);
+    let mut diagnostics: Vec<_> = parsed
+        .diagnostics
+        .into_iter()
+        .map(|error| error.rich(Span::default()))
+        .collect();
+    diagnostics.append(&mut hir.diagnostics);
+    report(diagnostics)?;
 
     let mut mir = mir::lower(hir)?;
     report(mir::known_panics(&mir))?;
@@ -127,7 +125,7 @@ pub fn compile_project_for(
     .canonicalize()?;
     let arena = bumpalo::Bump::new();
 
-    let loader = module::ModuleLoader::new(name.to_string(), root, &arena).collecting();
+    let loader = module::ModuleLoader::new(name.to_string(), root, &arena);
     let loaded = match source.is_dir() {
         true => loader.load_directory(source),
         false => loader.load(source),
@@ -215,10 +213,11 @@ fn report(diagnostics: Vec<diagnostic::RichDiagnostic>) -> Result<(), NyxError> 
         eprintln!("{}", diagnostic::render_batch(warnings).display());
     }
 
-    match errors.is_empty() {
-        true => Ok(()),
-        false => Err(diagnostic::render_batch(errors).into()),
+    if !errors.is_empty() {
+        return Err(diagnostic::render_batch(errors).into());
     }
+
+    Ok(())
 }
 
 impl TargetArch {
