@@ -8,6 +8,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdtDef<'hir> {
     pub name: SymbolId,
+    pub is_pub: bool,
     pub decl_span: Span,
     pub name_span: Span,
     pub kind: AdtKind<'hir>,

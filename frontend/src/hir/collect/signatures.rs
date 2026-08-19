@@ -132,6 +132,7 @@ impl<'hir> ItemTable<'hir> {
 
             let signature = InterfaceSignature {
                 name,
+                is_pub: interface.is_pub,
                 superinterfaces,
                 methods,
                 constants,

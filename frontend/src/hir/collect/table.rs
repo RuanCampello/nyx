@@ -121,6 +121,7 @@ pub struct ArrayTable<'hir> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceSignature<'hir> {
     pub name: SymbolId,
+    pub is_pub: bool,
     pub superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature<'hir>>,
     pub constants: Vec<InterfaceConstSignature<'hir>>,

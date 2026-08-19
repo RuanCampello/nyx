@@ -39,6 +39,7 @@ impl<'hir> ItemTable<'hir> {
 
             let id = self.adts.defs.push(AdtDef {
                 name: symbol,
+                is_pub: struct_decl.is_pub,
                 decl_span: struct_decl.span,
                 name_span: struct_decl.name_span,
                 kind: AdtKind::Struct { fields: Vec::new(), repr: struct_decl.repr },
@@ -139,6 +140,7 @@ impl<'hir> ItemTable<'hir> {
 
             let id = self.adts.defs.push(AdtDef {
                 name: symbol,
+                is_pub: enum_decl.is_pub,
                 decl_span: enum_decl.span,
                 name_span: enum_decl.name_span,
                 kind: AdtKind::Enum { variants: Vec::new(), repr, payload_offset: 0 },

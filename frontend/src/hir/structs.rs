@@ -429,6 +429,7 @@ impl<'a, 'h, 'hir> Lowering<'a, 'h, 'hir> {
 
         lowered[id] = Some(AdtDef {
             name,
+            is_pub: declaration.is_pub,
             decl_span: declaration.span,
             name_span: declaration.name_span,
             kind: AdtKind::Struct { fields, repr: declaration.repr },
