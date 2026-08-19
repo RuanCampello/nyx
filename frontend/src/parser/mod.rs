@@ -27,6 +27,9 @@ pub struct Parser<'i> {
     errors: Vec<ParserError<'i>>,
     /// tokens pulled off the stream so far
     consumed: usize,
+    /// whether a `{` ahead opens the body of the construct being parsed rather
+    /// than a struct literal, as in the head of an `if`, `loop` or `match`
+    no_struct_literal: bool,
 }
 
 /// The complete result of parsing one source file
@@ -60,6 +63,7 @@ impl<'i> Parser<'i> {
             last: None,
             errors: Vec::new(),
             consumed: 0,
+            no_struct_literal: false,
         }
     }
 
@@ -72,6 +76,7 @@ impl<'i> Parser<'i> {
             last: None,
             errors: Vec::new(),
             consumed: 0,
+            no_struct_literal: false,
         }
     }
 
@@ -104,6 +109,37 @@ impl<'i> Parser<'i> {
         }
 
         statements
+    }
+
+    pub(crate) fn in_construct_head<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParserError<'i>>,
+    ) -> Result<T, ParserError<'i>> {
+        self.with_struct_literal(false, parse)
+    }
+
+    pub(crate) fn in_delimiter<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParserError<'i>>,
+    ) -> Result<T, ParserError<'i>> {
+        self.with_struct_literal(true, parse)
+    }
+
+    #[inline]
+    pub(crate) const fn struct_literal_allowed(&self) -> bool {
+        !self.no_struct_literal
+    }
+
+    fn with_struct_literal<T>(
+        &mut self,
+        allowed: bool,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParserError<'i>>,
+    ) -> Result<T, ParserError<'i>> {
+        let previous = std::mem::replace(&mut self.no_struct_literal, !allowed);
+        let parsed = parse(self);
+        self.no_struct_literal = previous;
+
+        parsed
     }
 
     /// Whether the `@name` ahead opens a block rather than annotating a declaration
@@ -581,6 +617,104 @@ mod tests {
             ["unfinished", "main"],
             "both functions survive as separate items"
         );
+    }
+
+    #[test]
+    fn a_half_typed_field_access_keeps_its_block() {
+        let (statements, errors) =
+            recovered("fn a() { p.\n}\nfn b() { let ok = 2; }\nstruct P { x: i32 }");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ParseErrorKind::ExpectedIdentifier { .. })),
+            "the missing field name is reported: {errors:?}"
+        );
+        assert_eq!(
+            item_names(&statements),
+            ["a", "b", "P"],
+            "a `.` with nothing after it must not consume the closing brace and \
+             turn the rest of the file into one runaway item"
+        );
+    }
+
+    fn body_expression(source: &str) -> crate::parser::expression::Expression<'_> {
+        let parsed = Parser::new(source).parse();
+        assert!(parsed.diagnostics.is_empty(), "{source:?}: {:?}", parsed.diagnostics);
+
+        let Some(Statement::Item(Item { kind: ItemKind::Fn(function), .. })) =
+            parsed.statements.into_iter().next()
+        else {
+            panic!("{source:?} must parse as one function");
+        };
+
+        match function.body.statements.into_iter().next() {
+            Some(Statement::Expr(expr, _)) => expr,
+            other => panic!("{source:?} must have one expression body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_struct_field_may_be_written_as_its_own_name() {
+        use crate::parser::expression::Expression;
+
+        let Expression::Struct { fields, .. } = body_expression("fn main() { Point { x, y: 2 } }")
+        else {
+            panic!("a shorthand field still opens a struct literal");
+        };
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "x");
+        assert_eq!(
+            fields[0].value,
+            Expression::Identifier("x", fields[0].span),
+            "the shorthand stands for the binding of the same name, spanned where              it is written so it still resolves and type-checks like any other value"
+        );
+        assert_eq!(fields[1].name, "y");
+        assert_eq!(fields[1].value, Expression::Integer(2, fields[1].value.span()));
+    }
+
+    #[test]
+    fn a_lone_shorthand_field_still_opens_a_literal() {
+        use crate::parser::expression::Expression;
+
+        let Expression::Struct { fields, .. } = body_expression("fn main() { Point { x } }") else {
+            panic!("`Point {{ x }}` is a struct literal, not a name beside a block");
+        };
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "x");
+    }
+
+    #[test]
+    fn a_construct_head_reads_a_brace_as_its_body() {
+        use crate::parser::expression::Expression;
+
+        let parsed = Parser::new("fn main() { if flag { x } }").parse();
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+        let Some(Statement::Item(Item { kind: ItemKind::Fn(function), .. })) =
+            parsed.statements.into_iter().next()
+        else {
+            panic!("expected fn main");
+        };
+        assert!(
+            matches!(function.body.statements.first(), Some(Statement::If(_))),
+            "got {:?}",
+            function.body.statements
+        );
+
+        let parsed = Parser::new("fn main() { if take(Point { x, y }) { z } }").parse();
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "a literal inside a call in a construct head still parses: {:?}",
+            parsed.diagnostics
+        );
+
+        let Expression::Call { args, .. } = body_expression("fn main() { take(Point { x, y }) }")
+        else {
+            panic!("expected a call");
+        };
+        assert!(matches!(args.first(), Some(Expression::Struct { .. })), "got {args:?}");
     }
 
     #[test]

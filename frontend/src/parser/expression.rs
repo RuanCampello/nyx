@@ -210,12 +210,14 @@ impl<'i> Expression<'i> {
             },
 
             TokenKind::Punct(Punct::OpenParen) => {
-                let expr = parser.parse_node::<Expression<'i>>()?;
+                let expr = parser.in_delimiter(|parser| parser.parse_node::<Expression<'i>>())?;
                 parser.expect_token(Punct::CloseParen)?;
                 Ok(expr)
             },
 
-            TokenKind::Punct(Punct::OpenBracket) => Self::parse_array_literal(parser, token.span),
+            TokenKind::Punct(Punct::OpenBracket) => {
+                parser.in_delimiter(|parser| Self::parse_array_literal(parser, token.span))
+            },
 
             _ => {
                 parser.push_back(token);
@@ -235,15 +237,21 @@ impl<'i> Expression<'i> {
     ) -> Result<Self, ParserError<'i>> {
         parser.expect_token(Punct::OpenBrace)?;
 
-        let (fields, close_span) =
+        let (fields, close_span) = parser.in_delimiter(|parser| {
             statement::parse_comma_separated(parser, Punct::CloseBrace, |parser| {
                 let (name, field_span) = parser.expect_identifier()?;
-                parser.expect_token(Punct::Colon)?;
+
+                if !parser.consume_token(Punct::Colon)? {
+                    let value = Expression::Identifier(name, field_span);
+                    return Ok(StructField { name, value, span: field_span });
+                }
+
                 let value = parser.parse_node::<Expression>()?;
                 let span = field_span + value.span();
 
                 Ok(StructField { name, value, span })
-            })?;
+            })
+        })?;
 
         let span = span + close_span;
 
@@ -312,6 +320,13 @@ impl<'i> Expression<'i> {
         parser: &mut Parser<'i>,
         fallback_span: Span,
     ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
+        parser.in_delimiter(|parser| Self::call_args_body(parser, fallback_span))
+    }
+
+    fn call_args_body(
+        parser: &mut Parser<'i>,
+        fallback_span: Span,
+    ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
         let mut args = Vec::new();
         let mut first = true;
         let end_span;
@@ -359,6 +374,16 @@ impl<'i> Expression<'i> {
 
         match token.kind {
             TokenKind::Punct(Punct::Dot) => {
+                if let Some(Ok(ahead)) = parser.peek()
+                    && !matches!(ahead.kind, TokenKind::Identifier(_))
+                {
+                    let (kind, span) = (ahead.kind, ahead.span);
+                    return Err(ParserError::new(
+                        ParseErrorKind::ExpectedIdentifier { found: kind },
+                        span,
+                    ));
+                }
+
                 let (field, span) = parser.expect_identifier()?;
                 let span = left.span() + span;
 
@@ -494,7 +519,7 @@ impl<'i> Expression<'i> {
             },
 
             TokenKind::Punct(Punct::OpenBracket) => {
-                let index = parser.parse_node::<Expression<'i>>()?;
+                let index = parser.in_delimiter(|parser| parser.parse_node::<Expression<'i>>())?;
                 let close = parser.expect_token(Punct::CloseBracket)?.span;
                 let span = left.span() + close;
 
@@ -535,9 +560,20 @@ impl<'i> Expression<'i> {
     }
 
     fn next_is_struct(parser: &mut Parser<'i>) -> bool {
-        matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)))
-            && matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)))
-            && matches!(parser.peek_nth(2), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::Colon)))
+        if !parser.struct_literal_allowed() {
+            return false;
+        }
+
+        let opens = matches!(parser.peek_nth(0), Some(Ok(t)) if t.is_kind(TokenKind::Punct(Punct::OpenBrace)));
+        let named =
+            matches!(parser.peek_nth(1), Some(Ok(t)) if matches!(t.kind, TokenKind::Identifier(_)));
+        let separated = matches!(parser.peek_nth(2), Some(Ok(t)) if {
+            t.is_kind(TokenKind::Punct(Punct::Colon))
+                || t.is_kind(TokenKind::Punct(Punct::Comma))
+                || t.is_kind(TokenKind::Punct(Punct::CloseBrace))
+        });
+
+        opens && named && separated
     }
 }
 

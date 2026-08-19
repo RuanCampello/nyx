@@ -1115,6 +1115,87 @@ fn generic_bound_resolves_its_associated_constant() {
 }
 
 #[test]
+fn field_shorthand_binds_the_name_it_stands_for() {
+    let src = r#"
+            struct Point { x: i64, y: i64 }
+            fn make(x: i64, y: i64): Point { Point { x, y } }
+            fn main(): i64 { let p = make(1, 2); p.x }
+        "#;
+
+    with_lowered(src, |hir| {
+        let make = hir
+            .functions
+            .iter()
+            .find(|func| hir.symbols.get(func.name).ends_with("make"))
+            .expect("make is lowered");
+
+        // the shorthand is the parameter of the same name, not a fresh binding
+        assert_eq!(make.params.len(), 2, "no extra local is introduced");
+    });
+}
+
+#[test]
+fn field_shorthand_still_needs_the_binding_to_exist() {
+    let src = r#"
+            struct Point { x: i64, y: i64 }
+            fn main(): i64 { let x: i64 = 1; let p = Point { x, y }; p.x }
+        "#;
+
+    with_lowered_err(src, |err| {
+        assert_eq!(
+            err.kind,
+            HirErrorKind::UndeclaredIdentifier { name: "y" },
+            "a field named after nothing in scope is an error, not an empty field"
+        );
+    });
+}
+
+#[test]
+fn field_shorthand_still_checks_the_bindings_type() {
+    let src = r#"
+            struct Point { x: i64, y: i64 }
+            fn main(): i64 {
+                let x: i64 = 1;
+                let y: bool = true;
+                let p = Point { x, y };
+                p.x
+            }
+        "#;
+
+    with_lowered_err(src, |err| {
+        assert!(
+            matches!(err.kind, HirErrorKind::TypeMismatch { .. }),
+            "sharing a name is not sharing a type: {:?}",
+            err.kind
+        );
+    });
+}
+
+#[test]
+fn field_shorthand_still_checks_the_field_exists() {
+    let src = r#"
+            struct Point { x: i64 }
+            fn main(): i64 { let x: i64 = 1; let z: i64 = 2; let p = Point { x, z }; p.x }
+        "#;
+
+    with_lowered_err(src, |err| {
+        assert_eq!(err.kind, HirErrorKind::UnknownField { struct_name: "Point", field: "z" });
+    });
+}
+
+#[test]
+fn field_shorthand_still_requires_every_field() {
+    let src = r#"
+            struct Point { x: i64, y: i64 }
+            fn main(): i64 { let x: i64 = 1; let p = Point { x }; p.x }
+        "#;
+
+    with_lowered_err(src, |err| {
+        assert_eq!(err.kind, HirErrorKind::MissingField { struct_name: "Point", field: "y" });
+    });
+}
+
+#[test]
 fn primitive_orphan_rule_is_enforced() {
     let src = r#"
             impl i64 {

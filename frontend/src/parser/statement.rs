@@ -629,7 +629,7 @@ impl<'i> Parsable<'i> for If<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let if_token = parser.expect_token(Keyword::If)?;
 
-        let condition = Expression::parse(parser)?;
+        let condition = parser.in_construct_head(Expression::parse)?;
         let has_block = matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::OpenBrace));
 
         let (then_branch, then_end) = match has_block {
@@ -668,8 +668,7 @@ impl<'i> Parsable<'i> for If<'i> {
             },
         };
 
-        let mut else_branch = None;
-        let mut end_pos = then_end;
+        let (mut else_branch, mut end_pos) = (None, then_end);
 
         if parser.consume_optional(TokenKind::Keyword(Keyword::Else)) {
             let Some(Ok(next_token)) = parser.peek() else {
@@ -733,14 +732,14 @@ impl<'i> Parsable<'i> for Loop<'i> {
             _ => None,
         };
 
-        let start = Expression::parse(parser)?;
+        let start = parser.in_construct_head(Expression::parse)?;
         let header = match parser.peek() {
             Some(Ok(token)) if token.is_kind(Punct::Range) || token.is_kind(Punct::RangeEq) => {
                 let inclusive = parser.consume_token(Punct::RangeEq)?;
                 if !inclusive {
                     parser.expect_token(Punct::Range)?;
                 }
-                let end = Expression::parse(parser)?;
+                let end = parser.in_construct_head(Expression::parse)?;
                 LoopHeader::Range { binding, start, end, inclusive }
             },
             Some(Ok(token)) => {
@@ -766,7 +765,7 @@ impl<'i> Parsable<'i> for Loop<'i> {
 impl<'i> Parsable<'i> for Match<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let match_token = parser.expect_token(Keyword::Match)?;
-        let scrutinee = Expression::parse(parser)?;
+        let scrutinee = parser.in_construct_head(Expression::parse)?;
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut arms = Vec::new();
@@ -1001,8 +1000,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
             })?,
         };
 
-        let mut interface_type = None;
-        let mut interface = None;
+        let (mut interface_type, mut interface) = (None, None);
         if parser.consume_token(Keyword::With)? {
             let parsed_interface = parser.parse_node::<Spanned<Type>>()?;
             let interface_name = parsed_interface.value().name().ok_or_else(|| {
@@ -1025,27 +1023,24 @@ impl<'i> Parsable<'i> for Impl<'i> {
         let mut member_docs = Vec::new();
 
         let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
-            Some(Ok(_)) if parser.is_const_decl() => {
+            Some(Ok(_)) if parser.is_const_decl() => Ok({
                 let constant = parser.parse_node::<Const>()?;
                 push_member_docs(&mut member_docs, constant.span, docs);
                 constants.push(constant);
-                Ok(())
-            },
+            }),
 
-            Some(Ok(token)) if token.is_kind(Keyword::Type) => {
+            Some(Ok(token)) if token.is_kind(Keyword::Type) => Ok({
                 let associated = ImplType::parse(parser)?;
                 push_member_docs(&mut member_docs, associated.span, docs);
                 types.push(associated);
-                Ok(())
-            },
+            }),
 
-            Some(Ok(token)) if token.is_fn_start() => {
+            Some(Ok(token)) if token.is_fn_start() => Ok({
                 let mut method = parser.parse_node::<Function>()?;
                 push_member_docs(&mut member_docs, method.span, docs);
                 method.impl_type = Some(name);
                 methods.push(method);
-                Ok(())
-            },
+            }),
 
             Some(Ok(token)) => Err(ParserError::new(
                 ParseErrorKind::Expected {
