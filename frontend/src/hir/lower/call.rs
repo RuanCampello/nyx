@@ -375,12 +375,12 @@ where
             .expect("generic call target retains its source body")
             .generics
             .iter()
-            .filter(|generic| {
-                fixed
-                    .get(generic.name)
-                    .is_none_or(|typ| matches!(typ.kind(), TypeKind::GenericParam(_)))
+            .enumerate()
+            .filter_map(|(at, generic)| match fixed.get(generic.name).map(|typ| typ.kind()) {
+                Some(TypeKind::GenericParam(slot)) => Some((slot as usize, generic.clone())),
+                None => Some((at, generic.clone())),
+                _ => None,
             })
-            .cloned()
             .collect();
 
         let open_params = match syntax {
@@ -388,8 +388,8 @@ where
             GenericCallSyntax::Method { .. } => signature.explicit_params(),
         };
 
-        let generic_count =
-            generic_arity(&signature.params, signature.return_type).max(bounds.len());
+        let generic_count = generic_arity(&signature.params, signature.return_type)
+            .max(bounds.iter().map(|&(slot, _)| slot + 1).max().unwrap_or(0));
 
         let name = self.arena.alloc_str(self.scope.symbols.get(signature.name));
         self.check_arity(
@@ -409,18 +409,21 @@ where
         }
         let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
 
-        let substs = match type_args.is_empty() {
-            false => self.resolve_turbofish(type_args)?,
-            true => match syntax {
-                GenericCallSyntax::Free => infer_type_args(open_params, &arg_types, generic_count),
-                GenericCallSyntax::Method { receiver, .. } => {
-                    let mut actual = Vec::with_capacity(arg_types.len() + 1);
-                    actual.push(self.typeck.type_of(receiver.id));
-                    actual.extend(arg_types.iter().copied());
-                    infer_type_args(&signature.params, &actual, generic_count)
-                },
+        let mut substs = match syntax {
+            GenericCallSyntax::Free => infer_type_args(open_params, &arg_types, generic_count),
+            GenericCallSyntax::Method { receiver, .. } => {
+                let mut actual = Vec::with_capacity(arg_types.len() + 1);
+                actual.push(self.typeck.type_of(receiver.id));
+                actual.extend(arg_types.iter().copied());
+                infer_type_args(&signature.params, &actual, generic_count)
             },
         };
+
+        for (&(slot, _), typ) in bounds.iter().zip(self.resolve_turbofish(type_args)?) {
+            if let Some(existing) = substs.get_mut(slot) {
+                *existing = typ;
+            }
+        }
         self.check_bounds(&bounds, &substs, span)?;
 
         let return_type =
@@ -521,13 +524,15 @@ where
 
     fn check_bounds(
         &self,
-        generics: &[GenericBound<'src>],
+        generics: &[(usize, GenericBound<'src>)],
         args: &[Type<'hir>],
         span: Span,
     ) -> Result<(), HirError<'hir>> {
         let current_generics = self.function.map(|f| f.generics.as_slice()).unwrap_or(&[]);
-        for (i, param) in generics.iter().enumerate() {
-            let concrete_type = args[i];
+        for &(slot, ref param) in generics {
+            let Some(&concrete_type) = args.get(slot) else {
+                continue;
+            };
             for bound in &param.bounds {
                 let interface_name = match bound.value_ref() {
                     statement::Type::Named(name) => name,
