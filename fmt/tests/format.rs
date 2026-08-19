@@ -168,15 +168,15 @@ fn shorthand_never_applies_to_a_computed_value() {
 }
 
 #[test]
-fn shorthand_output_does_not_parse_yet() {
+fn shorthand_output_round_trips() {
     let source = "fn main(){let x=1;let p=Point{x:x};p.x}\n";
     let collapsed = format(source, shorthand_enabled()).unwrap();
-
     assert!(collapsed.contains("Point { x }"));
-    assert!(
-        format(&collapsed, FormatOptions::default()).is_err(),
-        "the parser accepted shorthand; enable it by default and invert this test"
-    );
+
+    let reprinted = format(&collapsed, FormatOptions::default())
+        .expect("shorthand the printer emits must parse again");
+    assert!(reprinted.contains("Point { x }"), "and stays shorthand: {reprinted}");
+    assert_eq!(reprinted, collapsed, "formatting is idempotent over the shorthand");
 }
 
 #[test]
