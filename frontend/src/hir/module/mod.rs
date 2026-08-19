@@ -78,11 +78,12 @@ pub enum ModuleError {
         code = "E044",
         message = "Symbol {name!} is not exported",
         primary = "not exported by this module",
-        help = "Add {`pub`} to {`fn {name}`} to export it"
+        help = "Add {`pub`} to {`{kind} {name}`} to export it"
     )]
     UnknownExport {
         path: PathBuf,
         name: String,
+        kind: &'static str,
         span: Span,
     },
 

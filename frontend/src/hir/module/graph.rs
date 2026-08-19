@@ -274,9 +274,11 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
 
             for item in items {
                 if !self.nodes[import_idx].exports.contains(item.name) {
+                    let kind = declared_kind(&self.nodes[import_idx].statements, item.name);
                     self.soft(ModuleError::UnknownExport {
                         path: import.clone(),
                         name: item.name.into(),
+                        kind,
                         span: item.span,
                     });
                 }
@@ -293,7 +295,13 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             };
 
             if !self.nodes[import_idx].exports.contains(name) {
-                self.soft(ModuleError::UnknownExport { path: import, name: name.into(), span });
+                let kind = declared_kind(&self.nodes[import_idx].statements, name);
+                self.soft(ModuleError::UnknownExport {
+                    path: import,
+                    name: name.into(),
+                    kind,
+                    span,
+                });
             }
         }
 
@@ -365,6 +373,26 @@ fn collect_interfaces<'src>(nodes: &[ModuleNode<'src>]) -> HashMap<String, Inter
     }
 
     interfaces
+}
+
+fn declared_kind<'k>(statements: &[Statement<'_>], name: &str) -> &'k str {
+    statements
+        .iter()
+        .find_map(|statement| {
+            let Statement::Item(item) = statement else {
+                return None;
+            };
+
+            match &item.kind {
+                ItemKind::Fn(f) if f.name == name => Some("fn"),
+                ItemKind::Struct(s) if s.name == name => Some("struct"),
+                ItemKind::Enum(e) if e.name == name => Some("enum"),
+                ItemKind::Interface(i) if i.name == name => Some("interface"),
+                ItemKind::Const(c) if c.name == name => Some("const"),
+                _ => None,
+            }
+        })
+        .unwrap_or("fn")
 }
 
 fn exports(statements: &[Statement<'_>]) -> HashSet<String> {
