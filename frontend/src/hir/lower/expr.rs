@@ -62,7 +62,7 @@ where
     ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
         match tail_ret && !expr.typ.diverges() {
             true => {
-                self.assert_type_at(self.return_type, expr.typ, expr.span, self.return_type_span)?;
+                self.check_type_at(self.return_type, expr.typ, expr.span, self.return_type_span)?;
                 Ok((Statement::Return(Some(expr.expr)), true))
             },
             _ => Ok((Statement::Expr(expr.expr), tail_ret || expr.typ.diverges())),
@@ -1102,7 +1102,13 @@ where
             | BinaryOperator::Sub
             | BinaryOperator::Mul
             | BinaryOperator::Div => {
-                self.assert_type(left, right, span)?;
+                // the operands already disagreeing is the one mistake here: keep
+                // the result poisoned so the enclosing check does not report a
+                // second, differently-framed mismatch against the same span
+                if !self.check_type_at(left, right, span, None)? {
+                    return Ok(self.scope.types.common.error);
+                }
+
                 let left = self.infer.resolve_shallow(left);
                 match left.is_number() || left.is_infer() {
                     true => Ok(left),
@@ -1135,7 +1141,10 @@ where
             },
 
             BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
-                self.assert_type(left, right, span)?;
+                if !self.check_type_at(left, right, span, None)? {
+                    return Ok(self.scope.types.common.error);
+                }
+
                 let left = self.infer.resolve_shallow(left);
                 match left == self.scope.types.common.bool || left.is_integer() || left.is_infer() {
                     true => Ok(left),

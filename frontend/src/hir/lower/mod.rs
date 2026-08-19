@@ -342,6 +342,7 @@ where
         }
     }
 
+    // TODO: remove this later
     #[inline(always)]
     fn resolve_type(
         &mut self,
@@ -358,30 +359,32 @@ where
         found: impl Into<Type<'hir>>,
         span: Span,
     ) -> Result<(), HirError<'hir>> {
-        self.assert_type_at(expected, found, span, None)
+        self.check_type_at(expected, found, span, None).map(drop)
     }
 
-    fn assert_type_at(
+    #[inline(always)]
+    fn check_type_at(
         &mut self,
         expected: impl Into<Type<'hir>>,
         found: impl Into<Type<'hir>>,
         span: Span,
         annotation: Option<Span>,
-    ) -> Result<(), HirError<'hir>> {
+    ) -> Result<bool, HirError<'hir>> {
         use TypeKind::*;
+
         let (expected, found) = (expected.into(), found.into());
         if expected.is_error() || found.is_error() || expected == found {
-            return Ok(());
+            return Ok(true);
         }
 
         if expected.is_infer() || found.is_infer() {
             return match self.infer.unify(expected, found) {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok(true),
                 _ => {
                     let expected = self.infer.resolve_or_default(expected);
                     let found = self.infer.resolve_or_default(found);
                     self.soft(Self::mismatch(expected, found, span, annotation));
-                    Ok(())
+                    Ok(false)
                 },
             };
         }
@@ -391,18 +394,18 @@ where
             && want == to
             && (mutable || !want_mut)
         {
-            return Ok(());
+            return Ok(true);
         }
 
         if let (Array(expected), Array(found)) = (expected.kind(), found.kind()) {
             let (lhs, rhs) = (self.scope.arrays.get(expected), self.scope.arrays.get(found));
             if lhs.len == rhs.len {
-                return self.assert_type_at(lhs.element, rhs.element, span, annotation);
+                return self.check_type_at(lhs.element, rhs.element, span, annotation);
             }
         }
 
         self.soft(Self::mismatch(expected, found, span, annotation));
-        Ok(())
+        Ok(false)
     }
 
     fn mismatch(
@@ -593,13 +596,21 @@ where
     'src: 'hir,
 {
     fn named(&mut self, name: &'hir str, span: Span) -> Result<Type<'hir>, HirError<'hir>> {
-        type_resolver::resolve_named(
-            Some(&self.generic_env),
+        // a generic parameter names no declaration, so it is not navigable
+        if let Some(&typ) = self.generic_env.get(name) {
+            return Ok(typ);
+        }
+
+        let typ = type_resolver::resolve_named(
+            None,
             name,
             span,
             |name| Some(self.scope.symbols.insert(name)),
             |symbol| self.scope.nominal_type(symbol),
-        )
+        )?;
+        self.scope.record_type_ref(span, typ);
+
+        Ok(typ)
     }
 
     fn generic(
@@ -608,7 +619,10 @@ where
         args: &[Type<'hir>],
         span: Span,
     ) -> Result<Type<'hir>, HirError<'hir>> {
-        self.scope.generic_adt(name, args, span)
+        let typ = self.scope.generic_adt(name, args, span)?;
+        self.scope.record_type_ref(span, typ);
+
+        Ok(typ)
     }
 
     fn self_type(&mut self, span: Span) -> Result<Type<'hir>, HirError<'hir>> {
