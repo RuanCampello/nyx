@@ -628,9 +628,11 @@ impl State {
 
 #[inline]
 fn indentation(options: &FormattingOptions) -> fmt::Indentation {
+    let width = options.tab_size.clamp(1, 16) as u8;
+
     match options.insert_spaces {
-        true => fmt::Indentation::Spaces { width: options.tab_size.clamp(1, 16) as u8 },
-        false => fmt::Indentation::Tabs,
+        true => fmt::Indentation::Spaces { width },
+        _ => fmt::Indentation::Tabs { width },
     }
 }
 

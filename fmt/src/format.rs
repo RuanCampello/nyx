@@ -11,6 +11,7 @@ use std::num::NonZero;
 pub struct FormatOptions {
     layout: LayoutOptions,
     field: FieldOptions,
+    style: StyleOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -22,15 +23,46 @@ pub struct LayoutOptions {
     indentation: Indentation,
 }
 
+/// Choices between two spellings the grammar accepts for the same construct
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct FieldOptions {
-    /// Whether use initialise field shorthand if possible
-    ///
-    /// Off until the parser makes the colon optional in a struct literal:
-    /// until then `Foo { x }` is source the compiler rejects.
+pub struct StyleOptions {
+    /// Whether a block body holding a single expression is rewritten as `= expr;`
     ///
     /// **default: false**
+    /// ```rust
+    /// fn add(x: i8, y: i8): i8 {
+    ///     return x + y;
+    /// }
+    /// ```
+    ///
+    /// **true**
+    /// ```rust
+    /// fn add(x: i8, y: i8): i8 = x + y;
+    /// ```
+    prefer_expression_body: bool,
+    /// Whether an `if` whose block holds a single statement is rewritten braceless
+    ///
+    /// **default: false**
+    /// ```rust
+    /// if feed.device_id() != 41 {
+    ///     return 1;
+    /// }
+    /// ```
+    ///
+    /// **true**
+    /// ```rust
+    /// if feed.device_id() != 41 return 1;
+    /// ```
+    prefer_single_line_if: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FieldOptions {
+    /// Whether to write a field as `x` when its value is the variable `x`
+    ///
+    /// **false**
     /// ```rust
     /// struct Foo {
     ///     x: u32,
@@ -47,7 +79,7 @@ pub struct FieldOptions {
     /// }
     ///
     ///```
-    /// **true**
+    /// **default: true**
     /// ```rust
     ///struct Foo {
     ///    x: u32,
@@ -109,7 +141,14 @@ impl Default for FormatOptions {
         Self {
             layout: LayoutOptions::default(),
             field: FieldOptions::default(),
+            style: StyleOptions::default(),
         }
+    }
+}
+
+impl Default for FieldOptions {
+    fn default() -> Self {
+        Self { initialise_short_hand: true, struct_align: None }
     }
 }
 
@@ -164,6 +203,16 @@ impl FormatOptions {
     pub const fn struct_align(&self) -> Option<NonZero<u8>> {
         self.field.struct_align
     }
+
+    #[inline]
+    pub const fn prefer_expression_body(&self) -> bool {
+        self.style.prefer_expression_body
+    }
+
+    #[inline]
+    pub const fn prefer_single_line_if(&self) -> bool {
+        self.style.prefer_single_line_if
+    }
 }
 
 impl std::fmt::Display for FormatError {
@@ -184,7 +233,7 @@ pub fn format(source: &str, options: FormatOptions) -> Result<String, FormatErro
     use frontend::parser::ParseOutput;
 
     let ParseOutput { diagnostics, statements } = Parser::new(source).parse();
-    if let Some(error) = diagnostics.first() {
+    if let Some(error) = diagnostics.iter().find(|error| !error.is_missing_semicolon()) {
         return Err(FormatError::Parse { span: error.span() });
     }
 

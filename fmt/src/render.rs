@@ -26,7 +26,11 @@ pub struct RenderOptions {
 #[serde(tag = "style", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Indentation {
     /// A tab character for every indentation level
-    Tabs,
+    Tabs {
+        /// Columns a tab is assumed to occupy, charged against the print width
+        #[serde(default = "default_tab_width")]
+        width: u8,
+    },
     /// A fixed number of spaces for every indentation level
     Spaces {
         /// Number of spaces written for one indentation level
@@ -43,9 +47,13 @@ enum Mode {
 
 const MAX_FIT_STEPS: usize = 1 << 16;
 
+const fn default_tab_width() -> u8 {
+    4
+}
+
 impl Default for Indentation {
     fn default() -> Self {
-        Self::Spaces { width: 4 }
+        Self::Tabs { width: default_tab_width() }
     }
 }
 
@@ -59,16 +67,18 @@ impl Indentation {
     #[inline]
     pub const fn width(self) -> u8 {
         match self {
-            Self::Tabs => 1,
-            Self::Spaces { width } => width,
+            Self::Tabs { width } | Self::Spaces { width } => width,
         }
     }
 
-    #[inline]
-    const fn unit(self) -> char {
+    /// `columns` is a width charged against the print width, always a multiple of
+    /// [Self::width], a tab is written once per level, a space once per column
+    fn write(self, out: &mut String, columns: usize) {
         match self {
-            Self::Tabs => '\t',
-            Self::Spaces { .. } => ' ',
+            Self::Tabs { width } => {
+                out.extend(std::iter::repeat_n('\t', columns / usize::from(width.max(1))))
+            },
+            Self::Spaces { .. } => out.extend(std::iter::repeat_n(' ', columns)),
         }
     }
 }
@@ -164,7 +174,11 @@ fn fits<'doc, 'src>(mut remaining: usize, mut commands: Vec<Command<'doc, 'src>>
             Doc::Group(content) => {
                 commands.push(Command { indent: command.indent, mode: Mode::Flat, doc: content })
             },
-            Doc::IfBreak { flat, .. } => commands.push(Command { doc: flat, ..command }),
+            // the layout a surrounding group already settled on, matching what `render` will do with the same command
+            Doc::IfBreak { broken, flat } => match command.mode {
+                Mode::Flat => commands.push(Command { doc: flat, ..command }),
+                Mode::Break => commands.push(Command { doc: broken, ..command }),
+            },
         }
     }
 
@@ -190,7 +204,7 @@ fn write_line(output: &mut String, pending: &mut Option<usize>, column: &mut usi
 #[inline]
 fn flush_indent(output: &mut String, pending: &mut Option<usize>, indentation: Indentation) {
     if let Some(indent) = pending.take() {
-        output.extend(std::iter::repeat_n(indentation.unit(), indent));
+        indentation.write(output, indent);
     }
 }
 
@@ -226,7 +240,13 @@ mod tests {
     #[test]
     fn renders_a_group_broken_when_it_does_not_fit() {
         assert_eq!(
-            render(&list(), RenderOptions { print_width: 12, ..Default::default() }),
+            render(
+                &list(),
+                RenderOptions {
+                    print_width: 12,
+                    indentation: Indentation::Spaces { width: 2 }
+                }
+            ),
             "call(\n  first,\n  second\n)"
         );
     }
@@ -240,7 +260,13 @@ mod tests {
         ]);
 
         assert_eq!(
-            render(&doc, RenderOptions { print_width: 7, ..Default::default() }),
+            render(
+                &doc,
+                RenderOptions {
+                    print_width: 7,
+                    indentation: Indentation::Spaces { width: 2 }
+                }
+            ),
             "xa\nbtail"
         );
     }
@@ -274,8 +300,32 @@ mod tests {
             "[ item ]"
         );
         assert_eq!(
-            render(&doc, RenderOptions { print_width: 6, ..Default::default() }),
+            render(
+                &doc,
+                RenderOptions {
+                    print_width: 6,
+                    indentation: Indentation::Spaces { width: 2 }
+                }
+            ),
             "[\n  item,\n]"
+        );
+    }
+
+    #[test]
+    fn tabs_are_written_once_per_level_not_once_per_column() {
+        let doc = Doc::concat([
+            Doc::text("{"),
+            Doc::indent(4, Doc::concat([Doc::hard_line(), Doc::text("body")])),
+            Doc::hard_line(),
+            Doc::text("}"),
+        ]);
+
+        assert_eq!(
+            render(
+                &doc,
+                RenderOptions { print_width: 80, indentation: Indentation::Tabs { width: 4 } }
+            ),
+            "{\n\tbody\n}"
         );
     }
 

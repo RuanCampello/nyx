@@ -102,6 +102,15 @@ impl<'src> Trivia<'src> {
             .filter(|piece| matches!(piece, Piece::LineComment(_)))
             .count()
     }
+
+    /// whether a comment lies inside `Span`
+    pub fn comments_within(&self, span: Span) -> bool {
+        self.gaps
+            .iter()
+            .filter(|gap| gap.span.end > span.start && gap.span.start < span.end)
+            .flat_map(|gap| &gap.pieces)
+            .any(|piece| matches!(piece, Piece::LineComment(_)))
+    }
 }
 
 pub fn opens_with_blank_line(pieces: &[Piece<'_>]) -> bool {

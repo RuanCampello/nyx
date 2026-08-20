@@ -99,7 +99,7 @@ impl<'src> Printer<'src> {
                 parts.push(Doc::hard_line());
             }
 
-            parts.push(self.statement(statement)?);
+            parts.push(self.statement(statement, index + 1 == statements.len())?);
             self.push_trailing_comment(&mut parts, span);
         }
 
@@ -163,7 +163,11 @@ impl<'src> Printer<'src> {
         }
     }
 
-    fn statement(&mut self, statement: &Statement<'src>) -> Result<Doc<'src>, FormatError> {
+    fn statement(
+        &mut self,
+        statement: &Statement<'src>,
+        is_tail: bool,
+    ) -> Result<Doc<'src>, FormatError> {
         match statement {
             Statement::Let(binding) => self.binding(binding),
             Statement::Return(returned) => self.returned(returned),
@@ -175,9 +179,9 @@ impl<'src> Printer<'src> {
             Statement::Expr(expr, _) => {
                 let printed = self.expression(expr)?;
 
-                match self.is_terminated(expr.span().end) {
-                    true => Ok(Doc::concat([printed, Doc::text(";")])),
-                    false => Ok(printed),
+                match is_tail && !self.is_terminated(expr.span().end) {
+                    true => Ok(printed),
+                    false => Ok(Doc::concat([printed, Doc::text(";")])),
                 }
             },
             Statement::Item(item) => self.item(item),
@@ -224,15 +228,20 @@ impl<'src> Printer<'src> {
             }
         }
 
-        parts.push(self.signature(
+        let signature = self.signature(
             function.name,
             function.name_span,
             function.receiver,
             &function.params,
             function.return_type.as_ref(),
             function.body.span.start,
-        ));
-        parts.push(self.body(&function.body)?);
+        );
+
+        parts.push(self.signature_and_body(
+            signature,
+            &function.body,
+            function.return_type.is_some(),
+        )?);
 
         Ok(Doc::concat(parts))
     }
@@ -361,18 +370,22 @@ impl<'src> Printer<'src> {
             None => method.span.end,
         };
 
-        parts.push(self.signature(
+        let signature = self.signature(
             method.name,
             method.name_span,
             method.receiver,
             &method.params,
             method.return_type.as_ref(),
             terminator,
-        ));
+        );
 
         match method.body {
-            Some(ref body) => parts.push(self.body(body)?),
-            None => parts.push(Doc::text(";")),
+            Some(ref body) => parts.push(self.signature_and_body(
+                signature,
+                body,
+                method.return_type.is_some(),
+            )?),
+            None => parts.push(Doc::concat([signature, Doc::text(";")])),
         }
 
         Ok(Doc::concat(parts))
@@ -414,25 +427,56 @@ impl<'src> Printer<'src> {
         Doc::concat(parts)
     }
 
-    fn body(&mut self, block: &Block<'src>) -> Result<Doc<'src>, FormatError> {
-        if !self.slice(block.span).starts_with('=') {
-            return Ok(Doc::concat([Doc::text(" "), self.block(block)?]));
+    /// a declaration's signature together with the `= expr;` or `{ ... }` closing it
+    fn signature_and_body(
+        &mut self,
+        signature: Doc<'src>,
+        block: &Block<'src>,
+        has_return_type: bool,
+    ) -> Result<Doc<'src>, FormatError> {
+        let written_compact = self.slice(block.span).starts_with('=');
+
+        // the grammar also admits `= if ...;` and `= match ...;`, which stay as
+        // written: expanding them would gain nothing and collapsing into them is
+        // never offered
+        if written_compact && collapsible(block).is_none() {
+            let [statement] = block.statements.as_slice() else {
+                return Err(FormatError::Unsupported { span: block.span });
+            };
+
+            return Ok(Doc::concat([
+                signature,
+                Doc::text(" = "),
+                self.statement(statement, false)?,
+            ]));
         }
 
-        let [statement] = block.statements.as_slice() else {
-            return Err(FormatError::Unsupported { span: block.span });
-        };
+        let eligible = has_return_type
+            && collapsible(block).is_some()
+            && !self.trivia.comments_within(block.span);
 
-        let printed = self.statement(statement)?;
-        let terminated = matches!(
-            statement,
-            Statement::Expr(expr, _) if self.is_terminated(expr.span().end)
-        );
-
-        match terminated {
-            true => Ok(Doc::concat([Doc::text(" = "), printed])),
-            false => Ok(Doc::concat([Doc::text(" = "), printed, Doc::text(";")])),
+        if !compact_shape(written_compact, self.options.prefer_expression_body(), eligible) {
+            return Ok(Doc::concat([signature, Doc::text(" "), self.block(block)?]));
         }
+
+        let value = collapsible(block).expect("a compact body reduces to one value");
+        let compact = Doc::concat([Doc::text(" = "), self.expression(value)?, Doc::text(";")]);
+        let expanded = Doc::concat([
+            Doc::text(" {"),
+            Doc::indent(
+                self.indent_width(),
+                Doc::concat([
+                    Doc::hard_line(),
+                    Doc::text("return "),
+                    self.expression(value)?,
+                    Doc::text(";"),
+                ]),
+            ),
+            Doc::hard_line(),
+            Doc::text("}"),
+        ]);
+
+        Ok(Doc::group(Doc::concat([signature, Doc::if_break(expanded, compact)])))
     }
 
     /// The `<...>` or `::<...>` list written at `after`
@@ -698,13 +742,32 @@ impl<'src> Printer<'src> {
     }
 
     fn conditional(&mut self, conditional: &If<'src>) -> Result<Doc<'src>, FormatError> {
-        let mut parts = vec![
-            Doc::text("if "),
-            self.expression(&conditional.condition)?,
-            Doc::text(" "),
-            self.block(&conditional.then_branch)?,
-        ];
+        let block = &conditional.then_branch;
+        // a braceless branch is desugared into a block whose span opens at the
+        // `if`, where a written block's span opens at its brace
+        let written_compact = !self.slice(block.span).starts_with('{');
+        let eligible = conditional.else_branch.is_none()
+            && matches!(block.statements.as_slice(), [Statement::Return(_) | Statement::Expr(..)])
+            && !self.trivia.comments_within(block.span);
 
+        let head = Doc::concat([Doc::text("if "), self.expression(&conditional.condition)?]);
+        let then =
+            match compact_shape(written_compact, self.options.prefer_single_line_if(), eligible) {
+                true => {
+                    let [statement] = block.statements.as_slice() else {
+                        return Err(FormatError::Unsupported { span: block.span });
+                    };
+
+                    // a braceless branch is never a tail value, so it always terminates
+                    let compact = Doc::concat([Doc::text(" "), self.statement(statement, false)?]);
+                    let expanded = Doc::concat([Doc::text(" "), self.block(block)?]);
+
+                    Doc::group(Doc::concat([head, Doc::if_break(expanded, compact)]))
+                },
+                _ => Doc::concat([head, Doc::text(" "), self.block(block)?]),
+            };
+
+        let mut parts = vec![then];
         if let Some(branch) = conditional.else_branch.as_deref() {
             parts.push(Doc::text(" else "));
 
@@ -1078,6 +1141,20 @@ const fn receiver_name<'s>(receiver: Receiver) -> &'s str {
         (true, false) => "&self",
         (false, true) => "mut self",
         (false, false) => "self",
+    }
+}
+
+#[inline(always)]
+const fn compact_shape(written_compact: bool, prefer: bool, eligible: bool) -> bool {
+    written_compact || (prefer && eligible)
+}
+
+/// the single value a body reduces to, when it has one
+fn collapsible<'a, 'src>(block: &'a Block<'src>) -> Option<&'a Expression<'src>> {
+    match block.statements.as_slice() {
+        [Statement::Return(Return { value: Some(value), .. })] => Some(value),
+        [Statement::Expr(value, _)] => Some(value),
+        _ => None,
     }
 }
 

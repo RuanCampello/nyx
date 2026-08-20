@@ -123,7 +123,7 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
-        /// Read layout options from a TOML file instead of using the defaults
+        /// Read layout options from this TOML file instead of discovering `nyxfmt.toml`
         #[arg(long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
@@ -234,7 +234,10 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
 }
 
 fn cmd_fmt(paths: &[PathBuf], check: bool, config: Option<&Path>) -> Result<i32, NyxError> {
-    let options = load_format_options(config)?;
+    let mut discovery = match config {
+        Some(path) => fmt::Discovery::fixed(load_format_options(path)?),
+        _ => fmt::Discovery::new(),
+    };
     let mut sources = Vec::new();
 
     match paths.is_empty() {
@@ -251,6 +254,7 @@ fn cmd_fmt(paths: &[PathBuf], check: bool, config: Option<&Path>) -> Result<i32,
 
     for path in &sources {
         let source = fs::read_to_string(path)?;
+        let options = discovery.options_for(path).map_err(config_error)?;
 
         match fmt::format(&source, options) {
             Ok(formatted) if formatted == source => {},
@@ -286,16 +290,18 @@ fn report_formatting(total: usize, unformatted: usize, refused: usize, check: bo
     println!("{total} files checked, {verb} {unformatted}, refused {refused}");
 }
 
-fn load_format_options(config: Option<&Path>) -> Result<fmt::FormatOptions, NyxError> {
+fn load_format_options(config: &Path) -> Result<fmt::FormatOptions, NyxError> {
     use std::io::{Error, ErrorKind};
 
-    let Some(path) = config else {
-        return Ok(fmt::FormatOptions::default());
-    };
-
-    fs::read_to_string(path)?.parse().map_err(|error| {
-        NyxError::Io(Error::new(ErrorKind::InvalidData, format!("{}: {error}", path.display())))
+    fs::read_to_string(config)?.parse().map_err(|error| {
+        NyxError::Io(Error::new(ErrorKind::InvalidData, format!("{}: {error}", config.display())))
     })
+}
+
+fn config_error(error: fmt::ConfigError) -> NyxError {
+    use std::io::{Error, ErrorKind};
+
+    NyxError::Io(Error::new(ErrorKind::InvalidData, error.to_string()))
 }
 
 /// `path:line:column` for a byte `offset`, or the bare path when there is none

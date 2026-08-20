@@ -1,9 +1,28 @@
-use fmt::{FormatOptions, format};
+use fmt::{FormatOptions, Indentation, format};
 use indoc::indoc;
 use std::str::FromStr;
 
+const LONG_BODY: &str =
+    "fn describe(alpha: i32, beta: i32): i32 = alpha * beta + alpha - beta + alpha * 2;\n";
+
+fn prefer_expression_body() -> FormatOptions {
+    FormatOptions::from_str("[style]\nprefer_expression_body = true\n")
+        .unwrap()
+        .with_indentation(Indentation::Spaces { width: 4 })
+}
+
+fn shorthand_disabled() -> FormatOptions {
+    FormatOptions::from_str("[field]\ninitialise_short_hand = false\n")
+        .unwrap()
+        .with_indentation(Indentation::Spaces { width: 4 })
+}
+
+fn spaces() -> FormatOptions {
+    FormatOptions::default().with_indentation(Indentation::Spaces { width: 4 })
+}
+
 fn assert_formats(source: &str, expected: &str) {
-    assert_eq!(format(source, FormatOptions::default()).unwrap(), expected);
+    assert_eq!(format(source, spaces()).unwrap(), expected);
 }
 
 fn assert_formats_with(options: FormatOptions, source: &str, expected: &str) {
@@ -11,14 +30,10 @@ fn assert_formats_with(options: FormatOptions, source: &str, expected: &str) {
 }
 
 fn assert_idempotent(source: &str) {
-    let once = format(source, FormatOptions::default()).unwrap();
-    let twice = format(&once, FormatOptions::default()).unwrap();
+    let once = format(source, spaces()).unwrap();
+    let twice = format(&once, spaces()).unwrap();
 
     assert_eq!(once, twice, "formatting is not idempotent");
-}
-
-fn shorthand_enabled() -> FormatOptions {
-    FormatOptions::from_str("[field]\ninitialise_short_hand = true\n").unwrap()
 }
 
 #[test]
@@ -101,25 +116,8 @@ fn indents_nested_blocks() {
 }
 
 #[test]
-fn keeps_explicit_struct_fields_by_default() {
+fn collapses_a_matching_field_to_shorthand_by_default() {
     assert_formats(
-        indoc! {"
-            fn main(){let x=1;let p=Point{x:x,y:2};p.x}
-        "},
-        indoc! {"
-            fn main() {
-                let x = 1;
-                let p = Point { x: x, y: 2 };
-                p.x
-            }
-        "},
-    );
-}
-
-#[test]
-fn collapses_a_matching_field_to_shorthand_when_enabled() {
-    assert_formats_with(
-        shorthand_enabled(),
         indoc! {"
             fn main(){let x=1;let p=Point{x:x,y:2};p.x}
         "},
@@ -134,9 +132,25 @@ fn collapses_a_matching_field_to_shorthand_when_enabled() {
 }
 
 #[test]
-fn shorthand_needs_the_field_and_variable_to_share_a_name() {
+fn keeps_explicit_fields_when_disabled() {
     assert_formats_with(
-        shorthand_enabled(),
+        shorthand_disabled(),
+        indoc! {"
+            fn main(){let x=1;let p=Point{x:x,y:2};p.x}
+        "},
+        indoc! {"
+            fn main() {
+                let x = 1;
+                let p = Point { x: x, y: 2 };
+                p.x
+            }
+        "},
+    );
+}
+
+#[test]
+fn shorthand_needs_the_field_and_variable_to_share_a_name() {
+    assert_formats(
         indoc! {"
             fn main(){let y=1;let p=Point{x:y};p.x}
         "},
@@ -152,8 +166,7 @@ fn shorthand_needs_the_field_and_variable_to_share_a_name() {
 
 #[test]
 fn shorthand_never_applies_to_a_computed_value() {
-    assert_formats_with(
-        shorthand_enabled(),
+    assert_formats(
         indoc! {"
             fn main(){let x=1;let p=Point{x:x+1};p.x}
         "},
@@ -170,11 +183,11 @@ fn shorthand_never_applies_to_a_computed_value() {
 #[test]
 fn shorthand_output_round_trips() {
     let source = "fn main(){let x=1;let p=Point{x:x};p.x}\n";
-    let collapsed = format(source, shorthand_enabled()).unwrap();
+    let collapsed = format(source, spaces()).unwrap();
     assert!(collapsed.contains("Point { x }"));
 
-    let reprinted = format(&collapsed, FormatOptions::default())
-        .expect("shorthand the printer emits must parse again");
+    let reprinted =
+        format(&collapsed, spaces()).expect("shorthand the printer emits must parse again");
     assert!(reprinted.contains("Point { x }"), "and stays shorthand: {reprinted}");
     assert_eq!(reprinted, collapsed, "formatting is idempotent over the shorthand");
 }
@@ -794,4 +807,297 @@ fn formats_static_declarations() {
             pub static SEEDED: u64 = 7;
         "},
     );
+}
+
+#[test]
+fn indents_with_one_tab_per_level_by_default() {
+    assert_eq!(
+        format("fn main():i32{let answer=40+2;answer}\n", FormatOptions::default()).unwrap(),
+        "fn main(): i32 {\n\tlet answer = 40 + 2;\n\tanswer\n}\n"
+    );
+}
+
+#[test]
+fn a_tab_is_charged_at_its_display_width() {
+    let source =
+        "fn main(){call(aaaaaaaaaa,bbbbbbbbbb,cccccccccc,dddddddddd,eeeeeeeeee,fffffffffff);}\n";
+
+    let narrow =
+        FormatOptions::from_str("[layout.indentation]\nstyle = \"tabs\"\nwidth = 1\n").unwrap();
+    let wide =
+        FormatOptions::from_str("[layout.indentation]\nstyle = \"tabs\"\nwidth = 4\n").unwrap();
+
+    assert_eq!(format(source, narrow).unwrap().lines().count(), 3, "the call fits on one line");
+    assert!(format(source, wide).unwrap().lines().count() > 3, "the call must break");
+}
+
+#[test]
+fn keeps_an_expression_body_written_as_one() {
+    assert_formats("fn add(x:i8,y:i8):i8=x+y;\n", "fn add(x: i8, y: i8): i8 = x + y;\n");
+}
+
+#[test]
+fn expands_an_expression_body_that_exceeds_the_line_width() {
+    let formatted = format(LONG_BODY, spaces()).unwrap();
+
+    assert!(
+        formatted.starts_with("fn describe(alpha: i32, beta: i32): i32 {\n"),
+        "got {formatted}"
+    );
+    assert!(formatted.contains("    return alpha * beta"), "got {formatted}");
+}
+
+#[test]
+fn keeps_a_block_body_as_a_block_by_default() {
+    assert_formats(
+        "fn add(x:i8,y:i8):i8{return x+y;}\n",
+        indoc! {"
+            fn add(x: i8, y: i8): i8 {
+                return x + y;
+            }
+        "},
+    );
+}
+
+#[test]
+fn collapses_a_returning_body_when_preferred() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn add(x:i8,y:i8):i8{return x+y;}\n",
+        "fn add(x: i8, y: i8): i8 = x + y;\n",
+    );
+}
+
+#[test]
+fn collapses_a_tail_expression_body_when_preferred() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn add(x:i8,y:i8):i8{x+y}\n",
+        "fn add(x: i8, y: i8): i8 = x + y;\n",
+    );
+}
+
+#[test]
+fn never_collapses_a_body_without_a_return_type() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn shout(){print(1);}\n",
+        indoc! {"
+            fn shout() {
+                print(1);
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_a_body_of_two_statements() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn add(x:i8,y:i8):i8{let s=x+y;return s;}\n",
+        indoc! {"
+            fn add(x: i8, y: i8): i8 {
+                let s = x + y;
+                return s;
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_a_body_holding_a_comment() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn add(x:i8,y:i8):i8{\n// sum\nreturn x+y;\n}\n",
+        indoc! {"
+            fn add(x: i8, y: i8): i8 {
+                // sum
+                return x + y;
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_a_conditional_body() {
+    assert_formats_with(
+        prefer_expression_body(),
+        "fn classify(v:i32):i32{if v>0{v}else{0}}\n",
+        indoc! {"
+            fn classify(v: i32): i32 {
+                if v > 0 {
+                    v
+                } else {
+                    0
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn expression_bodies_are_idempotent() {
+    assert_idempotent("fn add(x:i8,y:i8):i8=x+y;\n");
+    assert_idempotent(LONG_BODY);
+}
+
+fn prefer_single_line_if() -> FormatOptions {
+    FormatOptions::from_str("[style]\nprefer_single_line_if = true\n")
+        .unwrap()
+        .with_indentation(Indentation::Spaces { width: 4 })
+}
+
+#[test]
+fn keeps_a_braceless_if_written_as_one() {
+    assert_formats(
+        "fn f(d:i32):i32{if d!=41 return 1;\nreturn 0;}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 return 1;
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn braces_a_braceless_if_that_exceeds_the_line_width() {
+    let source = "fn f(device:i32):i32{if device!=41414141 return 111111 + 222222 + 333333 + 444444 + 555555 + 666666;\nreturn 0;}\n";
+    let formatted = format(source, spaces()).unwrap();
+
+    assert!(formatted.contains("    if device != 41414141 {\n"), "got {formatted}");
+    assert!(formatted.contains("        return 111111 + 222222"), "got {formatted}");
+}
+
+#[test]
+fn keeps_a_braced_if_braced_by_default() {
+    assert_formats(
+        "fn f(d:i32):i32{if d!=41{return 1;}\nreturn 0;}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 {
+                    return 1;
+                }
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn collapses_a_single_statement_if_when_preferred() {
+    assert_formats_with(
+        prefer_single_line_if(),
+        "fn f(d:i32):i32{if d!=41{return 1;}\nreturn 0;}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 return 1;
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_an_if_with_an_else() {
+    assert_formats_with(
+        prefer_single_line_if(),
+        "fn f(d:i32):i32{if d!=41{return 1;}else{return 2;}}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 {
+                    return 1;
+                } else {
+                    return 2;
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_an_if_of_two_statements() {
+    assert_formats_with(
+        prefer_single_line_if(),
+        "fn f(d:i32):i32{if d!=41{print(d);return 1;}\nreturn 0;}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 {
+                    print(d);
+                    return 1;
+                }
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn never_collapses_an_if_holding_a_comment() {
+    assert_formats_with(
+        prefer_single_line_if(),
+        "fn f(d:i32):i32{if d!=41{\n// bail\nreturn 1;\n}\nreturn 0;}\n",
+        indoc! {"
+            fn f(d: i32): i32 {
+                if d != 41 {
+                    // bail
+                    return 1;
+                }
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn braceless_ifs_are_idempotent() {
+    assert_idempotent("fn f(d:i32):i32{if d!=41 return 1;\nreturn 0;}\n");
+}
+
+#[test]
+fn inserts_a_semicolon_the_source_forgot() {
+    assert_formats(
+        "fn main():i32{\nlet x = 1\nreturn x;\n}\n",
+        indoc! {"
+            fn main(): i32 {
+                let x = 1;
+                return x;
+            }
+        "},
+    );
+}
+
+#[test]
+fn inserts_a_semicolon_after_an_expression_statement() {
+    assert_formats(
+        "fn main():i32{\nprint(1)\nreturn 0;\n}\n",
+        indoc! {"
+            fn main(): i32 {
+                print(1);
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn inserts_a_semicolon_after_a_return() {
+    assert_formats(
+        "fn main():i32{\nreturn 0\n}\n",
+        indoc! {"
+            fn main(): i32 {
+                return 0;
+            }
+        "},
+    );
+}
+
+#[test]
+fn refuses_a_file_whose_errors_are_not_only_semicolons() {
+    assert!(format("fn main(: i32 { 2 }\n", spaces()).is_err());
+}
+
+#[test]
+fn semicolon_insertion_is_idempotent() {
+    assert_idempotent("fn main():i32{\nlet x = 1\nreturn x;\n}\n");
 }
