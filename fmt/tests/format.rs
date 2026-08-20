@@ -810,9 +810,19 @@ fn formats_static_declarations() {
 }
 
 #[test]
-fn indents_with_one_tab_per_level_by_default() {
+fn indents_with_four_spaces_by_default() {
     assert_eq!(
         format("fn main():i32{let answer=40+2;answer}\n", FormatOptions::default()).unwrap(),
+        "fn main(): i32 {\n    let answer = 40 + 2;\n    answer\n}\n"
+    );
+}
+
+#[test]
+fn tabs_are_written_when_the_configuration_asks_for_them() {
+    let tabs = FormatOptions::from_str("[layout.indentation]\nstyle = \"tabs\"\n").unwrap();
+
+    assert_eq!(
+        format("fn main():i32{let answer=40+2;answer}\n", tabs).unwrap(),
         "fn main(): i32 {\n\tlet answer = 40 + 2;\n\tanswer\n}\n"
     );
 }

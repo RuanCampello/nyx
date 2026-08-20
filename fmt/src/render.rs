@@ -53,7 +53,7 @@ const fn default_tab_width() -> u8 {
 
 impl Default for Indentation {
     fn default() -> Self {
-        Self::Tabs { width: default_tab_width() }
+        Self::Spaces { width: 4 }
     }
 }
 
