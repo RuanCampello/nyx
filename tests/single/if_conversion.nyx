@@ -1,6 +1,5 @@
 // if-conversion
 // exit code: 3 + 7 + 9 + 31 + 13 + 4 - 1 + 9 = 75
-
 // a diamond: both arms assign the same local
 // the shape the pass exists for
 fn pick(c: bool, a: i32, b: i32): i32 {
@@ -16,9 +15,7 @@ fn pick(c: bool, a: i32, b: i32): i32 {
 // a triangle: the else arm is empty, so the select reads the incoming value back
 fn clamp_low(x: i32): i32 {
     let mut r: i32 = x;
-    if x < 0 {
-        r = 0;
-    }
+    if x < 0 r = 0;
     r
 }
 
@@ -53,9 +50,7 @@ fn side_effecting(c: bool, x: i32): i32 {
 // the branch
 fn guarded_div(d: i32): i32 {
     let mut r: i32 = -1;
-    if d != 0 {
-        r = 100 / d;
-    }
+    if d != 0 r = 100 / d;
     r
 }
 
@@ -66,11 +61,11 @@ fn largest(n: i32): i32 {
     let mut best: i32 = 0;
     let mut i: i32 = 1;
     loop {
-        if i > n { break; }
-        let v = (i - 3) * (i - 3);
-        if v > best {
-            best = v;
+        if i > n {
+            break;
         }
+        let v = (i - 3) * (i - 3);
+        if v > best best = v;
         i = i + 1;
     }
     best

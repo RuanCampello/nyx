@@ -5,13 +5,14 @@
 //
 // indices are `uptr` (Nyx has no implicit integer coercion, unlike Rust's
 // inference that unifies index variables to `usize`).
-
 fn bubble_sort(arr: &mut [i32]) {
     loop i in 0..arr.len() {
         let mut j = 0;
         // `j + i + 1 < len` avoids the unsigned underflow of `len - i - 1`
         loop {
-            if !(j + i + 1 < arr.len()) { break; }
+            if !(j + i + 1 < arr.len()) {
+                break;
+            }
             if arr[j] > arr[j + 1] {
                 let temp: i32 = arr[j];
                 arr[j] = arr[j + 1];
@@ -27,13 +28,14 @@ fn binary_search(arr: &[i32], target: i32): i32 {
     let mut right: uptr = arr.len();
 
     loop {
-        if !(left < right) { break; }
+        if !(left < right) {
+            break;
+        }
         let mid: uptr = left + (right - left) / 2;
         let val: i32 = arr[mid];
 
         if val == target return mid as i32;
-        if val < target left = mid + 1;
-        else right = mid;
+        if val < target left = mid + 1; else right = mid;
     }
 
     -1
@@ -44,7 +46,7 @@ fn main(): i32 {
 
     // fill in descending order so the sort has real work to do
     loop idx in 0..15 {
-        data[idx] = 14 - (idx as i32);
+        data[idx] = 14 - idx as i32
     }
 
     bubble_sort(&mut data);

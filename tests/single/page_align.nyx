@@ -5,67 +5,41 @@ const SEGMENT: uptr = 4194304;
 
 @unsafe
 fn main(): i32 {
-  let pages = Pages::new();
+    let pages = Pages::new();
 
-  let first = pages.map_aligned(SEGMENT, SEGMENT);
-  if first as uptr == 0 {
-    return 1;
-  }
-  if first as uptr & SEGMENT - 1 != 0 {
-    return 2;
-  }
+    let first = pages.map_aligned(SEGMENT, SEGMENT);
+    if first as uptr == 0 return 1;
+    if first as uptr & SEGMENT - 1 != 0 return 2;
 
-  // the whole span is mapped, and anonymous mappings arrive zeroed
-  if read(first as *u8) != 0 {
-    return 3;
-  }
-  if read(add_mut(first, SEGMENT - 8) as *u8) != 0 {
-    return 4;
-  }
+    // the whole span is mapped, and anonymous mappings arrive zeroed
+    if read(first as *u8) != 0 return 3;
+    if read(add_mut(first, SEGMENT - 8) as *u8) != 0 return 4;
 
-  // both ends survive the trimming
-  write(first, 7);
-  write(add_mut(first, SEGMENT - 8), 9);
-  if read(first as *u8) != 7 {
-    return 5;
-  }
-  if read(add_mut(first, SEGMENT - 8) as *u8) != 9 {
-    return 6;
-  }
+    // both ends survive the trimming
+    write(first, 7);
+    write(add_mut(first, SEGMENT - 8), 9);
+    if read(first as *u8) != 7 return 5;
+    if read(add_mut(first, SEGMENT - 8) as *u8) != 9 return 6;
 
-  // a second segment is aligned too, and does not tread on the first
-  let second = pages.map_aligned(SEGMENT, SEGMENT);
-  if second as uptr == 0 {
-    return 7;
-  }
-  if second as uptr & SEGMENT - 1 != 0 {
-    return 8;
-  }
-  if second as uptr == first as uptr {
-    return 9;
-  }
-  if read(first as *u8) != 7 {
-    return 10;
-  }
+    // a second segment is aligned too, and does not tread on the first
+    let second = pages.map_aligned(SEGMENT, SEGMENT);
+    if second as uptr == 0 return 7;
+    if second as uptr & SEGMENT - 1 != 0 return 8;
+    if second as uptr == first as uptr return 9;
+    if read(first as *u8) != 7 return 10;
 
-  // masking any interior address recovers the segment base
-  let interior = add_mut(first, 70000);
-  if interior as uptr & !(SEGMENT - 1) != first as uptr {
-    return 11;
-  }
+    // masking any interior address recovers the segment base
+    let interior = add_mut(first, 70000);
+    if interior as uptr & !(SEGMENT - 1) != first as uptr return 11;
 
-  // an alignment no stronger than a page needs no trimming at all
-  let plain = pages.map_aligned(4096, 4096);
-  if plain as uptr == 0 {
-    return 12;
-  }
-  if plain as uptr & 4095 != 0 {
-    return 13;
-  }
+    // an alignment no stronger than a page needs no trimming at all
+    let plain = pages.map_aligned(4096, 4096);
+    if plain as uptr == 0 return 12;
+    if plain as uptr & 4095 != 0 return 13;
 
-  pages.unmap(first, SEGMENT);
-  pages.unmap(second, SEGMENT);
-  pages.unmap(plain, 4096);
+    pages.unmap(first, SEGMENT);
+    pages.unmap(second, SEGMENT);
+    pages.unmap(plain, 4096);
 
-  42
+    42
 }

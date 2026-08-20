@@ -1,8 +1,9 @@
 // products that fit their own type but overflow every narrower one, so a checked
 // multiplication that tests the wrong width reports a spurious overflow
-
 fn i16_product(a: i16, b: i16): i16 = a * b;
+
 fn i32_product(a: i32, b: i32): i32 = a * b;
+
 fn i64_product(a: i64, b: i64): i64 = a * b;
 
 fn main(): i32 {

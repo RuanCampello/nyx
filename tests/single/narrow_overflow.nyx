@@ -2,7 +2,6 @@
 //
 // this must panic on 'debug' and wrap around on 'sane'/'max', so the overflow
 // test has to be made at the type's width rather than the machine's
-
 fn add(a: i8, b: i8): i8 = a + b;
 
 fn main(): i32 {

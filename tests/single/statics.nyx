@@ -6,53 +6,37 @@ static mut SEEDED: uptr = 7;
 
 @unsafe
 fn bump(): i32 {
-  CURSOR = CURSOR + 1;
-  CURSOR
+    CURSOR = CURSOR + 1;
+    CURSOR
 }
 
 @unsafe
 fn main(): i32 {
-  // an immutable static reads without an unsafe context
-  if LIMIT != 10 {
-    return 1;
-  }
+    // an immutable static reads without an unsafe context
+    if LIMIT != 10 return 1;
 
-  // `.bss`: a zero initialiser is not carried in the image
-  if CURSOR != 0 {
-    return 2;
-  }
+    // `.bss`: a zero initialiser is not carried in the image
+    if CURSOR != 0 return 2;
 
-  // `.data`: a non-zero initialiser is
-  if SEEDED != 7 {
-    return 3;
-  }
+    // `.data`: a non-zero initialiser is
+    if SEEDED != 7 return 3;
 
-  // the write must outlive the call that made it
-  if bump() != 1 {
-    return 4;
-  }
-  if bump() != 2 {
-    return 5;
-  }
-  if CURSOR != 2 {
-    return 6;
-  }
+    // the write must outlive the call that made it
+    if bump() != 1 return 4;
+    if bump() != 2 return 5;
+    if CURSOR != 2 return 6;
 
-  SEEDED = SEEDED * 6;
-  if SEEDED != 42 {
-    return 7;
-  }
+    SEEDED = SEEDED * 6;
+    if SEEDED != 42 return 7;
 
-  loop {
-    if CURSOR >= LIMIT {
-      break;
+    loop {
+        if CURSOR >= LIMIT {
+            break;
+        }
+        bump();
     }
-    bump();
-  }
 
-  if CURSOR != 10 {
-    return 8;
-  }
+    if CURSOR != 10 return 8;
 
-  SEEDED as i32
+    SEEDED as i32
 }

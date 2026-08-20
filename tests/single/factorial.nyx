@@ -5,7 +5,6 @@
 //
 // exit code: factorial(7) = 5040 ... too large for a byte exit code.
 // we use factorial(5) = 120 instead — still visible in $?
-
 fn factorial(n: i32): i32 {
     let mut result: i32 = 1;
     loop i in 2..=n {
@@ -15,6 +14,4 @@ fn factorial(n: i32): i32 {
     result
 }
 
-fn main(): i32 {
-    factorial(5)
-}
+fn main(): i32 = factorial(5);

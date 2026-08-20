@@ -55,7 +55,8 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         | "page_align"
         | "heap_alloc"
         | "heap_reclaim"
-        | "struct_shorthand" => Some(42),
+        | "struct_shorthand"
+        | "compact_forms" => Some(42),
         "factorial" | "const_factorial" => Some(120),
         "math" => Some(42),
         "nth_prime" => Some(229),

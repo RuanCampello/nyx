@@ -1,9 +1,7 @@
 use std::optional::{Optional};
 
 fn main(): i32 {
-  let value: Optional<i32> = Optional::None;
-  if value.unwrap_or_default() != 0 {
-    return 1;
-  }
-  0
+    let value: Optional<i32> = Optional::None;
+    if value.unwrap_or_default() != 0 return 1;
+    0
 }

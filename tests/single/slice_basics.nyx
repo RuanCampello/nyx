@@ -1,5 +1,4 @@
 // sum([2,4,6,8]) = 20, first element = 2, not empty so + 0 → 22
-
 use std::slice;
 
 fn sum(s: &[i32]): i32 {
@@ -18,9 +17,7 @@ fn main(): i32 {
     let first = *s.head();
 
     let mut empty = 0;
-    if s.is_empty() {
-        empty = 100;
-    }
+    if s.is_empty() empty = 100;
 
     total + first + empty
 }

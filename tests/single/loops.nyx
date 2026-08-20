@@ -23,8 +23,12 @@ fn main(): i32 {
     }
 
     loop value in 0..10 {
-        if value == 3 { continue; }
-        if value == 7 { break; }
+        if value == 3 {
+            continue;
+        }
+        if value == 7 {
+            break;
+        }
         total = total + value;
     }
 

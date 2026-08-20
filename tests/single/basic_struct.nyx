@@ -31,14 +31,6 @@ fn main(): i64 {
     0
 }
 
-fn dot_product(a: Vector, b: Vector): i64 {
-    (a.x * b.x) + (a.y * b.y)
-}
+fn dot_product(a: Vector, b: Vector): i64 = a.x * b.x + a.y * b.y;
 
-fn add_vec3(a: Vector3, b: Vector3): Vector3 {
-    Vector3 {
-        x: a.x + b.x,
-        y: a.y + b.y,
-        z: a.z + b.z,
-    }
-}
+fn add_vec3(a: Vector3, b: Vector3): Vector3 = Vector3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };

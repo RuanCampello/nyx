@@ -7,134 +7,82 @@ const SLAB_PAGE: uptr = 65536;
 
 @unsafe
 fn main(): i32 {
-  let heap = Heap::new();
+    let heap = Heap::new();
 
-  let first = heap.alloc(64, 8);
-  if first as uptr == 0 {
-    return 1;
-  }
-  if first as uptr & 7 != 0 {
-    return 2;
-  }
-  // segments come from anonymous mappings, so blocks start zeroed
-  if read(first as *u8) != 0 {
-    return 3;
-  }
+    let first = heap.alloc(64, 8);
+    if first as uptr == 0 return 1;
+    if first as uptr & 7 != 0 return 2;
+    // segments come from anonymous mappings, so blocks start zeroed
+    if read(first as *u8) != 0 return 3;
 
-  let second = heap.alloc(64, 8);
-  if second as uptr == 0 {
-    return 4;
-  }
-  if second as uptr == first as uptr {
-    return 5;
-  }
+    let second = heap.alloc(64, 8);
+    if second as uptr == 0 return 4;
+    if second as uptr == first as uptr return 5;
 
-  // distinct blocks must not overlap
-  write(first, 11);
-  write(second, 22);
-  if read(first as *u8) != 11 {
-    return 6;
-  }
-  if read(second as *u8) != 22 {
-    return 7;
-  }
+    // distinct blocks must not overlap
+    write(first, 11);
+    write(second, 22);
+    if read(first as *u8) != 11 return 6;
+    if read(second as *u8) != 22 return 7;
 
-  // both came from one segment, so masking recovers the same base
-  if first as uptr & !(SEGMENT - 1) != second as uptr & !(SEGMENT - 1) {
-    return 8;
-  }
+    // both came from one segment, so masking recovers the same base
+    if first as uptr & !(SEGMENT - 1) != second as uptr & !(SEGMENT - 1) return 8;
 
-  // a freed block is handed straight back out for the same class
-  heap.dealloc(second, 64, 8);
-  let reused = heap.alloc(64, 8);
-  if reused as uptr != second as uptr {
-    return 9;
-  }
+    // a freed block is handed straight back out for the same class
+    heap.dealloc(second, 64, 8);
+    let reused = heap.alloc(64, 8);
+    if reused as uptr != second as uptr return 9;
 
-  // and the block that was never freed is untouched by the round trip
-  if read(first as *u8) != 11 {
-    return 10;
-  }
+    // and the block that was never freed is untouched by the round trip
+    if read(first as *u8) != 11 return 10;
 
-  // a different size class is served from a different page
-  let other_class = heap.alloc(1000, 8);
-  if other_class as uptr == 0 {
-    return 11;
-  }
-  if other_class as uptr / SLAB_PAGE == first as uptr / SLAB_PAGE {
-    return 12;
-  }
-  write(other_class, 33);
-  if read(first as *u8) != 11 {
-    return 13;
-  }
+    // a different size class is served from a different page
+    let other_class = heap.alloc(1000, 8);
+    if other_class as uptr == 0 return 11;
+    if other_class as uptr / SLAB_PAGE == first as uptr / SLAB_PAGE return 12;
+    write(other_class, 33);
+    if read(first as *u8) != 11 return 13;
 
-  // a stronger alignment than the class granularity is still honoured
-  let aligned = heap.alloc(64, 64);
-  if aligned as uptr == 0 {
-    return 14;
-  }
-  if aligned as uptr & 63 != 0 {
-    return 15;
-  }
+    // a stronger alignment than the class granularity is still honoured
+    let aligned = heap.alloc(64, 64);
+    if aligned as uptr == 0 return 14;
+    if aligned as uptr & 63 != 0 return 15;
 
-  // filling a page must roll onto a second one, with its own descriptor: a
-  // single page of 64-byte blocks holds 1024, so 1200 requests cannot fit
-  let probe = heap.alloc(64, 8);
-  if probe as uptr == 0 {
-    return 19;
-  }
-  write(probe, 66);
-  let probe_page = probe as uptr / SLAB_PAGE;
+    // filling a page must roll onto a second one, with its own descriptor: a
+    // single page of 64-byte blocks holds 1024, so 1200 requests cannot fit
+    let probe = heap.alloc(64, 8);
+    if probe as uptr == 0 return 19;
+    write(probe, 66);
+    let probe_page = probe as uptr / SLAB_PAGE;
 
-  let mut spilled: uptr = 0;
-  loop 0..1200 {
-    let block = heap.alloc(64, 8);
-    if block as uptr == 0 {
-      return 20;
+    let mut spilled: uptr = 0;
+    loop 0..1200 {
+        let block = heap.alloc(64, 8);
+        if block as uptr == 0 return 20;
+        if block as uptr / SLAB_PAGE != probe_page spilled = block as uptr;
     }
-    if block as uptr / SLAB_PAGE != probe_page {
-      spilled = block as uptr;
-    }
-  }
-  if spilled == 0 {
-    return 21;
-  }
+    if spilled == 0 return 21;
 
-  // and nothing already handed out was trampled on the way
-  if read(probe as *u8) != 66 {
-    return 22;
-  }
-  if read(first as *u8) != 11 {
-    return 23;
-  }
+    // and nothing already handed out was trampled on the way
+    if read(probe as *u8) != 66 return 22;
+    if read(first as *u8) != 11 return 23;
 
-  // a freed block belongs to its own class and must not surface in another:
-  // this is what pins each page to its own descriptor rather than a shared one
-  let sized = heap.alloc(64, 8);
-  if sized as uptr == 0 {
-    return 24;
-  }
-  heap.dealloc(sized, 64, 8);
-  let smallest = heap.alloc(8, 8);
-  if smallest as uptr == sized as uptr {
-    return 25;
-  }
+    // a freed block belongs to its own class and must not surface in another:
+    // this is what pins each page to its own descriptor rather than a shared one
+    let sized = heap.alloc(64, 8);
+    if sized as uptr == 0 return 24;
+    heap.dealloc(sized, 64, 8);
+    let smallest = heap.alloc(8, 8);
+    if smallest as uptr == sized as uptr return 25;
 
-  // a request past the class ceiling goes to the kernel and is still usable
-  let large = heap.alloc(100000, 8);
-  if large as uptr == 0 {
-    return 16;
-  }
-  write(large, 44);
-  write(add_mut(large, 99992), 55);
-  if read(large as *u8) != 44 {
-    return 17;
-  }
-  if read(add_mut(large, 99992) as *u8) != 55 {
-    return 18;
-  }
-  heap.dealloc(large, 100000, 8);
+    // a request past the class ceiling goes to the kernel and is still usable
+    let large = heap.alloc(100000, 8);
+    if large as uptr == 0 return 16;
+    write(large, 44);
+    write(add_mut(large, 99992), 55);
+    if read(large as *u8) != 44 return 17;
+    if read(add_mut(large, 99992) as *u8) != 55 return 18;
+    heap.dealloc(large, 100000, 8);
 
-  42
+    42
 }

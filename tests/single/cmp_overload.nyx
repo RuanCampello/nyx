@@ -7,9 +7,7 @@ struct Meters {
 }
 
 impl Meters with PartialEq<Meters> {
-    fn eq(&self, other: &Meters): bool {
-        self.value == other.value
-    }
+    fn eq(&self, other: &Meters): bool = self.value == other.value;
 }
 
 impl Meters with PartialOrd<Meters> {

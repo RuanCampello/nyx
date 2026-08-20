@@ -14,18 +14,9 @@ pub struct Circle {
 }
 
 impl Rectangle {
-    pub fn width(&self): i64 {
-        self.bottom_right.x - self.top_left.x
-    }
-
-    pub fn height(&self): i64 {
-        self.top_left.y - self.bottom_right.y
-    }
-
-    pub fn area(&self): i64 {
-        self.width() * self.height()
-    }
-
+    pub fn width(&self): i64 = self.bottom_right.x - self.top_left.x;
+    pub fn height(&self): i64 = self.top_left.y - self.bottom_right.y;
+    pub fn area(&self): i64 = self.width() * self.height();
     pub fn perimeter(&self): i64 {
         let w = self.width();
         let h = self.height();
@@ -34,31 +25,19 @@ impl Rectangle {
 }
 
 impl Circle {
-    pub fn diameter(&self): i64 {
-        self.radius * 2
-    }
+    pub fn diameter(&self): i64 = self.radius * 2;
 }
 
 impl Point {
-    pub fn new(x: i64, y: i64): Point {
-        Point { x: x, y: y }
-    }
+    pub fn new(x: i64, y: i64): Point = Point { x, y };
 }
 
 impl Rectangle {
-    pub fn new(x1: i64, y1: i64, x2: i64, y2: i64): Rectangle {
-        Rectangle {
-            top_left: Point { x: x1, y: y1 },
-            bottom_right: Point { x: x2, y: y2 },
-        }
+    pub fn new(x: i64, y: i64, x2: i64, y2: i64): Rectangle {
+        return Rectangle { top_left: Point { x, y }, bottom_right: Point { x: x2, y: y2 } };
     }
 }
 
 impl Circle {
-    pub fn new(cx: i64, cy: i64, r: i64): Circle {
-        Circle {
-            center: Point { x: cx, y: cy },
-            radius: r,
-        }
-    }
+    pub fn new(x: i64, y: i64, r: i64): Circle = Circle { center: Point { x, y }, radius: r };
 }

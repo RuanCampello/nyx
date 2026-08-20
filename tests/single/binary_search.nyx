@@ -7,10 +7,7 @@
 // demonstrates: loop/break, if/else if/else, multiple locals, bool variables.
 //
 // exit code: binary_search(0, 99, 33) = 11  (because 11 * 3 = 33)
-
-fn seq(i: i32): i32 {
-    i * 3
-}
+fn seq(i: i32): i32 = i * 3;
 
 fn binary_search(lo: i32, hi: i32, target: i32): i32 {
     let mut left: i32 = lo;
@@ -19,7 +16,9 @@ fn binary_search(lo: i32, hi: i32, target: i32): i32 {
     let mut found: bool = false;
 
     loop {
-        if !(left <= right && !found) { break; }
+        if !(left <= right && !found) {
+            break;
+        }
         let mid = left + (right - left) / 2;
         let val = seq(mid);
 
@@ -36,6 +35,4 @@ fn binary_search(lo: i32, hi: i32, target: i32): i32 {
     result
 }
 
-fn main(): i32 {
-    binary_search(0, 99, 33)
-}
+fn main(): i32 = binary_search(0, 99, 33);

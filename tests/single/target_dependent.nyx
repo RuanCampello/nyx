@@ -1,10 +1,6 @@
-fn add_uptr(a: uptr, b: uptr): uptr {
-    a + b
-}
+fn add_uptr(a: uptr, b: uptr): uptr = a + b;
 
-fn scale_iptr(base: iptr, factor: iptr): iptr {
-    base * factor
-}
+fn scale_iptr(base: iptr, factor: iptr): iptr = base * factor;
 
 // sum 1..=limit with uptr — triangle number
 fn triangle(limit: uptr): uptr {

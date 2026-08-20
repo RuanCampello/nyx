@@ -4,27 +4,27 @@ use std::panic::{assert_eq};
 
 // FIXME: assert_eq<A, B> type checking is fucking with the generics
 fn main(): i64 {
-  // 10x5 rectangle: area=50, perimeter=30
-  let rect = Rectangle::new(0, 10, 10, 5);
-  assert_eq(rect.area(), 50 as i64);
-  assert_eq(rect.width(), 10 as i64);
-  assert_eq(rect.height(), 5 as i64);
-  assert_eq(rect.perimeter(), 30 as i64);
+    // 10x5 rectangle: area=50, perimeter=30
+    let rect = Rectangle::new(0, 10, 10, 5);
+    assert_eq(rect.area(), 50 as i64);
+    assert_eq(rect.width(), 10 as i64);
+    assert_eq(rect.height(), 5 as i64);
+    assert_eq(rect.perimeter(), 30 as i64);
 
-  // mutate and re-check
-  let mut r2 = Rectangle::new(0, 20, 4, 8);
-  assert_eq(r2.width(), 4 as i64);
-  assert_eq(r2.height(), 12 as i64);
-  assert_eq(r2.area(), 48 as i64);
+    // mutate and re-check
+    let mut r2 = Rectangle::new(0, 20, 4, 8);
+    assert_eq(r2.width(), 4 as i64);
+    assert_eq(r2.height(), 12 as i64);
+    assert_eq(r2.area(), 48 as i64);
 
-  // circle with radius 7: diameter = 14
-  let c = Circle::new(0, 0, 7);
-  assert_eq(c.diameter(), 14 as i64);
-  assert_eq(abs(-42), 42 as i64);
-  assert_eq(abs(10), 10 as i64);
-  assert_eq(clamp(200, 0, 100), 100 as i64);
-  assert_eq(clamp(-5, 0, 100), 0 as i64);
-  assert_eq(clamp(50, 0, 100), 50 as i64);
+    // circle with radius 7: diameter = 14
+    let c = Circle::new(0, 0, 7);
+    assert_eq(c.diameter(), 14 as i64);
+    assert_eq(abs(-42), 42 as i64);
+    assert_eq(abs(10), 10 as i64);
+    assert_eq(clamp(200, 0, 100), 100 as i64);
+    assert_eq(clamp(-5, 0, 100), 0 as i64);
+    assert_eq(clamp(50, 0, 100), 50 as i64);
 
-  0
+    0
 }

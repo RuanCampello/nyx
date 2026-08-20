@@ -1,7 +1,10 @@
-fn test_i8(val: i8): i8 { val.signum() }
-fn test_i16(val: i16): i16 { val.signum() }
-fn test_i32(val: i32): i32 { val.signum() }
-fn test_i64(val: i64): i64 { val.signum() }
+fn test_i8(val: i8): i8 = val.signum();
+
+fn test_i16(val: i16): i16 = val.signum();
+
+fn test_i32(val: i32): i32 = val.signum();
+
+fn test_i64(val: i64): i64 = val.signum();
 
 fn main(): i32 {
     if test_i8(5) != 1 return 1;

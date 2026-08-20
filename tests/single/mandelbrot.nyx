@@ -4,33 +4,32 @@
 // multiplication/division instruction generation, and condition checking.
 //
 // exit code: iterations before escape (or max_iter)
-
 fn mandelbrot(cr: i32, ci: i32, max_iter: i32): i32 {
-	  let mut zr = 0;
-	  let mut zi = 0;
-	  let mut iter = 0;
-	  let scale = 100; 
+    let mut zr = 0;
+    let mut zi = 0;
+    let mut iter = 0;
+    let scale = 100;
 
-	  loop {
-			  if iter >= max_iter { break; }
-			  let zr_sq = (zr * zr) / scale;
-			  let zi_sq = (zi * zi) / scale;
+    loop {
+        if iter >= max_iter {
+            break;
+        }
+        let zr_sq = zr * zr / scale;
+        let zi_sq = zi * zi / scale;
 
-			  if zr_sq + zi_sq > 4 * scale {
-					  return iter;
-				}
+        if zr_sq + zi_sq > 4 * scale return iter;
 
-				let next_zi = (2 * zr * zi) / scale + ci;
-				zr = zr_sq - zi_sq + cr;
-				zi = next_zi;
+        let next_zi = 2 * zr * zi / scale + ci;
+        zr = zr_sq - zi_sq + cr;
+        zi = next_zi;
 
-				iter = iter + 1;
-		}
+        iter = iter + 1;
+    }
 
-		iter
+    iter
 }
 
 fn main(): i32 {
-		// Escaping point c = -0.5 + 0.5i (scaled by 100 -> -50, 50)
-		mandelbrot(-50, 50, 1000)
+    // Escaping point c = -0.5 + 0.5i (scaled by 100 -> -50, 50)
+    mandelbrot(-50, 50, 1000)
 }

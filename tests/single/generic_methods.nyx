@@ -16,9 +16,7 @@ impl Adder with Sink {
         self.sum = self.sum + value;
     }
 
-    fn total(&self): u64 {
-        self.sum
-    }
+    fn total(&self): u64 = self.sum;
 }
 
 struct Point {

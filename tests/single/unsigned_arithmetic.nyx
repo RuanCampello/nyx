@@ -1,11 +1,14 @@
 // checked unsigned arithmetic whose result fits its own type
-
 fn u16_product(a: u16, b: u16): u16 = a * b;
+
 fn u32_product(a: u32, b: u32): u32 = a * b;
+
 fn u64_product(a: u64, b: u64): u64 = a * b;
 
 fn u16_sum(a: u16, b: u16): u16 = a + b;
+
 fn u32_sum(a: u32, b: u32): u32 = a + b;
+
 fn u64_sum(a: u64, b: u64): u64 = a + b;
 
 fn main(): i32 {

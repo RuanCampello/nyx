@@ -23,9 +23,7 @@ impl ByteSum with Hasher {
         }
     }
 
-    fn finish(&self): u64 {
-        self.total
-    }
+    fn finish(&self): u64 = self.total;
 }
 
 fn main(): i32 {

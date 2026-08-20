@@ -4,7 +4,6 @@
 // shows: multiple function params, ranges, let mut.
 //
 // exit code: power(2, 6) = 64
-
 fn power(base: i32, exp: i32): i32 {
     let mut result: i32 = 1;
     loop 0..exp {
@@ -15,25 +14,35 @@ fn power(base: i32, exp: i32): i32 {
 }
 
 fn abs(n: i32): i32 {
-    if n < 0 { -n } else { n }
+    if n < 0 {
+        -n
+    } else {
+        n
+    }
 }
 
 fn max(a: i32, b: i32): i32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 fn min(a: i32, b: i32): i32 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
-fn clamp(value: i32, lo: i32, hi: i32): i32 {
-    min(max(value, lo), hi)
-}
+fn clamp(value: i32, lo: i32, hi: i32): i32 = min(max(value, lo), hi);
 
 fn main(): i32 {
-    let p = power(2, 6);      // 64
-    let a = abs(-19);         // 19
-    let m = max(13, 7);       // 13
+    let p = power(2, 6); // 64
+    let a = abs(-19); // 19
+    let m = max(13, 7); // 13
     let c = clamp(200, 0, 100); // 100
 
     // combine into a single exit code so all four are exercised

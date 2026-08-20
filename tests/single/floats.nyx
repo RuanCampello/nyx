@@ -21,7 +21,9 @@ fn test_f64_loop(limit: f64): f64 {
     let mut i = 1.0;
 
     loop {
-        if i > limit { break; }
+        if i > limit {
+            break;
+        }
         sum = sum + i;
         i = i + 1.0;
     }

@@ -7,15 +7,11 @@ struct Point {
 }
 
 impl Point with Default {
-    fn default(): Self {
-        Point { x: 0, y: 0 }
-    }
+    fn default(): Self = Point { x: 0, y: 0 };
 }
 
 impl Point with PartialEq<Point> {
-    fn eq(&self, other: &Point): bool {
-        self.x == other.x && self.y == other.y
-    }
+    fn eq(&self, other: &Point): bool = self.x == other.x && self.y == other.y;
 }
 
 fn main(): i32 {

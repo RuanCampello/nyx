@@ -1,29 +1,27 @@
 struct Point {
-  x: i32,
-  y: i32,
+    x: i32,
+    y: i32,
 }
 
 impl Point {
-  inline fn new(x: i32, y: i32): Self = Point { x: x, y: y };
-  inline fn sum(&self): i32 = self.x + self.y;
+    inline fn new(x: i32, y: i32): Self = Point { x, y };
+    inline fn sum(&self): i32 = self.x + self.y;
 }
 
 interface Scaled {
-  fn base(&self): i32;
-  inline fn doubled(&self): i32 = self.base() * 2;
+    fn base(&self): i32;
+    inline fn doubled(&self): i32 = self.base() * 2;
 }
 
 impl Point with Scaled {
-  inline fn base(&self): i32 = self.x;
+    inline fn base(&self): i32 = self.x;
 }
 
 fn main(): i32 {
-  let p = Point::new(10, 20);
-  let scaled = Point::new(6, 0);
+    let p = Point::new(10, 20);
+    let scaled = Point::new(6, 0);
 
-  if scaled.doubled() != 12 {
-    return 1;
-  }
+    if scaled.doubled() != 12 return 1;
 
-  p.sum()
+    p.sum()
 }

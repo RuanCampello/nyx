@@ -3,9 +3,7 @@ struct Counter {
 }
 
 impl Counter {
-    fn value(&self): i32 {
-        self.value
-    }
+    fn value(&self): i32 = self.value;
 }
 
 impl Counter {
