@@ -81,7 +81,7 @@ where
                 let stmt = match statement.value {
                     Some(ref expr) => match self.lower_expr(expr, Some(typ)) {
                         Ok(expr) => {
-                            self.assert_type_at(typ, expr.typ, expr.span, annotation)?;
+                            self.check_type_at(typ, expr.typ, expr.span, annotation)?;
                             diverges = expr.typ.diverges();
 
                             Statement::LetInit { id, init: expr.expr }
@@ -101,7 +101,7 @@ where
                 let value = match statement.value.as_ref() {
                     Some(expr) => {
                         let expr = self.lower_expr(expr, Some(self.return_type))?;
-                        self.assert_type_at(
+                        self.check_type_at(
                             self.return_type,
                             expr.typ,
                             expr.span,
@@ -110,7 +110,7 @@ where
                         Some(expr.expr)
                     },
                     _ => {
-                        self.assert_type_at(
+                        self.check_type_at(
                             self.return_type,
                             TypeKind::Unit,
                             statement.span,

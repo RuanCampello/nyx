@@ -1102,9 +1102,6 @@ where
             | BinaryOperator::Sub
             | BinaryOperator::Mul
             | BinaryOperator::Div => {
-                // the operands already disagreeing is the one mistake here: keep
-                // the result poisoned so the enclosing check does not report a
-                // second, differently-framed mismatch against the same span
                 if !self.check_type_at(left, right, span, None)? {
                     return Ok(self.scope.types.common.error);
                 }
