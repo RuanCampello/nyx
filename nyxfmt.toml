@@ -1,0 +1,13 @@
+[layout]
+line_width = 120
+
+[layout.indentation]
+style = "spaces"
+width = 4
+
+[field]
+initialise_short_hand = true
+
+[style]
+prefer_expression_body = true
+prefer_single_line_if = true
