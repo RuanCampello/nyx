@@ -68,6 +68,21 @@ impl Lsp {
         }
     }
 
+    /// layout options governing `url`, resolved from the nearest `nyxfmt.toml`
+    async fn layout_for(&self, url: &Url) -> Option<fmt::FormatOptions> {
+        let Ok(path) = url.to_file_path() else {
+            return Some(fmt::FormatOptions::default());
+        };
+
+        match fmt::Discovery::new().options_for(&path) {
+            Ok(options) => Some(options),
+            Err(error) => {
+                self.client.log_message(MessageType::ERROR, error.to_string()).await;
+                None
+            },
+        }
+    }
+
     /// schedule a debounced re-analysis of `url`, discarding the result if a
     /// newer change arrives while it is in flight
     fn schedule(&self, url: Url) {
@@ -486,7 +501,9 @@ impl LanguageServer for Lsp {
         };
 
         let encoding = *self.state.encoding.read().await;
-        let options = fmt::FormatOptions::default().with_indentation(indentation(&params.options));
+        let Some(options) = self.layout_for(&params.text_document.uri).await else {
+            return Ok(None);
+        };
 
         let Ok(formatted) = fmt::format(&text, options) else {
             return Ok(None);
@@ -623,16 +640,6 @@ impl State {
         let guard = RwLockReadGuard::map(state_guard, |state| state.get(url).unwrap());
 
         Some((guard, encoding))
-    }
-}
-
-#[inline]
-fn indentation(options: &FormattingOptions) -> fmt::Indentation {
-    let width = options.tab_size.clamp(1, 16) as u8;
-
-    match options.insert_spaces {
-        true => fmt::Indentation::Spaces { width },
-        _ => fmt::Indentation::Tabs { width },
     }
 }
 

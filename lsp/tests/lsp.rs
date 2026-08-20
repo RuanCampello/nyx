@@ -908,16 +908,74 @@ async fn formatting_replaces_the_whole_document() {
 }
 
 #[tokio::test]
-async fn formatting_honours_the_editor_indentation() {
+async fn formatting_ignores_the_editor_indentation() {
     let mut client = TestClient::start().await;
     let url = client.open("main.nyx", "fn main():i32{let x=1;x}").await;
     client.wait_diagnostics(&url).await;
 
-    let spaces = format_document(&mut client, &url, 2, true).await;
-    assert!(spaces[0].new_text.contains("\n  let x"), "{:?}", spaces[0].new_text);
+    for (tab_size, insert_spaces) in [(2, true), (4, false), (8, true)] {
+        let edits = format_document(&mut client, &url, tab_size, insert_spaces).await;
 
-    let tabs = format_document(&mut client, &url, 4, false).await;
-    assert!(tabs[0].new_text.contains("\n\tlet x"), "{:?}", tabs[0].new_text);
+        assert!(
+            edits[0].new_text.contains("\n    let x"),
+            "tab_size {tab_size}, insert_spaces {insert_spaces}: {:?}",
+            edits[0].new_text
+        );
+    }
+}
+
+#[tokio::test]
+async fn formatting_obeys_the_discovered_configuration() {
+    let mut client = TestClient::start().await;
+    std::fs::write(
+        client.root.join("nyxfmt.toml"),
+        "[layout.indentation]\nstyle = \"tabs\"\nwidth = 4\n",
+    )
+    .unwrap();
+
+    let url = client.open("main.nyx", "fn main():i32{let x=1;x}").await;
+    client.wait_diagnostics(&url).await;
+
+    let edits = format_document(&mut client, &url, 4, true).await;
+
+    assert!(edits[0].new_text.contains("\n\tlet x"), "{:?}", edits[0].new_text);
+}
+
+#[tokio::test]
+async fn a_configuration_edited_mid_session_takes_effect_on_the_next_format() {
+    let mut client = TestClient::start().await;
+    let config = client.root.join("nyxfmt.toml");
+    std::fs::write(&config, "[layout.indentation]\nstyle = \"spaces\"\nwidth = 2\n").unwrap();
+
+    let url = client.open("main.nyx", "fn main():i32{let x=1;x}").await;
+    client.wait_diagnostics(&url).await;
+
+    let before = format_document(&mut client, &url, 4, true).await;
+    assert!(before[0].new_text.contains("\n  let x"), "{:?}", before[0].new_text);
+
+    // the same server, still running, with no notification of the change
+    std::fs::write(&config, "[layout.indentation]\nstyle = \"tabs\"\nwidth = 4\n").unwrap();
+
+    let after = format_document(&mut client, &url, 4, true).await;
+    assert!(
+        after[0].new_text.contains("\n\tlet x"),
+        "the edited configuration must be live without a restart: {:?}",
+        after[0].new_text
+    );
+}
+
+#[tokio::test]
+async fn formatting_leaves_a_document_alone_when_its_configuration_is_broken() {
+    let mut client = TestClient::start().await;
+    std::fs::write(client.root.join("nyxfmt.toml"), "[layout]\nline_width = \"wide\"\n").unwrap();
+
+    let url = client.open("main.nyx", "fn  main( ):i32{let x=1;x}").await;
+    client.wait_diagnostics(&url).await;
+
+    assert!(
+        format_document(&mut client, &url, 4, true).await.is_empty(),
+        "rewriting under options the author did not choose is worse than not formatting"
+    );
 }
 
 #[tokio::test]
