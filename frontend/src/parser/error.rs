@@ -1,6 +1,6 @@
 use crate::lexer::{
     error::LexError,
-    token::{Span, TokenKind},
+    token::{Punct, Span, TokenKind},
 };
 use macros::Diagnostic;
 
@@ -99,9 +99,17 @@ impl<'i> ParserError<'i> {
         Self { kind, span }
     }
 
-    #[inline]
+    #[inline(always)]
     pub const fn span(&self) -> Span {
         self.span
+    }
+
+    #[inline(always)]
+    pub const fn is_missing_semicolon(&self) -> bool {
+        matches!(
+            self.kind,
+            ParseErrorKind::Expected { expected: TokenKind::Punct(Punct::Semicolon), .. }
+        )
     }
 }
 

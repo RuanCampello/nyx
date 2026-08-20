@@ -473,13 +473,13 @@ impl<'i> Parsable<'i> for Statement<'i> {
             T::Keyword(Keyword::Loop) => return Ok(Statement::Loop(parser.parse_node()?)),
             T::Keyword(Keyword::Break) => {
                 let keyword = parser.expect_token(Keyword::Break)?;
-                let semicolon = parser.expect_token(Punct::Semicolon)?;
-                return Ok(Statement::Break(keyword.span + semicolon.span));
+                let semicolon = parser.expect_semicolon();
+                return Ok(Statement::Break(keyword.span + semicolon));
             },
             T::Keyword(Keyword::Continue) => {
                 let keyword = parser.expect_token(Keyword::Continue)?;
-                let semicolon = parser.expect_token(Punct::Semicolon)?;
-                return Ok(Statement::Continue(keyword.span + semicolon.span));
+                let semicolon = parser.expect_semicolon();
+                return Ok(Statement::Continue(keyword.span + semicolon));
             },
             T::Keyword(Keyword::Return) => return Ok(Statement::Return(parser.parse_node()?)),
             T::Punct(Punct::OpenBrace) => return Ok(Statement::Block(parser.parse_node()?)),
@@ -529,7 +529,7 @@ impl<'i> Parsable<'i> for Statement<'i> {
                     },
                     Some(Err(err)) => return Err(err.into()),
                     _ => {
-                        parser.expect_token(Punct::Semicolon)?;
+                        parser.expect_semicolon();
                         expr.span().end
                     },
                 };
@@ -552,8 +552,8 @@ impl<'i> Parsable<'i> for Let<'i> {
         let typ = parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         let value = parser.consume_token(Punct::Eq)?.then(|| parser.parse_node()).transpose()?;
 
-        let semicolon = parser.expect_token(Punct::Semicolon)?;
-        let span = let_token.span + semicolon.span;
+        let semicolon = parser.expect_semicolon();
+        let span = let_token.span + semicolon;
 
         Ok(Let { mutable, name, typ, value, span, name_span })
     }
@@ -576,8 +576,8 @@ impl<'i> Parsable<'i> for Const<'i> {
         let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
         parser.expect_token(Punct::Eq)?;
         let value = parser.parse_node::<Expression<'i>>()?;
-        let semi = parser.expect_token(Punct::Semicolon)?;
-        let span = start_span + semi.span;
+        let semi = parser.expect_semicolon();
+        let span = start_span + semi;
 
         Ok(Const { is_pub, name, name_span, typ, value, span })
     }
@@ -601,8 +601,8 @@ impl<'i> Parsable<'i> for Static<'i> {
         let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
         parser.expect_token(Punct::Eq)?;
         let value = parser.parse_node::<Expression<'i>>()?;
-        let semi = parser.expect_token(Punct::Semicolon)?;
-        let span = start_span + semi.span;
+        let semi = parser.expect_semicolon();
+        let span = start_span + semi;
 
         Ok(Static { is_pub, is_mut, name, name_span, typ, value, span })
     }
@@ -618,8 +618,8 @@ impl<'i> Parsable<'i> for Return<'i> {
         {
             value = Some(Expression::parse(parser)?);
         }
-        let semi_token = parser.expect_token(Punct::Semicolon)?;
-        let span = return_token.span + semi_token.span;
+        let semi_token = parser.expect_semicolon();
+        let span = return_token.span + semi_token;
 
         Ok(Return { value, span })
     }
@@ -650,10 +650,10 @@ impl<'i> Parsable<'i> for If<'i> {
 
                     Some(Ok(_)) => {
                         let expr = Expression::parse(parser)?;
-                        let semi = parser.expect_token(Punct::Semicolon)?;
-                        let span = expr.span() + semi.span;
+                        let semi = parser.expect_semicolon();
+                        let span = expr.span() + semi;
 
-                        Ok((Statement::Expr(expr, span), semi.span.end))
+                        Ok((Statement::Expr(expr, span), semi.end))
                     },
 
                     Some(Err(err)) => Err(err.into()),
@@ -698,9 +698,9 @@ impl<'i> Parsable<'i> for If<'i> {
 
                 _ => {
                     let expr = Expression::parse(parser)?;
-                    let semi = parser.expect_token(Punct::Semicolon)?;
+                    let semi = parser.expect_semicolon();
 
-                    end_pos = semi.span.end;
+                    end_pos = semi.end;
                     else_branch = Some(Box::new(Else::Expr(expr)));
                 },
             }
@@ -1303,9 +1303,9 @@ impl<'i> Parsable<'i> for InterfaceType<'i> {
             }
         }
 
-        let semi = parser.expect_token(Punct::Semicolon)?;
+        let semi = parser.expect_semicolon();
 
-        Ok(Self { name, name_span, bounds, span: type_token.span + semi.span })
+        Ok(Self { name, name_span, bounds, span: type_token.span + semi })
     }
 }
 
@@ -1315,9 +1315,9 @@ impl<'i> Parsable<'i> for ImplType<'i> {
         let (name, name_span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Eq)?;
         let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
-        let semi = parser.expect_token(Punct::Semicolon)?;
+        let semi = parser.expect_semicolon();
 
-        Ok(Self { name, name_span, typ, span: type_token.span + semi.span })
+        Ok(Self { name, name_span, typ, span: type_token.span + semi })
     }
 }
 
@@ -1327,9 +1327,9 @@ impl<'i> Parsable<'i> for InterfaceConst<'i> {
         let (name, name_span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Colon)?;
         let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
-        let semi = parser.expect_token(Punct::Semicolon)?;
+        let semi = parser.expect_semicolon();
 
-        Ok(Self { name, name_span, typ, span: const_token.span + semi.span })
+        Ok(Self { name, name_span, typ, span: const_token.span + semi })
     }
 }
 
@@ -1455,8 +1455,8 @@ impl<'i> Parsable<'i> for UseDecl<'i> {
             _ => UseItems::Namespace,
         };
 
-        let semi = parser.expect_token(Punct::Semicolon)?;
-        let span = use_token.span + semi.span;
+        let semi = parser.expect_semicolon();
+        let span = use_token.span + semi;
 
         Ok(UseDecl { path: UsePath { segments }, items, span })
     }
@@ -1745,9 +1745,9 @@ fn parse_function_body<'i>(
             Statement::Expr(expression, span)
         },
     };
-    let semicolon = parser.expect_token(Punct::Semicolon)?;
+    let semicolon = parser.expect_semicolon();
 
-    Ok(Block { statements: vec![statement], span: equals + semicolon.span })
+    Ok(Block { statements: vec![statement], span: equals + semicolon })
 }
 
 fn parse_bracketed_type<'i>(

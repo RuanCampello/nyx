@@ -316,6 +316,26 @@ impl<'i> Parser<'i> {
         }
     }
 
+    /// A statement terminator, recovered when it is absent
+    pub(crate) fn expect_semicolon(&mut self) -> Span {
+        if let Ok(true) = self.consume_token(Punct::Semicolon) {
+            return self.last_span().unwrap_or_default();
+        }
+
+        let at = self.last_span().map_or_else(BytePos::default, |span| span.end);
+        let found = match self.peek() {
+            Some(Ok(token)) => token.kind,
+            _ => TokenKind::Eof,
+        };
+
+        self.record(ParserError::new(
+            ParseErrorKind::Expected { expected: TokenKind::Punct(Punct::Semicolon), found },
+            Span::new(at, at),
+        ));
+
+        Span::new(at, at)
+    }
+
     #[inline(always)]
     pub fn expect_identifier(&mut self) -> Result<(&'i str, Span), ParserError<'i>> {
         let token = self.expect_next()?;
@@ -750,6 +770,38 @@ mod tests {
 
         assert_eq!(err.span.start.0, 13);
         assert_eq!(err.span.end.0, 13);
+    }
+
+    #[test]
+    fn a_missing_semicolon_keeps_the_statement_and_its_neighbours() {
+        let (statements, diagnostics) =
+            recovered("fn main(): i32 {\n    let x = 1\n    return x;\n}\n");
+
+        assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+        assert!(matches!(
+            diagnostics[0].kind,
+            ParseErrorKind::Expected { expected: TokenKind::Punct(Punct::Semicolon), .. }
+        ));
+
+        let [Statement::Item(Item { kind: ItemKind::Fn(function), .. })] = statements.as_slice()
+        else {
+            panic!("expected one function, got {statements:?}")
+        };
+
+        assert_eq!(
+            function.body.statements.len(),
+            2,
+            "recovery keeps both the let and the return: {:?}",
+            function.body.statements
+        );
+    }
+
+    #[test]
+    fn every_missing_semicolon_in_a_block_is_reported() {
+        let (_, diagnostics) =
+            recovered("fn main(): i32 {\n    let a = 1\n    let b = 2\n    return a;\n}\n");
+
+        assert_eq!(diagnostics.len(), 2, "got {diagnostics:?}");
     }
 
     #[test]
