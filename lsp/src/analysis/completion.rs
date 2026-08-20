@@ -7,36 +7,48 @@ use crate::analysis::{
 use frontend::hir::{self, AdtId, Owner};
 use frontend::lexer::token::Span;
 use frontend::source_map::SourceMap;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 /// The candidates a completion request can draw on
 #[derive(Debug, Default)]
-pub struct Completions {
-    /// members reachable through `.`, keyed by the receiver's nominal type name
-    pub members: HashMap<String, Vec<Completion>>,
+pub struct Completions<'a> {
+    /// members reachable through `.`, keyed by the receiver's type name with any
+    /// generic arguments stripped, since one template owns every instantiation
+    pub members: HashMap<&'a str, Vec<Completion<'a>>>,
     /// items reachable through `::`, keyed by a type name or by a module path
-    pub associated: HashMap<String, Vec<Completion>>,
+    pub associated: HashMap<&'a str, Vec<Completion<'a>>>,
     /// every item nameable without a qualifier
-    pub globals: Vec<Completion>,
+    pub globals: Vec<Completion<'a>>,
+    /// the generic parameters of each [members](Self::members) key, so a receiver
+    /// written with concrete arguments shows those instead of the parameters
+    pub generics: HashMap<&'a str, GenericSlots<'a>>,
 }
 
 /// One offered name
-#[derive(Debug, Clone, PartialEq)]
-pub struct Completion {
-    pub label: String,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Completion<'a> {
+    pub label: &'a str,
     pub kind: CompletionKind,
     /// the signature or type shown beside the label
-    pub detail: String,
-    pub docs: Option<String>,
+    pub detail: &'a str,
+    pub docs: Option<&'a str>,
     /// for a value, the nominal type whose members it exposes through `.`
-    pub type_key: Option<String>,
+    pub type_key: Option<&'a str>,
+}
+
+#[derive(Debug, Default)]
+pub struct GenericSlots<'a> {
+    pub arity: usize,
+    positions: HashMap<&'a str, usize>,
 }
 
 pub(super) struct CompletionCollector<'a, 'hir> {
     hir: &'a Snapshot<'hir>,
     map: &'a SourceMap,
     imported_names: &'a HashSet<String>,
-    out: Completions,
+    arena: &'hir bumpalo::Bump,
+    out: Completions<'hir>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,53 +79,58 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
         hir: &'a Snapshot<'hir>,
         map: &'a SourceMap,
         imported_names: &'a HashSet<String>,
+        arena: &'hir bumpalo::Bump,
     ) -> Self {
-        Self { hir, map, imported_names, out: Completions::default() }
+        Self { hir, map, imported_names, arena, out: Completions::default() }
     }
 
-    pub(super) fn collect(mut self) -> Completions {
-        let hir = self.hir;
+    pub(super) fn collect(mut self) -> Completions<'hir> {
+        let (hir, arena) = (self.hir, self.arena);
         self.register_modules();
 
         self.out
             .globals
             .extend(frontend::PRIMITIVE_TYPES.iter().map(|&name| Completion {
-                label: name.to_owned(),
+                label: name,
                 kind: CompletionKind::Primitive,
-                detail: format!("primitive type {name}"),
+                detail: keep(arena, &format!("primitive type {name}")),
                 docs: None,
                 type_key: None,
             }));
 
         for def in hir.adts.iter() {
-            let name = base_name(hir.symbols.get(def.name));
+            let name = keep(arena, &base_name(hir.symbols.get(def.name)));
             let generics: Vec<_> = def.generics.iter().map(|generic| generic.name).collect();
-            let key = base_name(&nominal_name(def.name, &generics, hir));
+            let key = member_key(arena, &nominal_name(def.name, &generics, hir));
+            self.declare_generics(key, generics.len(), &generics);
 
             match def.is_struct() {
                 true => {
                     let fields = self.out.members.entry(key).or_default();
                     for field in def.fields() {
                         fields.push(Completion {
-                            label: hir.symbols.get(field.name).to_owned(),
+                            label: keep(arena, hir.symbols.get(field.name)),
                             kind: CompletionKind::Field,
-                            detail: format_type(field.typ, hir, &generics),
-                            docs: hir.docs(field.name_span),
-                            type_key: type_key(field.typ, hir),
+                            detail: keep(arena, &format_type(field.typ, hir, &generics)),
+                            docs: hir.docs(field.name_span).map(|docs| keep(arena, &docs)),
+                            type_key: type_key(arena, field.typ, hir),
                         });
                     }
                 },
                 _ => {
-                    let variants = self.out.associated.entry(name.clone()).or_default();
+                    let variants = self.out.associated.entry(name).or_default();
                     for variant in def.variants() {
                         variants.push(Completion {
-                            label: hir.symbols.get(variant.name).to_owned(),
+                            label: keep(arena, hir.symbols.get(variant.name)),
                             kind: CompletionKind::Variant,
-                            detail: match &variant.payload {
-                                Some(payload) => format_type(*payload, hir, &generics),
-                                None => variant.value.to_string(),
-                            },
-                            docs: hir.docs(variant.name_span),
+                            detail: keep(
+                                arena,
+                                &match &variant.payload {
+                                    Some(payload) => format_type(*payload, hir, &generics),
+                                    None => variant.value.to_string(),
+                                },
+                            ),
+                            docs: hir.docs(variant.name_span).map(|docs| keep(arena, &docs)),
                             type_key: None,
                         });
                     }
@@ -130,35 +147,38 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
                 let candidate = Completion {
                     label: name,
                     kind,
-                    detail: format!("{keyword} {nominal}"),
-                    docs: hir.docs(def.decl_span),
+                    detail: keep(arena, &format!("{keyword} {nominal}")),
+                    docs: hir.docs(def.decl_span).map(|docs| keep(arena, &docs)),
                     type_key: None,
                 };
 
-                self.export_by_module(def.decl_span, candidate);
+                self.export_by_module(def.decl_span, def.is_pub, candidate);
             }
         }
 
         for interface in &hir.interfaces {
-            let name = base_name(hir.symbols.get(interface.name));
-            let methods = self.out.associated.entry(name.clone()).or_default();
+            let name = keep(arena, &base_name(hir.symbols.get(interface.name)));
+            let methods = self.out.associated.entry(name).or_default();
             for method in &interface.methods {
                 methods.push(Completion {
-                    label: base_name(hir.symbols.get(method.name)),
+                    label: keep(arena, &base_name(hir.symbols.get(method.name))),
                     kind: CompletionKind::Method,
-                    detail: hover::interface_signature(method, interface, hir),
-                    docs: hir.docs(method.decl_span),
+                    detail: keep(arena, &hover::interface_signature(method, interface, hir)),
+                    docs: hir.docs(method.decl_span).map(|docs| keep(arena, &docs)),
                     type_key: None,
                 });
             }
 
             for constant in &interface.constants {
                 methods.push(Completion {
-                    label: base_name(hir.symbols.get(constant.name)),
+                    label: keep(arena, &base_name(hir.symbols.get(constant.name))),
                     kind: CompletionKind::Constant,
-                    detail: hover::interface_const_signature(constant, interface, hir),
-                    docs: hir.docs(constant.decl_span),
-                    type_key: type_key(constant.typ, hir),
+                    detail: keep(
+                        arena,
+                        &hover::interface_const_signature(constant, interface, hir),
+                    ),
+                    docs: hir.docs(constant.decl_span).map(|docs| keep(arena, &docs)),
+                    type_key: type_key(arena, constant.typ, hir),
                 });
             }
             let nominal = nominal_name(interface.name, &interface.generic_params, hir);
@@ -166,11 +186,11 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
             let candidate = Completion {
                 label: name,
                 kind: CompletionKind::Interface,
-                detail: format!("interface {nominal}"),
-                docs: hir.docs(interface.decl_span),
+                detail: keep(arena, &format!("interface {nominal}")),
+                docs: hir.docs(interface.decl_span).map(|docs| keep(arena, &docs)),
                 type_key: None,
             };
-            self.export_by_module(interface.decl_span, candidate);
+            self.export_by_module(interface.decl_span, interface.is_pub, candidate);
         }
 
         let templates: HashSet<_> = hir
@@ -188,58 +208,52 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
 
             let receiver = hover::receiver(func, hir);
             let candidate = Completion {
-                label: base_name(qualified),
+                label: keep(arena, &base_name(qualified)),
                 kind: match receiver {
                     Some(_) => CompletionKind::Method,
                     None => CompletionKind::Function,
                 },
-                detail: hover::signature(func, hir),
-                docs: hir.docs(func.decl_span),
-                type_key: type_key(func.return_type, hir),
+                detail: keep(arena, &hover::signature(func, hir)),
+                docs: hir.docs(func.decl_span).map(|docs| keep(arena, &docs)),
+                type_key: type_key(arena, func.return_type, hir),
             };
 
             match (receiver, implementor_of(func.owner, hir, &[])) {
                 (Some(receiver), _) => {
-                    let key = base_name(&format_type(through_reference(receiver), hir, &[]));
+                    let key =
+                        member_key(arena, &format_type(through_reference(receiver), hir, &[]));
+                    let arity = self.out.generics.get(key).map_or(0, |slots| slots.arity);
+                    self.declare_generics(
+                        key,
+                        arity,
+                        &func.generics[..arity.min(func.generics.len())],
+                    );
                     self.out.members.entry(key).or_default().push(candidate);
                 },
                 (_, Some(implementor)) => {
-                    self.out.associated.entry(base_name(&implementor)).or_default().push(candidate);
+                    let key = keep(arena, &base_name(&implementor));
+                    self.out.associated.entry(key).or_default().push(candidate);
                 },
-                _ => {
-                    if let Some(module) = hir.module_of(self.map, func.decl_span) {
-                        self.out.associated.entry(module).or_default().push(candidate.clone());
-                    }
-
-                    if self.is_open_name(func.decl_span, &candidate.label) {
-                        self.out.globals.push(candidate);
-                    }
-                },
+                _ => self.export_by_module(func.decl_span, func.is_pub, candidate),
             }
         }
 
         for constant in &hir.constants {
             let qualified = hir.symbols.get(constant.name);
             let candidate = Completion {
-                label: base_name(qualified),
+                label: keep(arena, &base_name(qualified)),
                 kind: CompletionKind::Constant,
-                detail: format_type(constant.typ, hir, &[]),
-                docs: hir.docs(constant.decl_span),
-                type_key: type_key(constant.typ, hir),
+                detail: keep(arena, &format_type(constant.typ, hir, &[])),
+                docs: hir.docs(constant.decl_span).map(|docs| keep(arena, &docs)),
+                type_key: type_key(arena, constant.typ, hir),
             };
 
             match implementor_of(constant.owner, hir, &[]) {
                 Some(implementor) => {
-                    self.out.associated.entry(base_name(&implementor)).or_default().push(candidate);
+                    let key = keep(arena, &base_name(&implementor));
+                    self.out.associated.entry(key).or_default().push(candidate);
                 },
-                _ => {
-                    if let Some(module) = hir.module_of(self.map, constant.decl_span) {
-                        self.out.associated.entry(module).or_default().push(candidate.clone());
-                    }
-                    if self.is_open_name(constant.decl_span, &candidate.label) {
-                        self.out.globals.push(candidate);
-                    }
-                },
+                _ => self.export_by_module(constant.decl_span, constant.is_pub, candidate),
             }
         }
 
@@ -251,12 +265,28 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
         self.out
     }
 
-    fn export_by_module(&mut self, decl_span: Span, candidate: Completion) {
-        if let Some(module) = self.hir.module_of(self.map, decl_span) {
-            self.out.associated.entry(module).or_default().push(candidate.clone());
+    fn declare_generics(&mut self, key: &'hir str, arity: usize, names: &[hir::SymbolId]) {
+        if arity == 0 {
+            return;
         }
 
-        if self.is_open_name(decl_span, &candidate.label) {
+        let (symbols, arena) = (&self.hir.symbols, self.arena);
+        let slots = self.out.generics.entry(key).or_default();
+        slots.arity = arity;
+        for (at, &name) in names.iter().enumerate() {
+            slots.positions.insert(keep(arena, symbols.get(name)), at);
+        }
+    }
+
+    fn export_by_module(&mut self, decl_span: Span, is_pub: bool, candidate: Completion<'hir>) {
+        if let Some(module) = self.hir.module_of(self.map, decl_span)
+            && is_pub
+        {
+            let module = keep(self.arena, &module);
+            self.out.associated.entry(module).or_default().push(candidate);
+        }
+
+        if self.is_open_name(decl_span, candidate.label) {
             self.out.globals.push(candidate);
         }
     }
@@ -269,29 +299,87 @@ impl<'a, 'hir> CompletionCollector<'a, 'hir> {
     }
 
     fn register_modules(&mut self) {
-        for path in self.hir.modules.values() {
-            let mut prefix = String::new();
+        let (hir, arena) = (self.hir, self.arena);
+        for path in hir.modules.values() {
+            let mut prefix: Option<&'hir str> = None;
 
             for segment in path.split("::") {
-                let full = match prefix.is_empty() {
-                    true => segment.to_owned(),
-                    _ => format!("{prefix}::{segment}"),
+                let full = match prefix {
+                    Some(prefix) => keep(arena, &format!("{prefix}::{segment}")),
+                    _ => keep(arena, segment),
                 };
                 let candidate = Completion {
-                    label: segment.to_owned(),
+                    label: keep(arena, segment),
                     kind: CompletionKind::Module,
-                    detail: format!("mod {full}"),
+                    detail: keep(arena, &format!("mod {full}")),
                     docs: None,
                     type_key: None,
                 };
 
-                match prefix.is_empty() {
-                    true => self.out.globals.push(candidate),
-                    _ => self.out.associated.entry(prefix.clone()).or_default().push(candidate),
+                match prefix {
+                    Some(prefix) => self.out.associated.entry(prefix).or_default().push(candidate),
+                    _ => self.out.globals.push(candidate),
                 }
 
-                prefix = full;
+                prefix = Some(full);
             }
+        }
+    }
+}
+
+impl GenericSlots<'_> {
+    pub fn substitute<'t>(&self, text: &'t str, args: &[&'t str]) -> Cow<'t, str> {
+        if let Some(argument) = self.argument(text, args) {
+            return Cow::Borrowed(argument);
+        }
+
+        match words(text).any(|word| self.argument(word, args).is_some()) {
+            true => Cow::Owned(self.rewrite(text, args)),
+            _ => Cow::Borrowed(text),
+        }
+    }
+
+    pub fn argument<'t>(&self, word: &str, args: &[&'t str]) -> Option<&'t str> {
+        self.position(word).and_then(|at| args.get(at).copied())
+    }
+
+    fn rewrite(&self, text: &str, args: &[&str]) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut word = String::new();
+
+        for c in text.chars() {
+            match is_name_char(c) {
+                true => word.push(c),
+                _ => {
+                    self.push_word(&mut out, &mut word, args);
+                    out.push(c);
+                },
+            }
+        }
+        self.push_word(&mut out, &mut word, args);
+
+        out
+    }
+
+    fn push_word(&self, out: &mut String, word: &mut String, args: &[&str]) {
+        if word.is_empty() {
+            return;
+        }
+
+        match self.argument(word, args) {
+            Some(argument) => out.push_str(argument),
+            _ => out.push_str(word),
+        }
+        word.clear();
+    }
+
+    fn position(&self, word: &str) -> Option<usize> {
+        match self.positions.get(word) {
+            Some(&at) => Some(at),
+            _ => word
+                .strip_prefix('T')
+                .and_then(|rest| rest.parse::<usize>().ok())
+                .filter(|&at| at < self.arity),
         }
     }
 }
@@ -344,48 +432,76 @@ fn importable_name<'a>(qualified: &'a str, owner: Owner<'_>) -> Option<&'a str> 
     matches!(owner, Owner::Free).then(|| qualified.rsplit("::").next().unwrap_or(qualified))
 }
 
-/// The name a type's members are indexed under, references being transparent
-/// because a method call auto-references its receiver
 #[inline]
-fn type_key(typ: hir::Type<'_>, hir: &Snapshot<'_>) -> Option<String> {
+pub(super) fn member_key<'h>(arena: &'h bumpalo::Bump, rendered: &str) -> &'h str {
+    let base = base_name(rendered);
+    keep(arena, base.split_once('<').map_or(base.as_str(), |(head, _)| head))
+}
+
+#[inline]
+fn keep<'h>(arena: &'h bumpalo::Bump, text: &str) -> &'h str {
+    arena.alloc_str(text)
+}
+
+#[inline]
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+#[inline]
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !is_name_char(c)).filter(|word| !word.is_empty())
+}
+
+#[inline]
+fn type_key<'h>(
+    arena: &'h bumpalo::Bump,
+    typ: hir::Type<'_>,
+    hir: &Snapshot<'_>,
+) -> Option<&'h str> {
     let typ = through_reference(typ);
     match typ.kind() {
         hir::TypeKind::Infer(_)
         | hir::TypeKind::Error
         | hir::TypeKind::Unit
         | hir::TypeKind::Never => None,
-        _ => Some(base_name(&format_type(typ, hir, &[]))),
+        _ => Some(keep(arena, &base_name(&format_type(typ, hir, &[])))),
     }
 }
 
 /// collect every name completion can offer, keyed by how it is reached
 #[inline]
-pub(super) fn completions(
-    hir: &Snapshot<'_>,
+pub(super) fn completions<'hir>(
+    hir: &Snapshot<'hir>,
     map: &SourceMap,
     imported_names: &HashSet<String>,
-) -> Completions {
-    CompletionCollector::new(hir, map, imported_names).collect()
+    arena: &'hir bumpalo::Bump,
+) -> Completions<'hir> {
+    CompletionCollector::new(hir, map, imported_names, arena).collect()
 }
 
 /// drop repeats a monomorphised template leaves behind, keeping source order
-pub(super) fn dedup_by_label(list: &mut Vec<Completion>) {
+pub(super) fn dedup_by_label(list: &mut Vec<Completion<'_>>) {
     let mut seen = HashSet::new();
-    list.retain(|item| seen.insert((item.label.clone(), item.kind)));
-    list.sort_by(|a, b| a.label.cmp(&b.label));
+    list.retain(|item| seen.insert((item.label, item.kind)));
+    list.sort_by(|a, b| a.label.cmp(b.label));
 }
 
-pub(super) fn scope_of(func: &hir::Function<'_>, hir: &Snapshot<'_>) -> Vec<Completion> {
+pub(super) fn scope_of<'hir>(
+    func: &hir::Function<'_>,
+    hir: &Snapshot<'_>,
+    arena: &'hir bumpalo::Bump,
+) -> Vec<Completion<'hir>> {
     let mut locals: Vec<_> = func
         .locals
         .iter()
         .filter(|local| local.decl_span != Span::default())
         .map(|local| Completion {
-            label: hir.symbols.get(local.name).to_owned(),
+            label: keep(arena, hir.symbols.get(local.name)),
             kind: CompletionKind::Variable,
-            detail: format_type(local.typ, hir, &func.generics),
+            detail: keep(arena, &format_type(local.typ, hir, &func.generics)),
             docs: None,
-            type_key: type_key(local.typ, hir),
+            type_key: type_key(arena, local.typ, hir),
         })
         .collect();
 

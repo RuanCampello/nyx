@@ -744,8 +744,8 @@ async fn document_symbols_list_declarations() {
         .await
         .unwrap();
 
-    let Some(DocumentSymbolResponse::Flat(symbols)) = response else {
-        panic!("expected flat symbols, got {response:?}");
+    let Some(DocumentSymbolResponse::Nested(symbols)) = response else {
+        panic!("expected nested symbols, got {response:?}");
     };
     let names: Vec<_> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
     for expected in ["Point", "helper", "main"] {

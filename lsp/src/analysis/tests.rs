@@ -1,5 +1,5 @@
-use super::*;
 use super::hover::HoverInfo;
+use super::*;
 
 fn rendered(a: &SemanticAnalysis) -> Vec<(Span, HoverInfo)> {
     a.with_snapshot(|snapshot| {
@@ -27,7 +27,11 @@ fn hints(a: &SemanticAnalysis) -> Vec<String> {
         let Some(snapshot) = snapshot else {
             return Vec::new();
         };
-        snapshot.inlay_hints.iter().map(|&(_, typ, at)| snapshot.hint(typ, at)).collect()
+        snapshot
+            .inlay_hints
+            .iter()
+            .map(|&(_, typ, at)| snapshot.hint(typ, at))
+            .collect()
     })
 }
 
@@ -408,6 +412,25 @@ fn hover_on(a: &SemanticAnalysis, source: &str, needle: &str) -> HoverInfo {
     })
 }
 
+fn hover_nth(a: &SemanticAnalysis, source: &str, needle: &str, nth: usize) -> HoverInfo {
+    let origin = entry_origin(a, source);
+    a.with_snapshot(|snapshot| {
+        snapshot
+            .and_then(|snapshot| {
+                let mut hits: Vec<_> = snapshot
+                    .hover_types
+                    .iter()
+                    .filter(|(span, _)| text_at(origin, source, *span) == Some(needle))
+                    .collect();
+                hits.sort_by_key(|(span, _)| (span.start.0, span.end.0 - span.start.0));
+
+                let &&(_, target) = hits.get(nth)?;
+                snapshot.hover(target, &a.source_map)
+            })
+            .unwrap_or_else(|| panic!("nothing hovers occurrence {nth} of `{needle}`"))
+    })
+}
+
 /// The text the definition of `needle` lands on, `<std>` when it leaves the buffer
 fn definition_of(a: &SemanticAnalysis, source: &str, needle: &str) -> String {
     let origin = entry_origin(a, source);
@@ -510,11 +533,7 @@ fn enum_variants_hover_at_their_declaration_and_use() {
 fn interfaces_and_their_methods_hover() {
     let a = analyse("interface_hover", RICH);
 
-    let shape = hover_on(
-        &a,
-        RICH,
-        "interface Shape {\n    /// the area of the shape\n    fn area(&self): i32;\n}",
-    );
+    let shape = hover_nth(&a, RICH, "Shape", 0);
     assert_eq!(shape.ty, "interface Shape {\n    fn area(&self): i32;\n}");
     assert_eq!(shape.docs.as_deref(), Some("A documented interface."));
 
@@ -538,7 +557,11 @@ fn an_import_reaches_the_item_it_names() {
     let a = analyse("import_hover", RICH);
 
     let import = hover_on(&a, RICH, "size_of");
-    assert!(import.ty.contains("fn size_of"), "the import shows the signature: {}", import.ty);
+    assert!(
+        import.ty.contains("fn size_of"),
+        "the import shows the signature: {}",
+        import.ty
+    );
     assert_eq!(
         definition_of(&a, RICH, "size_of"),
         "<std>",
@@ -550,7 +573,7 @@ fn an_import_reaches_the_item_it_names() {
 fn markers_sit_above_the_signature_they_annotate() {
     let a = analyse("marker_hover", RICH);
 
-    let danger = hover_on(&a, RICH, "fn danger(): i32 { 7 }");
+    let danger = hover_on(&a, RICH, "danger");
     assert_eq!(danger.ty, "@unsafe\nfn danger(): i32");
 }
 
@@ -585,7 +608,11 @@ fn destructuring_a_variant_hints_the_payload() {
 
     assert_eq!(hint_on("volume").as_deref(), Some("i32"), "a payload binding is hinted");
     assert_eq!(hint_on("x").as_deref(), Some("i32"), "and so is a nested struct field binding");
-    assert_eq!(hint_on("other").as_deref(), Some("Msg"), "a catch-all binds the scrutinee itself");
+    assert_eq!(
+        hint_on("other").as_deref(),
+        Some("Msg"),
+        "a catch-all binds the scrutinee itself"
+    );
 }
 
 fn offered(a: &SemanticAnalysis, source: &str, cursor: &str) -> Vec<String> {
@@ -595,7 +622,9 @@ fn offered(a: &SemanticAnalysis, source: &str, cursor: &str) -> Vec<String> {
     let context = completion::context_at(source, offset);
     let position = frontend::BytePos(entry_origin(a, source) + offset as u32);
 
-    a.completion_candidates(&context, Some(position)).into_iter().map(|item| item.label).collect()
+    a.completion_candidates(&context, Some(position), |candidates| {
+        candidates.items.iter().map(|item| item.label.to_owned()).collect()
+    })
 }
 
 #[test]
@@ -668,11 +697,12 @@ fn imported_standard_functions_are_offered_unqualified() {
 #[test]
 fn a_module_path_offers_the_types_it_exports() {
     let a = analyse("complete_module_type", RICH);
-    let exports: Vec<_> = a
-        .with_snapshot(|snapshot| snapshot.unwrap().completions.associated["std::optional"].clone())
-        .into_iter()
-        .map(|item| item.label)
-        .collect();
+    let exports: Vec<String> = a.with_snapshot(|snapshot| {
+        snapshot.unwrap().completions.associated["std::optional"]
+            .iter()
+            .map(|item| item.label.to_owned())
+            .collect()
+    });
 
     assert!(
         exports.iter().any(|label| label == "Optional"),
@@ -697,7 +727,7 @@ fn an_intrinsic_method_completes_and_hovers() {
                 .members
                 .get("str")
                 .and_then(|items| items.iter().find(|item| item.label == "len"))
-                .map(|item| item.detail.clone())
+                .map(|item| item.detail.to_owned())
         })
         .expect("str::len is indexed");
     assert!(signature.starts_with("@intrinsic\n"), "the marker is shown: {signature}");
@@ -717,7 +747,7 @@ fn a_generic_signature_names_its_parameters_as_declared() {
                 .expect("std::ptr is indexed")
                 .iter()
                 .find(|item| item.label == "add_mut")
-                .map(|item| item.detail.clone())
+                .map(|item| item.detail.to_owned())
         })
         .expect("std::ptr::add_mut is indexed");
 
@@ -776,10 +806,10 @@ fn a_binding_hovers_as_the_declaration_it_was_written_as() {
 fn an_interface_implementation_names_the_interface_it_satisfies() {
     let a = analyse("impl_iface", RICH);
 
-    let area = hover_on(&a, RICH, "fn area(&self): i32 { self.x * self.y }");
+    let area = hover_nth(&a, RICH, "area", 1);
     assert_eq!(area.ty, "impl Point with Shape\nfn area(&self): i32");
 
-    let origin = hover_on(&a, RICH, "fn origin(): Point { Point { x: 0, y: 0 } }");
+    let origin = hover_on(&a, RICH, "origin");
     assert_eq!(origin.ty, "impl Point\nfn origin(): Point", "a plain impl names no interface");
 }
 
@@ -808,7 +838,7 @@ fn a_generic_impl_names_its_receiver_type() {
     let a = analyse("generic_owner", source);
     assert!(a.ok, "{:?}", a.diagnostics);
 
-    let got = hover_on(&a, source, "fn get(&self): T { self.value }");
+    let got = hover_on(&a, source, "get");
     assert!(
         got.ty.starts_with("impl Holder<T>\n"),
         "the receiver type names the block, not a mangled segment: {}",

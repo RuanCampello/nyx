@@ -1,6 +1,7 @@
-use crate::analysis::{Snapshot, short_name, walker::Binding};
+use crate::analysis::{Snapshot, base_name, short_name, walker::Binding};
 use frontend::hir::{self, AdtId, LocalId, Owner, SymbolId};
 use frontend::{lexer::token::Span, source_map::SourceMap};
+use std::collections::HashSet;
 
 /// A hover result
 ///
@@ -121,8 +122,9 @@ impl<'hir> Snapshot<'hir> {
             true => None,
             false => layout_of(self, typ),
         };
+        let (path, docs) = (None, None);
 
-        HoverInfo { path: None, ty: format_type(typ, self, generics), layout, docs: None }
+        HoverInfo { path, ty: format_type(typ, self, generics), layout, docs }
     }
 
     /// a binding read back as it was declared, so it shows its `let`, its
@@ -474,7 +476,9 @@ fn enum_def(def: &hir::AdtDef<'_>, hir: &Snapshot<'_>) -> String {
     }
 
     let lines = variants.iter().map(|v| match &v.payload {
-        Some(typ) => format!("    {}({}),", hir.symbols.get(v.name), format_type(*typ, hir, &generics)),
+        Some(typ) => {
+            format!("    {}({}),", hir.symbols.get(v.name), format_type(*typ, hir, &generics))
+        },
         None => format!("    {},", hir.symbols.get(v.name)),
     });
 
@@ -553,6 +557,25 @@ pub(super) fn is_generic_instance(func: &hir::Function<'_>, hir: &Snapshot<'_>) 
     tail.contains('$') && func.generics.is_empty()
 }
 
+/// whether `func` is a specialisation of a template that is itself in the index
+#[inline(always)]
+pub(super) fn is_shadowed_instance(
+    func: &hir::Function<'_>,
+    hir: &Snapshot<'_>,
+    templates: &HashSet<String>,
+) -> bool {
+    is_generic_instance(func, hir) && templates.contains(&base_name(hir.symbols.get(func.name)))
+}
+
+/// the base name of every function that is not a specialisation
+pub(super) fn template_names(hir: &Snapshot<'_>) -> HashSet<String> {
+    hir.functions
+        .iter()
+        .filter(|func| !is_generic_instance(func, hir))
+        .map(|func| base_name(hir.symbols.get(func.name)))
+        .collect()
+}
+
 fn function_name(func: &hir::Function<'_>, hir: &Snapshot<'_>) -> String {
     let qualified = hir.symbols.get(func.name);
     let declares_generics = matches!(func.owner, Owner::Free) && !func.generics.is_empty();
@@ -591,7 +614,10 @@ fn is_open_adt(def: &hir::AdtDef<'_>) -> bool {
 
     match def.is_struct() {
         true => def.fields().iter().any(|field| carries_generic(field.typ)),
-        false => def.variants().iter().any(|variant| variant.payload.is_some_and(carries_generic)),
+        false => def
+            .variants()
+            .iter()
+            .any(|variant| variant.payload.is_some_and(carries_generic)),
     }
 }
 

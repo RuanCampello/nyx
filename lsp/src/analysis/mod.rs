@@ -6,7 +6,7 @@ mod walker;
 #[cfg(test)]
 mod tests;
 
-pub use completion::{Completion, CompletionKind, Completions};
+pub use completion::{Completion, CompletionKind, Completions, GenericSlots};
 pub use hover::{HoverInfo, HoverTarget};
 pub use walker::Binding;
 
@@ -75,10 +75,10 @@ struct Snapshot<'hir> {
     document_symbols: Vec<DocumentSymbol>,
     /// Everything the completion provider can offer, precomputed while the HIR
     /// is still alive
-    completions: Completions,
+    completions: Completions<'hir>,
     /// `(body span, locals declared in it)` for every function, so a position
     /// inside a body can offer the names that body has in scope
-    scopes: Vec<(Span, Vec<Completion>)>,
+    scopes: Vec<(Span, Vec<Completion<'hir>>)>,
 }
 
 /// A name-indexed lookup that need not cover every value of `I`
@@ -92,7 +92,10 @@ pub(super) struct SparseIndex<I, T> {
 pub struct DocumentSymbol {
     pub name: String,
     pub kind: SymbolKind,
+    /// the whole declaration, which is what an outline highlights
     pub span: Span,
+    /// the declared name alone, which is where selecting the symbol lands
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -166,7 +169,7 @@ impl Analysis {
                     let modules = module_paths(&source_map, &name, &root, &std_root);
                     result_diagnostics = std::mem::take(&mut hir.diagnostics);
                     ok = true;
-                    Ok(build_snapshot(hir, &source_map, modules))
+                    Ok(build_snapshot(hir, &source_map, modules, arena))
                 },
                 Err((diagnostics, e)) => {
                     result_diagnostics = diagnostics;
@@ -285,23 +288,24 @@ impl SemanticAnalysis {
         &self,
         map: &SourceMap,
         file: FileId,
-    ) -> Vec<(String, SymbolKind, Span)> {
+    ) -> Vec<(String, SymbolKind, Span, Span)> {
         self.with_snapshot(|snapshot| {
             snapshot
                 .map(|s| s.document_symbols.as_slice())
                 .unwrap_or(&[])
                 .iter()
                 .filter(|symbol| map.span_data(symbol.span).file == file)
-                .map(|symbol| (symbol.name.clone(), symbol.kind, symbol.span))
+                .map(|symbol| (symbol.name.clone(), symbol.kind, symbol.span, symbol.name_span))
                 .collect()
         })
     }
 
-    pub fn completion_candidates(
+    pub fn completion_candidates<T>(
         &self,
         context: &feature::completion::Context<'_>,
         position: Option<frontend::BytePos>,
-    ) -> Vec<Completion> {
+        render: impl FnOnce(&feature::completion::Candidates<'_>) -> Vec<T>,
+    ) -> Vec<T> {
         self.with_snapshot(|snapshot| {
             let Some(snapshot) = snapshot else {
                 return Vec::new();
@@ -316,10 +320,7 @@ impl SemanticAnalysis {
                     .map(|(_, locals)| locals.as_slice())
             });
 
-            feature::completion::candidates(&snapshot.completions, context, scope)
-                .into_iter()
-                .cloned()
-                .collect()
+            render(&feature::completion::candidates(&snapshot.completions, context, scope))
         })
     }
 }
@@ -380,6 +381,7 @@ fn build_snapshot<'hir>(
     hir: hir::Hir<'hir>,
     map: &SourceMap,
     modules: HashMap<FileId, String>,
+    arena: &'hir bumpalo::Bump,
 ) -> Snapshot<'hir> {
     use SymbolKind::*;
 
@@ -434,9 +436,12 @@ fn build_snapshot<'hir>(
         .map(|(at, constant)| (constant.name, (at as u32, constant)))
         .collect();
 
-    for (at, func) in snapshot.functions.iter().enumerate() {
+    let templates = hover::template_names(&snapshot);
+    let open = |func: &hir::Function<'_>| !hover::is_shadowed_instance(func, &snapshot, &templates);
+
+    for (at, func) in snapshot.functions.iter().enumerate().filter(|(_, f)| open(f)) {
         let at = at as u32;
-        push_hover!(func.decl_span, HoverTarget::Function(at));
+        push_hover!(func.name_span, HoverTarget::Function(at));
 
         let mut forms = HashMap::new();
         for param in &func.params {
@@ -470,7 +475,7 @@ fn build_snapshot<'hir>(
     for (id, def) in snapshot.adts.iter_enumerated() {
         match def.is_struct() {
             true => {
-                push_hover!(def.decl_span, HoverTarget::Struct(id));
+                push_hover!(def.name_span, HoverTarget::Struct(id));
 
                 for (at, field) in def.fields().iter().enumerate() {
                     let target = HoverTarget::Field { structure: id, field: at as u32 };
@@ -478,7 +483,7 @@ fn build_snapshot<'hir>(
                 }
             },
             _ => {
-                push_hover!(def.decl_span, HoverTarget::Enum(id));
+                push_hover!(def.name_span, HoverTarget::Enum(id));
                 for (at, variant) in def.variants().iter().enumerate() {
                     let target = HoverTarget::Variant { enumeration: id, variant: at as u32 };
                     push_hover!(variant.name_span, target);
@@ -488,11 +493,11 @@ fn build_snapshot<'hir>(
     }
 
     for (at, constant) in snapshot.constants.iter().enumerate() {
-        push_hover!(constant.decl_span, HoverTarget::Constant(at as u32));
+        push_hover!(constant.name_span, HoverTarget::Constant(at as u32));
     }
 
     for (at, interface) in snapshot.interfaces.iter().enumerate() {
-        push_hover!(interface.decl_span, HoverTarget::Interface(at as u32));
+        push_hover!(interface.name_span, HoverTarget::Interface(at as u32));
         for (method, signature) in interface.methods.iter().enumerate() {
             let target =
                 HoverTarget::InterfaceMethod { interface: at as u32, method: method as u32 };
@@ -537,8 +542,8 @@ fn build_snapshot<'hir>(
     let scopes = snapshot
         .functions
         .iter()
-        .filter(|func| func.decl_span != Span::default())
-        .map(|func| (func.decl_span, completion::scope_of(func, &snapshot)))
+        .filter(|func| func.decl_span != Span::default() && open(func))
+        .map(|func| (func.decl_span, completion::scope_of(func, &snapshot, arena)))
         .collect();
 
     let mut symbols = Vec::new();
@@ -549,18 +554,22 @@ fn build_snapshot<'hir>(
                     name: short_name(&snapshot.symbols.get(item.name)),
                     kind: $kind,
                     span: item.decl_span,
+                    name_span: match item.name_span == Span::default() {
+                        true => item.decl_span,
+                        _ => item.name_span,
+                    },
                 })
             }));
         };
     }
 
-    collect!(snapshot.functions.iter(), Function);
+    collect!(snapshot.functions.iter().filter(|f| open(f)), Function);
     collect!(snapshot.adts.iter().filter(|d| d.is_struct()), Struct);
     collect!(snapshot.adts.iter().filter(|d| d.is_enum()), Enum);
     collect!(snapshot.constants.iter(), Constant);
 
     symbols.sort_unstable_by_key(|s| s.span.start.offset());
-    let candidates = completions(&snapshot, map, &imported_names);
+    let candidates = completions(&snapshot, map, &imported_names, arena);
 
     Snapshot {
         hover_types,

@@ -33,6 +33,11 @@ struct State {
     published: Mutex<HashMap<Url, HashSet<Url>>>,
     /// whether the client renders work-done progress
     progress: AtomicBool,
+    /// whether the client expands `$0` placeholders in an accepted completion
+    snippets: AtomicBool,
+    /// whether the client understands nested outline symbols, which carry both a
+    /// declaration's full range and the name to select inside it
+    hierarchical_symbols: AtomicBool,
 }
 
 /// floor on how long the load spinner stays up, so a near-instant analysis is
@@ -57,6 +62,8 @@ impl Lsp {
                 analysed: Mutex::new(HashMap::new()),
                 published: Mutex::new(HashMap::new()),
                 progress: AtomicBool::new(false),
+                snippets: AtomicBool::new(false),
+                hierarchical_symbols: AtomicBool::new(false),
             }),
         }
     }
@@ -153,6 +160,26 @@ impl LanguageServer for Lsp {
             .and_then(|window| window.work_done_progress)
             .unwrap_or_default();
         self.state.progress.store(progress, Ordering::Relaxed);
+
+        let snippets = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|document| {
+                document.completion.as_ref()?.completion_item.as_ref()?.snippet_support
+            })
+            .unwrap_or_default();
+        self.state.snippets.store(snippets, Ordering::Relaxed);
+
+        let hierarchical = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|document| {
+                document.document_symbol.as_ref()?.hierarchical_document_symbol_support
+            })
+            .unwrap_or_default();
+        self.state.hierarchical_symbols.store(hierarchical, Ordering::Relaxed);
 
         let tokens_capabilities =
             SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
@@ -258,7 +285,10 @@ impl LanguageServer for Lsp {
             let contents =
                 HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value });
 
-            Hover { contents, range: Some(convert::span_to_range(map, span, encoding)) }
+            Hover {
+                contents,
+                range: Some(convert::span_to_range(map, span, encoding)),
+            }
         }))
     }
 
@@ -346,15 +376,38 @@ impl LanguageServer for Lsp {
             return Ok(None);
         };
 
-        let symbols = analysis
-            .document_symbols_in(map, file)
+        let symbols = analysis.document_symbols_in(map, file);
+        if self.state.hierarchical_symbols.load(Ordering::Relaxed) {
+            #[allow(deprecated)]
+            let symbols = symbols
+                .into_iter()
+                .map(|(name, kind, span, name_span)| lsp_types::DocumentSymbol {
+                    name,
+                    detail: None,
+                    kind: symbol_kind(kind),
+                    range: convert::span_to_range(map, span, encoding),
+                    selection_range: convert::span_to_range(map, name_span, encoding),
+                    tags: None,
+                    deprecated: None,
+                    children: None,
+                })
+                .collect();
+
+            return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
+        }
+
+        // a flat symbol carries one range only, so it must be the name
+        let symbols = symbols
             .into_iter()
-            .map(|(name, kind, span)| {
+            .map(|(name, kind, _, name_span)| {
                 #[allow(deprecated)]
                 SymbolInformation {
                     name,
                     kind: symbol_kind(kind),
-                    location: Location { uri: url.clone(), range: convert::span_to_range(map, span, encoding) },
+                    location: Location {
+                        uri: url.clone(),
+                        range: convert::span_to_range(map, name_span, encoding),
+                    },
                     tags: None,
                     deprecated: None,
                     container_name: None,
@@ -380,11 +433,14 @@ impl LanguageServer for Lsp {
         let context = completion::context_at(&text, offset);
         let position = self.locate(&analysis.source_map, url, position).await.map(|(_, pos)| pos);
 
-        let mut items: Vec<_> = analysis
-            .completion_candidates(&context, position)
-            .into_iter()
-            .map(|candidate| completion_item(&candidate))
-            .collect();
+        let snippets = self.state.snippets.load(Ordering::Relaxed);
+        let mut items = analysis.completion_candidates(&context, position, |candidates| {
+            candidates
+                .items
+                .iter()
+                .map(|candidate| completion_item(candidate, candidates, &context, snippets))
+                .collect()
+        });
 
         if context == completion::Context::Open {
             items.extend(completion::keywords().map(|keyword| CompletionItem {
@@ -597,25 +653,61 @@ fn already_annotated(map: &frontend::SourceMap, span: frontend::Span) -> bool {
 }
 
 /// a candidate rendered the way [Lsp::hover] renders a declaration, so the two popups read alike
-fn completion_item(candidate: &Completion) -> CompletionItem {
-    let mut value = fenced_text(&candidate.detail);
-    if let Some(docs) = &candidate.docs {
+fn completion_item(
+    candidate: &Completion<'_>,
+    candidates: &completion::Candidates<'_>,
+    context: &completion::Context<'_>,
+    snippets: bool,
+) -> CompletionItem {
+    let detail = candidates.detail(candidate);
+
+    let mut value = fenced_text(&detail);
+    if let Some(docs) = candidate.docs {
         value.push_str("\n\n---\n\n");
         value.push_str(docs);
     }
 
+    let insertion = insertion(candidate, &detail, context);
+    let format = insertion.as_ref().map(|_| match snippets {
+        true => InsertTextFormat::SNIPPET,
+        false => InsertTextFormat::PLAIN_TEXT,
+    });
+
     CompletionItem {
-        label: candidate.label.clone(),
+        label: candidate.label.to_owned(),
         label_details: Some(CompletionItemLabelDetails {
             detail: None,
-            description: candidate.detail.lines().next_back().map(str::to_owned),
+            description: detail.lines().next_back().map(str::to_owned),
         }),
         kind: Some(completion_kind(candidate.kind)),
         documentation: Some(Documentation::MarkupContent(MarkupContent {
             kind: MarkupKind::Markdown,
             value,
         })),
+        insert_text: match snippets {
+            true => insertion,
+            false => insertion.map(|text| text.replace("$0", "")),
+        },
+        insert_text_format: format,
         ..Default::default()
+    }
+}
+
+/// what accepting a candidate has to write when its bare label is not usable
+/// source on its own, with `$0` marking where the cursor is left
+fn insertion(
+    candidate: &Completion<'_>,
+    detail: &str,
+    context: &completion::Context<'_>,
+) -> Option<String> {
+    use CompletionKind as K;
+    use completion::Context::{InterfaceImpl, Path};
+
+    match (context, candidate.kind) {
+        (Path { import: true, .. }, K::Module) => Some(format!("{}::{{$0}}", candidate.label)),
+        (InterfaceImpl { .. }, K::Method) => Some(format!("{detail} {{\n    $0\n}}")),
+        (InterfaceImpl { .. }, K::Constant) => Some(format!("{detail} = $0;")),
+        _ => None,
     }
 }
 

@@ -40,8 +40,19 @@ impl TestClient {
         Self::start_with(Some(vec![PositionEncodingKind::UTF8])).await
     }
 
-    /// same as [start](TestClient::start), with explicit position encodings
+    /// same as [start](Self::start), for a client that advertises none of the
+    /// optional capabilities: no snippet expansion, no nested outline symbols
+    pub async fn start_minimal() -> Self {
+        Self::boot(Some(vec![PositionEncodingKind::UTF8]), false).await
+    }
+
+    /// same as [start](Self::start), with explicit position encodings
     pub async fn start_with(encodings: Option<Vec<PositionEncodingKind>>) -> Self {
+        Self::boot(encodings, true).await
+    }
+
+    /// `modern` advertises the optional capabilities a current editor has
+    async fn boot(encodings: Option<Vec<PositionEncodingKind>>, modern: bool) -> Self {
         let (service, socket) = LspService::new(Lsp::new);
         let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
         let (server_read, server_write) = tokio::io::split(server_io);
@@ -74,6 +85,20 @@ impl TestClient {
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
                     position_encodings: encodings,
+                    ..Default::default()
+                }),
+                text_document: Some(TextDocumentClientCapabilities {
+                    completion: Some(CompletionClientCapabilities {
+                        completion_item: Some(CompletionItemCapability {
+                            snippet_support: Some(modern),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    document_symbol: Some(DocumentSymbolClientCapabilities {
+                        hierarchical_document_symbol_support: Some(modern),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
