@@ -30,28 +30,28 @@ pub struct StyleOptions {
     /// Whether a block body holding a single expression is rewritten as `= expr;`
     ///
     /// **default: false**
-    /// ```rust
+    /// ```rust,ignore
     /// fn add(x: i8, y: i8): i8 {
     ///     return x + y;
     /// }
     /// ```
     ///
     /// **true**
-    /// ```rust
+    /// ```rust,ignore
     /// fn add(x: i8, y: i8): i8 = x + y;
     /// ```
     prefer_expression_body: bool,
     /// Whether an `if` whose block holds a single statement is rewritten braceless
     ///
     /// **default: false**
-    /// ```rust
+    /// ```rust,ignore
     /// if feed.device_id() != 41 {
     ///     return 1;
     /// }
     /// ```
     ///
     /// **true**
-    /// ```rust
+    /// ```rust,ignore
     /// if feed.device_id() != 41 return 1;
     /// ```
     prefer_single_line_if: bool,
