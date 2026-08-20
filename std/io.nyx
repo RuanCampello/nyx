@@ -1,4 +1,7 @@
 @intrinsic
-pub fn println() {}
+pub fn println() {
+}
+
 @intrinsic
-pub fn print() {}
+pub fn print() {
+}

@@ -17,7 +17,6 @@ pub interface Hash {
 pub interface Hasher {
     /// Feeds `bytes` into this hasher
     fn write(&mut self, bytes: &[u8]);
-
     /// Materialises the hash of the bytes written so far
     ///
     /// This does not reset the hasher, writing more bytes afterwards
@@ -30,19 +29,16 @@ pub interface Hasher {
     }
 
     inline fn write_u16(&mut self, value: u16) {
-        let buf: [u8; 2] = [
-            (value & 255) as u8,
-            ((value >> 8) & 255) as u8,
-        ];
+        let buf: [u8; 2] = [(value & 255) as u8, (value >> 8 & 255) as u8];
         self.write(&buf);
     }
 
     inline fn write_u32(&mut self, value: u32) {
         let buf: [u8; 4] = [
             (value & 255) as u8,
-            ((value >> 8) & 255) as u8,
-            ((value >> 16) & 255) as u8,
-            ((value >> 24) & 255) as u8,
+            (value >> 8 & 255) as u8,
+            (value >> 16 & 255) as u8,
+            (value >> 24 & 255) as u8,
         ];
         self.write(&buf);
     }
@@ -50,13 +46,13 @@ pub interface Hasher {
     inline fn write_u64(&mut self, value: u64) {
         let buf: [u8; 8] = [
             (value & 255) as u8,
-            ((value >> 8) & 255) as u8,
-            ((value >> 16) & 255) as u8,
-            ((value >> 24) & 255) as u8,
-            ((value >> 32) & 255) as u8,
-            ((value >> 40) & 255) as u8,
-            ((value >> 48) & 255) as u8,
-            ((value >> 56) & 255) as u8,
+            (value >> 8 & 255) as u8,
+            (value >> 16 & 255) as u8,
+            (value >> 24 & 255) as u8,
+            (value >> 32 & 255) as u8,
+            (value >> 40 & 255) as u8,
+            (value >> 48 & 255) as u8,
+            (value >> 56 & 255) as u8,
         ];
         self.write(&buf);
     }
@@ -94,30 +90,25 @@ pub struct Fnv64 {
 }
 
 const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
+
 const FNV_PRIME: u64 = 1099511628211;
 
 impl Fnv64 {
-    pub fn new(): Fnv64 {
-        Fnv64 { state: FNV_OFFSET_BASIS }
-    }
+    pub fn new(): Fnv64 = Fnv64 { state: FNV_OFFSET_BASIS };
 }
 
 impl Fnv64 with Default {
-    fn default(): Self {
-        Fnv64::new()
-    }
+    fn default(): Self = Fnv64::new();
 }
 
 impl Fnv64 with Hasher {
     fn write(&mut self, bytes: &[u8]) {
         loop i in 0..bytes.len() {
-            self.state = (self.state ^ (bytes[i] as u64)).wrapping_mul(FNV_PRIME);
+            self.state = (self.state ^ bytes[i] as u64).wrapping_mul(FNV_PRIME);
         }
     }
 
-    fn finish(&self): u64 {
-        self.state
-    }
+    fn finish(&self): u64 = self.state;
 }
 
 /// Hashes a single value with the default hasher

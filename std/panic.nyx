@@ -6,13 +6,9 @@ pub const fn panic(msg: &str): ! {
 }
 
 pub fn assert(condition: bool) {
-    if !condition {
-        panic("assertion failed");
-    }
+    if !condition panic("assertion failed");
 }
 
 pub fn assert_eq<A, B>(left: A, right: B) where A: PartialEq<B> {
-    if left != right {
-        panic("assertion failed: values are not equal");
-    }
+    if left != right panic("assertion failed: values are not equal");
 }
