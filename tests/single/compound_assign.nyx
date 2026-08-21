@@ -1,0 +1,63 @@
+struct Counter {
+    hits: i32,
+}
+
+static mut CALLS: i32 = 0;
+
+@unsafe
+fn slot(): i32 {
+    CALLS += 1;
+    return 1;
+}
+
+@unsafe
+fn main(): i32 {
+    let mut i = 1;
+    i += 4;
+    if i != 5 return 1;
+
+    i *= 3;
+    if i != 15 return 2;
+
+    i -= 5;
+    if i != 10 return 3;
+
+    i /= 2;
+    if i != 5 return 4;
+
+    let mut bits = 12;
+    bits &= 10;
+    if bits != 8 return 5;
+
+    bits |= 1;
+    if bits != 9 return 6;
+
+    bits ^= 2;
+    if bits != 11 return 7;
+
+    bits <<= 2;
+    if bits != 44 return 8;
+
+    bits >>= 1;
+    if bits != 22 return 9;
+
+    let mut counter = Counter { hits: 0 };
+    counter.hits += 7;
+    if counter.hits != 7 return 10;
+
+    let mut cells = [10, 20, 30];
+    cells[1] *= 2;
+    if cells[1] != 40 return 11;
+
+    // the target is evaluated once, so the index call must not run twice
+    cells[slot()] += 5;
+    if cells[1] != 45 return 12;
+    if CALLS != 1 return 13;
+
+    let mut through = &mut i;
+    *through += 3;
+    if i != 8 return 14;
+
+    CALLS += 41;
+    CALLS
+}

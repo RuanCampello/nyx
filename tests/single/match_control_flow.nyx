@@ -1,0 +1,58 @@
+enum Signal {
+    Halt,
+    Skip,
+    Take,
+}
+
+fn signal_for(step: i32): Signal {
+    match step {
+        0 | 1 -> Signal::Skip,
+        5 -> Signal::Halt,
+        _ -> Signal::Take,
+    }
+}
+
+fn classify(n: i32): i32 {
+    match n {
+        0 -> return 100,
+        n if n < 0 -> return 0,
+        1 -> 7,
+        _ -> 1,
+    }
+}
+
+fn main(): i32 {
+    let mut total = 0;
+
+    loop i in 0..10 {
+        match i {
+            3 -> continue,
+            8 -> break,
+            _ -> total += i,
+        }
+    }
+
+    // 0+1+2+4+5+6+7
+    if total != 25 return 1;
+
+    if classify(0) != 100 return 2;
+    if classify(-4) != 0 return 3;
+    if classify(1) != 7 return 4;
+    if classify(9) != 1 return 5;
+
+    let mut seen = 0;
+    loop step in 0..6 {
+        let signal = signal_for(step);
+
+        match signal {
+            Signal::Skip -> continue,
+            Signal::Halt -> break,
+            Signal::Take -> seen += 1,
+        }
+    }
+
+    // steps 2, 3 and 4 are taken
+    if seen != 3 return 6;
+
+    return 42;
+}
