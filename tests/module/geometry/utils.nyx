@@ -8,14 +8,14 @@ pub fn abs(n: i64): i64 {
 pub fn max(a: i64, b: i64): i64 {
     match a > b {
         true -> a,
-        _ -> b
+        _ -> b,
     }
 }
 
 pub fn min(a: i64, b: i64): i64 {
     match a < b {
         true -> a,
-        _ -> b
+        _ -> b,
     }
 }
 

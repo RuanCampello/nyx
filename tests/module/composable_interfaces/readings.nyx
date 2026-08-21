@@ -85,7 +85,7 @@ impl DoorAlarm with DispatchableAlert {
     pub fn priority(&self): i64 {
         match self.is_over_limit() {
             true -> 900 + self.site_id(),
-            _ -> 100
+            _ -> 100,
         }
     }
 }

@@ -1,17 +1,54 @@
 // every condition the combiner can fold into a terminator, including the
 // unsigned codes a float comparison produces, plus the case it must refuse
+fn lt(a: i32, b: i32): i32 = match a < b {
+    true -> 1,
+    _ -> 0,
+};
 
-fn lt(a: i32, b: i32): i32 = if a < b { 1 } else { 0 };
-fn le(a: i32, b: i32): i32 = if a <= b { 1 } else { 0 };
-fn gt(a: i32, b: i32): i32 = if a > b { 1 } else { 0 };
-fn ge(a: i32, b: i32): i32 = if a >= b { 1 } else { 0 };
-fn eq(a: i32, b: i32): i32 = if a == b { 1 } else { 0 };
-fn ne(a: i32, b: i32): i32 = if a != b { 1 } else { 0 };
+fn le(a: i32, b: i32): i32 = match a <= b {
+    true -> 1,
+    _ -> 0,
+};
 
-fn flt(a: f64, b: f64): i32 = if a < b { 1 } else { 0 };
-fn fle(a: f64, b: f64): i32 = if a <= b { 1 } else { 0 };
-fn fgt(a: f64, b: f64): i32 = if a > b { 1 } else { 0 };
-fn fge(a: f64, b: f64): i32 = if a >= b { 1 } else { 0 };
+fn gt(a: i32, b: i32): i32 = match a > b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn ge(a: i32, b: i32): i32 = match a >= b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn eq(a: i32, b: i32): i32 = match a == b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn ne(a: i32, b: i32): i32 = match a != b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn flt(a: f64, b: f64): i32 = match a < b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn fle(a: f64, b: f64): i32 = match a <= b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn fgt(a: f64, b: f64): i32 = match a > b {
+    true -> 1,
+    _ -> 0,
+};
+
+fn fge(a: f64, b: f64): i32 = match a >= b {
+    true -> 1,
+    _ -> 0,
+};
 
 fn clobbered(a: i32, b: i32, x: i32, y: i32): i32 {
     let less = a < b;
