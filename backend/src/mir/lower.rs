@@ -900,6 +900,93 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
             },
 
+            ExpressionKind::CompoundAssign { target, operator, value } => {
+                let (target, value_expr, operator) = (*target, *value, *operator);
+                let target_type = self.typeck.type_of(target.id);
+
+                if let ExpressionKind::Index { base, index } = &target.kind {
+                    let base_type = self.typeck.type_of(base.id);
+                    let (base, bound, _, stride) = self.index_operands(base, base_type)?;
+                    let index = self.lower_expr(index)?;
+                    let Operand::Place(base_place) = base else {
+                        unreachable!("indexing a constant aggregate");
+                    };
+
+                    let old = self.fresh_temporary(temp_value_type(target_type));
+                    let instr = Kind::ElementLoad { base, index, bound, stride, typ: target_type };
+                    self.emit(old, instr);
+
+                    let updated = self.combine(operator, Operand::Place(old), value_expr, typ)?;
+                    let instr = Kind::ElementStore { index, bound, value: updated, stride };
+                    self.emit(base_place, instr);
+
+                    return Ok(updated);
+                }
+
+                if let ExpressionKind::Static(id) = &target.kind {
+                    let address = self.static_address(*id, target_type);
+
+                    let old = self.fresh_temporary(temp_value_type(target_type));
+                    let src = Operand::Place(address);
+                    let instr = Kind::FieldLoad { src, offset: 0, typ: target_type };
+                    self.emit(old, instr);
+
+                    let updated = self.combine(operator, Operand::Place(old), value_expr, typ)?;
+                    self.emit(address, Kind::FieldStore { value: updated, offset: 0 });
+
+                    return Ok(updated);
+                }
+
+                if let ExpressionKind::Unary { operator: UnaryOperator::Deref, expr } = &target.kind
+                {
+                    let Operand::Place(pointer) = self.lower_expr(expr)? else {
+                        unreachable!("dereferencing a constant");
+                    };
+
+                    let old = self.fresh_temporary(temp_value_type(target_type));
+                    let src = Operand::Place(pointer);
+                    let instr = Kind::FieldLoad { src, offset: 0, typ: target_type };
+                    self.emit(old, instr);
+
+                    let updated = self.combine(operator, Operand::Place(old), value_expr, typ)?;
+                    self.emit(pointer, Kind::FieldStore { value: updated, offset: 0 });
+
+                    return Ok(updated);
+                }
+
+                let (dest, offset, _) = self.place_parts(target)?;
+                match &target.kind {
+                    ExpressionKind::Local(local) => {
+                        // a local that never escapes to the runtime was folded away,
+                        // so its updated value is handed straight back
+                        let updated =
+                            self.combine(operator, Operand::Place(dest), value_expr, typ)?;
+                        self.constant_locals[*local] = None;
+
+                        match self.runtime_local_uses(*local) {
+                            true => {
+                                self.emit(dest, Kind::Assign(updated));
+                                Ok(Operand::Place(dest))
+                            },
+                            false => Ok(updated),
+                        }
+                    },
+                    ExpressionKind::Field { .. } => {
+                        let old = self.fresh_temporary(temp_value_type(target_type));
+                        let instr =
+                            Kind::FieldLoad { src: Operand::Place(dest), offset, typ: target_type };
+                        self.emit(old, instr);
+
+                        let updated =
+                            self.combine(operator, Operand::Place(old), value_expr, typ)?;
+                        self.emit(dest, Kind::FieldStore { value: updated, offset });
+
+                        Ok(updated)
+                    },
+                    _ => unreachable!("invalid compound assignment target in MIR lowering"),
+                }
+            },
+
             ExpressionKind::Path(_) => unreachable!(
                 "a path callee is resolved via the side-tables, never lowered as a value"
             ),
@@ -1146,11 +1233,43 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         .unwrap_or(body_block);
                     let _ = exec_block;
 
-                    let body_operand = self.lower_expr(arm.body)?;
-                    if let Some(res_place) = match_result_place {
-                        self.emit(res_place, Kind::Assign(body_operand));
+                    match arm.body {
+                        hir::ArmBody::Expr(body) => {
+                            let body_operand = self.lower_expr(body)?;
+                            if let Some(res_place) = match_result_place {
+                                self.emit(res_place, Kind::Assign(body_operand));
+                            }
+                            self.terminate(Terminator::Jump(join_block));
+                        },
+
+                        // an arm that transfers control never reaches the join, so it terminates its own block and contributes no value
+                        hir::ArmBody::Return(value) => {
+                            let operand = value.map(|value| self.lower_expr(value)).transpose()?;
+                            match self.inlined_return_target {
+                                Some((exit_block, return_place)) => {
+                                    if let (Some(operand), Some(dest)) = (operand, return_place) {
+                                        self.emit(dest, Kind::Assign(operand));
+                                    }
+                                    self.terminate(Terminator::Jump(exit_block));
+                                },
+                                _ => self.terminate(Terminator::Return(operand)),
+                            }
+                        },
+
+                        hir::ArmBody::Break => {
+                            let target =
+                                self.loop_targets.last().expect("break without an enclosing loop");
+                            self.terminate(Terminator::Jump(target.break_target));
+                        },
+
+                        hir::ArmBody::Continue => {
+                            let target = self
+                                .loop_targets
+                                .last()
+                                .expect("continue without an enclosing loop");
+                            self.terminate(Terminator::Jump(target.continue_target));
+                        },
                     }
-                    self.terminate(Terminator::Jump(join_block));
                 }
 
                 self.switch_to(next_arm_check_block);
@@ -1343,6 +1462,35 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     /// [Self::place_info] over any place, including ones reached dynamically
+    fn combine(
+        &mut self,
+        operator: BinaryOperator,
+        old: Operand<'hir>,
+        value: &'hir Expression<'hir>,
+        typ: Type<'hir>,
+    ) -> Result<Operand<'hir>, MirError> {
+        let rhs = self.lower_expr(value)?;
+        let dest = self.fresh_temporary(temp_value_type(typ));
+
+        let is_arithmetic =
+            matches!(operator, BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul);
+        let checked =
+            typ.is_integer() && is_arithmetic && optimisation::Level::Debug == optimisation::get();
+
+        self.emit(
+            dest,
+            InstructionKind::Binary {
+                operation: operator,
+                lhs: old,
+                rhs,
+                checked,
+                wrapping: false,
+            },
+        );
+
+        Ok(Operand::Place(dest))
+    }
+
     fn place_parts(
         &mut self,
         expr: &'hir Expression<'hir>,
@@ -2100,6 +2248,11 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
             }
             visit_expr_runtime_uses(value, uses);
         },
+        // unlike a plain assignment the target is read before it is written, so even a local target counts as a use
+        CompoundAssign { target, value, .. } => {
+            visit_expr_runtime_uses(target, uses);
+            visit_expr_runtime_uses(value, uses);
+        },
         Struct { fields, .. } => {
             for &(_, value) in *fields {
                 visit_expr_runtime_uses(value, uses);
@@ -2141,7 +2294,9 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
                 if let Some(guard) = arm.guard {
                     visit_expr_runtime_uses(guard, uses);
                 }
-                visit_expr_runtime_uses(arm.body, uses);
+                if let Some(body) = arm.body.value() {
+                    visit_expr_runtime_uses(body, uses);
+                }
             }
         },
     }

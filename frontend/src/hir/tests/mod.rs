@@ -20,6 +20,19 @@ fn with_lowered_err<R>(src: &str, f: impl for<'a> FnOnce(HirError<'a>) -> R) -> 
     f(err)
 }
 
+fn missing_pattern(src: &str) -> Option<String> {
+    let arena = bumpalo::Bump::new();
+    let statements = Parser::new(src).parse().expect("parse failed");
+
+    super::lower(statements, &arena)
+        .reported_errors
+        .iter()
+        .find_map(|error| match error.kind {
+            HirErrorKind::NonExhaustiveMatch { missing, .. } => Some(missing.to_owned()),
+            _ => None,
+        })
+}
+
 #[test]
 fn statics_are_laid_out_with_their_initialiser() {
     let source = "static LIMIT: i32 = 10;\nstatic mut CURSOR: i32 = 0;\nfn main(): i32 { LIMIT }";
@@ -2021,4 +2034,94 @@ fn writing_through_a_shared_slice_is_rejected() {
         assert_eq!(err.kind, HirErrorKind::AssignBehindSharedRef);
         assert_eq!(span_text(src, err.span), "s[0]");
     });
+}
+
+#[test]
+fn a_match_missing_an_enum_variant_is_reported() {
+    let source = "enum Signal { Halt, Skip, Take }\n\
+        fn code(s: Signal): i32 { match s { Signal::Halt -> 0, Signal::Skip -> 1, } }\n\
+        fn main(): i32 { code(Signal::Halt) }";
+
+    assert_eq!(missing_pattern(source).as_deref(), Some("Signal::Take"));
+}
+
+#[test]
+fn a_match_covering_every_variant_is_accepted() {
+    let source = "enum Signal { Halt, Skip }\n\
+        fn code(s: Signal): i32 { match s { Signal::Halt -> 0, Signal::Skip -> 1, } }\n\
+        fn main(): i32 { code(Signal::Halt) }";
+
+    assert_eq!(missing_pattern(source), None);
+}
+
+#[test]
+fn a_wildcard_arm_covers_what_is_left() {
+    let source = "enum Signal { Halt, Skip, Take }\n\
+        fn code(s: Signal): i32 { match s { Signal::Halt -> 0, _ -> 1, } }\n\
+        fn main(): i32 { code(Signal::Halt) }";
+
+    assert_eq!(missing_pattern(source), None);
+}
+
+#[test]
+fn an_or_pattern_covers_each_of_its_alternatives() {
+    let source = "enum Signal { Halt, Skip }\n\
+        fn code(s: Signal): i32 { match s { Signal::Halt | Signal::Skip -> 0, } }\n\
+        fn main(): i32 { code(Signal::Halt) }";
+
+    assert_eq!(missing_pattern(source), None);
+}
+
+#[test]
+fn a_guarded_arm_does_not_count_towards_coverage() {
+    let source = "fn code(b: bool): i32 { match b { x if x -> 0, false -> 1, } }\n\
+        fn main(): i32 { code(false) }";
+
+    assert_eq!(missing_pattern(source).as_deref(), Some("true"));
+}
+
+#[test]
+fn both_booleans_are_needed() {
+    let source = "fn code(b: bool): i32 { match b { false -> 0, } }\n\
+        fn main(): i32 { code(false) }";
+
+    assert_eq!(missing_pattern(source).as_deref(), Some("true"));
+}
+
+#[test]
+fn a_range_spanning_the_whole_type_is_exhaustive() {
+    let source = "fn code(n: u8): i32 { match n { 0..=255 -> 0, } }\n\
+        fn main(): i32 { code(0) }";
+
+    assert_eq!(missing_pattern(source), None);
+}
+
+#[test]
+fn a_range_leaving_one_value_out_names_it() {
+    let source = "fn code(n: u8): i32 { match n { 0..=254 -> 0, } }\n\
+        fn main(): i32 { code(0) }";
+
+    assert_eq!(missing_pattern(source).as_deref(), Some("255"));
+}
+
+#[test]
+fn a_missing_payload_is_reported_through_the_variant() {
+    let source = "enum Opt { None, Some(bool) }\n\
+        fn code(o: Opt): i32 { match o { Opt::None -> 0, Opt::Some(true) -> 1, } }\n\
+        fn main(): i32 { code(Opt::None) }";
+
+    assert_eq!(missing_pattern(source).as_deref(), Some("Opt::Some(false)"));
+}
+
+#[test]
+fn a_binding_covers_everything() {
+    let source = "fn code(n: i32): i32 { match n { x -> x, } }\nfn main(): i32 { code(1) }";
+
+    assert_eq!(missing_pattern(source), None);
+}
+
+#[test]
+fn a_float_match_always_needs_a_wildcard() {
+    let source = "fn code(x: f64): i32 { match x { 1.0 -> 0, } }\nfn main(): i32 { code(1.0) }";
+    assert_eq!(missing_pattern(source).as_deref(), Some("_"));
 }

@@ -997,6 +997,69 @@ mod tests {
     }
 
     #[test]
+    fn compound_assignment_keeps_its_operator() {
+        let statements = Parser::new("a += b;").parse().unwrap();
+        let [Statement::Expr(Expression::CompoundAssignment { target, operator, value, .. }, _)] =
+            statements.as_slice()
+        else {
+            panic!("expected a compound assignment, got {statements:?}");
+        };
+
+        assert_eq!(**target, Expression::Identifier("a", Span::new(BytePos(0), BytePos(1))));
+        assert_eq!(*operator, BinaryOperator::Add);
+        assert_eq!(**value, Expression::Identifier("b", Span::new(BytePos(5), BytePos(6))));
+    }
+
+    #[test]
+    fn compound_assignment_binds_looser_than_arithmetic() {
+        let statements = Parser::new("a += b * c;").parse().unwrap();
+        let [Statement::Expr(Expression::CompoundAssignment { value, .. }, _)] =
+            statements.as_slice()
+        else {
+            panic!("expected a compound assignment, got {statements:?}");
+        };
+
+        assert!(matches!(**value, Expression::Binary { operator: BinaryOperator::Mul, .. }));
+    }
+
+    #[test]
+    fn every_compound_operator_parses() {
+        let cases = [
+            ("a += b;", BinaryOperator::Add),
+            ("a -= b;", BinaryOperator::Sub),
+            ("a *= b;", BinaryOperator::Mul),
+            ("a /= b;", BinaryOperator::Div),
+            ("a &= b;", BinaryOperator::BitAnd),
+            ("a |= b;", BinaryOperator::BitOr),
+            ("a ^= b;", BinaryOperator::BitXor),
+            ("a <<= b;", BinaryOperator::Shl),
+            ("a >>= b;", BinaryOperator::Shr),
+        ];
+
+        for (source, expected) in cases {
+            let statements = Parser::new(source).parse().unwrap();
+            let [Statement::Expr(Expression::CompoundAssignment { operator, .. }, _)] =
+                statements.as_slice()
+            else {
+                panic!("expected a compound assignment for {source:?}, got {statements:?}");
+            };
+
+            assert_eq!(*operator, expected, "wrong operator for {source:?}");
+        }
+    }
+
+    #[test]
+    fn compound_assignment_rejects_a_non_place_target() {
+        let errors = Parser::new("f() += 1;").parse().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ParseErrorKind::InvalidAssignmentTarget)),
+            "expected an invalid-target error, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn unary_binds_after_method_call() {
         let statements = Parser::new("!rect.is_larger_than(15);").parse().unwrap();
 

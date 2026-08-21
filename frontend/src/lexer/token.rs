@@ -95,6 +95,17 @@ pub enum Punct {
     Shl,       // <<
     Shr,       // >>
 
+    // compound assignment, one per arithmetic and bitwise operator
+    PlusEq,      // +=
+    MinusEq,     // -=
+    StarEq,      // *=
+    SlashEq,     // /=
+    AmpersandEq, // &=
+    PipeEq,      // |=
+    CaretEq,     // ^=
+    ShlEq,       // <<=
+    ShrEq,       // >>=
+
     OpenParen,    // (
     CloseParen,   // )
     OpenBrace,    // {
@@ -351,6 +362,15 @@ impl Punct {
             Self::Caret => "^",
             Self::Shl => "<<",
             Self::Shr => ">>",
+            Self::PlusEq => "+=",
+            Self::MinusEq => "-=",
+            Self::StarEq => "*=",
+            Self::SlashEq => "/=",
+            Self::AmpersandEq => "&=",
+            Self::PipeEq => "|=",
+            Self::CaretEq => "^=",
+            Self::ShlEq => "<<=",
+            Self::ShrEq => ">>=",
             Self::OpenParen => "(",
             Self::CloseParen => ")",
             Self::OpenBrace => "{",

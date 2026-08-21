@@ -966,6 +966,26 @@ fn read(pp: **i32) {}  // error: cannot point at *i32
 Wrap the inner pointer in a struct when a second level is genuinely needed.
 "#;
 
+E160 => "match does not cover every value", r#"
+A `match` must handle every value its scrutinee can take. The compiler works
+out which values no arm accepts and names one of them.
+
+```nyx
+enum Signal { Halt, Skip, Take }
+
+fn code(signal: Signal): i32 {
+    match signal {
+        Signal::Halt -> 0,
+        Signal::Skip -> 1,
+    }  // error: `Signal::Take` not covered
+}
+```
+
+Add the missing arms, or close the match with a `_` arm that stands for
+everything left. An arm carrying an `if` guard does not count towards coverage,
+since the guard may fail at run time.
+"#;
+
 E150 => "unknown intrinsic", r#"
 A declaration marked `@intrinsic` claims the compiler supplies its body, but no
 implementation is registered under that name.

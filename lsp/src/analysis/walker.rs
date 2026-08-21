@@ -302,7 +302,7 @@ impl<'a, 'h> Visitor<'h> for Walker<'a, 'h> {
                 self.visit_expression(right);
             },
             Field { base, .. } => self.visit_expression(base),
-            Assign { target, value } => {
+            Assign { target, value } | CompoundAssign { target, value, .. } => {
                 self.visit_expression(target);
                 self.visit_expression(value);
             },
@@ -326,7 +326,9 @@ impl<'a, 'h> Visitor<'h> for Walker<'a, 'h> {
                 self.visit_expression(scrutinee);
                 for arm in *arms {
                     self.visit_pattern(arm.pattern);
-                    self.visit_expression(arm.body);
+                    if let Some(body) = arm.body.value() {
+                        self.visit_expression(body);
+                    }
                     if let Some(guard) = arm.guard {
                         self.visit_expression(guard);
                     }

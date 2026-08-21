@@ -1,7 +1,7 @@
 use crate::hir::{
-    Arm, Block, Constant, Expression, ExpressionKind as ExprKind, Function, FunctionKind, Local,
-    LoopKind, Method, Parameter, Pattern, PatternKind as PattKind, Res, Statement as Stmt, Type,
-    TypeckResults,
+    Arm, ArmBody, Block, Constant, Expression, ExpressionKind as ExprKind, Function, FunctionKind,
+    Local, LoopKind, Method, Parameter, Pattern, PatternKind as PattKind, Res, Statement as Stmt,
+    Type, TypeckResults,
 };
 
 pub trait Visitor<'hir>: Sized {
@@ -122,6 +122,7 @@ pub fn walk_expression<'hir, V: Visitor<'hir>>(
         | ExprKind::Cast { from: expr, .. } => visitor.visit_expression(expr),
         ExprKind::Binary { left, right, .. }
         | ExprKind::Assign { target: left, value: right }
+        | ExprKind::CompoundAssign { target: left, value: right, .. }
         | ExprKind::Index { base: left, index: right } => {
             visitor.visit_expression(left);
             visitor.visit_expression(right);
@@ -155,7 +156,9 @@ pub fn walk_expression<'hir, V: Visitor<'hir>>(
                 if let Some(guard) = arm.guard {
                     visitor.visit_expression(guard);
                 }
-                visitor.visit_expression(arm.body);
+                if let Some(body) = arm.body.value() {
+                    visitor.visit_expression(body);
+                }
             }
         },
         ExprKind::Literal(_)
@@ -311,6 +314,11 @@ pub fn fold_expression<'hir, F: Folder<'hir>>(
             target: folder.fold_expression(target),
             value: folder.fold_expression(value),
         },
+        CompoundAssign { target, operator, value } => CompoundAssign {
+            target: folder.fold_expression(target),
+            operator,
+            value: folder.fold_expression(value),
+        },
         Struct { id, fields } => {
             let fields = fields
                 .iter()
@@ -342,12 +350,18 @@ pub fn fold_expression<'hir, F: Folder<'hir>>(
         TypeIntrinsic { kind, typ } => TypeIntrinsic { kind, typ: folder.fold_type(typ) },
         Cast { from, to } => Cast { from: folder.fold_expression(from), to: folder.fold_type(to) },
         Match { scrutinee, arms } => {
+            use ArmBody::*;
             let arms: Vec<_> = arms
                 .iter()
                 .map(|arm| Arm {
                     pattern: folder.fold_pattern(arm.pattern),
                     guard: arm.guard.map(|guard| folder.fold_expression(guard)),
-                    body: folder.fold_expression(arm.body),
+                    body: match arm.body {
+                        Expr(body) => Expr(folder.fold_expression(body)),
+                        Return(value) => Return(value.map(|value| folder.fold_expression(value))),
+                        Break => Break,
+                        Continue => Continue,
+                    },
                     span: arm.span,
                 })
                 .collect();

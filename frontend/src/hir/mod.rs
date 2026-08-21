@@ -35,6 +35,7 @@ mod declarations;
 mod def;
 pub mod diagnostics;
 pub mod error;
+mod exhaustive;
 pub mod ids;
 mod infer;
 mod interfaces;
@@ -258,7 +259,7 @@ pub struct Block<'hir> {
 pub struct Arm<'hir> {
     pub pattern: &'hir Pattern<'hir>,
     pub guard: Option<&'hir Expression<'hir>>,
-    pub body: &'hir Expression<'hir>,
+    pub body: ArmBody<'hir>,
     pub span: Span,
 }
 
@@ -314,6 +315,12 @@ pub enum ExpressionKind<'hir> {
         target: &'hir Expression<'hir>,
         value: &'hir Expression<'hir>,
     },
+    /// `target <op>= value`, where `target` is evaluated once
+    CompoundAssign {
+        target: &'hir Expression<'hir>,
+        operator: BinaryOperator,
+        value: &'hir Expression<'hir>,
+    },
     /// A struct literal (e.g. `A { x: 1, y: 2 }`)
     Struct {
         id: AdtId,
@@ -335,13 +342,13 @@ pub enum ExpressionKind<'hir> {
     },
     /// A path referencing an item, e.g. the name of a called function
     ///
-    /// Carries only the structural name, the resolved [`FunctionId`] lives in
-    /// [`TypeckResults::type_dependent_defs`], keyed by the enclosing call's id
+    /// Carries only the structural name, the resolved [FunctionId] lives in
+    /// [TypeckResults::type_dependent_defs], keyed by the enclosing call's id
     Path(SymbolId),
     /// A use of a named constant
     ///
-    /// The referenced value tree lives in the constant's own [`ExprId`] space,
-    /// MIR swaps to its [`TypeckResults`] when lowering through this node
+    /// The referenced value tree lives in the constant's own [ExprId] space,
+    /// MIR swaps to its [TypeckResults] when lowering through this node
     Const(&'hir Constant<'hir>),
     /// An associated constant selected through a generic bound. Structural
     /// monomorphisation resolves it once the parameter has a concrete type.
@@ -354,15 +361,15 @@ pub enum ExpressionKind<'hir> {
     Static(StaticId),
     /// A function call
     ///
-    /// The `callee` is a structural [`ExpressionKind::Path`],
-    /// the resolved target is looked up from the side-tables in [`TypeckResults`]
+    /// The `callee` is a structural [ExpressionKind::Path],
+    /// the resolved target is looked up from the side-tables in [TypeckResults]
     Call {
         callee: &'hir Expression<'hir>,
         args: &'hir [&'hir Expression<'hir>],
     },
     /// A method call (e.g. `x.foo(a, b)`)
     ///
-    /// The resolved target is looked up from [`TypeckResults::type_dependent_defs`],
+    /// The resolved target is looked up from [TypeckResults::type_dependent_defs],
     /// keyed by this expression's id
     MethodCall {
         name: SymbolId,
@@ -383,6 +390,27 @@ pub enum ExpressionKind<'hir> {
         scrutinee: &'hir Expression<'hir>,
         arms: &'hir [Arm<'hir>],
     },
+}
+
+/// The block an item was declared in
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Owner<'hir> {
+    /// declared at module level
+    #[default]
+    Free,
+    /// declared in `impl T`
+    Inherent(Type<'hir>),
+    /// declared in `impl T with I`
+    Interface { on: Type<'hir>, interface: SymbolId },
+}
+
+/// What an arm does once its pattern and guard have matched
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArmBody<'hir> {
+    Expr(&'hir Expression<'hir>),
+    Return(Option<&'hir Expression<'hir>>),
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -482,23 +510,8 @@ impl<'hir> Hir<'hir> {
     }
 }
 
-/// The block an item was declared in
-///
-/// Mangling flattens this into the name (`nyx::Point::Shape::area`), which is
-/// lossy to read back: keep the structure so no consumer has to re-split it
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Owner<'hir> {
-    /// declared at module level
-    #[default]
-    Free,
-    /// declared in `impl T`
-    Inherent(Type<'hir>),
-    /// declared in `impl T with I`
-    Interface { on: Type<'hir>, interface: SymbolId },
-}
-
 impl<'hir> Owner<'hir> {
-    /// Rewrites the owning type through `f`, leaving `Free` untouched.
+    /// rewrites the owning type through `f`, leaving `Free` untouched
     pub fn map_type(self, f: impl FnOnce(Type<'hir>) -> Type<'hir>) -> Self {
         match self {
             Self::Inherent(on) => Self::Inherent(f(on)),
@@ -508,13 +521,24 @@ impl<'hir> Owner<'hir> {
     }
 }
 
-/// Establish the public HIR invariant that every [FunctionId] is the
+impl<'hir> ArmBody<'hir> {
+    #[inline]
+    pub const fn value(self) -> Option<&'hir Expression<'hir>> {
+        match self {
+            Self::Expr(expr) | Self::Return(Some(expr)) => Some(expr),
+            Self::Return(None) | Self::Break | Self::Continue => None,
+        }
+    }
+
+    /// Whether the arm leaves the match instead of producing a value for it
+    #[inline]
+    pub const fn diverges(self) -> bool {
+        !matches!(self, Self::Expr(_))
+    }
+}
+
+/// establish the public HIR invariant that every [FunctionId] is the
 /// function's position in [Hir::functions]
-///
-/// Collection IDs also name signature-only items
-/// (intrinsics and generic templates), so executable
-/// bodies are compacted once, at the HIR freeze boundary, and all body-local
-/// resolutions are rewritten together
 pub(in crate::hir) fn freeze_function_ids<'hir>(
     mut functions: IndexVec<FunctionId, Function<'hir>>,
 ) -> IndexVec<FunctionId, Function<'hir>> {
@@ -539,7 +563,7 @@ pub(in crate::hir) fn freeze_function_ids<'hir>(
     functions
 }
 
-/// Walk a place expression to the local it is rooted at, if any
+/// walk a place expression to the local it is rooted at, if any
 pub fn place_base_local(expr: &Expression<'_>) -> Option<LocalId> {
     match &expr.kind {
         ExpressionKind::Local(local) => Some(*local),

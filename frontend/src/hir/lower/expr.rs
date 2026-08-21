@@ -1,8 +1,9 @@
 use crate::{
     hir::{
-        Arm, Constant, Expression, ExpressionKind, Literal, LocalId, Res, Statement, Static,
-        StaticId, SymbolId, Type, TypeKind, collect,
+        Arm, ArmBody, Constant, Expression, ExpressionKind, Literal, LocalId, Res, Statement,
+        Static, StaticId, SymbolId, Type, TypeKind, collect,
         error::{HirError, hir_error},
+        exhaustive,
         lower::{FunctionBuilder, Lowered},
         place_base_local,
         symbols::qualified,
@@ -104,6 +105,42 @@ where
         }
     }
 
+    /// lowers the left-hand side of an assignment, rejecting a target that is
+    /// not an assignable place and one bound immutably
+    fn lower_assignment_target(
+        &mut self,
+        target: &expression::Expression<'src>,
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let lowered = self.lower_mutable_place(target, None)?;
+
+        if let ExpressionKind::Static(id) = lowered.expr.kind {
+            let item = self.scope.values.statics[id];
+            if !item.is_mut {
+                let name = self.arena.alloc_str(self.scope.symbols.get(item.name));
+                let decl = collect::source_span(item.decl_span);
+                return Err(hir_error!(span, ImmutableBind { name, decl }));
+            }
+
+            return Ok(lowered);
+        }
+
+        let is_place = self.place_indirection(lowered.expr).is_some()
+            || place_base_local(lowered.expr).is_some();
+        if !is_place {
+            return Err(hir_error!(span, InvalidAssignmentTarget));
+        }
+
+        let blame = match lowered.expr.kind {
+            ExpressionKind::Local(_) => span,
+            _ => target.span(),
+        };
+        self.check_mutable_place(lowered.expr, blame)?;
+        self.make_place_mutable(lowered.expr)?;
+
+        Ok(lowered)
+    }
+
     fn check_mutable_place(
         &self,
         expr: &Expression<'hir>,
@@ -117,7 +154,7 @@ where
                 Some(local) if self[local].mutable => Ok(()),
                 Some(local) => {
                     let name = self.arena.alloc_str(self.scope.symbols.get(self[local].name));
-                    let decl = crate::hir::collect::source_span(self[local].decl_span);
+                    let decl = collect::source_span(self[local].decl_span);
                     Err(hir_error!(blame, ImmutableBind { name, decl }))
                 },
             },
@@ -510,49 +547,33 @@ where
             },
 
             Expr::Assignment { target, value, span } => {
-                let target_lowered = self.lower_mutable_place(target, None)?;
-
-                if let ExpressionKind::Static(id) = target_lowered.expr.kind {
-                    let item = self.scope.values.statics[id];
-                    if !item.is_mut {
-                        let name = self.arena.alloc_str(self.scope.symbols.get(item.name));
-                        let decl = collect::source_span(item.decl_span);
-                        return Err(hir_error!(*span, ImmutableBind { name, decl }));
-                    }
-
-                    let value = self.lower_expr(value, Some(target_lowered.typ))?;
-                    self.assert_type(target_lowered.typ, value.typ, *span)?;
-
-                    let typ = target_lowered.typ;
-                    return Ok(self.alloc(
-                        ExpressionKind::Assign { target: target_lowered.expr, value: value.expr },
-                        typ,
-                        *span,
-                    ));
-                }
-
-                let is_place = self.place_indirection(target_lowered.expr).is_some()
-                    || place_base_local(target_lowered.expr).is_some();
-                if !is_place {
-                    return Err(hir_error!(*span, InvalidAssignmentTarget));
-                }
-
-                let blame = match target_lowered.expr.kind {
-                    ExpressionKind::Local(_) => *span,
-                    _ => target.span(),
-                };
-                self.check_mutable_place(target_lowered.expr, blame)?;
-                self.make_place_mutable(target_lowered.expr)?;
-
+                let target_lowered = self.lower_assignment_target(target, *span)?;
                 let value = self.lower_expr(value, Some(target_lowered.typ))?;
                 self.assert_type(target_lowered.typ, value.typ, *span)?;
 
                 let typ = target_lowered.typ;
-                Ok(self.alloc(
-                    ExpressionKind::Assign { target: target_lowered.expr, value: value.expr },
-                    typ,
-                    *span,
-                ))
+                let instr =
+                    ExpressionKind::Assign { target: target_lowered.expr, value: value.expr };
+                Ok(self.alloc(instr, typ, *span))
+            },
+
+            Expr::CompoundAssignment { target, operator, value, span } => {
+                let target_lowered = self.lower_assignment_target(target, *span)?;
+                let (typ, expr, operator) = (target_lowered.typ, target_lowered.expr, *operator);
+
+                // the operand rules are the ones 'target <op> value' would obey,
+                // so 'x <<= 1' accepts a shift amount of another width just as 'x << 1' does
+                let hint = match operator {
+                    BinaryOperator::Shl | BinaryOperator::Shr => None,
+                    _ => Some(self.infer.resolve_shallow(target_lowered.typ)),
+                };
+                let value = self.lower_expr(value, hint)?;
+                let result = self.type_for_binary(&operator, typ, value.typ, *span)?;
+                self.assert_type(typ, result, *span)?;
+
+                let instr =
+                    ExpressionKind::CompoundAssign { target: expr, operator, value: value.expr };
+                Ok(self.alloc(instr, typ, *span))
             },
 
             Expr::Struct { name, fields, span, type_args } => {
@@ -589,7 +610,7 @@ where
                     fields,
                     *span,
                     false,
-                    |this, _field_symbol, expected, field| {
+                    |this, _, expected, field| {
                         let value = this.lower_expr(&field.value, Some(expected))?;
                         this.assert_type(expected, value.typ, value.span)?;
                         Ok(value.expr)
@@ -955,6 +976,27 @@ where
         Ok(lowered)
     }
 
+    /// reports a match that leaves some value of the scrutinee unhandled
+    fn check_exhaustive(
+        &self,
+        scrutinee: Type<'hir>,
+        arms: &[Arm<'hir>],
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let context =
+            exhaustive::Context { adts: &self.scope.adts.defs, symbols: &self.scope.symbols };
+        let rows: Vec<_> = arms
+            .iter()
+            .map(|arm| exhaustive::Row { pattern: arm.pattern, guarded: arm.guard.is_some() })
+            .collect();
+
+        let Some(witness) = context.missing_patterns(scrutinee, &rows, 1).into_iter().next() else {
+            return Ok(());
+        };
+        let missing = self.arena.alloc_str(&witness.0);
+        Err(hir_error!(span, NonExhaustiveMatch { typ: scrutinee, missing }))
+    }
+
     pub(super) fn lower_match(
         &mut self,
         match_stmt: &statement::Match<'src>,
@@ -978,27 +1020,55 @@ where
                 self.assert_type(TypeKind::Bool, g.typ, g.span)?;
             }
 
-            let body = self.lower_expr(&arm.body, unified_type)?;
-            match body.typ.diverges() {
-                true => divergent = divergent.or(Some(body.typ)),
-                _ => {
-                    valued = true;
-                    match unified_type {
-                        Some(expected) => self.assert_type(expected, body.typ, body.span)?,
-                        None => unified_type = Some(body.typ),
+            let body = match &arm.body {
+                statement::ArmBody::Expr(expr) => {
+                    let body = self.lower_expr(expr, unified_type)?;
+                    match body.typ.diverges() {
+                        true => divergent = divergent.or(Some(body.typ)),
+                        _ => {
+                            valued = true;
+                            match unified_type {
+                                Some(expected) => {
+                                    self.assert_type(expected, body.typ, body.span)?
+                                },
+                                _ => unified_type = Some(body.typ),
+                            }
+                        },
                     }
+
+                    ArmBody::Expr(body.expr)
                 },
-            }
+                // an arm that leaves the match yields nothing to unify against,
+                // so it only makes the match itself diverge when every arm does
+                statement::ArmBody::Return(returned) => {
+                    let value = self.lower_return_value(returned)?;
+                    divergent = divergent.or(Some(self.scope.types.common.never));
+
+                    ArmBody::Return(value)
+                },
+                statement::ArmBody::Break(span) => {
+                    if self.loop_depth == 0 {
+                        return Err(hir_error!(*span, LoopControlOutsideLoop { kind: "break" }));
+                    }
+
+                    divergent = divergent.or(Some(self.scope.types.common.never));
+                    ArmBody::Break
+                },
+                statement::ArmBody::Continue(span) => {
+                    if self.loop_depth == 0 {
+                        return Err(hir_error!(*span, LoopControlOutsideLoop { kind: "continue" }));
+                    }
+
+                    divergent = divergent.or(Some(self.scope.types.common.never));
+                    ArmBody::Continue
+                },
+            };
 
             self.pop_scope();
-
-            arms.push(Arm {
-                pattern,
-                guard: guard.map(|g| g.expr),
-                body: body.expr,
-                span: arm.span,
-            });
+            arms.push(Arm { pattern, guard: guard.map(|g| g.expr), body, span: arm.span });
         }
+
+        self.check_exhaustive(scrutinee.typ, &arms, match_stmt.span)?;
 
         // every arm diverging makes the match itself diverge,
         // whatever the context expected

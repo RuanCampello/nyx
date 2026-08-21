@@ -99,6 +99,7 @@ impl<'a, 'hir> Checker<'a, 'hir> {
             | Cast { from: expr, .. } => self.check_expr(expr),
             Binary { left, right, .. }
             | Assign { target: left, value: right }
+            | CompoundAssign { target: left, value: right, .. }
             | Index { base: left, index: right } => {
                 self.check_expr(left);
                 self.check_expr(right);
@@ -131,7 +132,9 @@ impl<'a, 'hir> Checker<'a, 'hir> {
                     if let Some(guard) = arm.guard {
                         self.check_expr(guard);
                     }
-                    self.check_expr(arm.body);
+                    if let Some(body) = arm.body.value() {
+                        self.check_expr(body);
+                    }
                 }
             },
             Literal(_)

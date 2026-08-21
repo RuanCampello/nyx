@@ -348,6 +348,14 @@ pub enum HirErrorKind<'h> {
     NotIterable { typ: Type<'h> },
 
     #[diagnostic(
+        code = "E160",
+        message = "Match does not cover every value of {typ!}",
+        primary = "{missing!} not covered",
+        note = "A match must handle every case; add the missing arms or a {`_`} arm"
+    )]
+    NonExhaustiveMatch { typ: Type<'h>, missing: &'h str },
+
+    #[diagnostic(
         code = "E132",
         message = "{kind!} outside a loop",
         primary = "no enclosing loop",

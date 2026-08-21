@@ -1,6 +1,6 @@
 use crate::{
     hir::{
-        Block, Constant, LoopKind, Owner, Statement, Type, TypeKind,
+        Block, Constant, Expression, LoopKind, Owner, Statement, Type, TypeKind,
         error::{HirError, hir_error},
         lower::FunctionBuilder,
     },
@@ -98,28 +98,7 @@ where
             },
 
             Stmt::Return(statement) => {
-                let value = match statement.value.as_ref() {
-                    Some(expr) => {
-                        let expr = self.lower_expr(expr, Some(self.return_type))?;
-                        self.check_type_at(
-                            self.return_type,
-                            expr.typ,
-                            expr.span,
-                            self.return_type_span,
-                        )?;
-                        Some(expr.expr)
-                    },
-                    _ => {
-                        self.check_type_at(
-                            self.return_type,
-                            TypeKind::Unit,
-                            statement.span,
-                            self.return_type_span,
-                        )?;
-                        None
-                    },
-                };
-
+                let value = self.lower_return_value(statement)?;
                 Ok((Statement::Return(value), true))
             },
             Stmt::If(statement) => self.lower_if(statement, is_tail),
@@ -367,5 +346,24 @@ where
     fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type<'hir>, HirError<'hir>> {
         let expr = self.lower_expr(expr, None)?;
         Ok(expr.typ)
+    }
+
+    /// the value a `return` carries, checked against the enclosing signature
+    pub(super) fn lower_return_value(
+        &mut self,
+        returned: &statement::Return<'src>,
+    ) -> Result<Option<&'hir Expression<'hir>>, HirError<'hir>> {
+        Ok(match returned.value.as_ref() {
+            Some(expr) => {
+                let expr = self.lower_expr(expr, Some(self.return_type))?;
+                self.check_type_at(self.return_type, expr.typ, expr.span, self.return_type_span)?;
+                Some(expr.expr)
+            },
+            _ => {
+                let (typ, span) = (self.return_type, self.return_type_span);
+                self.check_type_at(typ, TypeKind::Unit, returned.span, span)?;
+                None
+            },
+        })
     }
 }

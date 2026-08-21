@@ -22,6 +22,13 @@ pub enum Expression<'i> {
         span: Span,
     },
     Assignment { target: Box<Expression<'i>>, value: Box<Expression<'i>>, span: Span },
+    /// `target <op>= value`, where the target is evaluated once
+    CompoundAssignment {
+        target: Box<Expression<'i>>,
+        operator: BinaryOperator,
+        value: Box<Expression<'i>>,
+        span: Span,
+    },
     Field { expr: Box<Expression<'i>>, field: &'i str, span: Span },
     Struct { 
         name: &'i str,
@@ -136,6 +143,7 @@ impl<'i> Expression<'i> {
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Assignment { span, .. }
+            | Self::CompoundAssignment { span, .. }
             | Self::Struct { span, .. }
             | Self::Field { span, .. }
             | Self::Call { span, .. }
@@ -303,6 +311,10 @@ impl<'i> Expression<'i> {
 
         if let Some(operator) = BinaryOperator::from_punct(punct) {
             return operator.precedence().level();
+        }
+
+        if BinaryOperator::from_compound_assignment(punct).is_some() {
+            return Precedence::Assignment.level();
         }
 
         let precedence = match punct {
@@ -500,18 +512,32 @@ impl<'i> Expression<'i> {
                 let right = Self::parse_expr(parser, precedence - 1)?;
                 let span = left.span() + right.span();
 
-                match left {
-                    Expression::Identifier { .. }
-                    | Expression::Field { .. }
-                    | Expression::Index { .. }
-                    | Expression::Unary { operator: UnaryOperator::Deref, .. } => {
-                        Ok(Expression::Assignment {
-                            target: Box::new(left),
-                            value: Box::new(right),
-                            span,
-                        })
+                match is_place(&left) {
+                    true => Ok(Expression::Assignment {
+                        target: Box::new(left),
+                        value: Box::new(right),
+                        span,
+                    }),
+                    _ => {
+                        Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))
                     },
+                }
+            },
 
+            // `a += b` keeps its operator rather than expanding to `a = a + b`, so the target is evaluated once when it is lowered
+            TokenKind::Punct(punct)
+                if let Some(operator) = BinaryOperator::from_compound_assignment(punct) =>
+            {
+                let right = Self::parse_expr(parser, precedence - 1)?;
+                let span = left.span() + right.span();
+
+                match is_place(&left) {
+                    true => Ok(Expression::CompoundAssignment {
+                        target: Box::new(left),
+                        operator,
+                        value: Box::new(right),
+                        span,
+                    }),
                     _ => {
                         Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))
                     },
@@ -651,6 +677,23 @@ impl BinaryOperator {
     }
 
     #[inline]
+    pub const fn from_compound_assignment(punct: Punct) -> Option<Self> {
+        let operator = match punct {
+            Punct::PlusEq => Self::Add,
+            Punct::MinusEq => Self::Sub,
+            Punct::StarEq => Self::Mul,
+            Punct::SlashEq => Self::Div,
+            Punct::AmpersandEq => Self::BitAnd,
+            Punct::PipeEq => Self::BitOr,
+            Punct::CaretEq => Self::BitXor,
+            Punct::ShlEq => Self::Shl,
+            Punct::ShrEq => Self::Shr,
+            _ => return None,
+        };
+
+        Some(operator)
+    }
+
     pub const fn from_punct(punct: Punct) -> Option<Self> {
         let operator = match punct {
             Punct::Plus => Self::Add,
@@ -696,4 +739,15 @@ impl BinaryOperator {
     pub const fn as_str<'s>(self) -> &'s str {
         self.punct().as_str()
     }
+}
+
+#[inline]
+const fn is_place(expr: &Expression<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::Identifier { .. }
+            | Expression::Field { .. }
+            | Expression::Index { .. }
+            | Expression::Unary { operator: UnaryOperator::Deref, .. }
+    )
 }

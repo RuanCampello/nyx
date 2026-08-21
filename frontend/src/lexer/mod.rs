@@ -97,11 +97,24 @@ impl<'src> Lexer<'src> {
                 match self.cursor.consume_optional('.') {
                     true if self.cursor.consume_optional('=') => self.token(Punct::RangeEq, start),
                     true => self.token(Punct::Range, start),
-                    false => self.token(Punct::Dot, start),
+                    _ => self.token(Punct::Dot, start),
                 }
             },
-            '+' => self.single_punct(Punct::Plus),
-            '*' => self.single_punct(Punct::Star),
+            '+' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::PlusEq, start),
+                    _ => self.token(Punct::Plus, start),
+                }
+            },
+
+            '*' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::StarEq, start),
+                    _ => self.token(Punct::Star, start),
+                }
+            },
 
             ':' => {
                 self.cursor.advance();
@@ -115,14 +128,23 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('>') {
                     true => self.token(Punct::Arrow, start),
-                    _ => self.token(Punct::Minus, start),
+                    _ => match self.cursor.consume_optional('=') {
+                        true => self.token(Punct::MinusEq, start),
+                        _ => self.token(Punct::Minus, start),
+                    },
                 }
             },
 
             // `//` was consumed while skipping; only `///` or a lone `/` reach here
             '/' => match self.is_doc_comment() {
                 true => DocComment.lex(&mut self.cursor, start)?,
-                false => self.single_punct(Punct::Slash),
+                _ => {
+                    self.cursor.advance();
+                    match self.cursor.consume_optional('=') {
+                        true => self.token(Punct::SlashEq, start),
+                        _ => self.token(Punct::Slash, start),
+                    }
+                },
             },
 
             '=' => {
@@ -137,32 +159,45 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('=') {
                     true => self.token(Punct::BangEq, start),
-                    false => self.token(Punct::Bang, start),
+                    _ => self.token(Punct::Bang, start),
                 }
             },
 
-            '^' => self.single_punct(Punct::Caret),
+            '^' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::CaretEq, start),
+                    _ => self.token(Punct::Caret, start),
+                }
+            },
+
             '@' => self.single_punct(Punct::At),
 
             '<' => {
                 self.cursor.advance();
-                if self.cursor.consume_optional('=') {
-                    self.token(Punct::LtEq, start)
-                } else if self.cursor.consume_optional('<') {
-                    self.token(Punct::Shl, start)
-                } else {
-                    self.token(Punct::Lt, start)
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::LtEq, start),
+                    _ => match self.cursor.consume_optional('<') {
+                        true => match self.cursor.consume_optional('=') {
+                            true => self.token(Punct::ShlEq, start),
+                            _ => self.token(Punct::Shl, start),
+                        },
+                        _ => self.token(Punct::Lt, start),
+                    },
                 }
             },
 
             '>' => {
                 self.cursor.advance();
-                if self.cursor.consume_optional('=') {
-                    self.token(Punct::GtEq, start)
-                } else if self.cursor.consume_optional('>') {
-                    self.token(Punct::Shr, start)
-                } else {
-                    self.token(Punct::Gt, start)
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::GtEq, start),
+                    _ => match self.cursor.consume_optional('>') {
+                        true => match self.cursor.consume_optional('=') {
+                            true => self.token(Punct::ShrEq, start),
+                            _ => self.token(Punct::Shr, start),
+                        },
+                        _ => self.token(Punct::Gt, start),
+                    },
                 }
             },
 
@@ -170,7 +205,10 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('&') {
                     true => self.token(Punct::And, start),
-                    false => self.token(Punct::Ampersand, start),
+                    _ => match self.cursor.consume_optional('=') {
+                        true => self.token(Punct::AmpersandEq, start),
+                        _ => self.token(Punct::Ampersand, start),
+                    },
                 }
             },
 
@@ -178,7 +216,10 @@ impl<'src> Lexer<'src> {
                 self.cursor.advance();
                 match self.cursor.consume_optional('|') {
                     true => self.token(Punct::Or, start),
-                    false => self.token(Punct::Pipe, start),
+                    _ => match self.cursor.consume_optional('=') {
+                        true => self.token(Punct::PipeEq, start),
+                        _ => self.token(Punct::Pipe, start),
+                    },
                 }
             },
 
@@ -295,6 +336,56 @@ mod tests {
     fn whitespace_only() {
         let kinds = kinds("   \n\t  \n  ");
         assert!(kinds.is_empty());
+    }
+
+    #[test]
+    fn compound_assignment_operators() {
+        let ks = kinds("+= -= *= /= &= |= ^= <<= >>=");
+        let expected = [
+            Punct::PlusEq,
+            Punct::MinusEq,
+            Punct::StarEq,
+            Punct::SlashEq,
+            Punct::AmpersandEq,
+            Punct::PipeEq,
+            Punct::CaretEq,
+            Punct::ShlEq,
+            Punct::ShrEq,
+        ];
+
+        assert_eq!(ks, expected.map(TokenKind::Punct));
+    }
+
+    #[test]
+    fn compound_assignment_does_not_swallow_its_neighbours() {
+        let ks = kinds("a <= b >= c << d >> e -> f && g || h");
+        let puncts: Vec<_> = ks
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TokenKind::Punct(punct) => Some(punct),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            puncts,
+            [
+                Punct::LtEq,
+                Punct::GtEq,
+                Punct::Shl,
+                Punct::Shr,
+                Punct::Arrow,
+                Punct::And,
+                Punct::Or,
+            ]
+        );
+    }
+
+    #[test]
+    fn equals_followed_by_an_operator_stays_two_tokens() {
+        let ks = kinds("a =- 1");
+        assert_eq!(ks[1], TokenKind::Punct(Punct::Eq));
+        assert_eq!(ks[2], TokenKind::Punct(Punct::Minus));
     }
 
     #[test]

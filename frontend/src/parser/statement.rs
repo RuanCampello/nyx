@@ -111,12 +111,21 @@ pub struct Match<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm<'i> {
-    /// Single pattern; multiple `|` alternatives are wrapped in [`Pattern::Or`].
+    /// Single pattern, multiple `|` alternatives are wrapped in [`Pattern::Or`].
     pub pattern: Spanned<Pattern<'i>>,
     /// Optional `if <guard>` condition.
     pub guard: Option<Expression<'i>>,
-    pub body: Expression<'i>,
+    pub body: ArmBody<'i>,
     pub span: Span,
+}
+
+/// What an arm does once its pattern and guard have matched
+#[derive(Debug, PartialEq, Clone)]
+pub enum ArmBody<'i> {
+    Expr(Expression<'i>),
+    Return(Return<'i>),
+    Break(Span),
+    Continue(Span),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -625,6 +634,28 @@ impl<'i> Parsable<'i> for Return<'i> {
     }
 }
 
+impl<'i> Return<'i> {
+    fn parse_without_terminator(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let return_token = parser.expect_token(Keyword::Return)?;
+
+        let mut value = None;
+        if let Some(Ok(token)) = parser.peek()
+            && !token.is_kind(Punct::Comma)
+            && !token.is_kind(Punct::CloseBrace)
+            && !token.is_kind(Punct::Semicolon)
+        {
+            value = Some(Expression::parse(parser)?);
+        }
+
+        let span = match value {
+            Some(ref value) => return_token.span + value.span(),
+            _ => return_token.span,
+        };
+
+        Ok(Return { value, span })
+    }
+}
+
 impl<'i> Parsable<'i> for If<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let if_token = parser.expect_token(Keyword::If)?;
@@ -640,26 +671,7 @@ impl<'i> Parsable<'i> for If<'i> {
                 (block, end)
             },
             false => {
-                let (statement, end) = match parser.peek() {
-                    Some(Ok(token)) if token.is_kind(Keyword::Return) => {
-                        let ret = Return::parse(parser)?;
-                        let end = ret.span.end;
-
-                        Ok((Statement::Return(ret), end))
-                    },
-
-                    Some(Ok(_)) => {
-                        let expr = Expression::parse(parser)?;
-                        let semi = parser.expect_semicolon();
-                        let span = expr.span() + semi;
-
-                        Ok((Statement::Expr(expr, span), semi.end))
-                    },
-
-                    Some(Err(err)) => Err(err.into()),
-
-                    _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, if_token.span)),
-                }?;
+                let (statement, end) = parse_braceless_branch(parser, if_token.span)?;
 
                 let span = Span::new(if_token.span.start, end);
                 let block = Block { span, statements: vec![statement] };
@@ -688,11 +700,14 @@ impl<'i> Parsable<'i> for If<'i> {
                     else_branch = Some(Box::new(Else::Block(else_block)));
                 },
 
-                // brace-less `else return x;`
-                TokenKind::Keyword(Keyword::Return) => {
-                    let ret = Return::parse(parser)?;
-                    end_pos = ret.span.end;
-                    let block = Block { span: ret.span, statements: vec![Statement::Return(ret)] };
+                // brace-less 'else return x;', 'else break;' and 'else continue;'
+                TokenKind::Keyword(Keyword::Return | Keyword::Break | Keyword::Continue) => {
+                    let start = next_token.span;
+                    let (statement, end) = parse_braceless_branch(parser, start)?;
+                    end_pos = end;
+
+                    let span = Span::new(start.start, end);
+                    let block = Block { span, statements: vec![statement] };
                     else_branch = Some(Box::new(Else::Block(block)));
                 },
 
@@ -800,8 +815,8 @@ impl<'i> Parsable<'i> for Match<'i> {
                 .then(|| Expression::parse(parser))
                 .transpose()?;
 
-            parser.expect_token(Punct::Arrow)?;
-            let body = Expression::parse(parser)?;
+            let arrow = parser.expect_token(Punct::Arrow)?;
+            let body = ArmBody::parse_after_arrow(parser, arrow.span)?;
             let span = body.span();
             arms.push(MatchArm { pattern, guard, body, span });
 
@@ -813,6 +828,46 @@ impl<'i> Parsable<'i> for Match<'i> {
 
         let close = parser.expect_token(Punct::CloseBrace)?;
         Ok(Match { scrutinee, arms, span: match_token.span + close.span })
+    }
+}
+
+impl<'i> ArmBody<'i> {
+    /// a `break`, `continue` or `return` arm carries no value and closes the arm on its own
+    fn parse_after_arrow(parser: &mut Parser<'i>, arrow: Span) -> Result<Self, ParserError<'i>> {
+        match parser.peek() {
+            Some(Ok(token)) if token.is_kind(Keyword::Break) => {
+                let keyword = parser.expect_token(Keyword::Break)?;
+                Ok(Self::Break(keyword.span))
+            },
+            Some(Ok(token)) if token.is_kind(Keyword::Continue) => {
+                let keyword = parser.expect_token(Keyword::Continue)?;
+                Ok(Self::Continue(keyword.span))
+            },
+            Some(Ok(token)) if token.is_kind(Keyword::Return) => {
+                Ok(Self::Return(Return::parse_without_terminator(parser)?))
+            },
+            Some(Ok(_)) => Ok(Self::Expr(Expression::parse(parser)?)),
+            Some(Err(err)) => Err(err.into()),
+            _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, arrow)),
+        }
+    }
+
+    #[inline]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::Return(returned) => returned.span,
+            Self::Break(span) | Self::Continue(span) => *span,
+            Self::Expr(expr) => expr.span(),
+        }
+    }
+
+    #[inline]
+    pub const fn value(&self) -> Option<&Expression<'i>> {
+        match self {
+            Self::Expr(expr) => Some(expr),
+            Self::Return(Return { value: Some(value), .. }) => Some(value),
+            _ => None,
+        }
     }
 }
 
@@ -1721,6 +1776,42 @@ fn parse_markers<'i>(parser: &mut Parser<'i>) -> Result<Markers, ParserError<'i>
     }
 
     Ok(markers)
+}
+
+/// the single statement of a brace-less branch, as in `if c return 1;`
+fn parse_braceless_branch<'i>(
+    parser: &mut Parser<'i>,
+    blame: Span,
+) -> Result<(Statement<'i>, BytePos), ParserError<'i>> {
+    match parser.peek() {
+        Some(Ok(token)) if token.is_kind(Keyword::Return) => {
+            let returned = Return::parse(parser)?;
+            let end = returned.span.end;
+
+            Ok((Statement::Return(returned), end))
+        },
+        Some(Ok(token)) if token.is_kind(Keyword::Break) => {
+            let keyword = parser.expect_token(Keyword::Break)?;
+            let semicolon = parser.expect_semicolon();
+
+            Ok((Statement::Break(keyword.span + semicolon), semicolon.end))
+        },
+        Some(Ok(token)) if token.is_kind(Keyword::Continue) => {
+            let keyword = parser.expect_token(Keyword::Continue)?;
+            let semicolon = parser.expect_semicolon();
+
+            Ok((Statement::Continue(keyword.span + semicolon), semicolon.end))
+        },
+        Some(Ok(_)) => {
+            let expression = Expression::parse(parser)?;
+            let semicolon = parser.expect_semicolon();
+            let span = expression.span() + semicolon;
+
+            Ok((Statement::Expr(expression, span), semicolon.end))
+        },
+        Some(Err(err)) => Err(err.into()),
+        _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, blame)),
+    }
 }
 
 fn parse_function_body<'i>(

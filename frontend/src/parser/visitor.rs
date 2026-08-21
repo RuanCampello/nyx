@@ -30,7 +30,9 @@ pub trait Visitor<'i>: Sized {
     fn visit_match(&mut self, match_stmt: &Match<'i>) {
         self.visit_expression(&match_stmt.scrutinee);
         for arm in &match_stmt.arms {
-            self.visit_expression(&arm.body);
+            if let Some(body) = arm.body.value() {
+                self.visit_expression(body);
+            }
         }
     }
 
@@ -123,7 +125,8 @@ pub fn walk_expression<'i, V: Visitor<'i>>(visitor: &mut V, expr: &Expression<'i
             visitor.visit_expression(left);
             visitor.visit_expression(right);
         },
-        Expression::Assignment { target, value, .. } => {
+        Expression::Assignment { target, value, .. }
+        | Expression::CompoundAssignment { target, value, .. } => {
             visitor.visit_expression(target);
             visitor.visit_expression(value);
         },
