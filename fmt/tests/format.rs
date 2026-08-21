@@ -21,6 +21,12 @@ fn spaces() -> FormatOptions {
     FormatOptions::default().with_indentation(Indentation::Spaces { width: 4 })
 }
 
+fn no_trailing_comma() -> FormatOptions {
+    FormatOptions::from_str("[style]\ntrailing_comma = false\n")
+        .unwrap()
+        .with_indentation(Indentation::Spaces { width: 4 })
+}
+
 fn assert_formats(source: &str, expected: &str) {
     assert_eq!(format(source, spaces()).unwrap(), expected);
 }
@@ -1110,4 +1116,220 @@ fn refuses_a_file_whose_errors_are_not_only_semicolons() {
 #[test]
 fn semicolon_insertion_is_idempotent() {
     assert_idempotent("fn main():i32{\nlet x = 1\nreturn x;\n}\n");
+}
+
+#[test]
+fn lays_out_match_arms_one_per_line() {
+    assert_formats(
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            0 -> 1,
+            _ -> 2,
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    0 -> 1,
+                    _ -> 2,
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn closes_the_last_arm_with_a_comma_by_default() {
+    assert_formats(
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            0 -> 1,
+            _ -> 2
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    0 -> 1,
+                    _ -> 2,
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn drops_the_last_comma_when_the_configuration_asks() {
+    assert_formats_with(
+        no_trailing_comma(),
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            0 -> 1,
+            _ -> 2,
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    0 -> 1,
+                    _ -> 2
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn normalises_or_pattern_separators() {
+    assert_formats(
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            1|2|3 -> 1,
+            _ -> 2,
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    1 | 2 | 3 -> 1,
+                    _ -> 2,
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn keeps_a_match_guard() {
+    assert_formats(
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            x if x<0 -> 1,
+            _ -> 2,
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    x if x < 0 -> 1,
+                    _ -> 2,
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn prints_control_flow_arm_bodies() {
+    assert_formats(
+        indoc! {"
+            fn scan(): i32 {
+            let mut total = 0;
+            loop i in 0..10 {
+            match i {
+            3 -> continue,
+            8 -> break,
+            9 -> return total,
+            _ -> total += i,
+            }
+            }
+            return total;
+            }
+        "},
+        indoc! {"
+            fn scan(): i32 {
+                let mut total = 0;
+                loop i in 0..10 {
+                    match i {
+                        3 -> continue,
+                        8 -> break,
+                        9 -> return total,
+                        _ -> total += i,
+                    }
+                }
+                return total;
+            }
+        "},
+    );
+}
+
+#[test]
+fn keeps_a_comment_between_match_arms() {
+    assert_formats(
+        indoc! {"
+            fn classify(n: i32): i32 {
+            match n {
+            0 -> 1,
+            // everything else
+            _ -> 2,
+            }
+            }
+        "},
+        indoc! {"
+            fn classify(n: i32): i32 {
+                match n {
+                    0 -> 1,
+                    // everything else
+                    _ -> 2,
+                }
+            }
+        "},
+    );
+}
+
+#[test]
+fn match_formatting_is_idempotent() {
+    assert_idempotent(indoc! {"
+        fn classify(n: i32): i32 {
+            match n {
+                1 | 2 -> 1,
+                x if x < 0 -> return 0,
+                _ -> 2,
+            }
+        }
+    "});
+}
+
+#[test]
+fn keeps_the_terminator_of_a_branching_expression_body() {
+    assert_formats(
+        indoc! {"
+            fn classify(value: i32): i32 = match value {
+                0 -> 1,
+                _ -> value,
+            };
+        "},
+        indoc! {"
+            fn classify(value: i32): i32 = match value {
+                0 -> 1,
+                _ -> value,
+            };
+        "},
+    );
+}
+
+#[test]
+fn keeps_the_terminator_of_a_conditional_expression_body() {
+    assert_formats(
+        indoc! {"
+            fn lt(a: i32, b: i32): i32 = if a < b { 1 } else { 0 };
+        "},
+        indoc! {"
+            fn lt(a: i32, b: i32): i32 = if a < b {
+                1
+            } else {
+                0
+            };
+        "},
+    );
 }

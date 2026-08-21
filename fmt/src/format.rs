@@ -24,7 +24,7 @@ pub struct LayoutOptions {
 }
 
 /// Choices between two spellings the grammar accepts for the same construct
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StyleOptions {
     /// Whether a block body holding a single expression is rewritten as `= expr;`
@@ -55,6 +55,27 @@ pub struct StyleOptions {
     /// if feed.device_id() != 41 return 1;
     /// ```
     prefer_single_line_if: bool,
+    /// Whether the last arm of a `match` is closed with a comma
+    ///
+    /// A struct declaration always carries one, this governs match arms, where
+    /// both spellings are common.
+    ///
+    /// **default: true**
+    /// ```rust,ignore
+    /// match signal {
+    ///     Signal::Halt -> 0,
+    ///     _ -> 1,
+    /// }
+    /// ```
+    ///
+    /// **false**
+    /// ```rust,ignore
+    /// match signal {
+    ///     Signal::Halt -> 0,
+    ///     _ -> 1
+    /// }
+    /// ```
+    trailing_comma: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -146,6 +167,16 @@ impl Default for FormatOptions {
     }
 }
 
+impl Default for StyleOptions {
+    fn default() -> Self {
+        Self {
+            prefer_expression_body: false,
+            prefer_single_line_if: false,
+            trailing_comma: true,
+        }
+    }
+}
+
 impl Default for FieldOptions {
     fn default() -> Self {
         Self { initialise_short_hand: true, struct_align: None }
@@ -212,6 +243,11 @@ impl FormatOptions {
     #[inline]
     pub const fn prefer_single_line_if(&self) -> bool {
         self.style.prefer_single_line_if
+    }
+
+    #[inline]
+    pub const fn trailing_comma(&self) -> bool {
+        self.style.trailing_comma
     }
 }
 

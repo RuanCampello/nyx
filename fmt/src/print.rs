@@ -10,9 +10,9 @@ use frontend::lexer::Spanned;
 use frontend::lexer::token::{BytePos, Punct, Span};
 use frontend::parser::expression::{Expression, Precedence, StructField};
 use frontend::parser::statement::{
-    Block, Const, Else, Function, If, Impl, ImplType, Interface, InterfaceConst, InterfaceMethod,
-    InterfaceType, Item, ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Parameter, Receiver,
-    Return, Statement, Static, Struct, Type, UseDecl, UseItems,
+    ArmBody, Block, Const, Else, Function, If, Impl, ImplType, Interface, InterfaceConst,
+    InterfaceMethod, InterfaceType, Item, ItemKind, Let, Loop, LoopHeader, MODIFIER_ORDER, Match,
+    Parameter, Pattern, Receiver, Return, Statement, Static, Struct, Type, UseDecl, UseItems,
 };
 
 /// Walks the AST once, emitting a [Doc] and tracking the comments it consumed
@@ -173,6 +173,7 @@ impl<'src> Printer<'src> {
             Statement::Return(returned) => self.returned(returned),
             Statement::If(conditional) => self.conditional(conditional),
             Statement::Loop(repeated) => self.repetition(repeated),
+            Statement::Match(matched) => self.matched(matched),
             Statement::Block(block) => self.block(block),
             Statement::Break(_) => Ok(Doc::text("break;")),
             Statement::Continue(_) => Ok(Doc::text("continue;")),
@@ -444,10 +445,16 @@ impl<'src> Printer<'src> {
                 return Err(FormatError::Unsupported { span: block.span });
             };
 
+            let terminator = match statement {
+                Statement::Expr(..) => Doc::Empty,
+                _ => Doc::text(";"),
+            };
+
             return Ok(Doc::concat([
                 signature,
                 Doc::text(" = "),
                 self.statement(statement, false)?,
+                terminator,
             ]));
         }
 
@@ -708,6 +715,82 @@ impl<'src> Printer<'src> {
         Ok(Doc::concat(parts))
     }
 
+    fn matched(&mut self, matched: &Match<'src>) -> Result<Doc<'src>, FormatError> {
+        let mut parts =
+            vec![Doc::text("match "), self.expression(&matched.scrutinee)?, Doc::text(" {")];
+
+        let mut arms = Vec::with_capacity(matched.arms.len() * 4);
+        let last = matched.arms.len().saturating_sub(1);
+        for (index, arm) in matched.arms.iter().enumerate() {
+            arms.push(Doc::hard_line());
+
+            for comment in self.comments_before(arm.pattern.span().start) {
+                arms.push(Doc::text(comment));
+                arms.push(Doc::hard_line());
+            }
+            arms.push(self.pattern(&arm.pattern));
+
+            if let Some(ref guard) = arm.guard {
+                arms.push(Doc::text(" if "));
+                arms.push(self.expression(guard)?);
+            }
+            arms.push(Doc::text(" -> "));
+            arms.push(self.arm_body(&arm.body)?);
+
+            if index < last || self.options.trailing_comma() {
+                arms.push(Doc::text(","));
+            }
+
+            self.push_trailing_comment(&mut arms, arm.span);
+        }
+
+        let dangling = self.dangling(matched.span);
+        match (arms.is_empty(), &dangling) {
+            (true, Doc::Empty) => parts.push(Doc::hard_line()),
+            _ => {
+                parts.push(Doc::indent(
+                    self.indent_width(),
+                    Doc::concat([Doc::concat(arms), dangling]),
+                ));
+                parts.push(Doc::hard_line());
+            },
+        }
+
+        parts.push(Doc::text("}"));
+
+        Ok(Doc::concat(parts))
+    }
+
+    /// a pattern is reproduced as written, the way a type annotation is, so only
+    /// the separators the formatter owns are normalised
+    fn pattern(&mut self, pattern: &Spanned<Pattern<'src>>) -> Doc<'src> {
+        let Pattern::Or(alternatives) = pattern.value_ref() else {
+            return Doc::text(self.slice(pattern.span()));
+        };
+        let mut parts = Vec::with_capacity(alternatives.len() * 2);
+
+        for (index, alternative) in alternatives.iter().enumerate() {
+            if index > 0 {
+                parts.push(Doc::text(" | "));
+            }
+
+            parts.push(Doc::text(self.slice(alternative.span())));
+        }
+        Doc::concat(parts)
+    }
+
+    fn arm_body(&mut self, body: &ArmBody<'src>) -> Result<Doc<'src>, FormatError> {
+        match body {
+            ArmBody::Expr(expr) => self.expression(expr),
+            ArmBody::Break(_) => Ok(Doc::text("break")),
+            ArmBody::Continue(_) => Ok(Doc::text("continue")),
+            ArmBody::Return(returned) => match returned.value {
+                Some(ref value) => Ok(Doc::concat([Doc::text("return "), self.expression(value)?])),
+                None => Ok(Doc::text("return")),
+            },
+        }
+    }
+
     fn binding(&mut self, binding: &Let<'src>) -> Result<Doc<'src>, FormatError> {
         let mut parts = vec![Doc::text("let ")];
 
@@ -840,6 +923,13 @@ impl<'src> Printer<'src> {
             Expression::Assignment { target, value, .. } => Ok(Doc::concat([
                 self.expression(target)?,
                 Doc::text(" = "),
+                self.expression(value)?,
+            ])),
+            Expression::CompoundAssignment { target, operator, value, .. } => Ok(Doc::concat([
+                self.expression(target)?,
+                Doc::text(" "),
+                Doc::text(operator.as_str()),
+                Doc::text("= "),
                 self.expression(value)?,
             ])),
             Expression::Field { expr: base, field, .. } => Ok(Doc::concat([
@@ -1126,7 +1216,9 @@ fn docs_for<'a, 'src>(member_docs: &'a [(Span, Box<[&'src str]>)], span: Span) -
 #[inline(always)]
 const fn precedence(expr: &Expression<'_>) -> u8 {
     match expr {
-        Expression::Assignment { .. } => Precedence::Assignment.level(),
+        Expression::Assignment { .. } | Expression::CompoundAssignment { .. } => {
+            Precedence::Assignment.level()
+        },
         Expression::Binary { operator, .. } => operator.precedence().level(),
         Expression::Cast { .. } => Precedence::Suffix.level(),
         Expression::Unary { .. } => Precedence::UNARY_OPERAND.level(),
