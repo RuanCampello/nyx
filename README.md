@@ -131,7 +131,7 @@ fn main(): i32 {
 
 ## Diagnostics
 
-Nyx diagnostics are *beautiful* and use stable error codes, precise source spans. For example, bindings are immutable unless declared with `mut`:
+Nyx diagnostics are _beautiful_ and use stable error codes, precise source spans. For example, bindings are immutable unless declared with `mut`:
 
 ```rust
 fn main(): i32 {
@@ -210,6 +210,7 @@ Inspiration and architectural references for the Nyx compiler and standard libra
 Foundational papers for algorithms implemented or used as research in Nyx
 
 - [Register Allocation and Spilling via Graph Coloring](https://dl.acm.org/doi/epdf/10.1145/872726.806984) - Gregory J. Chaitin's seminal 1982 paper detailing the graph-colouring approach to register allocation and spilling
+- [Exhaustiveness pattern matching algorithm](https://cambium.inria.fr/~maranget/papers/warn/index.html) - Luc Maranget on anomalies of non-exhaustive matches and algorithms in this domains used on compiler
 
 ## License
 
