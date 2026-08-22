@@ -94,27 +94,13 @@ pub struct Layout {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Statement<'hir> {
-    LetInit {
-        id: LocalId,
-        init: &'hir Expression<'hir>,
-    },
-    LetUninit {
-        id: LocalId,
-    },
+    LetInit { id: LocalId, init: &'hir Expression<'hir> },
+    LetUninit { id: LocalId },
     Expr(&'hir Expression<'hir>),
     Return(Option<&'hir Expression<'hir>>),
-    If {
-        condition: &'hir Expression<'hir>,
-        then_block: Block<'hir>,
-        else_block: Option<Block<'hir>>,
-    },
-    Loop {
-        kind: LoopKind<'hir>,
-        body: Block<'hir>,
-    },
+    Loop { kind: LoopKind<'hir>, body: Block<'hir> },
     Break,
     Continue,
-    Block(Block<'hir>),
 }
 
 /// resolved loop [header](crate::parser::statement::LoopHeader)
@@ -389,6 +375,19 @@ pub enum ExpressionKind<'hir> {
     Match {
         scrutinee: &'hir Expression<'hir>,
         arms: &'hir [Arm<'hir>],
+    },
+    /// A block evaluated for the value of its tail expression
+    /// Without a tail the block is unit, which is what a block statement lowers to
+    Block {
+        statements: &'hir [Statement<'hir>],
+        tail: Option<&'hir Expression<'hir>>,
+    },
+    /// An `if` evaluated for a value
+    /// Both branches are `Block` expressions, and a missing `else` makes the whole expression unit
+    If {
+        condition: &'hir Expression<'hir>,
+        then_block: &'hir Expression<'hir>,
+        else_block: Option<&'hir Expression<'hir>>,
     },
 }
 

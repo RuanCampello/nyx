@@ -59,13 +59,6 @@ impl<'a, 'hir> Checker<'a, 'hir> {
         match statement {
             LetInit { init, .. } | Expr(init) => self.check_expr(init),
             Return(Some(value)) => self.check_expr(value),
-            If { condition, then_block, else_block } => {
-                self.check_expr(condition);
-                self.check_block(then_block);
-                if let Some(else_block) = else_block {
-                    self.check_block(else_block);
-                }
-            },
             Loop { kind, body } => {
                 match kind {
                     LoopKind::Range { start, end, .. } => {
@@ -77,7 +70,6 @@ impl<'a, 'hir> Checker<'a, 'hir> {
                 }
                 self.check_block(body);
             },
-            Block(block) => self.check_block(block),
             Return(None) | LetUninit { .. } | Break | Continue => {},
         }
     }
@@ -124,6 +116,21 @@ impl<'a, 'hir> Checker<'a, 'hir> {
                 self.check_expr(receiver);
                 for argument in args {
                     self.check_expr(argument);
+                }
+            },
+            Block { statements, tail } => {
+                for statement in statements {
+                    self.check_statement(statement);
+                }
+                if let Some(tail) = tail {
+                    self.check_expr(tail);
+                }
+            },
+            If { condition, then_block, else_block } => {
+                self.check_expr(condition);
+                self.check_expr(then_block);
+                if let Some(else_block) = else_block {
+                    self.check_expr(else_block);
                 }
             },
             Match { scrutinee, arms } => {

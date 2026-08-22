@@ -88,13 +88,6 @@ pub fn walk_statement<'hir, V: Visitor<'hir>>(visitor: &mut V, statement: &'hir 
                 visitor.visit_expression(value);
             }
         },
-        Stmt::If { condition, then_block, else_block } => {
-            visitor.visit_expression(condition);
-            visitor.visit_block(then_block);
-            if let Some(else_block) = else_block {
-                visitor.visit_block(else_block);
-            }
-        },
         Stmt::Loop { kind, body } => {
             match kind {
                 LoopKind::Range { start, end, .. } => {
@@ -106,7 +99,6 @@ pub fn walk_statement<'hir, V: Visitor<'hir>>(visitor: &mut V, statement: &'hir 
             }
             visitor.visit_block(body);
         },
-        Stmt::Block(block) => visitor.visit_block(block),
         Stmt::LetUninit { .. } | Stmt::Break | Stmt::Continue => {},
     }
 }
@@ -147,6 +139,21 @@ pub fn walk_expression<'hir, V: Visitor<'hir>>(
             visitor.visit_expression(receiver);
             for argument in args {
                 visitor.visit_expression(argument);
+            }
+        },
+        ExprKind::Block { statements, tail } => {
+            for statement in statements {
+                visitor.visit_statement(statement);
+            }
+            if let Some(tail) = tail {
+                visitor.visit_expression(tail);
+            }
+        },
+        ExprKind::If { condition, then_block, else_block } => {
+            visitor.visit_expression(condition);
+            visitor.visit_expression(then_block);
+            if let Some(else_block) = else_block {
+                visitor.visit_expression(else_block);
             }
         },
         ExprKind::Match { scrutinee, arms } => {
@@ -271,11 +278,6 @@ pub fn fold_statement<'hir, F: Folder<'hir>>(folder: &mut F, statement: Stmt<'hi
         Stmt::LetInit { id, init } => Stmt::LetInit { id, init: folder.fold_expression(init) },
         Stmt::Expr(expression) => Stmt::Expr(folder.fold_expression(expression)),
         Stmt::Return(value) => Stmt::Return(value.map(|value| folder.fold_expression(value))),
-        Stmt::If { condition, then_block, else_block } => Stmt::If {
-            condition: folder.fold_expression(condition),
-            then_block: folder.fold_block(then_block),
-            else_block: else_block.map(|block| folder.fold_block(block)),
-        },
         Stmt::Loop { kind, body } => {
             let kind = match kind {
                 LoopKind::Range { binding, start, end, inclusive } => LoopKind::Range {
@@ -291,7 +293,6 @@ pub fn fold_statement<'hir, F: Folder<'hir>>(folder: &mut F, statement: Stmt<'hi
             };
             Stmt::Loop { kind, body: folder.fold_block(body) }
         },
-        Stmt::Block(block) => Stmt::Block(folder.fold_block(block)),
         other => other,
     }
 }
@@ -349,6 +350,20 @@ pub fn fold_expression<'hir, F: Folder<'hir>>(
         },
         TypeIntrinsic { kind, typ } => TypeIntrinsic { kind, typ: folder.fold_type(typ) },
         Cast { from, to } => Cast { from: folder.fold_expression(from), to: folder.fold_type(to) },
+        Block { statements, tail } => {
+            let statements: Vec<_> =
+                statements.iter().map(|statement| folder.fold_statement(*statement)).collect();
+
+            Block {
+                statements: folder.arena().alloc_slice_copy(&statements),
+                tail: tail.map(|tail| folder.fold_expression(tail)),
+            }
+        },
+        If { condition, then_block, else_block } => If {
+            condition: folder.fold_expression(condition),
+            then_block: folder.fold_expression(then_block),
+            else_block: else_block.map(|block| folder.fold_expression(block)),
+        },
         Match { scrutinee, arms } => {
             use ArmBody::*;
             let arms: Vec<_> = arms
