@@ -1,8 +1,12 @@
-use crate::lexer::Spanned;
-use crate::lexer::token::{Keyword, Punct, Span, TokenKind};
-use crate::parser::error::{ParseErrorKind, ParserError};
-use crate::parser::statement::{self, Type};
-use crate::parser::{Parsable, Parser};
+use crate::lexer::{
+    Spanned,
+    token::{Keyword, Punct, Span, TokenKind},
+};
+use crate::parser::{
+    Parsable, Parser,
+    error::{ParseErrorKind, ParserError},
+    statement::{self, Block, If, Match, Type},
+};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +34,18 @@ pub enum Expression<'i> {
         span: Span,
     },
     Field { expr: Box<Expression<'i>>, field: &'i str, span: Span },
-    Struct { 
+    /// `value?`, unwraps a success value or returns the failure early
+    Try { value: Box<Expression<'i>>, span: Span },
+    /// A `{ … }` block in value position, its value is the tail expression
+    Block { block: Block<'i>, span: Span },
+    /// An `if`/`else` chain in value position, every branch yields the value
+    If { inner: Box<If<'i>>, span: Span },
+    /// A `match` in value position, every arm yields the value
+    Match { inner: Box<Match<'i>>, span: Span },
+    /// A string literal carrying `{...}` interpolations
+    /// Plain literals stay [Expression::String], so only strings that interpolate pay for it
+    Interpolated { segments: Vec<Segment<'i>>, span: Span },
+    Struct {
         name: &'i str,
         fields: Vec<StructField<'i>>,
         type_args: Vec<Spanned<Type<'i>>>,
@@ -101,6 +116,15 @@ pub enum BinaryOperator {
     Shr,
 }
 
+/// One piece of an interpolated string literal
+#[derive(Debug, PartialEq, Clone)]
+pub enum Segment<'i> {
+    /// A run of literal text, exactly as written in the source
+    Text(&'i str),
+    /// An expression whose value is printed in place of the braces
+    Value(Expression<'i>),
+}
+
 /// How tightly each operator binds, as the Pratt parser climbs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -146,6 +170,11 @@ impl<'i> Expression<'i> {
             | Self::CompoundAssignment { span, .. }
             | Self::Struct { span, .. }
             | Self::Field { span, .. }
+            | Self::Try { span, .. }
+            | Self::Block { span, .. }
+            | Self::If { span, .. }
+            | Self::Match { span, .. }
+            | Self::Interpolated { span, .. }
             | Self::Call { span, .. }
             | Self::QualifiedCall { span, .. }
             | Self::QualifiedName { span, .. }
@@ -172,35 +201,52 @@ impl<'i> Expression<'i> {
         Ok(left)
     }
 
-    fn parse_prefix(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+    pub(super) fn parse_prefix(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        use TokenKind as T;
         let token = parser.expect_next()?;
 
-        match token.kind {
-            TokenKind::Integer(n) => Ok(Expression::Integer(n, token.span)),
-            TokenKind::Float(f) => Ok(Expression::Float(f, token.span)),
-            TokenKind::String(s) => Ok(Expression::String(s, token.span)),
-            TokenKind::Char(c) => Ok(Expression::Char(c, token.span)),
-            TokenKind::Bool(b) => Ok(Expression::Bool(b, token.span)),
-            TokenKind::Identifier(ident) => {
-                if Self::next_is_struct(parser) {
-                    Self::parse_struct(parser, ident, Vec::new(), token.span)
-                } else {
-                    Ok(Expression::Identifier(ident, token.span))
-                }
+        Ok(match token.kind {
+            T::Integer(n) => Expression::Integer(n, token.span),
+            T::Float(f) => Expression::Float(f, token.span),
+            T::String(s) => match Self::interpolate(s, token.span)? {
+                Some(segments) => Expression::Interpolated { segments, span: token.span },
+                _ => Expression::String(s, token.span),
             },
-            TokenKind::Punct(Punct::Minus)
-            | TokenKind::Punct(Punct::Bang)
-            | TokenKind::Punct(Punct::Star)
-            | TokenKind::Punct(Punct::Ampersand) => {
+            T::Char(c) => Expression::Char(c, token.span),
+            T::Bool(b) => Expression::Bool(b, token.span),
+            T::Identifier(ident) => match Self::next_is_struct(parser) {
+                true => return Self::parse_struct(parser, ident, Vec::new(), token.span),
+                _ => Expression::Identifier(ident, token.span),
+            },
+            T::Punct(Punct::OpenBrace) => {
+                parser.push_back(token);
+                let block = parser.parse_node::<Block>()?;
+
+                Expression::Block { span: block.span, block }
+            },
+            T::Keyword(Keyword::If) => {
+                parser.push_back(token);
+                let inner = parser.parse_node::<If>()?;
+
+                Expression::If { span: inner.span, inner: Box::new(inner) }
+            },
+            T::Keyword(Keyword::Match) => {
+                parser.push_back(token);
+                let inner = parser.parse_node::<Match>()?;
+
+                Expression::Match { span: inner.span, inner: Box::new(inner) }
+            },
+            T::Punct(Punct::Minus)
+            | T::Punct(Punct::Bang)
+            | T::Punct(Punct::Star)
+            | T::Punct(Punct::Ampersand) => {
                 let operator = match token.kind {
-                    TokenKind::Punct(Punct::Minus) => UnaryOperator::Neg,
-                    TokenKind::Punct(Punct::Bang) => UnaryOperator::Not,
-                    TokenKind::Punct(Punct::Star) => UnaryOperator::Deref,
-                    TokenKind::Punct(Punct::Ampersand) => {
-                        match parser.consume_token(Keyword::Mut)? {
-                            true => UnaryOperator::RefMut,
-                            false => UnaryOperator::Ref,
-                        }
+                    T::Punct(Punct::Minus) => UnaryOperator::Neg,
+                    T::Punct(Punct::Bang) => UnaryOperator::Not,
+                    T::Punct(Punct::Star) => UnaryOperator::Deref,
+                    T::Punct(Punct::Ampersand) => match parser.consume_token(Keyword::Mut)? {
+                        true => UnaryOperator::RefMut,
+                        false => UnaryOperator::Ref,
                     },
 
                     _ => {
@@ -214,27 +260,120 @@ impl<'i> Expression<'i> {
                 let expr = Self::parse_expr(parser, Precedence::UNARY_OPERAND.level())?;
                 let span = token.span + expr.span();
 
-                Ok(Expression::Unary { operator, expr: Box::new(expr), span })
+                Expression::Unary { operator, expr: Box::new(expr), span }
             },
-
-            TokenKind::Punct(Punct::OpenParen) => {
+            T::Punct(Punct::OpenParen) => {
                 let expr = parser.in_delimiter(|parser| parser.parse_node::<Expression<'i>>())?;
                 parser.expect_token(Punct::CloseParen)?;
-                Ok(expr)
+                expr
             },
 
-            TokenKind::Punct(Punct::OpenBracket) => {
-                parser.in_delimiter(|parser| Self::parse_array_literal(parser, token.span))
+            T::Punct(Punct::OpenBracket) => {
+                return parser.in_delimiter(|parser| Self::parse_array_literal(parser, token.span));
             },
-
             _ => {
                 parser.push_back(token);
-                Err(ParserError::new(
+                return Err(ParserError::new(
                     ParseErrorKind::ExpectedExpression { found: token.kind },
                     token.span,
-                ))
+                ));
             },
+        })
+    }
+
+    /// splits a string literal into literal text and the expressions written between braces
+    fn interpolate(
+        content: &'i str,
+        span: Span,
+    ) -> Result<Option<Vec<Segment<'i>>>, ParserError<'i>> {
+        if !content.contains('{') {
+            return Ok(None);
         }
+
+        // the literal's own span covers the quotes, so the first byte of `content` sits one past its start
+        let base = span.start + 1;
+        let bytes = content.as_bytes();
+
+        let mut segments = Vec::new();
+        let (mut text_start, mut index) = (0, 0);
+
+        let push_text = |segments: &mut Vec<Segment<'i>>, text: &'i str| {
+            if !text.is_empty() {
+                segments.push(Segment::Text(text));
+            }
+        };
+
+        while index < bytes.len() {
+            use ParseErrorKind as E;
+
+            let doubled = |ch: u8| bytes.get(index + 1) == Some(&ch);
+            match bytes[index] {
+                ch @ (b'{' | b'}') if doubled(ch) => {
+                    push_text(&mut segments, &content[text_start..index]);
+                    segments.push(Segment::Text(match ch {
+                        b'{' => "{",
+                        _ => "}",
+                    }));
+
+                    index += 2;
+                    text_start = index;
+                },
+
+                b'{' => {
+                    push_text(&mut segments, &content[text_start..index]);
+
+                    let open = index;
+                    let start = index + 1;
+                    let end = Self::interpolation_end(bytes, start).ok_or_else(|| {
+                        let at = base + open as u32;
+                        ParserError::new(E::UnterminatedInterpolation, Span::new(at, at + 1))
+                    })?;
+
+                    if content[start..end].trim().is_empty() {
+                        let at = base + open as u32;
+                        return Err(ParserError::new(
+                            E::EmptyInterpolation,
+                            Span::new(at, base + end as u32 + 1),
+                        ));
+                    }
+
+                    let mut inner = Parser::with_base(&content[start..end], base + start as u32);
+                    segments.push(Segment::Value(inner.parse_node::<Expression>()?));
+
+                    if let Some(Ok(token)) = inner.peek()
+                        && !token.is_kind(TokenKind::Eof)
+                    {
+                        let (kind, at) = (token.kind, token.span);
+                        return Err(ParserError::new(E::ExpectedExpression { found: kind }, at));
+                    }
+
+                    index = end + 1;
+                    text_start = index;
+                },
+
+                _ => index += 1,
+            }
+        }
+
+        push_text(&mut segments, &content[text_start..]);
+
+        Ok(Some(segments))
+    }
+
+    #[inline]
+    fn interpolation_end(bytes: &[u8], start: usize) -> Option<usize> {
+        let mut depth = 0;
+
+        for (offset, byte) in bytes.iter().enumerate().skip(start) {
+            match byte {
+                b'}' if depth == 0 => return Some(offset),
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {},
+            }
+        }
+
+        None
     }
 
     fn parse_struct(
@@ -321,18 +460,11 @@ impl<'i> Expression<'i> {
             Punct::Eq => Precedence::Assignment,
             Punct::OpenParen | Punct::OpenBracket => Precedence::Suffix,
             Punct::ColonColon => Precedence::Path,
-            Punct::Dot => Precedence::Field,
+            Punct::Dot | Punct::Question => Precedence::Field,
             _ => Precedence::None,
         };
 
         precedence.level()
-    }
-
-    fn parse_call_args_after_paren(
-        parser: &mut Parser<'i>,
-        fallback_span: Span,
-    ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
-        parser.in_delimiter(|parser| Self::call_args_body(parser, fallback_span))
     }
 
     fn call_args_body(
@@ -374,7 +506,7 @@ impl<'i> Expression<'i> {
         fallback_span: Span,
     ) -> Result<(Vec<Expression<'i>>, Span), ParserError<'i>> {
         parser.expect_token(Punct::OpenParen)?;
-        Self::parse_call_args_after_paren(parser, fallback_span)
+        parser.in_delimiter(|parser| Self::call_args_body(parser, fallback_span))
     }
 
     fn parse_infix(
@@ -382,32 +514,29 @@ impl<'i> Expression<'i> {
         left: Expression<'i>,
         precedence: u8,
     ) -> Result<Self, ParserError<'i>> {
+        use Expression::*;
+        use ParseErrorKind as E;
+
         let token = parser.expect_next()?;
 
-        match token.kind {
+        Ok(match token.kind {
             TokenKind::Punct(Punct::Dot) => {
                 if let Some(Ok(ahead)) = parser.peek()
                     && !matches!(ahead.kind, TokenKind::Identifier(_))
                 {
                     let (kind, span) = (ahead.kind, ahead.span);
-                    return Err(ParserError::new(
-                        ParseErrorKind::ExpectedIdentifier { found: kind },
-                        span,
-                    ));
+                    return Err(ParserError::new(E::ExpectedIdentifier { found: kind }, span));
                 }
 
                 let (field, span) = parser.expect_identifier()?;
-                let span = left.span() + span;
-
-                Ok(Expression::Field { expr: Box::new(left), field, span })
+                Field { span: left.span() + span, expr: Box::new(left), field }
+            },
+            TokenKind::Punct(Punct::Question) => {
+                Try { span: left.span() + token.span, value: Box::new(left) }
             },
             TokenKind::Punct(Punct::ColonColon) => {
-                let invalid_expr = || {
-                    ParserError::new(
-                        ParseErrorKind::ExpectedExpression { found: token.kind },
-                        token.span,
-                    )
-                };
+                let invalid_expr =
+                    || ParserError::new(E::ExpectedExpression { found: token.kind }, token.span);
 
                 // turbofish on `left` (e.g., `left::<T>`)
                 if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::Lt)) {
@@ -424,7 +553,7 @@ impl<'i> Expression<'i> {
 
                     // generic function call (e.g., `foo::<T>()`)
                     let (args, end_span) = Self::parse_call_args(parser, left.span())?;
-                    return Ok(Expression::Call {
+                    return Ok(Call {
                         span: left.span() + end_span,
                         callee: Box::new(left),
                         args,
@@ -434,8 +563,8 @@ impl<'i> Expression<'i> {
 
                 // path / associated item access (e.g., `std::io::println...`)
                 let (path, start_span) = match left {
-                    Expression::Identifier(name, span) => (vec![name], span),
-                    Expression::QualifiedName { mut path, name, span } => {
+                    Identifier(name, span) => (vec![name], span),
+                    QualifiedName { mut path, name, span } => {
                         path.push(name);
                         (path, span)
                     },
@@ -452,10 +581,10 @@ impl<'i> Expression<'i> {
                 //associated call with turbofish (e.g., `container::method::<T>()`)
                 if has_turbofish {
                     parser.expect_token(Punct::ColonColon)?;
-                    let type_args = super::statement::parse_generics::<Spanned<Type>>(parser)?;
+                    let type_args = statement::parse_generics::<Spanned<Type>>(parser)?;
 
                     let (args, end_span) = Self::parse_call_args(parser, start_span)?;
-                    return Ok(Expression::QualifiedCall {
+                    return Ok(QualifiedCall {
                         span: start_span + end_span,
                         path,
                         name,
@@ -470,42 +599,34 @@ impl<'i> Expression<'i> {
                         parser.expect_token(Punct::OpenParen)?;
                         let typ = parser.parse_node::<Spanned<Type>>()?;
                         let end_span = parser.expect_token(Punct::CloseParen)?.span;
+                        let span = start_span + end_span;
 
-                        return Ok(Expression::TypeIntrinsic {
-                            kind,
-                            path: Some(path),
-                            typ,
-                            span: start_span + end_span,
-                        });
+                        return Ok(TypeIntrinsic { kind, path: Some(path), typ, span });
                     }
 
                     let (args, end_span) = Self::parse_call_args(parser, name_span)?;
-                    return Ok(Expression::QualifiedCall {
-                        span: start_span + end_span,
-                        path,
-                        name,
-                        args,
-                        type_args: Vec::new(),
-                    });
+                    let span = start_span + end_span;
+                    return Ok(QualifiedCall { span, path, name, args, type_args: Vec::new() });
                 }
 
                 // plain associated path / variable (e.g., `Container::CONSTANT`)
-                Ok(Expression::QualifiedName { span: start_span + name_span, path, name })
+                QualifiedName { span: start_span + name_span, path, name }
             },
             TokenKind::Punct(Punct::OpenParen) => {
-                if let Expression::Identifier(name, _) = &left
+                if let Identifier(name, _) = &left
                     && let Ok(kind) = TypeIntrinsicKind::from_str(name)
                 {
                     let typ = parser.parse_node::<Spanned<Type>>()?;
                     let end_span = parser.expect_token(Punct::CloseParen)?.span;
                     let span = left.span() + end_span;
 
-                    return Ok(Expression::TypeIntrinsic { kind, path: None, typ, span });
+                    return Ok(TypeIntrinsic { kind, path: None, typ, span });
                 }
 
-                let (args, end_span) = Self::parse_call_args_after_paren(parser, token.span)?;
+                let (args, end_span) =
+                    parser.in_delimiter(|parser| Self::call_args_body(parser, token.span))?;
                 let span = Span::new(left.span().start, end_span.end);
-                Ok(Expression::Call { callee: Box::new(left), args, type_args: Vec::new(), span })
+                Call { callee: Box::new(left), args, type_args: Vec::new(), span }
             },
 
             TokenKind::Punct(Punct::Eq) => {
@@ -513,14 +634,8 @@ impl<'i> Expression<'i> {
                 let span = left.span() + right.span();
 
                 match is_place(&left) {
-                    true => Ok(Expression::Assignment {
-                        target: Box::new(left),
-                        value: Box::new(right),
-                        span,
-                    }),
-                    _ => {
-                        Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))
-                    },
+                    true => Assignment { target: Box::new(left), value: Box::new(right), span },
+                    _ => return Err(ParserError::new(E::InvalidAssignmentTarget, left.span())),
                 }
             },
 
@@ -530,17 +645,11 @@ impl<'i> Expression<'i> {
             {
                 let right = Self::parse_expr(parser, precedence - 1)?;
                 let span = left.span() + right.span();
+                let value = Box::new(right);
 
                 match is_place(&left) {
-                    true => Ok(Expression::CompoundAssignment {
-                        target: Box::new(left),
-                        operator,
-                        value: Box::new(right),
-                        span,
-                    }),
-                    _ => {
-                        Err(ParserError::new(ParseErrorKind::InvalidAssignmentTarget, left.span()))
-                    },
+                    true => CompoundAssignment { target: Box::new(left), operator, value, span },
+                    _ => return Err(ParserError::new(E::InvalidAssignmentTarget, left.span())),
                 }
             },
 
@@ -549,14 +658,14 @@ impl<'i> Expression<'i> {
                 let close = parser.expect_token(Punct::CloseBracket)?.span;
                 let span = left.span() + close;
 
-                Ok(Expression::Index { base: Box::new(left), index: Box::new(index), span })
+                Index { base: Box::new(left), index: Box::new(index), span }
             },
 
             TokenKind::Keyword(Keyword::As) => {
                 let target_type = parser.parse_node::<Spanned<Type>>()?;
                 let span = left.span() + target_type.span();
 
-                Ok(Expression::Cast { expr: Box::new(left), target_type, span })
+                Cast { expr: Box::new(left), target_type, span }
             },
 
             _ => {
@@ -566,23 +675,15 @@ impl<'i> Expression<'i> {
                 };
 
                 let Some(operator) = operator else {
-                    return Err(ParserError::new(
-                        ParseErrorKind::InvalidBinaryOperator { found: token.kind },
-                        token.span,
-                    ));
+                    let (found, span) = (token.kind, token.span);
+                    return Err(ParserError::new(E::InvalidBinaryOperator { found }, span));
                 };
 
                 let right = Self::parse_expr(parser, precedence)?;
                 let span = left.span() + right.span();
-
-                Ok(Expression::Binary {
-                    left: Box::new(left),
-                    operator,
-                    right: Box::new(right),
-                    span,
-                })
+                Binary { left: Box::new(left), operator, right: Box::new(right), span }
             },
-        }
+        })
     }
 
     fn next_is_struct(parser: &mut Parser<'i>) -> bool {
