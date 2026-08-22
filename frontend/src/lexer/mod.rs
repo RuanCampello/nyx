@@ -1,7 +1,7 @@
-//! Nyx lexical analyzer (Lexer).
+//! Nyx lexical analyzer (Lexer)
 //!
-//! Splits source code into a sequence of [`Token`]s.
-//! The lexer skips whitespace and comments and produces meaningful errors with source spans.
+//! Splits source code into a sequence of [Token]s
+//! The lexer skips whitespace and comments and produces meaningful errors with source spans
 //!
 //! # Usage
 //! ```ignore
@@ -29,13 +29,13 @@ use number::NumberLiteral;
 use string::StringLiteral;
 use token::{Punct, Span, Token, TokenKind, Tokenize};
 
-/// The Nyx lexer.
+/// The Nyx lexer
 ///
-/// Wraps a [`Cursor`] and exposes an [`Iterator`] of `Result<Token, LexError>`.
+/// Wraps a [Cursor] and exposes an [Iterator] of `Result<Token, LexError>`
 #[derive(Debug)]
 pub struct Lexer<'src> {
     cursor: Cursor<'src>,
-    /// set to `true` once we've emitted [`TokenKind::Eof`].
+    /// set to `true` once we've emitted [TokenKind::Eof].
     finished: bool,
 }
 
@@ -56,7 +56,7 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex `source` whose first byte sits at global offset `base` in the
-    /// [`SourceMap`](crate::source_map::SourceMap) address space
+    /// [SourceMap](crate::source_map::SourceMap) address space
     #[inline]
     pub fn with_base(source: &'src str, base: token::BytePos) -> Self {
         Self { cursor: Cursor::new(source, base), finished: false }
@@ -172,6 +172,7 @@ impl<'src> Lexer<'src> {
             },
 
             '@' => self.single_punct(Punct::At),
+            '?' => self.single_punct(Punct::Question),
 
             '<' => {
                 self.cursor.advance();
@@ -251,7 +252,7 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    /// Exactly three slashes, a `////`+ divider is an ordinary comment.
+    /// Exactly three slashes, a `////`+ divider is an ordinary comment
     #[inline]
     fn is_doc_comment(&self) -> bool {
         self.cursor.peek_until(2) == Some('/')
@@ -259,7 +260,7 @@ impl<'src> Lexer<'src> {
             && self.cursor.peek_until(4) != Some('/')
     }
 
-    /// Consumes a single character and returns a punctuation token.
+    /// Consumes a single character and returns a punctuation token
     #[inline]
     fn single_punct(&mut self, punct: Punct) -> Token<'src> {
         let start = self.cursor.position();
@@ -267,7 +268,7 @@ impl<'src> Lexer<'src> {
         self.token(punct, start)
     }
 
-    /// Builds a punctuation token from `start` to the current cursor position.
+    /// Builds a punctuation token from `start` to the current cursor position
     #[inline]
     fn token(&self, punct: Punct, start: token::BytePos) -> Token<'src> {
         Token::new(TokenKind::Punct(punct), Span::new(start, self.cursor.position()))
@@ -336,6 +337,22 @@ mod tests {
     fn whitespace_only() {
         let kinds = kinds("   \n\t  \n  ");
         assert!(kinds.is_empty());
+    }
+
+    #[test]
+    fn question_mark_stands_alone() {
+        assert_eq!(kinds("a?"), vec![TokenKind::Identifier("a"), Punct::Question.into()]);
+        assert_eq!(
+            kinds("f()?.g"),
+            vec![
+                TokenKind::Identifier("f"),
+                Punct::OpenParen.into(),
+                Punct::CloseParen.into(),
+                Punct::Question.into(),
+                Punct::Dot.into(),
+                TokenKind::Identifier("g"),
+            ]
+        );
     }
 
     #[test]

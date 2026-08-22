@@ -1,11 +1,11 @@
-//! Token types for the Nyx lexer.
+//! Token types for the Nyx lexer
 
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::LexError;
 use std::fmt;
 use std::ops::Add;
 
-/// A single token produced by the lexer.
+/// A single token produced by the lexer
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'src> {
     pub kind: TokenKind<'src>,
@@ -19,7 +19,7 @@ pub struct Span {
     pub end: BytePos,
 }
 
-/// A byte offset into the global [`SourceMap`](crate::source_map::SourceMap)
+/// A byte offset into the global [SourceMap](crate::source_map::SourceMap)
 /// address space. File identity and line/column are derived from it on demand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
 pub struct BytePos(pub u32);
@@ -39,7 +39,7 @@ pub enum TokenKind<'src> {
     Eof,
 }
 
-/// Reserved words in the Nyx language.
+/// Reserved words in the Nyx language
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Keyword {
     Fn,
@@ -69,7 +69,7 @@ pub enum Keyword {
     Type,
 }
 
-/// Punctuators and operators.
+/// Punctuators and operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Punct {
     Plus,  // +
@@ -95,7 +95,7 @@ pub enum Punct {
     Shl,       // <<
     Shr,       // >>
 
-    // compound assignment, one per arithmetic and bitwise operator
+    // compound assignment, per arithmetic and bitwise operator
     PlusEq,      // +=
     MinusEq,     // -=
     StarEq,      // *=
@@ -123,13 +123,16 @@ pub enum Punct {
     RangeEq,    // ..=
     Arrow,      // ->
     At,         // @
+    Question,   // ?
 }
 
 /// Trait implemented by every sub-tokenizer
 ///
 /// Each token type (identifier, number, string, …) is a small struct that
-/// implements this trait. The [`Lexer`](super::Lexer) dispatches to the
-/// appropriate implementor after peeking at the first character
+/// implements this trait
+///
+/// The [Lexer](super::Lexer) dispatches to the appropriate implementor after
+/// peeking at the first character
 pub trait Tokenize<'src> {
     /// Lex a single token starting at `start`, advancing `cursor` past it
     fn lex(self, cursor: &mut Cursor<'src>, start: BytePos) -> Result<Token<'src>, LexError<'src>>;
@@ -183,12 +186,6 @@ impl Add<Span> for Span {
     }
 }
 
-impl fmt::Display for Span {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start.0, self.end.0)
-    }
-}
-
 impl BytePos {
     #[inline(always)]
     pub const fn offset(self) -> usize {
@@ -205,12 +202,6 @@ impl Add<u32> for BytePos {
     }
 }
 
-impl fmt::Display for BytePos {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 impl From<Punct> for TokenKind<'_> {
     fn from(value: Punct) -> Self {
         Self::Punct(value)
@@ -220,23 +211,6 @@ impl From<Punct> for TokenKind<'_> {
 impl From<Keyword> for TokenKind<'_> {
     fn from(value: Keyword) -> Self {
         Self::Keyword(value)
-    }
-}
-
-impl fmt::Display for TokenKind<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Integer(n) => write!(f, "{n}"),
-            Self::Float(n) => write!(f, "{n}"),
-            Self::String(s) => write!(f, "\"{s}\""),
-            Self::Char(c) => write!(f, "'{c}'"),
-            Self::Bool(b) => write!(f, "{b}"),
-            Self::Identifier(id) => write!(f, "{id}"),
-            Self::Keyword(kw) => write!(f, "{kw}"),
-            Self::Punct(p) => write!(f, "{p}"),
-            Self::DocComment(text) => write!(f, "///{text}"),
-            Self::Eof => write!(f, "EOF"),
-        }
     }
 }
 
@@ -334,12 +308,6 @@ impl std::str::FromStr for Keyword {
     }
 }
 
-impl fmt::Display for Keyword {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 impl Punct {
     pub const fn as_str<'s>(self) -> &'s str {
         match self {
@@ -386,7 +354,37 @@ impl Punct {
             Self::RangeEq => "..=",
             Self::Arrow => "->",
             Self::At => "@",
+            Self::Question => "?",
         }
+    }
+}
+
+impl fmt::Display for TokenKind<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Integer(n) => write!(f, "{n}"),
+            Self::Float(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+            Self::Char(c) => write!(f, "'{c}'"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Identifier(id) => write!(f, "{id}"),
+            Self::Keyword(kw) => write!(f, "{kw}"),
+            Self::Punct(p) => write!(f, "{p}"),
+            Self::DocComment(text) => write!(f, "///{text}"),
+            Self::Eof => write!(f, "EOF"),
+        }
+    }
+}
+
+impl fmt::Display for Keyword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Display for BytePos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
