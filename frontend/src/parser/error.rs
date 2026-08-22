@@ -46,6 +46,20 @@ pub enum ParseErrorKind<'i> {
     )]
     InvalidUnaryOperator { found: TokenKind<'i> },
     #[diagnostic(
+        code = "E032",
+        message = "Unterminated interpolation in a string literal",
+        primary = "this {`{`} is never closed",
+        note = "Close the interpolation with a closing brace, or double an opening brace to write a literal one"
+    )]
+    UnterminatedInterpolation,
+    #[diagnostic(
+        code = "E033",
+        message = "Empty interpolation in a string literal",
+        primary = "nothing to print here",
+        note = "Put an expression between the braces, or double them to write a literal pair"
+    )]
+    EmptyInterpolation,
+    #[diagnostic(
         code = "E025",
         message = "Expected an expression, found {found!}",
         primary = "expression expected here"
