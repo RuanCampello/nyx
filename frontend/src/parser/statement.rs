@@ -25,21 +25,16 @@ pub enum ItemKind<'i> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[rustfmt::skip]
 pub enum Statement<'i> {
     Let(Let<'i>),
     Return(Return<'i>),
-    If(If<'i>),
     Loop(Loop<'i>),
     Break(Span),
     Continue(Span),
-    Expr(Expression<'i>, Span),
-    Block(Block<'i>),
+    Expr { expr: Expression<'i>, span: Span, semi: bool },
     /// `@unsafe { … }`, a block that permits the operations a marker guards
-    Unsafe {
-        block: Block<'i>,
-        marker: Span,
-    },
-    Match(Match<'i>),
+    Unsafe { block: Block<'i>, marker: Span },
     Item(Item<'i>),
 }
 
@@ -477,8 +472,9 @@ impl<'i> Parsable<'i> for Statement<'i> {
         // non-item statements return directly
         let kind = match kind {
             T::Keyword(Keyword::Let) => return Ok(Statement::Let(parser.parse_node()?)),
-            T::Keyword(Keyword::If) => return Ok(Statement::If(parser.parse_node()?)),
-            T::Keyword(Keyword::Match) => return Ok(Statement::Match(parser.parse_node()?)),
+            T::Keyword(Keyword::If | Keyword::Match) | T::Punct(Punct::OpenBrace) => {
+                return parse_block_statement(parser);
+            },
             T::Keyword(Keyword::Loop) => return Ok(Statement::Loop(parser.parse_node()?)),
             T::Keyword(Keyword::Break) => {
                 let keyword = parser.expect_token(Keyword::Break)?;
@@ -491,7 +487,6 @@ impl<'i> Parsable<'i> for Statement<'i> {
                 return Ok(Statement::Continue(keyword.span + semicolon));
             },
             T::Keyword(Keyword::Return) => return Ok(Statement::Return(parser.parse_node()?)),
-            T::Punct(Punct::OpenBrace) => return Ok(Statement::Block(parser.parse_node()?)),
             T::Keyword(Keyword::Use) => ItemKind::Use(parser.parse_node()?),
             T::Keyword(Keyword::Struct) => ItemKind::Struct(parser.parse_node()?),
             T::Keyword(Keyword::Enum) => ItemKind::Enum(parser.parse_node()?),
@@ -532,19 +527,17 @@ impl<'i> Parsable<'i> for Statement<'i> {
             T::Eof => return Err(ParserError::new(ParseErrorKind::UnexpectedEof, Span::default())),
             _ => {
                 let expr = parser.parse_node::<Expression>()?;
-                let end_position = match parser.peek() {
-                    Some(Ok(t)) if t.is_kind(Punct::CloseBrace) | t.is_kind(T::Eof) => {
-                        expr.span().end
-                    },
+                let semi = match parser.peek() {
+                    Some(Ok(t)) if t.is_kind(Punct::CloseBrace) | t.is_kind(T::Eof) => false,
                     Some(Err(err)) => return Err(err.into()),
                     _ => {
                         parser.expect_semicolon();
-                        expr.span().end
+                        true
                     },
                 };
 
-                let span = Span::new(expr.span().start, end_position);
-                return Ok(Statement::Expr(expr, span));
+                let span = Span::new(expr.span().start, expr.span().end);
+                return Ok(Statement::Expr { expr, span, semi });
             },
         };
 
@@ -1807,7 +1800,7 @@ fn parse_braceless_branch<'i>(
             let semicolon = parser.expect_semicolon();
             let span = expression.span() + semicolon;
 
-            Ok((Statement::Expr(expression, span), semicolon.end))
+            Ok((Statement::Expr { expr: expression, span, semi: true }, semicolon.end))
         },
         Some(Err(err)) => Err(err.into()),
         _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, blame)),
@@ -1827,18 +1820,26 @@ fn parse_function_body<'i>(
         return Err(ParserError::new(ParseErrorKind::ExpressionBodyNeedsReturnType, equals));
     }
 
-    let statement = match parser.peek() {
-        Some(Ok(token)) if token.is_kind(Keyword::If) => Statement::If(parser.parse_node()?),
-        Some(Ok(token)) if token.is_kind(Keyword::Match) => Statement::Match(parser.parse_node()?),
-        _ => {
-            let expression = parser.parse_node::<Expression>()?;
-            let span = expression.span();
-            Statement::Expr(expression, span)
-        },
-    };
+    let expression = parser.parse_node::<Expression>()?;
+    let span = expression.span();
+    let statement = Statement::Expr { expr: expression, span, semi: false };
     let semicolon = parser.expect_semicolon();
 
     Ok(Block { statements: vec![statement], span: equals + semicolon })
+}
+
+fn parse_block_statement<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, ParserError<'i>> {
+    let expr = Expression::parse_prefix(parser)?;
+    let span = expr.span();
+
+    // the value goes nowhere here, so a closing semicolon is accepted but never demanded
+    let semi = parser.consume_token(Punct::Semicolon)?;
+    let end = match semi {
+        true => parser.last_span().unwrap_or(span).end,
+        _ => span.end,
+    };
+
+    Ok(Statement::Expr { expr, span: Span::new(span.start, end), semi })
 }
 
 fn parse_bracketed_type<'i>(
@@ -2147,13 +2148,10 @@ impl<'s> Statement<'s> {
         match self {
             Self::Let(s) => s.span,
             Self::Return(s) => s.span,
-            Self::If(s) => s.span,
             Self::Loop(s) => s.span,
             Self::Break(span) | Self::Continue(span) => *span,
-            Self::Expr(_, span) => *span,
-            Self::Block(b) => b.span,
+            Self::Expr { span, .. } => *span,
             Self::Unsafe { block, marker } => Span::new(marker.start, block.span.end),
-            Self::Match(m) => m.span,
             Self::Item(item) => item.kind.span(),
         }
     }
