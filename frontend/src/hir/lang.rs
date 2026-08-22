@@ -1,8 +1,26 @@
 use crate::{
-    hir::{Intrinsic, Syscall, error::CmpInterface as Cmp},
+    hir::{
+        Intrinsic, Syscall,
+        error::CmpInterface as Cmp,
+        ty::{Type, TypeKind},
+    },
     parser::expression::BinaryOperator as BinOp,
 };
 use std::str::FromStr;
+
+/// How a value is written out when a `{...}` interpolation prints it. The
+/// compiler emits each of these itself, so this is the whole set of types an
+/// interpolation accepts until a formatting interface exists
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintKind {
+    /// a signed integer, widened to `i64`
+    Int,
+    /// an unsigned integer, widened to `u64`
+    Uint,
+    Bool,
+    Char,
+    Str,
+}
 
 pub struct Comparison<'s> {
     pub method: &'s str,
@@ -45,6 +63,25 @@ const SYSCALLS: &[(&str, Syscall)] = &[
     ("SYS_MREMAP", Syscall::Mremap),
     ("SYS_MADVISE", Syscall::Madvise),
 ];
+
+/// How `typ` is printed, or `None` when it has no printed form
+pub fn print_kind(typ: Type<'_>) -> Option<PrintKind> {
+    let kind = match typ.kind() {
+        TypeKind::Ref { to, .. } => to.kind(),
+        other => other,
+    };
+
+    Some(match kind {
+        TypeKind::Bool => PrintKind::Bool,
+        TypeKind::Char => PrintKind::Char,
+        TypeKind::Str => PrintKind::Str,
+        TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 | TypeKind::Uptr => {
+            PrintKind::Uint
+        },
+        _ if typ.is_integer() => PrintKind::Int,
+        _ => return None,
+    })
+}
 
 #[inline]
 pub fn comparison<'s>(operator: BinOp) -> Option<&'s Comparison<'s>> {

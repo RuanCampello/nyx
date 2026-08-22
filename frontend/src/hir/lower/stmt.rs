@@ -7,7 +7,7 @@ use crate::{
     lexer::Spanned,
     parser::{
         expression,
-        statement::{self, Else, ItemKind},
+        statement::{self, ItemKind},
     },
 };
 
@@ -53,7 +53,7 @@ where
         Ok((Block { statements, span: block.span }, returns))
     }
 
-    fn lower_statement(
+    pub(super) fn lower_statement(
         &mut self,
         statement: &statement::Statement<'src>,
         is_tail: bool,
@@ -101,7 +101,6 @@ where
                 let value = self.lower_return_value(statement)?;
                 Ok((Statement::Return(value), true))
             },
-            Stmt::If(statement) => self.lower_if(statement, is_tail),
             Stmt::Loop(statement) => self.lower_loop(statement),
             Stmt::Break(span) => {
                 if self.loop_depth == 0 {
@@ -117,39 +116,28 @@ where
                 }
                 Ok((Statement::Continue, false))
             },
-            Stmt::Expr(expr, _) => {
+            Stmt::Expr { expr, .. } => {
                 let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
                 let expr = self.lower_expr(expr, tail_ret.then_some(self.return_type))?;
 
                 self.handle_tail_expr(expr, tail_ret)
             },
-            Stmt::Block(block) => {
-                let (block, returns) = self.lower_block(block, is_tail)?;
-                Ok((Statement::Block(block), returns))
-            },
-
             Stmt::Unsafe { block, marker } => {
                 // a block nested in a context that already allows the operations
                 // grants nothing, so it is redundant however much it contains
                 let redundant = self.unsafe_ctx.depth > 0;
                 let before = self.unsafe_ctx.ops;
+                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
 
                 self.unsafe_ctx.depth += 1;
-                let lowered = self.lower_block(block, is_tail);
+                let lowered = self.lower_block_expr(block, tail_ret.then_some(self.return_type));
                 self.unsafe_ctx.depth -= 1;
 
-                let (block, returns) = lowered?;
+                let expr = lowered?;
                 if redundant || self.unsafe_ctx.ops == before {
                     let diagnostic = hir_error!(*marker, UnusedUnsafe).into();
                     self.scope.diagnostics.borrow_mut().warn(diagnostic);
                 }
-
-                Ok((Statement::Block(block), returns))
-            },
-
-            Stmt::Match(statement) => {
-                let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
-                let expr = self.lower_match(statement, tail_ret.then_some(self.return_type))?;
 
                 self.handle_tail_expr(expr, tail_ret)
             },
@@ -284,63 +272,6 @@ where
         self.const_scope.body.insert(name, constant);
 
         Ok(())
-    }
-
-    fn lower_if(
-        &mut self,
-        if_stmt: &statement::If<'src>,
-        is_tail: bool,
-    ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
-        let condition = self.lower_expr(&if_stmt.condition, None)?;
-        self.assert_type(TypeKind::Bool, condition.typ, condition.span)?;
-        let condition = condition.expr;
-
-        let (then_block, then_returns) = self.lower_block(&if_stmt.then_branch, is_tail)?;
-        let (else_block, else_returns) = if_stmt
-            .else_branch
-            .as_ref()
-            .map(|else_branch| -> Result<_, HirError> {
-                match else_branch.as_ref() {
-                    Else::If(block) => {
-                        let (statement, returns) = self.lower_if(block, is_tail)?;
-                        let statements = self.arena.alloc_slice_copy(&[statement]);
-                        let block = Block { span: block.span, statements };
-
-                        Ok((Some(block), returns))
-                    },
-
-                    Else::Block(block) => {
-                        let (block, returns) = self.lower_block(block, is_tail)?;
-                        Ok((Some(block), returns))
-                    },
-
-                    Else::Expr(expr) => {
-                        let tail_ret = is_tail && self.return_type.kind() != TypeKind::Unit;
-                        let hint = tail_ret.then_some(self.return_type);
-                        let lowered = self.lower_expr(expr, hint)?;
-                        let span = lowered.span;
-
-                        let stmt = match tail_ret {
-                            true => {
-                                self.assert_type(self.return_type, lowered.typ, lowered.span)?;
-                                Statement::Return(Some(lowered.expr))
-                            },
-                            _ => Statement::Expr(lowered.expr),
-                        };
-
-                        let statements = self.arena.alloc_slice_copy(&[stmt]);
-                        let block = Block { statements, span };
-                        Ok((Some(block), tail_ret))
-                    },
-                }
-            })
-            .transpose()?
-            .unwrap_or((None, false));
-
-        Ok((
-            Statement::If { condition, then_block, else_block },
-            then_returns && else_returns,
-        ))
     }
 
     fn infer(&mut self, expr: &expression::Expression<'src>) -> Result<Type<'hir>, HirError<'hir>> {

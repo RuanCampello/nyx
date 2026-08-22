@@ -1,10 +1,10 @@
 use crate::{
     hir::{
-        Arm, ArmBody, Constant, Expression, ExpressionKind, Literal, LocalId, Res, Statement,
-        Static, StaticId, SymbolId, Type, TypeKind, collect,
+        AdtId, Arm, ArmBody, Constant, Expression, ExpressionKind, Literal, LocalId, Pattern,
+        PatternKind, Res, Statement, Static, StaticId, SymbolId, Type, TypeKind, collect,
         error::{HirError, hir_error},
-        exhaustive,
-        lower::{FunctionBuilder, Lowered},
+        exhaustive, lang,
+        lower::{FunctionBuilder, Lowered, call::GenericCall},
         place_base_local,
         symbols::qualified,
     },
@@ -15,6 +15,13 @@ use crate::{
     },
 };
 use std::borrow::Cow;
+
+/// The failure carriers `?` understands
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TryFamily {
+    Optional,
+    Result,
+}
 
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
 where
@@ -56,17 +63,19 @@ where
         Ok(self.local_expr(id, span))
     }
 
-    pub(super) fn handle_tail_expr(
+    pub(in crate::hir::lower) fn handle_tail_expr(
         &mut self,
         expr: Lowered<'hir>,
         tail_ret: bool,
     ) -> Result<(Statement<'hir>, bool), HirError<'hir>> {
-        match tail_ret && !expr.typ.diverges() {
+        let carries_value = tail_ret && !expr.typ.diverges() && expr.typ.kind() != TypeKind::Unit;
+
+        match carries_value {
             true => {
                 self.check_type_at(self.return_type, expr.typ, expr.span, self.return_type_span)?;
                 Ok((Statement::Return(Some(expr.expr)), true))
             },
-            _ => Ok((Statement::Expr(expr.expr), tail_ret || expr.typ.diverges())),
+            _ => Ok((Statement::Expr(expr.expr), expr.typ.diverges())),
         }
     }
 
@@ -441,13 +450,8 @@ where
                     UnaryOperator::Neg => match expr.typ.is_number() {
                         true => expr.typ,
                         _ => {
-                            return Err(hir_error!(
-                                expr.span,
-                                TypeMismatch {
-                                    expected: self.scope.types.common.i32,
-                                    found: expr.typ
-                                }
-                            ));
+                            let (expected, found) = (self.scope.types.common.i32, expr.typ);
+                            return Err(hir_error!(expr.span, TypeMismatch { expected, found }));
                         },
                     },
 
@@ -455,12 +459,10 @@ where
                         match expr.typ == self.scope.types.common.bool || expr.typ.is_integer() {
                             true => expr.typ,
                             _ => {
+                                let (expected, found) = (self.scope.types.common.bool, expr.typ);
                                 return Err(hir_error!(
                                     expr.span,
-                                    TypeMismatch {
-                                        expected: self.scope.types.common.bool,
-                                        found: expr.typ
-                                    }
+                                    TypeMismatch { expected, found }
                                 ));
                             },
                         }
@@ -479,7 +481,7 @@ where
                         match self.coerce_array_to_slice(expr.typ, hint) {
                             // `&array` unsizes to a `&[T]`/`&mut [T]` slice in slice context
                             Some(slice) => slice,
-                            None => {
+                            _ => {
                                 self.scope.types.refer(expr.typ, *operator == UnaryOperator::RefMut)
                             },
                         }
@@ -621,6 +623,12 @@ where
                 Ok(self.alloc(ExpressionKind::Struct { id, fields }, typ, *span))
             },
 
+            Expr::Try { value, span } => self.lower_try(value, *span),
+            Expr::Interpolated { span, .. } => Err(hir_error!(*span, InterpolationOutsidePrint)),
+            Expr::Block { block, .. } => self.lower_block_expr(block, hint),
+            Expr::If { inner, .. } => self.lower_if_expr(inner, hint),
+            Expr::Match { inner, .. } => self.lower_match(inner, hint),
+
             Expr::Field { expr: base, field, span } => {
                 let base_lowered = self.lower_expr(base, None)?;
                 let is_place = matches!(
@@ -732,7 +740,13 @@ where
                 };
 
                 match self.scope.functions.defs[function_id].body.is_some() {
-                    true => self.lower_generic_call(function_id, args, type_args, *span),
+                    true => self.lower_generic_call(
+                        function_id,
+                        GenericCall::Free,
+                        args,
+                        type_args,
+                        *span,
+                    ),
                     _ => self.lower_direct_call(function_id, args, type_args, *span),
                 }
             },
@@ -776,7 +790,7 @@ where
                     })?;
 
                 match self.scope.functions.defs[id].body.is_some() {
-                    true => self.lower_generic_call(id, args, type_args, *span),
+                    true => self.lower_generic_call(id, GenericCall::Free, args, type_args, *span),
                     _ => self.lower_direct_call(id, args, type_args, *span),
                 }
             },
@@ -891,15 +905,9 @@ where
         let signature = self.scope.functions.defs[function].clone();
         assert!(signature.receiver_type().is_some(), "method call resolved to a free function");
 
-        let receiver_lowered = match signature.receiver_mutable() {
-            true if matches!(
-                receiver_type.kind(),
-                Ref { mutable: true, .. } | Slice { mutable: true, .. }
-            ) =>
-            {
-                receiver_lowered
-            },
-            true => self.lower_mutable_place(receiver, None)?,
+        let receiver_lowered = match (signature.receiver_mutable(), receiver_type.kind()) {
+            (true, Ref { mutable: true, .. } | Slice { mutable: true, .. }) => receiver_lowered,
+            (true, _) => self.lower_mutable_place(receiver, None)?,
             _ => receiver_lowered,
         };
         let base_local = place_base_local(receiver_lowered.expr);
@@ -934,10 +942,9 @@ where
         )?;
 
         if self.scope.functions.defs[function].body.is_some() {
-            return self.lower_generic_method_call(
+            return self.lower_generic_call(
                 function,
-                method_symbol,
-                receiver_lowered.expr,
+                GenericCall::Method { name: method_symbol, receiver: receiver_lowered.expr },
                 args,
                 type_args,
                 span,
@@ -995,6 +1002,85 @@ where
         };
         let missing = self.arena.alloc_str(&witness.0);
         Err(hir_error!(span, NonExhaustiveMatch { typ: scrutinee, missing }))
+    }
+
+    pub(in crate::hir::lower) fn lower_block_expr(
+        &mut self,
+        block: &statement::Block<'src>,
+        hint: Option<Type<'hir>>,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        use statement::Statement as Stmt;
+
+        self.push_scope();
+
+        let (leading, tail) = match block.statements.split_last() {
+            Some((Stmt::Expr { expr, semi: false, .. }, leading)) => (leading, Some(expr)),
+            _ => (block.statements.as_slice(), None),
+        };
+
+        let (mut statements, mut diverges) = (Vec::with_capacity(leading.len()), false);
+        for statement in leading {
+            match self.lower_statement(statement, false) {
+                Ok((statement, returns)) => {
+                    diverges |= returns;
+                    statements.push(statement);
+                },
+                Err(error) => self.soft(error),
+            }
+        }
+
+        let tail = tail.map(|tail| self.lower_expr(tail, hint)).transpose()?;
+        self.pop_scope();
+
+        let typ = match tail {
+            Some(tail) => tail.typ,
+            None if diverges => self.scope.types.common.never,
+            None => self.scope.types.common.unit,
+        };
+        let statements = self.arena.alloc_slice_copy(&statements);
+        let tail = tail.map(|tail| tail.expr);
+
+        Ok(self.alloc(ExpressionKind::Block { statements, tail }, typ, block.span))
+    }
+
+    /// an interpolated literal flattens into the print call's own arguments
+    pub(super) fn lower_print_args(
+        &mut self,
+        args: &[expression::Expression<'src>],
+    ) -> Result<Vec<&'hir Expression<'hir>>, HirError<'hir>> {
+        use expression::Segment;
+
+        let mut lowered = Vec::with_capacity(args.len());
+        for arg in args {
+            let expression::Expression::Interpolated { segments, span } = arg else {
+                lowered.push(self.lower_expr(arg, None)?.expr);
+                continue;
+            };
+
+            for segment in segments {
+                match segment {
+                    Segment::Text(text) => {
+                        let symbol = self.scope.symbols.insert(text);
+                        let kind = ExpressionKind::Literal(Literal::Str(symbol));
+
+                        lowered.push(self.alloc(kind, self.scope.types.common.str, *span).expr);
+                    },
+                    Segment::Value(expr) => {
+                        let value = self.lower_expr(expr, None)?;
+
+                        // an un-annotated literal is still an inference variable here, and nothing later will constrain it
+                        let typ = self.infer.resolve_or_default(value.typ);
+                        if lang::print_kind(typ).is_none() {
+                            return Err(hir_error!(value.span, NotPrintable { typ }));
+                        }
+
+                        lowered.push(value.expr);
+                    },
+                }
+            }
+        }
+
+        Ok(lowered)
     }
 
     pub(super) fn lower_match(
@@ -1083,6 +1169,230 @@ where
             return_type,
             match_stmt.span,
         ))
+    }
+
+    /// an `if` in value position
+    fn lower_if_expr(
+        &mut self,
+        if_stmt: &statement::If<'src>,
+        hint: Option<Type<'hir>>,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        use statement::Else;
+
+        let condition = self.lower_expr(&if_stmt.condition, None)?;
+        self.assert_type(TypeKind::Bool, condition.typ, condition.span)?;
+        let then_block = self.lower_block_expr(&if_stmt.then_branch, hint)?;
+        let typ = then_block.typ;
+
+        let else_block = match if_stmt.else_branch.as_deref() {
+            Some(Else::Block(block)) => Some(self.lower_block_expr(block, hint.or(Some(typ)))?),
+            Some(Else::If(inner)) => Some(self.lower_if_expr(inner, hint.or(Some(typ)))?),
+            Some(Else::Expr(expr)) => {
+                let lowered = self.lower_expr(expr, None)?;
+                let statements = self.arena.alloc_slice_copy(&[Statement::Expr(lowered.expr)]);
+                let kind = ExpressionKind::Block { statements, tail: None };
+
+                Some(self.alloc(kind, self.scope.types.common.unit, lowered.span))
+            },
+            _ => None,
+        };
+
+        // a branch that leaves the function yields nothing to unify against, so it only makes the 'if' itself diverge when every branch does
+        let typ = match else_block {
+            Some(other) => {
+                let (mut unified, mut divergent) = (None, None);
+                for branch in [&then_block, &other] {
+                    match branch.typ.diverges() {
+                        true => divergent = divergent.or(Some(branch.typ)),
+                        _ => match unified {
+                            Some(expected) => {
+                                self.assert_type(expected, branch.typ, branch.span)?
+                            },
+                            _ => unified = Some(branch.typ),
+                        },
+                    }
+                }
+
+                unified.or(divergent).unwrap_or(self.scope.types.common.unit)
+            },
+            // without an 'else' the 'if' can always be skipped, so it is unit however the branch itself ends
+            _ => {
+                if !typ.diverges() {
+                    self.assert_type(TypeKind::Unit, typ, then_block.span)?;
+                }
+
+                self.scope.types.common.unit
+            },
+        };
+
+        let kind = ExpressionKind::If {
+            condition: condition.expr,
+            then_block: then_block.expr,
+            else_block: else_block.map(|block| block.expr),
+        };
+
+        Ok(self.alloc(kind, typ, if_stmt.span))
+    }
+
+    /// `?` expands here into the match a user would otherwise write by hand
+    fn lower_try(
+        &mut self,
+        value: &expression::Expression<'src>,
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let scrutinee = self.lower_expr(value, None)?;
+        let (id, generic_args, family) = self.try_family(scrutinee.typ, scrutinee.span)?;
+
+        let (success, failure) = {
+            let def = &self.scope[id];
+            let index_of = |name: &str| {
+                def.variants().iter().position(|v| self.scope.symbols.get(v.name) == name)
+            };
+
+            match (index_of(family.success()), index_of(family.failure())) {
+                (Some(success), Some(failure)) => (success, failure),
+                _ => {
+                    return Err(hir_error!(scrutinee.span, TryOnNonTryable { typ: scrutinee.typ }));
+                },
+            }
+        };
+
+        let payload_of = |this: &Self, index: usize| {
+            this.scope[id].variants()[index]
+                .payload
+                .map(|p| p.subst(&this.scope.types, &this.scope.arrays, generic_args))
+        };
+
+        let Some(unwrapped) = payload_of(self, success) else {
+            return Err(hir_error!(scrutinee.span, TryOnNonTryable { typ: scrutinee.typ }));
+        };
+        self.check_try_return(id, generic_args, family, span)?;
+
+        // a name no identifier can spell, so the binding can never be shadowed by, or collide with, anything the user wrote
+        let binding = self.scope.symbols.insert("?");
+
+        self.push_scope();
+        let local = self.declare_local(binding, unwrapped, false, span)?;
+        let success_arm = Arm {
+            pattern: self.arena.alloc(Pattern {
+                kind: PatternKind::Variant {
+                    id,
+                    variant_idx: success,
+                    sub: Some(
+                        self.arena.alloc(Pattern { kind: PatternKind::Binding(local), span }),
+                    ),
+                },
+                span,
+            }),
+            guard: None,
+            body: ArmBody::Expr(self.alloc(ExpressionKind::Local(local), unwrapped, span).expr),
+            span,
+        };
+        self.pop_scope();
+        self.push_scope();
+
+        let failure_arm =
+            self.lower_try_failure_arm(id, failure, payload_of(self, failure), span)?;
+        self.pop_scope();
+
+        let arms = self.arena.alloc_slice_copy(&[success_arm, failure_arm]);
+
+        Ok(self.alloc(ExpressionKind::Match { scrutinee: scrutinee.expr, arms }, unwrapped, span))
+    }
+
+    /// the arm that leaves the function, rebuilding the failure in the return
+    /// type: `None -> return None`, or `Failure(e) -> return Failure(e)`
+    fn lower_try_failure_arm(
+        &mut self,
+        id: AdtId,
+        index: usize,
+        payload: Option<Type<'hir>>,
+        span: Span,
+    ) -> Result<Arm<'hir>, HirError<'hir>> {
+        let (sub, args) = match payload {
+            Some(typ) => {
+                let binding = self.scope.symbols.insert("?");
+                let local = self.declare_local(binding, typ, false, span)?;
+                let carried = self.alloc(ExpressionKind::Local(local), typ, span).expr;
+
+                (
+                    Some(&*self.arena.alloc(Pattern { kind: PatternKind::Binding(local), span })),
+                    &*self.arena.alloc_slice_copy(&[carried]),
+                )
+            },
+            _ => (None, &*self.arena.alloc_slice_copy(&[])),
+        };
+
+        let name = self.scope[id].variants()[index].name;
+        let callee =
+            self.alloc(ExpressionKind::Path(name), self.scope.types.common.unit, span).expr;
+        let rebuilt = self.alloc(ExpressionKind::Call { callee, args }, self.return_type, span);
+        self.typeck
+            .type_dependent_defs
+            .insert(rebuilt.expr.id, Res::Variant { id, index });
+
+        Ok(Arm {
+            pattern: self.arena.alloc(Pattern {
+                kind: PatternKind::Variant { id, variant_idx: index, sub },
+                span,
+            }),
+            guard: None,
+            body: ArmBody::Return(Some(rebuilt.expr)),
+            span,
+        })
+    }
+
+    fn try_family(
+        &self,
+        typ: Type<'hir>,
+        span: Span,
+    ) -> Result<(AdtId, &'hir [Type<'hir>], TryFamily), HirError<'hir>> {
+        let TypeKind::Adt(id, args) = typ.kind() else {
+            return Err(hir_error!(span, TryOnNonTryable { typ }));
+        };
+
+        let def = &self.scope[id];
+        let family = match def.is_enum().then(|| self.scope.symbols.get(def.name)) {
+            Some("Optional") => TryFamily::Optional,
+            Some("Result") => TryFamily::Result,
+            _ => return Err(hir_error!(span, TryOnNonTryable { typ })),
+        };
+
+        Ok((id, args, family))
+    }
+
+    /// The desugaring contains a `return`, so the enclosing signature has to be able to carry the failure onwards
+    fn check_try_return(
+        &self,
+        id: AdtId,
+        args: &'hir [Type<'hir>],
+        family: TryFamily,
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let found = self.return_type;
+        let mismatch = |suggestion| Err(hir_error!(span, TryReturnMismatch { found, suggestion }));
+
+        let TypeKind::Adt(return_id, return_args) = found.kind() else {
+            return mismatch("Change the return type to an `Optional` or a `Result`");
+        };
+
+        if return_id != id {
+            return mismatch(match family {
+                TryFamily::Optional => {
+                    "An absent `Optional` carries no failure value to return; return an `Optional` here, or match on it explicitly"
+                },
+                TryFamily::Result => {
+                    "A `Result` failure carries a value this function cannot return; return a `Result` here, or match on it explicitly"
+                },
+            });
+        }
+
+        match family {
+            TryFamily::Result if args.get(1) != return_args.get(1) => mismatch(
+                "The failure types must match exactly; there is no conversion between them yet",
+            ),
+            _ => Ok(()),
+        }
     }
 
     fn lower_variant(
@@ -1376,5 +1686,23 @@ where
         })?;
 
         Ok((sym, field.typ.subst(&self.scope.types, &self.scope.arrays, generic_args)))
+    }
+}
+
+impl TryFamily {
+    #[inline]
+    const fn success<'s>(self) -> &'s str {
+        match self {
+            Self::Optional => "Some",
+            Self::Result => "Success",
+        }
+    }
+
+    #[inline]
+    const fn failure<'s>(self) -> &'s str {
+        match self {
+            Self::Optional => "None",
+            Self::Result => "Failure",
+        }
     }
 }

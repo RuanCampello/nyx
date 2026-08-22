@@ -15,7 +15,7 @@ use crate::{
 use std::str::FromStr;
 
 #[derive(Clone, Copy)]
-enum GenericCallSyntax<'hir> {
+pub(in crate::hir::lower) enum GenericCall<'hir> {
     Free,
     Method { name: SymbolId, receiver: &'hir Expression<'hir> },
 }
@@ -28,7 +28,7 @@ where
         &self,
         param: u8,
         method: SymbolId,
-    ) -> Option<(SymbolId, crate::hir::collect::InterfaceMethodSignature<'hir>)> {
+    ) -> Option<(SymbolId, InterfaceMethodSignature<'hir>)> {
         let generic = self.generics.get(param as usize)?;
         self.find_bound_signature(generic, |candidate| candidate.name == method)
     }
@@ -37,7 +37,7 @@ where
         &self,
         qualifier: &str,
         name: SymbolId,
-    ) -> Option<(u8, SymbolId, crate::hir::collect::InterfaceMethodSignature<'hir>)> {
+    ) -> Option<(u8, SymbolId, InterfaceMethodSignature<'hir>)> {
         let concrete = *self.generic_env.get(qualifier)?;
         let TypeKind::GenericParam(param) = concrete.kind() else {
             return None;
@@ -277,6 +277,11 @@ where
 
         let mut lowered_args = Vec::with_capacity(args.len());
         match intrinsic {
+            // an interpolated literal flattens into the argument list here, so
+            // everything downstream sees an ordinary variadic print
+            Some(Intrinsic::Print | Intrinsic::PrintLn) => {
+                lowered_args = self.lower_print_args(args)?;
+            },
             Some(_) => {
                 for arg in args {
                     let arg = self.lower_expr(arg, None)?;
@@ -305,7 +310,7 @@ where
         Ok(self.finish_call(function_id, kind, return_type, res, substs, span))
     }
 
-    pub(super) fn resolve_turbofish(
+    pub(in crate::hir::lower) fn resolve_turbofish(
         &self,
         type_args: &[Spanned<statement::Type<'src>>],
     ) -> Result<Vec<Type<'hir>>, HirError<'hir>> {
@@ -331,38 +336,10 @@ where
             .collect()
     }
 
-    pub(super) fn lower_generic_method_call(
+    pub(in crate::hir::lower) fn lower_generic_call(
         &mut self,
         function_id: FunctionId,
-        method_symbol: SymbolId,
-        receiver: &'hir Expression<'hir>,
-        args: &[expression::Expression<'src>],
-        type_args: &[Spanned<statement::Type<'src>>],
-        span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'hir>> {
-        self.lower_generic_call_with(
-            function_id,
-            GenericCallSyntax::Method { name: method_symbol, receiver },
-            args,
-            type_args,
-            span,
-        )
-    }
-
-    pub(super) fn lower_generic_call(
-        &mut self,
-        function_id: FunctionId,
-        args: &[expression::Expression<'src>],
-        type_args: &[Spanned<statement::Type<'src>>],
-        span: Span,
-    ) -> Result<Lowered<'hir>, HirError<'hir>> {
-        self.lower_generic_call_with(function_id, GenericCallSyntax::Free, args, type_args, span)
-    }
-
-    fn lower_generic_call_with(
-        &mut self,
-        function_id: FunctionId,
-        syntax: GenericCallSyntax<'hir>,
+        syntax: GenericCall<'hir>,
         args: &[expression::Expression<'src>],
         type_args: &[Spanned<statement::Type<'src>>],
         span: Span,
@@ -384,8 +361,8 @@ where
             .collect();
 
         let open_params = match syntax {
-            GenericCallSyntax::Free => signature.params.as_slice(),
-            GenericCallSyntax::Method { .. } => signature.explicit_params(),
+            GenericCall::Free => signature.params.as_slice(),
+            GenericCall::Method { .. } => signature.explicit_params(),
         };
 
         let generic_count = generic_arity(&signature.params, signature.return_type)
@@ -410,8 +387,8 @@ where
         let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
 
         let mut substs = match syntax {
-            GenericCallSyntax::Free => infer_type_args(open_params, &arg_types, generic_count),
-            GenericCallSyntax::Method { receiver, .. } => {
+            GenericCall::Free => infer_type_args(open_params, &arg_types, generic_count),
+            GenericCall::Method { receiver, .. } => {
                 let mut actual = Vec::with_capacity(arg_types.len() + 1);
                 actual.push(self.typeck.type_of(receiver.id));
                 actual.extend(arg_types.iter().copied());
@@ -429,13 +406,13 @@ where
         let return_type =
             signature.return_type.subst(&self.scope.types, &self.scope.arrays, &substs);
         let kind = match syntax {
-            GenericCallSyntax::Free => {
+            GenericCall::Free => {
                 let callee = self
                     .alloc(ExpressionKind::Path(signature.name), self.scope.types.common.unit, span)
                     .expr;
                 ExpressionKind::Call { callee, args: lowered_args }
             },
-            GenericCallSyntax::Method { name, receiver } => {
+            GenericCall::Method { name, receiver } => {
                 ExpressionKind::MethodCall { name, receiver, args: lowered_args }
             },
         };
@@ -450,7 +427,7 @@ where
         ))
     }
 
-    fn finish_call(
+    pub(super) fn finish_call(
         &mut self,
         function_id: FunctionId,
         kind: ExpressionKind<'hir>,
