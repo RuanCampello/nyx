@@ -356,6 +356,38 @@ pub enum HirErrorKind<'h> {
     NonExhaustiveMatch { typ: Type<'h>, missing: &'h str },
 
     #[diagnostic(
+        code = "E163",
+        message = "A string can only interpolate inside {`print`} or {`println`}",
+        primary = "interpolation is not allowed here",
+        note = "Nyx has no owned string to build yet, so the pieces have nowhere to go but straight to output"
+    )]
+    InterpolationOutsidePrint,
+
+    #[diagnostic(
+        code = "E164",
+        message = "{typ!} cannot be printed",
+        primary = "no way to write this value out",
+        help = "Print a field or a conversion of it instead; integers, {`bool`}, {`char`} and strings all print directly"
+    )]
+    NotPrintable { typ: Type<'h> },
+
+    #[diagnostic(
+        code = "E161",
+        message = "The {`?`} operator cannot be applied to {typ!}",
+        primary = "not {`Optional`} or {`Result`}",
+        note = "{`?`} unwraps an {`Optional`} or a {`Result`}; no other type carries a failure to propagate"
+    )]
+    TryOnNonTryable { typ: Type<'h> },
+
+    #[diagnostic(
+        code = "E162",
+        message = "The {`?`} operator can only be used in a function that returns {`Optional`} or {`Result`}",
+        primary = "cannot use {`?`} in a function that returns {found^}",
+        help = "{suggestion}"
+    )]
+    TryReturnMismatch { found: Type<'h>, suggestion: &'static str },
+
+    #[diagnostic(
         code = "E132",
         message = "{kind!} outside a loop",
         primary = "no enclosing loop",

@@ -237,6 +237,28 @@ fn main() {
 a declaration whose body the compiler supplies.
 "#;
 
+E032 => "unterminated interpolation", r#"
+An interpolation opened with `{` inside a string literal was never closed.
+
+```nyx
+io::println("value = {count");  // error: this `{` is never closed
+```
+
+Close it with `}`, or write `{{` when a literal opening brace is what you meant.
+"#;
+
+E033 => "empty interpolation", r#"
+An interpolation must contain an expression to print; there is nothing to
+evaluate between the braces.
+
+```nyx
+io::println("value = {}");  // error: nothing to print here
+```
+
+Name what should be printed — any expression will do, including a field access
+or a calculation — or write `{{}}` for a literal pair of braces.
+"#;
+
 E031 => "expression-bodied function needs a return type", r#"
 An expression-bodied function must declare the type produced by its expression.
 
@@ -984,6 +1006,69 @@ fn code(signal: Signal): i32 {
 Add the missing arms, or close the match with a `_` arm that stands for
 everything left. An arm carrying an `if` guard does not count towards coverage,
 since the guard may fail at run time.
+"#;
+
+E161 => "`?` applied to a type that carries no failure", r#"
+The `?` operator unwraps an `Optional` or a `Result`, returning early when the
+value is absent or failed. No other type carries a failure to propagate.
+
+```nyx
+fn total(values: [i32; 4]): i32 {
+    let first = values[0]?;  // error: `i32` is not `Optional` or `Result`
+    return first;
+}
+```
+
+Match on the value directly, or change the expression to produce an `Optional`
+or a `Result`.
+"#;
+
+E162 => "`?` in a function that cannot carry the failure", r#"
+`?` returns early when its operand fails, so the enclosing function must be able
+to return that failure. Its return type has to be the same carrier: an
+`Optional` for `Optional`, and a `Result` with the same failure type for
+`Result`.
+
+```nyx
+fn head(values: Optional<i32>): i32 {
+    let first = values?;  // error: `i32` cannot carry the absent case
+    return first;
+}
+```
+
+Change the return type to match the operand, or handle the failure with an
+explicit `match`. The two carriers do not convert into one another, and two
+`Result`s must agree on their failure type exactly — there is no conversion
+between failure types yet.
+"#;
+
+E163 => "interpolation outside a print", r#"
+A string literal may interpolate only where its pieces can be written straight
+out, which today means `print` and `println`. Nyx has no owned string type yet,
+so there is nowhere to build the result.
+
+```nyx
+let greeting = "hello {name}";  // error: interpolation is not allowed here
+```
+
+Print it directly, or keep the literal plain.
+"#;
+
+E164 => "value cannot be printed", r#"
+Interpolation writes a value out directly, and only the primitives know how:
+every integer type, `bool`, `char`, and string slices. A struct, an enum, an
+array or a float has no printed form yet.
+
+```nyx
+struct Point { x: i32, y: i32 }
+
+fn show(p: Point) {
+    io::println("{p}");  // error: Point cannot be printed
+}
+```
+
+Interpolate the parts that do print — `"{p.x}, {p.y}"` — until a formatting
+interface exists.
 "#;
 
 E150 => "unknown intrinsic", r#"
