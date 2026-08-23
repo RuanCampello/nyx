@@ -1,5 +1,6 @@
 use super::hover::HoverInfo;
 use super::*;
+use rstest::rstest;
 
 fn rendered(a: &SemanticAnalysis) -> Vec<(Span, HoverInfo)> {
     a.with_snapshot(|snapshot| {
@@ -869,4 +870,33 @@ fn a_hover_target_stays_a_handle() {
         "a target is {} bytes, it should stay a handle",
         size_of::<HoverTarget<'_>>()
     );
+}
+
+/// a constant that cannot be folded is rendered without a value rather than wrongly
+#[rstest]
+#[case::sum("SUM", "3 + 4", Some("7"))]
+#[case::product("PRODUCT", "3 * 4", Some("12"))]
+#[case::quotient("QUOTIENT", "17 / 5", Some("3"))]
+#[case::remainder("REMAINDER", "17 % 5", Some("2"))]
+#[case::negative_remainder("NEGATIVE", "-17 % 5", Some("-2 (0xFFFFFFFE)"))]
+#[case::remainder_after_division("CHAINED", "100 / 7 % 5", Some("4"))]
+#[case::remainder_by_zero("BY_ZERO", "17 % 0", None)]
+#[case::division_by_zero("DIV_ZERO", "17 / 0", None)]
+fn a_constant_hover_shows_its_folded_value(
+    #[case] name: &str,
+    #[case] expression: &str,
+    #[case] expected: Option<&str>,
+) {
+    let source = format!("const {name}: i32 = {expression};\nfn main(): i32 {{ {name} }}\n");
+    let analysis = analyse(&name.to_lowercase(), &source);
+
+    let hover = rendered(&analysis)
+        .into_iter()
+        .find_map(|(_, hover)| hover.ty.starts_with("const ").then_some(hover.ty))
+        .unwrap_or_else(|| panic!("nothing hovers the constant"));
+
+    match expected {
+        Some(value) => assert_eq!(hover, format!("const {name}: i32 = {value}")),
+        None => assert_eq!(hover, format!("const {name}: i32")),
+    }
 }

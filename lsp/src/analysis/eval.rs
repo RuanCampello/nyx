@@ -59,6 +59,7 @@ fn eval_const_int(expr: &hir::Expression<'_>, hir: &Snapshot<'_>) -> Option<i128
                 Sub => left.checked_sub(right),
                 Mul => left.checked_mul(right),
                 Div => left.checked_div(right),
+                Rem => left.checked_rem(right),
                 Shl => left.checked_shl(u32::try_from(right).ok()?),
                 Shr => left.checked_shr(u32::try_from(right).ok()?),
                 BitAnd => Some(left & right),
