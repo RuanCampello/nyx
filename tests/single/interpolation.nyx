@@ -1,0 +1,49 @@
+use std::io;
+
+struct User {
+    age: i32,
+}
+
+fn double(n: i32): i32 = n * 2;
+
+fn values(user: User) {
+    let name = "ruan";
+    io::println("hello {name} with {user.age * 2 + 3}");
+}
+
+fn widths(user: User) {
+    let big: u64 = 12345678901234;
+    let items: [i32; 3] = [7, 8, 9];
+    io::println("call {double(user.age)} index {items[2]} unsigned {big}");
+}
+
+fn primitives() {
+    io::println("bool {3 > 2} char {'x'} negative {0 - 7}");
+}
+
+fn extremes(floor: i64, ceiling: u64) {
+    io::println("floor={floor} ceiling={ceiling}");
+}
+
+fn braces() {
+    io::println("literal braces {{ }} stay put");
+}
+
+fn nesting(user: User) {
+    io::println("nested {if user.age > 18 { 1 } else { 2 }}");
+}
+
+fn main(): i32 {
+    let user = User { age: 20 };
+
+    values(user);
+    extremes(0 - 9223372036854775807 - 1, 18446744073709551615);
+    widths(user);
+    primitives();
+    braces();
+    nesting(user);
+    io::print("no trailing newline");
+    io::println("");
+
+    return 42;
+}

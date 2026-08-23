@@ -1,0 +1,54 @@
+use std::optional::{Optional};
+use std::result::{Result};
+
+fn halve(n: i32): Optional<i32> {
+    if n & 1 != 0 return Optional::None;
+
+    return Optional::Some(n / 2);
+}
+
+fn quarter(n: i32): Optional<i32> {
+    let half = halve(n)?;
+    let rest = halve(half)?;
+
+    return Optional::Some(rest);
+}
+
+fn checked(n: i32): Result<i32, i32> {
+    if n < 0 return Result::Failure(n);
+
+    return Result::Success(n * 2);
+}
+
+fn doubled_twice(n: i32): Result<i32, i32> {
+    let once = checked(n)?;
+
+    return checked(once);
+}
+
+fn or_else(value: Optional<i32>, fallback: i32): i32 {
+    match value {
+        Some(v) -> v,
+        None -> fallback,
+    }
+}
+
+fn or_failure(value: Result<i32, i32>): i32 {
+    match value {
+        Success(v) -> v,
+        Failure(e) -> e,
+    }
+}
+
+fn main(): i32 {
+    if or_else(quarter(20), 0) != 5 return 1;
+    // odd half, the second `?` leaves
+    if or_else(quarter(6), 99) != 99 return 2;
+    // odd input, the first `?` leaves
+    if or_else(quarter(7), 99) != 99 return 3;
+
+    if or_failure(doubled_twice(3)) != 12 return 4;
+    if or_failure(doubled_twice(0 - 1)) != 0 - 1 return 5;
+
+    return 42;
+}

@@ -1,0 +1,15 @@
+fn divide(a: u64, b: u64): u64 = a / b;
+
+fn main(): i32 {
+    let half: u64 = 9223372036854775808;
+
+    if divide(half, 10) != 922337203685477580 return 1;
+    if divide(18446744073709551615, 3) != 6148914691236517205 return 2;
+    if divide(half, half) != 1 return 3;
+
+    // signed division must stay signed
+    let negative = 0 - 100;
+    if negative / 7 != 0 - 14 return 4;
+
+    return 42;
+}

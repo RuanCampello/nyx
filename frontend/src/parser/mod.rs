@@ -511,7 +511,7 @@ mod tests {
     use crate::{
         lexer::{Spanned, token::BytePos},
         parser::{
-            expression::{BinaryOperator, Expression, UnaryOperator},
+            expression::{BinaryOperator, Expression, Segment, UnaryOperator},
             statement::{Item, ItemKind, Let, Loop, LoopHeader, Pattern, PatternLit, Return, Type},
         },
     };
@@ -669,7 +669,7 @@ mod tests {
         };
 
         match function.body.statements.into_iter().next() {
-            Some(Statement::Expr(expr, _)) => expr,
+            Some(Statement::Expr { expr, .. }) => expr,
             other => panic!("{source:?} must have one expression body, got {other:?}"),
         }
     }
@@ -718,7 +718,10 @@ mod tests {
             panic!("expected fn main");
         };
         assert!(
-            matches!(function.body.statements.first(), Some(Statement::If(_))),
+            matches!(
+                function.body.statements.first(),
+                Some(Statement::Expr { expr: Expression::If { .. }, .. })
+            ),
             "got {:?}",
             function.body.statements
         );
@@ -954,8 +957,8 @@ mod tests {
 
         assert_eq!(
             statements,
-            vec![Statement::Expr(
-                Expression::Binary {
+            vec![Statement::Expr {
+                expr: Expression::Binary {
                     left: Box::new(Expression::Binary {
                         left: a,
                         operator: BinaryOperator::Mul,
@@ -966,8 +969,9 @@ mod tests {
                     right: c,
                     span: Span::new(BytePos(0), BytePos(9)),
                 },
-                Span::new(BytePos(0), BytePos(9))
-            )]
+                span: Span::new(BytePos(0), BytePos(9)),
+                semi: true
+            }]
         );
     }
 
@@ -982,8 +986,8 @@ mod tests {
 
         assert_eq!(
             statements,
-            vec![Statement::Expr(
-                Expression::Assignment {
+            vec![Statement::Expr {
+                expr: Expression::Assignment {
                     target: Box::new(Expression::Identifier(
                         "a",
                         Span::new(BytePos(0), BytePos(1)),
@@ -991,16 +995,21 @@ mod tests {
                     value: b_eq_c,
                     span: Span::new(BytePos(0), BytePos(9)),
                 },
-                Span::new(BytePos(0), BytePos(9))
-            )]
+                span: Span::new(BytePos(0), BytePos(9)),
+                semi: true
+            }]
         );
     }
 
     #[test]
     fn compound_assignment_keeps_its_operator() {
         let statements = Parser::new("a += b;").parse().unwrap();
-        let [Statement::Expr(Expression::CompoundAssignment { target, operator, value, .. }, _)] =
-            statements.as_slice()
+        let [
+            Statement::Expr {
+                expr: Expression::CompoundAssignment { target, operator, value, .. },
+                ..
+            },
+        ] = statements.as_slice()
         else {
             panic!("expected a compound assignment, got {statements:?}");
         };
@@ -1011,9 +1020,113 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_string_does_not_interpolate() {
+        let statements = Parser::new(r#"f("no braces here");"#).parse().unwrap();
+        let [Statement::Expr { expr: Expression::Call { args, .. }, .. }] = statements.as_slice()
+        else {
+            panic!("expected a call, got {statements:?}");
+        };
+
+        assert!(matches!(args.as_slice(), [Expression::String(..)]));
+    }
+
+    #[test]
+    fn interpolation_splits_text_from_expressions() {
+        let statements = Parser::new(r#"f("a {x + 1} b");"#).parse().unwrap();
+        let [Statement::Expr { expr: Expression::Call { args, .. }, .. }] = statements.as_slice()
+        else {
+            panic!("expected a call, got {statements:?}");
+        };
+        let [Expression::Interpolated { segments, .. }] = args.as_slice() else {
+            panic!("expected an interpolated literal, got {args:?}");
+        };
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0], Segment::Text("a "));
+        assert!(matches!(segments[1], Segment::Value(Expression::Binary { .. })));
+        assert_eq!(segments[2], Segment::Text(" b"));
+    }
+
+    #[test]
+    fn doubled_braces_are_literal() {
+        let statements = Parser::new(r#"f("{{}}");"#).parse().unwrap();
+        let [Statement::Expr { expr: Expression::Call { args, .. }, .. }] = statements.as_slice()
+        else {
+            panic!("expected a call, got {statements:?}");
+        };
+        let [Expression::Interpolated { segments, .. }] = args.as_slice() else {
+            panic!("expected an interpolated literal, got {args:?}");
+        };
+
+        assert_eq!(segments, &[Segment::Text("{"), Segment::Text("}")]);
+    }
+
+    #[test]
+    fn an_interpolation_may_nest_braces() {
+        let statements = Parser::new(r#"f("{if a { 1 } else { 2 }}");"#).parse().unwrap();
+        let [Statement::Expr { expr: Expression::Call { args, .. }, .. }] = statements.as_slice()
+        else {
+            panic!("expected a call, got {statements:?}");
+        };
+        let [Expression::Interpolated { segments, .. }] = args.as_slice() else {
+            panic!("expected an interpolated literal, got {args:?}");
+        };
+
+        assert!(matches!(segments.as_slice(), [Segment::Value(Expression::If { .. })]));
+    }
+
+    #[test]
+    fn an_unclosed_or_empty_interpolation_is_rejected() {
+        for source in [r#"f("{x");"#, r#"f("{}");"#, r#"f("{ }");"#] {
+            let output = Parser::new(source).parse();
+            assert!(!output.diagnostics.is_empty(), "{source:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_block_is_an_expression() {
+        let statements = Parser::new("let x = { 1 };").parse().unwrap();
+        let [Statement::Let(binding)] = statements.as_slice() else {
+            panic!("expected a let, got {statements:?}");
+        };
+
+        assert!(matches!(binding.value, Some(Expression::Block { .. })));
+    }
+
+    #[test]
+    fn an_if_and_a_match_are_expressions() {
+        let statements = Parser::new("let x = if a { 1 } else { 2 };").parse().unwrap();
+        let [Statement::Let(binding)] = statements.as_slice() else {
+            panic!("expected a let, got {statements:?}");
+        };
+        assert!(matches!(binding.value, Some(Expression::If { .. })));
+
+        let statements = Parser::new("let y = match a { _ -> 1, };").parse().unwrap();
+        let [Statement::Let(binding)] = statements.as_slice() else {
+            panic!("expected a let, got {statements:?}");
+        };
+        assert!(matches!(binding.value, Some(Expression::Match { .. })));
+    }
+
+    #[test]
+    fn try_operator_chains_with_the_other_postfix_forms() {
+        let statements = Parser::new("f()?.g;").parse().unwrap();
+        let [Statement::Expr { expr: Expression::Field { expr, .. }, .. }] = statements.as_slice()
+        else {
+            panic!("expected a field access, got {statements:?}");
+        };
+
+        let Expression::Try { value, .. } = expr.as_ref() else {
+            panic!("expected `?` to bind before the field access, got {expr:?}");
+        };
+
+        assert!(matches!(**value, Expression::Call { .. }));
+    }
+
+    #[test]
     fn compound_assignment_binds_looser_than_arithmetic() {
         let statements = Parser::new("a += b * c;").parse().unwrap();
-        let [Statement::Expr(Expression::CompoundAssignment { value, .. }, _)] =
+        let [Statement::Expr { expr: Expression::CompoundAssignment { value, .. }, .. }] =
             statements.as_slice()
         else {
             panic!("expected a compound assignment, got {statements:?}");
@@ -1038,7 +1151,7 @@ mod tests {
 
         for (source, expected) in cases {
             let statements = Parser::new(source).parse().unwrap();
-            let [Statement::Expr(Expression::CompoundAssignment { operator, .. }, _)] =
+            let [Statement::Expr { expr: Expression::CompoundAssignment { operator, .. }, .. }] =
                 statements.as_slice()
             else {
                 panic!("expected a compound assignment for {source:?}, got {statements:?}");
@@ -1063,8 +1176,12 @@ mod tests {
     fn unary_binds_after_method_call() {
         let statements = Parser::new("!rect.is_larger_than(15);").parse().unwrap();
 
-        let [Statement::Expr(Expression::Unary { operator: UnaryOperator::Not, expr, .. }, _)] =
-            statements.as_slice()
+        let [
+            Statement::Expr {
+                expr: Expression::Unary { operator: UnaryOperator::Not, expr, .. },
+                ..
+            },
+        ] = statements.as_slice()
         else {
             panic!("expected unary expression statement, got {statements:?}");
         };
@@ -1113,7 +1230,10 @@ mod tests {
         assert!(matches!(function.return_type.as_ref().map(Spanned::value), Some(Type::Bool)));
         assert!(matches!(
             function.body.statements.as_slice(),
-            [Statement::Expr(Expression::Binary { operator: BinaryOperator::Eq, .. }, _)]
+            [Statement::Expr {
+                expr: Expression::Binary { operator: BinaryOperator::Eq, .. },
+                ..
+            }]
         ));
     }
 
@@ -1198,12 +1318,18 @@ mod tests {
         let Statement::Item(Item { kind: ItemKind::Fn(absolute), .. }) = &statements[0] else {
             panic!("expected a function item");
         };
-        assert!(matches!(absolute.body.statements.as_slice(), [Statement::If(_)]));
+        assert!(matches!(
+            absolute.body.statements.as_slice(),
+            [Statement::Expr { expr: Expression::If { .. }, .. }]
+        ));
 
         let Statement::Item(Item { kind: ItemKind::Fn(classify), .. }) = &statements[1] else {
             panic!("expected a function item");
         };
-        assert!(matches!(classify.body.statements.as_slice(), [Statement::Match(_)]));
+        assert!(matches!(
+            classify.body.statements.as_slice(),
+            [Statement::Expr { expr: Expression::Match { .. }, .. }]
+        ));
     }
 
     #[test]
@@ -1349,7 +1475,7 @@ mod tests {
     #[test]
     fn bitwise_and_shifts_precedence() {
         let statements = Parser::new("!x & y | z ^ w << 2 >> 3;").parse().unwrap();
-        let [Statement::Expr(expr, _)] = statements.as_slice() else {
+        let [Statement::Expr { expr, .. }] = statements.as_slice() else {
             panic!("expected expression statement");
         };
         let Expression::Binary { left, operator, right, .. } = expr else {
@@ -1497,7 +1623,7 @@ mod tests {
         };
         assert_eq!(*count, 4);
 
-        assert!(matches!(&body[2], Statement::Expr(Expression::Index { .. }, _)));
+        assert!(matches!(&body[2], Statement::Expr { expr: Expression::Index { .. }, .. }));
     }
 
     #[test]

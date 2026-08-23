@@ -58,6 +58,10 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         | "struct_shorthand"
         | "compound_assign"
         | "match_control_flow"
+        | "try_operator"
+        | "expression_blocks"
+        | "interpolation"
+        | "unsigned_division"
         | "compact_forms" => Some(42),
         "factorial" | "const_factorial" => Some(120),
         "math" => Some(42),
@@ -86,6 +90,15 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
     let stdout = match name {
         "hello_world" => "hello, world!\nJohn Doe is 42 years old!",
         "modules" => "Initialising...\nDone.\n",
+        "interpolation" => {
+            "hello ruan with 43\n\
+             floor=-9223372036854775808 ceiling=18446744073709551615\n\
+             call 40 index 9 unsigned 12345678901234\n\
+             bool true char x negative -7\n\
+             literal braces { } stay put\n\
+             nested 1\n\
+             no trailing newline\n"
+        },
         _ => "",
     };
     (exit_code, stdout)
