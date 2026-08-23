@@ -4,16 +4,17 @@ use crate::{
     Span,
     hir::{
         self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, Statement, SymbolId,
-        SymbolTable, TyInterner, Type, TypeKind, ids::IndexVec,
+        SymbolTable, TyInterner, Type, TypeKind, ids::IndexVec, lang::PrintKind,
     },
     mir::{
-        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand, Place,
-        Terminator, ValueId, error::MirError,
+        self, Block, BlockId, Const, Function, Instruction, InstructionKind,
+        InstructionKind as Kind, Mir, Operand, Place, Terminator, ValueId, error::MirError,
     },
     optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
 use std::collections::HashMap;
+
 struct FunctionLower<'a, 'hir> {
     blocks: Vec<PartialBlock<'hir>>,
     current: usize,
@@ -324,37 +325,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
             },
 
-            Stmt::If { condition, then_block, else_block } => {
-                let condition = self.lower_expr(condition)?;
-
-                let then_id = self.new_block();
-                let else_id = self.new_block();
-                let merge_id = self.new_block();
-
-                self.terminate(Terminator::Branch {
-                    condition,
-                    then_block: then_id,
-                    else_block: else_id,
-                });
-
-                self.switch_to(then_id);
-                self.lower_block(then_block)?;
-                if !self.is_terminated() {
-                    self.terminate(Terminator::Jump(merge_id));
-                }
-
-                self.switch_to(else_id);
-                if let Some(else_blk) = else_block {
-                    self.lower_block(else_blk)?;
-                }
-
-                if !self.is_terminated() {
-                    self.terminate(Terminator::Jump(merge_id));
-                }
-
-                self.switch_to(merge_id);
-            },
-
             Stmt::Loop { kind, body } => self.lower_loop(*kind, body)?,
             Stmt::Break => {
                 let target = self.loop_targets.last().expect("break without an enclosing loop");
@@ -363,10 +333,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             Stmt::Continue => {
                 let target = self.loop_targets.last().expect("continue without an enclosing loop");
                 self.terminate(Terminator::Jump(target.continue_target));
-            },
-
-            Stmt::Block(inner) => {
-                self.lower_block(inner)?;
             },
         }
 
@@ -1008,32 +974,37 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         self.emit_call(function, lowered_args, typ)
                     },
                     hir::Res::Intrinsic(intrinsic) => {
-                        use crate::hir::Intrinsic;
+                        use crate::hir::Intrinsic as I;
 
                         match intrinsic {
-                            Intrinsic::PrintLn | Intrinsic::Print => {
-                                let mut output = String::new();
+                            I::PrintLn | I::Print => {
+                                let mut pending = String::new();
+
                                 for arg in *args {
-                                    self.push_print_arg(&mut output, arg);
+                                    match self.constant_text(arg) {
+                                        Some(text) => pending.push_str(&text),
+                                        _ => {
+                                            self.flush_text(&mut pending);
+                                            self.emit_write_value(arg)?;
+                                        },
+                                    }
                                 }
-                                if intrinsic == Intrinsic::PrintLn {
-                                    output.push('\n');
+
+                                if intrinsic == I::PrintLn {
+                                    pending.push('\n');
                                 }
-                                if !output.is_empty() {
-                                    self.emit_write_string(output);
-                                }
+                                self.flush_text(&mut pending);
+
                                 Ok(Operand::Const(Const::Unit))
                             },
-                            Intrinsic::Syscall => {
-                                unreachable!("syscall must carry Res::Syscall")
-                            },
-                            Intrinsic::Len => match self.lower_expr(args[0])? {
+                            I::Syscall => unreachable!("syscall must carry Res::Syscall"),
+                            I::Len => match self.lower_expr(args[0])? {
                                 Operand::Const(Const::Str { len, .. }) => {
                                     Ok(Operand::Const(Const::Int(len as i64, typ)))
                                 },
                                 Operand::Place(place) => {
                                     let dest = self.fresh_temporary(typ);
-                                    let instr = InstructionKind::FieldLoad {
+                                    let instr = Kind::FieldLoad {
                                         src: Operand::Place(place),
                                         offset: 8,
                                         typ,
@@ -1041,26 +1012,18 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                                     self.emit(dest, instr);
                                     Ok(Operand::Place(dest))
                                 },
-                                other => {
-                                    unreachable!("str length of a non-str operand: {other:?}")
-                                },
+                                other => unreachable!("str length of a non-str operand: {other:?}"),
                             },
-                            Intrinsic::WrappingAdd
-                            | Intrinsic::WrappingSub
-                            | Intrinsic::WrappingMul => {
+                            I::WrappingAdd | I::WrappingSub | I::WrappingMul => {
                                 let operation = intrinsic
                                     .binary_operator()
                                     .expect("wrapping intrinsic must map to a binary operator");
-                                let lhs = self.lower_expr(args[0])?;
-                                let rhs = self.lower_expr(args[1])?;
+                                let (lhs, rhs) =
+                                    (self.lower_expr(args[0])?, self.lower_expr(args[1])?);
                                 let dest = self.fresh_temporary(typ);
-                                let op = InstructionKind::Binary {
-                                    operation,
-                                    lhs,
-                                    rhs,
-                                    checked: false,
-                                    wrapping: true,
-                                };
+                                let (checked, wrapping) = (false, true);
+
+                                let op = Kind::Binary { operation, lhs, rhs, checked, wrapping };
                                 self.emit(dest, op);
                                 Ok(Operand::Place(dest))
                             },
@@ -1173,6 +1136,61 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 self.emit(dest, Kind::ElementLoad { base, index, bound, stride, typ: element });
 
                 Ok(Operand::Place(dest))
+            },
+
+            ExpressionKind::Block { statements, tail } => {
+                for statement in *statements {
+                    if self.is_terminated() {
+                        break;
+                    }
+
+                    self.lower_statement(statement)?;
+                }
+
+                match tail {
+                    Some(tail) if !self.is_terminated() => self.lower_expr(tail),
+                    _ => Ok(Operand::Const(Const::Unit)),
+                }
+            },
+
+            ExpressionKind::If { condition, then_block, else_block } => {
+                let condition = self.lower_expr(condition)?;
+
+                let (then, else_id, merge) = (self.new_block(), self.new_block(), self.new_block());
+                let result = (typ.kind() != TypeKind::Unit).then(|| self.fresh_temporary(typ));
+
+                self.terminate(Terminator::Branch {
+                    condition,
+                    then_block: then,
+                    else_block: else_id,
+                });
+
+                // a branch that leaves the function never reaches the merge, so it contributes no value to unify
+                let branch = |this: &mut Self, block: &'hir Expression<'hir>| {
+                    let value = this.lower_expr(block)?;
+                    Ok::<_, MirError>(if !this.is_terminated() {
+                        if let Some(place) = result {
+                            this.emit(place, Kind::Assign(value));
+                        }
+                        this.terminate(Terminator::Jump(merge));
+                    })
+                };
+
+                self.switch_to(then);
+                branch(self, then_block)?;
+
+                self.switch_to(else_id);
+                match else_block {
+                    Some(else_block) => branch(self, else_block)?,
+                    _ => self.terminate(Terminator::Jump(merge)),
+                }
+
+                self.switch_to(merge);
+
+                Ok(match result {
+                    Some(place) => Operand::Place(place),
+                    _ => Operand::Const(Const::Unit),
+                })
             },
 
             ExpressionKind::Match { scrutinee, arms } => {
@@ -1851,8 +1869,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
     }
 
-    /// emit `cond = lhs == rhs`, then branch to `then_block` if `cond` is true,
-    /// otherwise to `else_block`
+    /// emit `cond = lhs == rhs`, then branch to `then_block` if `cond` is true, otherwise to `else_block`
     #[inline]
     fn emit_eq_branch(
         &mut self,
@@ -1864,8 +1881,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.emit_cmp_branch(BinaryOperator::Eq, lhs, rhs, then_block, else_block);
     }
 
-    /// emit `cond = lhs <op> rhs`, then branch to `then_block` if `cond` is true,
-    /// otherwise to `else_block`
+    /// emit `cond = lhs <op> rhs`, then branch to `then_block` if `cond` is true, otherwise to `else_block`
     fn emit_cmp_branch(
         &mut self,
         operation: BinaryOperator,
@@ -1893,6 +1909,339 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.blocks[self.current].instructions.push(Instruction { dest, kind, span });
     }
 
+    /// emits the pending run of compile-time text, if any, and clears it
+    #[inline]
+    fn flush_text(&mut self, pending: &mut String) {
+        if !pending.is_empty() {
+            self.emit_write_string(std::mem::take(pending));
+        }
+    }
+
+    fn emit_write_value(&mut self, expr: &'hir Expression<'hir>) -> Result<(), MirError> {
+        let typ = self.typeck.type_of(expr.id);
+        let kind = hir::lang::print_kind(typ).expect("HIR rejects an interpolated value");
+        let operand = self.lower_expr(expr)?;
+
+        match kind {
+            PrintKind::Str => self.emit_write_str(operand),
+            PrintKind::Bool => self.emit_write_bool(operand),
+            PrintKind::Char => self.emit_write_char(operand),
+            PrintKind::Int => self.emit_write_digits(operand, true),
+            PrintKind::Uint => self.emit_write_digits(operand, false),
+        }
+
+        Ok(())
+    }
+
+    /// a `str` is a pointer and a length side by side, so writing one is the syscall and nothing else
+    fn emit_write_str(&mut self, operand: Operand<'hir>) {
+        let uptr = self.types.common.uptr;
+        let pointer = self.fresh_temporary(uptr);
+        self.emit(pointer, Kind::FieldLoad { src: operand.clone(), offset: 0, typ: uptr });
+
+        let len = self.fresh_temporary(uptr);
+        self.emit(len, Kind::FieldLoad { src: operand, offset: 8, typ: uptr });
+
+        self.emit_write(Operand::Place(pointer), Operand::Place(len));
+    }
+
+    fn emit_write_bool(&mut self, condition: Operand<'hir>) {
+        let (then_id, else_id, merge_id) = (self.new_block(), self.new_block(), self.new_block());
+
+        self.terminate(Terminator::Branch { condition, then_block: then_id, else_block: else_id });
+
+        self.switch_to(then_id);
+        self.emit_write_string("true".to_owned());
+        self.terminate(Terminator::Jump(merge_id));
+
+        self.switch_to(else_id);
+        self.emit_write_string("false".to_owned());
+        self.terminate(Terminator::Jump(merge_id));
+
+        self.switch_to(merge_id);
+    }
+
+    /// encodes a `char` as UTF-8
+    fn emit_write_char(&mut self, point: Operand<'hir>) {
+        let (u32, buffer) = (self.types.common.u32, self.byte_buffer(4));
+
+        let point = self.cast(point, u32);
+        let one = self.compare(BinaryOperator::Lt, point, self.int(128, u32), u32);
+        let two = self.compare(BinaryOperator::Lt, point, self.int(2048, u32), u32);
+        let three = self.compare(BinaryOperator::Lt, point, self.int(65536, u32), u32);
+
+        // the continuation bytes of each width, low six bits first
+        let low = self.trailing_byte(point, 1, u32);
+        let mid = self.trailing_byte(point, 64, u32);
+        let high = self.trailing_byte(point, 4096, u32);
+
+        let lead_two = self.lead_byte(point, 64, 192, u32);
+        let lead_three = self.lead_byte(point, 4096, 224, u32);
+        let lead_four = self.lead_byte(point, 262144, 240, u32);
+
+        let byte0 = self.select3(&one, &two, &three, point, lead_two, lead_three, lead_four, u32);
+        let byte1 = self.select3(&one, &two, &three, low, low, mid, high, u32);
+        let byte2 = self.select3(&one, &two, &three, low, low, low, mid, u32);
+        let byte3 = self.select3(&one, &two, &three, low, low, low, low, u32);
+
+        for (index, byte) in [byte0, byte1, byte2, byte3].into_iter().enumerate() {
+            self.store_byte(buffer, index as i64, byte, 4);
+        }
+
+        let len = self.select3(
+            &one,
+            &two,
+            &three,
+            self.int(1, u32),
+            self.int(2, u32),
+            self.int(3, u32),
+            self.int(4, u32),
+            u32,
+        );
+
+        let pointer = self.element_address(buffer, self.int(0, self.types.common.uptr), 4);
+        self.emit_write(pointer, len);
+    }
+
+    /// writes an integer as decimal
+    fn emit_write_digits(&mut self, value: Operand<'hir>, signed: bool) {
+        const WIDTH: u32 = 24;
+        let (uptr, typ) = (self.types.common.uptr, self.types.common.u64);
+        let buffer = self.byte_buffer(WIDTH);
+
+        let index = self.fresh_temporary(uptr);
+        self.emit(index, Kind::Assign(self.int(WIDTH as i64, uptr)));
+
+        let rest = self.fresh_temporary(typ);
+        let negative = match signed {
+            true => {
+                let signed_typ = self.types.common.i64;
+                let value = self.cast(value, signed_typ);
+                let zero = self.int(0, signed_typ);
+                let negative = self.compare(BinaryOperator::Lt, value, zero, signed_typ);
+
+                let raw = self.cast(value, typ);
+                let flipped = self.binary(BinaryOperator::Sub, self.int(0, typ), raw, typ);
+                let magnitude = self.fresh_temporary(typ);
+
+                self.emit(
+                    magnitude,
+                    Kind::Select { condition: negative, then_value: flipped, else_value: raw },
+                );
+                self.emit(rest, Kind::Assign(Operand::Place(magnitude)));
+
+                Some(negative)
+            },
+            _ => {
+                let value = self.cast(value, typ);
+                self.emit(rest, Kind::Assign(value));
+                None
+            },
+        };
+
+        let (body_id, done_id) = (self.new_block(), self.new_block());
+        self.terminate(Terminator::Jump(body_id));
+        self.switch_to(body_id);
+
+        let next = self.binary(BinaryOperator::Sub, Operand::Place(index), self.int(1, uptr), uptr);
+        self.emit(index, Kind::Assign(next));
+
+        let quotient =
+            self.binary(BinaryOperator::Div, Operand::Place(rest), self.int(10, typ), typ);
+        let scaled = self.binary(BinaryOperator::Mul, quotient, self.int(10, typ), typ);
+        let digit = self.binary(BinaryOperator::Sub, Operand::Place(rest), scaled, typ);
+        let character = self.binary(BinaryOperator::Add, digit, self.int(48, typ), typ);
+
+        self.store_byte_at(buffer, Operand::Place(index), character, WIDTH);
+        self.emit(rest, Kind::Assign(quotient));
+
+        let finished =
+            self.compare(BinaryOperator::Eq, Operand::Place(rest), self.int(0, typ), typ);
+        self.terminate(Terminator::Branch {
+            condition: finished,
+            then_block: done_id,
+            else_block: body_id,
+        });
+
+        self.switch_to(done_id);
+
+        if let Some(negative) = negative {
+            let (sign_id, write_id) = (self.new_block(), self.new_block());
+            self.terminate(Terminator::Branch {
+                condition: negative,
+                then_block: sign_id,
+                else_block: write_id,
+            });
+
+            self.switch_to(sign_id);
+            let before =
+                self.binary(BinaryOperator::Sub, Operand::Place(index), self.int(1, uptr), uptr);
+            self.emit(index, Kind::Assign(before));
+            self.store_byte_at(buffer, Operand::Place(index), self.int(45, typ), WIDTH);
+            self.terminate(Terminator::Jump(write_id));
+
+            self.switch_to(write_id);
+        }
+
+        let pointer = self.element_address(buffer, Operand::Place(index), WIDTH);
+        let len = self.binary(
+            BinaryOperator::Sub,
+            self.int(WIDTH as i64, uptr),
+            Operand::Place(index),
+            uptr,
+        );
+
+        self.emit_write(pointer, len);
+    }
+
+    fn byte_buffer(&mut self, len: u32) -> Place<'hir> {
+        let id = self.arrays.intern(self.types.common.u8, len);
+        self.fresh_temporary(self.types.array(id))
+    }
+
+    fn emit_write(&mut self, pointer: Operand<'hir>, len: Operand<'hir>) {
+        let i32 = self.types.common.i32;
+        let dest = self.fresh_temporary(i32);
+
+        self.emit(
+            dest,
+            Kind::Syscall {
+                code: hir::Syscall::Write,
+                args: vec![Operand::Const(Const::Int(1, i32)), pointer, len],
+                returns: false,
+            },
+        );
+    }
+
+    #[inline]
+    fn int(&self, value: i64, typ: Type<'hir>) -> Operand<'hir> {
+        Operand::Const(Const::Int(value, typ))
+    }
+
+    fn binary(
+        &mut self,
+        operation: BinaryOperator,
+        lhs: Operand<'hir>,
+        rhs: Operand<'hir>,
+        typ: Type<'hir>,
+    ) -> Operand<'hir> {
+        let dest = self.fresh_temporary(typ);
+        self.emit(dest, Kind::Binary { operation, lhs, rhs, checked: false, wrapping: true });
+
+        Operand::Place(dest)
+    }
+
+    fn compare(
+        &mut self,
+        operation: BinaryOperator,
+        lhs: Operand<'hir>,
+        rhs: Operand<'hir>,
+        _typ: Type<'hir>,
+    ) -> Operand<'hir> {
+        let dest = self.fresh_temporary(self.types.common.bool);
+        self.emit(dest, Kind::Binary { operation, lhs, rhs, checked: false, wrapping: true });
+
+        Operand::Place(dest)
+    }
+
+    fn cast(&mut self, src: Operand<'hir>, typ: Type<'hir>) -> Operand<'hir> {
+        let dest = self.fresh_temporary(typ);
+        self.emit(dest, Kind::Cast { src, typ });
+
+        Operand::Place(dest)
+    }
+
+    /// `128 + (point / shift) % 64`, one UTF-8 continuation byte
+    fn trailing_byte(
+        &mut self,
+        point: Operand<'hir>,
+        shift: i64,
+        typ: Type<'hir>,
+    ) -> Operand<'hir> {
+        let shifted = self.binary(BinaryOperator::Div, point, self.int(shift, typ), typ);
+        let folded = self.binary(BinaryOperator::Div, shifted, self.int(64, typ), typ);
+        let scaled = self.binary(BinaryOperator::Mul, folded, self.int(64, typ), typ);
+        let low = self.binary(BinaryOperator::Sub, shifted, scaled, typ);
+
+        self.binary(BinaryOperator::Add, low, self.int(128, typ), typ)
+    }
+
+    /// `marker + point / shift`, the leading byte of a multi-byte encoding
+    fn lead_byte(
+        &mut self,
+        point: Operand<'hir>,
+        shift: i64,
+        marker: i64,
+        typ: Type<'hir>,
+    ) -> Operand<'hir> {
+        let shifted = self.binary(BinaryOperator::Div, point, self.int(shift, typ), typ);
+        self.binary(BinaryOperator::Add, shifted, self.int(marker, typ), typ)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select3(
+        &mut self,
+        one: &Operand<'hir>,
+        two: &Operand<'hir>,
+        three: &Operand<'hir>,
+        a: Operand<'hir>,
+        b: Operand<'hir>,
+        c: Operand<'hir>,
+        d: Operand<'hir>,
+        typ: Type<'hir>,
+    ) -> Operand<'hir> {
+        let inner = self.fresh_temporary(typ);
+        self.emit(inner, Kind::Select { condition: *three, then_value: c, else_value: d });
+
+        let middle = self.fresh_temporary(typ);
+        let else_value = Operand::Place(inner);
+        self.emit(middle, Kind::Select { condition: *two, then_value: b, else_value });
+
+        let outer = self.fresh_temporary(typ);
+        let else_value = Operand::Place(middle);
+        self.emit(outer, Kind::Select { condition: *one, then_value: a, else_value });
+
+        Operand::Place(outer)
+    }
+
+    #[inline]
+    fn store_byte(&mut self, buffer: Place<'hir>, index: i64, value: Operand<'hir>, bound: u32) {
+        let uptr = self.types.common.uptr;
+        self.store_byte_at(buffer, self.int(index, uptr), value, bound);
+    }
+
+    fn store_byte_at(
+        &mut self,
+        buffer: Place<'hir>,
+        index: Operand<'hir>,
+        value: Operand<'hir>,
+        bound: u32,
+    ) {
+        let uptr = self.types.common.uptr;
+        let byte = self.cast(value, self.types.common.u8);
+        let bound = self.int(bound as i64, uptr);
+
+        self.emit(buffer, Kind::ElementStore { index, bound, value: byte, stride: 1 });
+    }
+
+    fn element_address(
+        &mut self,
+        buffer: Place<'hir>,
+        index: Operand<'hir>,
+        bound: u32,
+    ) -> Operand<'hir> {
+        let uptr = self.types.common.uptr;
+        let dest = self.fresh_temporary(uptr);
+        let bound = self.int(bound as i64, uptr);
+
+        self.emit(
+            dest,
+            Kind::ElementAddr { base: Operand::Place(buffer), index, bound, stride: 1 },
+        );
+
+        Operand::Place(dest)
+    }
+
     fn emit_write_string(&mut self, text: String) {
         let len = text.len();
         let id = self.intern_owned_string(text);
@@ -1913,13 +2262,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     #[inline]
-    fn push_print_arg(&self, output: &mut String, expr: &Expression<'hir>) {
-        if let ExpressionKind::Literal(hir::Literal::Str(sym)) = &expr.kind {
-            let text = self.symbols.get(*sym);
-            output.push_str(&self.expand_interpolation(text));
-        } else if let Some(text) = self.capture_constant_expr(expr) {
-            output.push_str(&text);
-        }
+    fn constant_text(&self, expr: &Expression<'hir>) -> Option<String> {
+        hir::lang::print_kind(self.typeck.type_of(expr.id))?;
+
+        self.capture_constant_expr(expr)
+    }
+
+    #[inline]
+    fn get_fn_unchecked(&self, id: &FunctionId) -> &'a hir::Function<'hir> {
+        self.functions
+            .get(*id)
+            .unwrap_or_else(|| panic!("callee function {:?} not found", id))
     }
 
     #[inline]
@@ -1939,62 +2292,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Local(id) => self.constant_locals[*id].clone(),
             _ => None,
         }
-    }
-
-    fn expand_interpolation(&self, input: &str) -> String {
-        let mut output = String::with_capacity(input.len());
-        let mut chars = input.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if ch != '{' {
-                output.push(ch);
-                continue;
-            }
-
-            let mut name = String::new();
-            let mut closed = false;
-
-            for ch in chars.by_ref() {
-                if ch == '}' {
-                    closed = true;
-                    break;
-                }
-
-                name.push(ch);
-            }
-
-            if closed {
-                match self.lookup_constant_local(&name) {
-                    Some(value) => output.push_str(value),
-                    None => {
-                        output.push('{');
-                        output.push_str(&name);
-                        output.push('}');
-                    },
-                }
-            } else {
-                output.push('{');
-                output.push_str(&name);
-            }
-        }
-
-        output
-    }
-
-    #[inline]
-    fn get_fn_unchecked(&self, id: &FunctionId) -> &'a hir::Function<'hir> {
-        self.functions
-            .get(*id)
-            .unwrap_or_else(|| panic!("callee function {:?} not found", id))
-    }
-
-    #[inline]
-    fn lookup_constant_local(&self, name: &str) -> Option<&str> {
-        self.local_symbols
-            .iter()
-            .enumerate()
-            .find(|(_, symbol)| self.symbols.get(**symbol) == name)
-            .and_then(|(idx, _)| self.constant_locals[LocalId(idx as u32)].as_deref())
     }
 
     #[inline]
@@ -2192,40 +2489,34 @@ fn collect_runtime_local_uses(function: &hir::Function<'_>) -> IndexVec<LocalId,
 
 fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId, bool>) {
     for statement in block.statements {
-        match statement {
-            Statement::LetInit { init, .. } => visit_expr_runtime_uses(init, uses),
-            Statement::LetUninit { .. } => {},
-            Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
-            Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
-            Statement::Return(None) => {},
-            Statement::If { condition, then_block, else_block } => {
-                visit_expr_runtime_uses(condition, uses);
-                visit_block_runtime_uses(then_block, uses);
-                if let Some(else_block) = else_block {
-                    visit_block_runtime_uses(else_block, uses);
-                }
-            },
-            hir::Statement::Loop { kind, body } => {
-                use hir::LoopKind::*;
-                match kind {
-                    Infinite => {},
-                    Range { binding, start, end, .. } => {
-                        if let Some(binding) = binding {
-                            uses[*binding] = true;
-                        }
-                        visit_expr_runtime_uses(start, uses);
-                        visit_expr_runtime_uses(end, uses);
-                    },
-                    Iterable { binding, iterable } => {
+        visit_statement_runtime_uses(statement, uses);
+    }
+}
+
+fn visit_statement_runtime_uses(statement: &Statement<'_>, uses: &mut IndexVec<LocalId, bool>) {
+    match statement {
+        Statement::LetUninit { .. } | Statement::Return(None) => {},
+        Statement::LetInit { init, .. } => visit_expr_runtime_uses(init, uses),
+        Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
+        Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
+        Statement::Loop { kind, body } => {
+            match kind {
+                hir::LoopKind::Infinite => {},
+                hir::LoopKind::Range { binding, start, end, .. } => {
+                    if let Some(binding) = binding {
                         uses[*binding] = true;
-                        visit_expr_runtime_uses(iterable, uses);
-                    },
-                }
-                visit_block_runtime_uses(body, uses);
-            },
-            Statement::Break | Statement::Continue => {},
-            Statement::Block(block) => visit_block_runtime_uses(block, uses),
-        }
+                    }
+                    visit_expr_runtime_uses(start, uses);
+                    visit_expr_runtime_uses(end, uses);
+                },
+                hir::LoopKind::Iterable { binding, iterable } => {
+                    uses[*binding] = true;
+                    visit_expr_runtime_uses(iterable, uses);
+                },
+            }
+            visit_block_runtime_uses(body, uses);
+        },
+        Statement::Break | Statement::Continue => {},
     }
 }
 
@@ -2241,6 +2532,21 @@ fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<Local
         Binary { left, right, .. } => {
             visit_expr_runtime_uses(left, uses);
             visit_expr_runtime_uses(right, uses);
+        },
+        Block { statements, tail } => {
+            for statement in *statements {
+                visit_statement_runtime_uses(statement, uses);
+            }
+            if let Some(tail) = tail {
+                visit_expr_runtime_uses(tail, uses);
+            }
+        },
+        If { condition, then_block, else_block } => {
+            visit_expr_runtime_uses(condition, uses);
+            visit_expr_runtime_uses(then_block, uses);
+            if let Some(else_block) = else_block {
+                visit_expr_runtime_uses(else_block, uses);
+            }
         },
         Assign { target, value } => {
             if !matches!(&target.kind, Local(_)) {
