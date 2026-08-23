@@ -28,6 +28,10 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Data Types
 
 - [x] Integer Types
+  - [x] Literal bases
+    - [x] Decimal with `_` separators
+    - [x] Hexadecimal (`0xFF`)
+    - [x] Binary (`0b1100`)
   - [x] Signed (`i8`, `i16`, `i32`, `i64`)
   - [x] Unsigned (`u8`, `u16`, `u32`, `u64`)
   - [x] Target-dependent pointer-sized (`iptr`, `uptr`)
@@ -72,7 +76,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 ### Expressions & Operators
 
 - [x] Arithmetic Operators (`+`, `-`, `*`, `/`)
-  - [ ] Compound Assignment (`+=`, `-=`, `*=`, `/=`)
+  - [x] Compound Assignment (`+=`, `-=`, `*=`, `/=`, and the bitwise operators)
   - [x] Compiler-time panic on overflow ([reference](https://doc.rust-lang.org/core/panicking/panic_const/index.html))
 - [x] Comparison Operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - [ ] Logical Operators
@@ -80,6 +84,7 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Bitwise Operators
   - [x] Logic (`&`, `|`, `^`, `!`)
   - [x] Shifts (`>>`, `<<`)
+- [ ] Module operator (`%`)
 - [x] Variable Assignment (`=`)
 - [x] Function Calls
 - [x] Reference Operators
@@ -90,13 +95,12 @@ This document outlines the implementation status and roadmap for Nyx. It include
 
 - [x] `if` / `else` statements
   - [x] Inline return (`if this return that;`)
-- [x] `while` loops
+- [x] Expression position for `if`, `match` and blocks (`let x = if ...`)
 - [x] `loop`
   - [x] Infinite loops
   - [x] Integer ranges (`start..end`, `start..=end`)
   - [x] Array and slice iteration
   - [x] `break` and `continue`
-- [ ] `for` loops
 - [x] Pattern matching
 
 ### Variables & Functions
@@ -180,7 +184,8 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [x] Basic console printing (`print`/`println`)
     - [ ] Console formatting
       - [ ] Better formatting (padding, alignment)
-      - [ ] Interpolation of non-immediate values
+      - [x] Interpolation of arbitrary expressions (`{user.name}`, `{a * 2 + 3}`)
+      - [ ] Floats, structs, enums and arrays in interpolation
     - [ ] Keyboard input reading
     - [ ] File system
   - [ ] Core interfaces
@@ -215,7 +220,10 @@ This document outlines the implementation status and roadmap for Nyx. It include
     - [ ] TCP
     - [ ] UDP
 - [ ] Memory allocator (**requires** definition of memory layout)
-- [ ] Error handling (**requires** definition of error handling model)
+- [ ] Error handling
+  - [x] `?` operator on `Optional` and `Result`
+  - [ ] Failure-type conversion (**requires** a `From` interface)
+  - [ ] Extensible `Try` interface
 - [ ] Panic handling
   - [x] Panicking primitives
   - [ ] Panicking unwinder
