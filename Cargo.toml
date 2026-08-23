@@ -12,6 +12,9 @@ bench = false
 members = ["backend", "frontend", "fmt", "lsp", "macros"]
 resolver = "2"
 
+[workspace.dependencies]
+rstest = { version = "0.26", default-features = false }
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 backend = { path = "./backend" }
@@ -19,6 +22,7 @@ fmt = { path = "./fmt" }
 
 [dev-dependencies]
 criterion = "0.5"
+rstest = { workspace = true }
 libloading = "0.8"
 backend = { path = "./backend" }
 frontend = { path = "./frontend" }

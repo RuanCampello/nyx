@@ -10,3 +10,6 @@ bench = false
 bumpalo = "3"
 clap = { version = "4", features = ["derive"] }
 frontend = { path = "../frontend" }
+
+[dev-dependencies]
+rstest = { workspace = true }
