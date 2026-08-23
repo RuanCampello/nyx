@@ -16,6 +16,13 @@ use crate::{
 };
 use std::borrow::Cow;
 
+/// Unifies the values several branches yield, whether they are match arms or
+/// the two sides of an `if`
+struct Branches<'hir> {
+    unified: Option<Type<'hir>>,
+    divergent: Option<Type<'hir>>,
+}
+
 /// The failure carriers `?` understands
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TryFamily {
@@ -471,7 +478,8 @@ where
                     UnaryOperator::Deref => match expr.typ.kind() {
                         TypeKind::Ref { to, .. } => to,
                         TypeKind::Raw { to, .. } => {
-                            self.check_raw_deref(expr.typ, expr.span);
+                            let (found, span) = (expr.typ, expr.span);
+                            self.require_unsafe(|_| hir_error!(span, UnsafeDeref { found }));
                             to
                         },
                         _ => return Err(hir_error!(expr.span, InvalidDeref { found: expr.typ })),
@@ -1053,7 +1061,8 @@ where
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
             let expression::Expression::Interpolated { segments, span } = arg else {
-                lowered.push(self.lower_expr(arg, None)?.expr);
+                let value = self.lower_expr(arg, None)?;
+                lowered.push(self.printable(value)?);
                 continue;
             };
 
@@ -1067,14 +1076,7 @@ where
                     },
                     Segment::Value(expr) => {
                         let value = self.lower_expr(expr, None)?;
-
-                        // an un-annotated literal is still an inference variable here, and nothing later will constrain it
-                        let typ = self.infer.resolve_or_default(value.typ);
-                        if lang::print_kind(typ).is_none() {
-                            return Err(hir_error!(value.span, NotPrintable { typ }));
-                        }
-
-                        lowered.push(value.expr);
+                        lowered.push(self.printable(value)?);
                     },
                 }
             }
@@ -1091,8 +1093,7 @@ where
         let scrutinee = self.lower_expr(&match_stmt.scrutinee, None)?;
         let mut arms = Vec::with_capacity(match_stmt.arms.len());
 
-        let mut unified_type = hint;
-        let (mut divergent, mut valued) = (None, false);
+        let mut branches = Branches::new(hint);
 
         for arm in &match_stmt.arms {
             self.push_scope();
@@ -1108,19 +1109,8 @@ where
 
             let body = match &arm.body {
                 statement::ArmBody::Expr(expr) => {
-                    let body = self.lower_expr(expr, unified_type)?;
-                    match body.typ.diverges() {
-                        true => divergent = divergent.or(Some(body.typ)),
-                        _ => {
-                            valued = true;
-                            match unified_type {
-                                Some(expected) => {
-                                    self.assert_type(expected, body.typ, body.span)?
-                                },
-                                _ => unified_type = Some(body.typ),
-                            }
-                        },
-                    }
+                    let body = self.lower_expr(expr, branches.hint())?;
+                    self.record_branch(&mut branches, &body)?;
 
                     ArmBody::Expr(body.expr)
                 },
@@ -1128,7 +1118,7 @@ where
                 // so it only makes the match itself diverge when every arm does
                 statement::ArmBody::Return(returned) => {
                     let value = self.lower_return_value(returned)?;
-                    divergent = divergent.or(Some(self.scope.types.common.never));
+                    branches.diverge(self.scope.types.common.never);
 
                     ArmBody::Return(value)
                 },
@@ -1137,7 +1127,7 @@ where
                         return Err(hir_error!(*span, LoopControlOutsideLoop { kind: "break" }));
                     }
 
-                    divergent = divergent.or(Some(self.scope.types.common.never));
+                    branches.diverge(self.scope.types.common.never);
                     ArmBody::Break
                 },
                 statement::ArmBody::Continue(span) => {
@@ -1145,7 +1135,7 @@ where
                         return Err(hir_error!(*span, LoopControlOutsideLoop { kind: "continue" }));
                     }
 
-                    divergent = divergent.or(Some(self.scope.types.common.never));
+                    branches.diverge(self.scope.types.common.never);
                     ArmBody::Continue
                 },
             };
@@ -1158,10 +1148,7 @@ where
 
         // every arm diverging makes the match itself diverge,
         // whatever the context expected
-        let return_type = match valued {
-            true => unified_type.expect("a valued arm always sets the unified type"),
-            _ => divergent.unwrap_or(self.scope.types.common.unit),
-        };
+        let return_type = branches.resolve(self.scope.types.common.unit);
         let arms = self.arena.alloc_slice_copy(&arms);
 
         Ok(self.alloc(
@@ -1171,7 +1158,23 @@ where
         ))
     }
 
-    /// an `if` in value position
+    /// an `if` in value position, folds one branch into the running unification, per [Branches]
+    fn record_branch(
+        &mut self,
+        branches: &mut Branches<'hir>,
+        branch: &Lowered<'hir>,
+    ) -> Result<(), HirError<'hir>> {
+        if branch.typ.diverges() {
+            branches.diverge(branch.typ);
+            return Ok(());
+        }
+
+        Ok(match branches.unified {
+            Some(expected) => self.assert_type(expected, branch.typ, branch.span)?,
+            _ => branches.unified = Some(branch.typ),
+        })
+    }
+
     fn lower_if_expr(
         &mut self,
         if_stmt: &statement::If<'src>,
@@ -1182,11 +1185,14 @@ where
         let condition = self.lower_expr(&if_stmt.condition, None)?;
         self.assert_type(TypeKind::Bool, condition.typ, condition.span)?;
         let then_block = self.lower_block_expr(&if_stmt.then_branch, hint)?;
-        let typ = then_block.typ;
+
+        let mut branches = Branches::new(hint);
+        self.record_branch(&mut branches, &then_block)?;
+        let onward = branches.hint();
 
         let else_block = match if_stmt.else_branch.as_deref() {
-            Some(Else::Block(block)) => Some(self.lower_block_expr(block, hint.or(Some(typ)))?),
-            Some(Else::If(inner)) => Some(self.lower_if_expr(inner, hint.or(Some(typ)))?),
+            Some(Else::Block(block)) => Some(self.lower_block_expr(block, onward)?),
+            Some(Else::If(inner)) => Some(self.lower_if_expr(inner, onward)?),
             Some(Else::Expr(expr)) => {
                 let lowered = self.lower_expr(expr, None)?;
                 let statements = self.arena.alloc_slice_copy(&[Statement::Expr(lowered.expr)]);
@@ -1197,28 +1203,14 @@ where
             _ => None,
         };
 
-        // a branch that leaves the function yields nothing to unify against, so it only makes the 'if' itself diverge when every branch does
         let typ = match else_block {
-            Some(other) => {
-                let (mut unified, mut divergent) = (None, None);
-                for branch in [&then_block, &other] {
-                    match branch.typ.diverges() {
-                        true => divergent = divergent.or(Some(branch.typ)),
-                        _ => match unified {
-                            Some(expected) => {
-                                self.assert_type(expected, branch.typ, branch.span)?
-                            },
-                            _ => unified = Some(branch.typ),
-                        },
-                    }
-                }
-
-                unified.or(divergent).unwrap_or(self.scope.types.common.unit)
+            Some(ref other) => {
+                self.record_branch(&mut branches, other)?;
+                branches.resolve(self.scope.types.common.unit)
             },
-            // without an 'else' the 'if' can always be skipped, so it is unit however the branch itself ends
             _ => {
-                if !typ.diverges() {
-                    self.assert_type(TypeKind::Unit, typ, then_block.span)?;
+                if !then_block.typ.diverges() {
+                    self.assert_type(TypeKind::Unit, then_block.typ, then_block.span)?;
                 }
 
                 self.scope.types.common.unit
@@ -1232,6 +1224,18 @@ where
         };
 
         Ok(self.alloc(kind, typ, if_stmt.span))
+    }
+
+    fn printable(
+        &mut self,
+        value: Lowered<'hir>,
+    ) -> Result<&'hir Expression<'hir>, HirError<'hir>> {
+        let typ = self.infer.resolve_or_default(value.typ);
+
+        match lang::print_kind(typ) {
+            Some(_) => Ok(value.expr),
+            _ => Err(hir_error!(value.span, NotPrintable { typ })),
+        }
     }
 
     /// `?` expands here into the match a user would otherwise write by hand
@@ -1361,7 +1365,7 @@ where
         Ok((id, args, family))
     }
 
-    /// The desugaring contains a `return`, so the enclosing signature has to be able to carry the failure onwards
+    /// the desugaring contains a `return`, so the enclosing signature has to be able to carry the failure onwards
     fn check_try_return(
         &self,
         id: AdtId,
@@ -1545,11 +1549,6 @@ where
         }
     }
 
-    #[inline(always)]
-    fn check_raw_deref(&mut self, found: Type<'hir>, span: Span) {
-        self.require_unsafe(|_| hir_error!(span, UnsafeDeref { found }));
-    }
-
     fn resolve_enum_type(
         &mut self,
         qualifier: &str,
@@ -1686,6 +1685,28 @@ where
         })?;
 
         Ok((sym, field.typ.subst(&self.scope.types, &self.scope.arrays, generic_args)))
+    }
+}
+
+impl<'hir> Branches<'hir> {
+    #[inline]
+    const fn new(hint: Option<Type<'hir>>) -> Self {
+        Self { unified: hint, divergent: None }
+    }
+
+    #[inline]
+    const fn hint(&self) -> Option<Type<'hir>> {
+        self.unified
+    }
+
+    #[inline]
+    fn diverge(&mut self, never: Type<'hir>) {
+        self.divergent = self.divergent.or(Some(never));
+    }
+
+    #[inline]
+    fn resolve(self, unit: Type<'hir>) -> Type<'hir> {
+        self.unified.or(self.divergent).unwrap_or(unit)
     }
 }
 

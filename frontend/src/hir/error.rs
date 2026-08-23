@@ -367,7 +367,7 @@ pub enum HirErrorKind<'h> {
         code = "E164",
         message = "{typ!} cannot be printed",
         primary = "no way to write this value out",
-        help = "Print a field or a conversion of it instead; integers, {`bool`}, {`char`} and strings all print directly"
+        help = "Print a field or a conversion of it instead, integers, {`bool`}, {`char`} and strings all print directly"
     )]
     NotPrintable { typ: Type<'h> },
 
