@@ -171,16 +171,14 @@ impl<'src> Printer<'src> {
         match statement {
             Statement::Let(binding) => self.binding(binding),
             Statement::Return(returned) => self.returned(returned),
-            Statement::If(conditional) => self.conditional(conditional),
             Statement::Loop(repeated) => self.repetition(repeated),
-            Statement::Match(matched) => self.matched(matched),
-            Statement::Block(block) => self.block(block),
             Statement::Break(_) => Ok(Doc::text("break;")),
             Statement::Continue(_) => Ok(Doc::text("continue;")),
-            Statement::Expr(expr, _) => {
+            Statement::Expr { expr, .. } => {
                 let printed = self.expression(expr)?;
+                let bare = is_block_like(expr) || (is_tail && !self.is_terminated(expr.span().end));
 
-                match is_tail && !self.is_terminated(expr.span().end) {
+                match bare {
                     true => Ok(printed),
                     false => Ok(Doc::concat([printed, Doc::text(";")])),
                 }
@@ -445,8 +443,12 @@ impl<'src> Printer<'src> {
                 return Err(FormatError::Unsupported { span: block.span });
             };
 
+            // the grammar closes an expression body with a semicolon; a
+            // block-like expression prints none of its own, where any other
+            // expression statement already carries one
             let terminator = match statement {
-                Statement::Expr(..) => Doc::Empty,
+                Statement::Expr { expr, .. } if is_block_like(expr) => Doc::text(";"),
+                Statement::Expr { .. } => Doc::Empty,
                 _ => Doc::text(";"),
             };
 
@@ -829,8 +831,13 @@ impl<'src> Printer<'src> {
         // a braceless branch is desugared into a block whose span opens at the
         // `if`, where a written block's span opens at its brace
         let written_compact = !self.slice(block.span).starts_with('{');
+        let compactable = match block.statements.as_slice() {
+            [Statement::Return(_)] => true,
+            [Statement::Expr { expr, .. }] => !is_block_like(expr),
+            _ => false,
+        };
         let eligible = conditional.else_branch.is_none()
-            && matches!(block.statements.as_slice(), [Statement::Return(_) | Statement::Expr(..)])
+            && compactable
             && !self.trivia.comments_within(block.span);
 
         let head = Doc::concat([Doc::text("if "), self.expression(&conditional.condition)?]);
@@ -937,6 +944,15 @@ impl<'src> Printer<'src> {
                 Doc::text("."),
                 Doc::text(*field),
             ])),
+            Expression::Try { value, .. } => {
+                Ok(Doc::concat([self.operand(value, Precedence::Field.level())?, Doc::text("?")]))
+            },
+            // the literal is reprinted from source, so interpolations keep
+            // whatever the author wrote between the braces
+            Expression::Interpolated { span, .. } => Ok(Doc::text(self.slice(*span))),
+            Expression::Block { block, .. } => self.block(block),
+            Expression::If { inner, .. } => self.conditional(inner),
+            Expression::Match { inner, .. } => self.matched(inner),
             Expression::Index { base, index, .. } => Ok(Doc::concat([
                 self.operand(base, Precedence::Field.level())?,
                 Doc::text("["),
@@ -1245,9 +1261,17 @@ const fn compact_shape(written_compact: bool, prefer: bool, eligible: bool) -> b
 fn collapsible<'a, 'src>(block: &'a Block<'src>) -> Option<&'a Expression<'src>> {
     match block.statements.as_slice() {
         [Statement::Return(Return { value: Some(value), .. })] => Some(value),
-        [Statement::Expr(value, _)] => Some(value),
+        [Statement::Expr { expr: value, .. }] if !is_block_like(value) => Some(value),
         _ => None,
     }
+}
+
+#[inline(always)]
+const fn is_block_like(expr: &Expression<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::Block { .. } | Expression::If { .. } | Expression::Match { .. }
+    )
 }
 
 #[inline(always)]
@@ -1255,12 +1279,9 @@ const fn statement_span(statement: &Statement<'_>) -> Span {
     match statement {
         Statement::Let(binding) => binding.span,
         Statement::Return(returned) => returned.span,
-        Statement::If(conditional) => conditional.span,
         Statement::Loop(repeated) => repeated.span,
-        Statement::Break(span) | Statement::Continue(span) | Statement::Expr(_, span) => *span,
-        Statement::Block(block) => block.span,
+        Statement::Break(span) | Statement::Continue(span) | Statement::Expr { span, .. } => *span,
         Statement::Unsafe { block, .. } => block.span,
-        Statement::Match(matched) => matched.span,
         Statement::Item(item) => item_span(&item.kind),
     }
 }
