@@ -148,13 +148,6 @@ impl<'a, 'h> Visitor<'h> for Walker<'a, 'h> {
             },
             LetUninit { id } => self.binding(*id, Binding::Let),
             Expr(e) | Return(Some(e)) => self.visit_expression(e),
-            If { condition, then_block, else_block } => {
-                self.visit_expression(condition);
-                self.visit_block(then_block);
-                if let Some(eb) = else_block {
-                    self.visit_block(eb);
-                }
-            },
             Loop { kind, body } => {
                 match kind {
                     hir::LoopKind::Infinite => {},
@@ -166,7 +159,6 @@ impl<'a, 'h> Visitor<'h> for Walker<'a, 'h> {
                 }
                 self.visit_block(body);
             },
-            Block(b) => self.visit_block(b),
             Return(None) | Break | Continue => {},
         }
     }
@@ -321,6 +313,21 @@ impl<'a, 'h> Visitor<'h> for Walker<'a, 'h> {
             Index { base, index } => {
                 self.visit_expression(base);
                 self.visit_expression(index);
+            },
+            Block { statements, tail } => {
+                for statement in *statements {
+                    self.visit_statement(statement);
+                }
+                if let Some(tail) = tail {
+                    self.visit_expression(tail);
+                }
+            },
+            If { condition, then_block, else_block } => {
+                self.visit_expression(condition);
+                self.visit_expression(then_block);
+                if let Some(else_block) = else_block {
+                    self.visit_expression(else_block);
+                }
             },
             Match { scrutinee, arms } => {
                 self.visit_expression(scrutinee);
