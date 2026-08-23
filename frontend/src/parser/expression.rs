@@ -1,6 +1,6 @@
 use crate::lexer::{
-    Spanned,
-    token::{Keyword, Punct, Span, TokenKind},
+    Lexer, Spanned,
+    token::{BytePos, Keyword, Punct, Span, TokenKind},
 };
 use crate::parser::{
     Parsable, Parser,
@@ -324,7 +324,7 @@ impl<'i> Expression<'i> {
 
                     let open = index;
                     let start = index + 1;
-                    let end = Self::interpolation_end(bytes, start).ok_or_else(|| {
+                    let end = Self::interpolation_end(content, start, base)?.ok_or_else(|| {
                         let at = base + open as u32;
                         ParserError::new(E::UnterminatedInterpolation, Span::new(at, at + 1))
                     })?;
@@ -340,11 +340,13 @@ impl<'i> Expression<'i> {
                     let mut inner = Parser::with_base(&content[start..end], base + start as u32);
                     segments.push(Segment::Value(inner.parse_node::<Expression>()?));
 
-                    if let Some(Ok(token)) = inner.peek()
-                        && !token.is_kind(TokenKind::Eof)
-                    {
-                        let (kind, at) = (token.kind, token.span);
-                        return Err(ParserError::new(E::ExpectedExpression { found: kind }, at));
+                    match inner.peek() {
+                        Some(Ok(token)) if !token.is_kind(TokenKind::Eof) => {
+                            let (found, at) = (token.kind, token.span);
+                            return Err(ParserError::new(E::ExpectedExpression { found }, at));
+                        },
+                        Some(Err(error)) => return Err(error.into()),
+                        _ => {},
                     }
 
                     index = end + 1;
@@ -360,20 +362,30 @@ impl<'i> Expression<'i> {
         Ok(Some(segments))
     }
 
-    #[inline]
-    fn interpolation_end(bytes: &[u8], start: usize) -> Option<usize> {
-        let mut depth = 0;
+    /// The offset of the `}` closing an interpolation opened at `start`, or `None` when it is never closed
+    fn interpolation_end(
+        content: &'i str,
+        start: usize,
+        base: BytePos,
+    ) -> Result<Option<usize>, ParserError<'i>> {
+        let (mut lexer, mut depth) = (Lexer::with_base(&content[start..], base + start as u32), 0);
 
-        for (offset, byte) in bytes.iter().enumerate().skip(start) {
-            match byte {
-                b'}' if depth == 0 => return Some(offset),
-                b'{' => depth += 1,
-                b'}' => depth -= 1,
+        loop {
+            let Some(token) = lexer.next() else {
+                return Ok(None);
+            };
+
+            let token = token.map_err(|error| ParserError::from(&error))?;
+            match token.kind {
+                TokenKind::Punct(Punct::CloseBrace) if depth == 0 => {
+                    return Ok(Some(token.span.start.offset() - base.offset()));
+                },
+                TokenKind::Punct(Punct::OpenBrace) => depth += 1,
+                TokenKind::Punct(Punct::CloseBrace) => depth -= 1,
+                TokenKind::Eof => return Ok(None),
                 _ => {},
             }
         }
-
-        None
     }
 
     fn parse_struct(
