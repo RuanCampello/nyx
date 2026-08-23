@@ -116,6 +116,14 @@ impl<'src> Lexer<'src> {
                 }
             },
 
+            '%' => {
+                self.cursor.advance();
+                match self.cursor.consume_optional('=') {
+                    true => self.token(Punct::PercentEq, start),
+                    _ => self.token(Punct::Percent, start),
+                }
+            },
+
             ':' => {
                 self.cursor.advance();
                 match self.cursor.consume_optional(':') {
@@ -315,7 +323,18 @@ pub fn is_keyword(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use token::{Keyword, Punct, TokenKind};
+
+    fn puncts(src: &str) -> Vec<Punct> {
+        kinds(src)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TokenKind::Punct(punct) => Some(punct),
+                _ => None,
+            })
+            .collect()
+    }
 
     fn kinds(src: &str) -> Vec<TokenKind<'_>> {
         Lexer::new(src)
@@ -356,58 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn compound_assignment_operators() {
-        let ks = kinds("+= -= *= /= &= |= ^= <<= >>=");
-        let expected = [
-            Punct::PlusEq,
-            Punct::MinusEq,
-            Punct::StarEq,
-            Punct::SlashEq,
-            Punct::AmpersandEq,
-            Punct::PipeEq,
-            Punct::CaretEq,
-            Punct::ShlEq,
-            Punct::ShrEq,
-        ];
-
-        assert_eq!(ks, expected.map(TokenKind::Punct));
-    }
-
-    #[test]
-    fn compound_assignment_does_not_swallow_its_neighbours() {
-        let ks = kinds("a <= b >= c << d >> e -> f && g || h");
-        let puncts: Vec<_> = ks
-            .into_iter()
-            .filter_map(|kind| match kind {
-                TokenKind::Punct(punct) => Some(punct),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(
-            puncts,
-            [
-                Punct::LtEq,
-                Punct::GtEq,
-                Punct::Shl,
-                Punct::Shr,
-                Punct::Arrow,
-                Punct::And,
-                Punct::Or,
-            ]
-        );
-    }
-
-    #[test]
-    fn equals_followed_by_an_operator_stays_two_tokens() {
-        let ks = kinds("a =- 1");
-        assert_eq!(ks[1], TokenKind::Punct(Punct::Eq));
-        assert_eq!(ks[2], TokenKind::Punct(Punct::Minus));
-    }
-
-    #[test]
     fn punctuation() {
-        let ks = kinds("( ) { } [ ] : ; , . + - * / = == != < > <= >= -> & && || @");
+        let ks = kinds("( ) { } [ ] : ; , . + - * / % = == != < > <= >= -> & && || @");
         let expected = [
             Punct::OpenParen,
             Punct::CloseParen,
@@ -423,6 +392,7 @@ mod tests {
             Punct::Minus,
             Punct::Star,
             Punct::Slash,
+            Punct::Percent,
             Punct::Eq,
             Punct::EqEq,
             Punct::BangEq,
@@ -442,16 +412,38 @@ mod tests {
         assert_eq!(ks, expected);
     }
 
-    #[test]
-    fn and_vs_ampersand() {
-        let ks = kinds("& && && &");
+    #[rstest]
+    #[case::plus("+= 1", &[Punct::PlusEq])]
+    #[case::minus("-= 1", &[Punct::MinusEq])]
+    #[case::star("*= 1", &[Punct::StarEq])]
+    #[case::slash("/= 1", &[Punct::SlashEq])]
+    #[case::percent("%= 1", &[Punct::PercentEq])]
+    #[case::ampersand("&= 1", &[Punct::AmpersandEq])]
+    #[case::pipe("|= 1", &[Punct::PipeEq])]
+    #[case::caret("^= 1", &[Punct::CaretEq])]
+    #[case::shl("<<= 1", &[Punct::ShlEq])]
+    #[case::shr(">>= 1", &[Punct::ShrEq])]
+    fn compound_assignment_operators(#[case] src: &str, #[case] expected: &[Punct]) {
+        assert_eq!(puncts(src), expected);
+    }
 
-        assert_eq!(
-            [Punct::Ampersand, Punct::And, Punct::And, Punct::Ampersand]
-                .map(TokenKind::Punct)
-                .to_vec(),
-            ks
-        )
+    /// every operator that is a prefix of a longer one must stop at its own end
+    #[rstest]
+    #[case::lone_percent("a % b", &[Punct::Percent])]
+    #[case::percent_then_negation("a %-b", &[Punct::Percent, Punct::Minus])]
+    #[case::percent_eq_is_not_percent_then_eq("a %= b", &[Punct::PercentEq])]
+    #[case::percent_then_comparison("a % b == c", &[Punct::Percent, Punct::EqEq])]
+    #[case::lone_slash("a / b", &[Punct::Slash])]
+    #[case::comparisons("a <= b >= c", &[Punct::LtEq, Punct::GtEq])]
+    #[case::shifts("a << b >> c", &[Punct::Shl, Punct::Shr])]
+    #[case::arrow_vs_minus("a -> b - c", &[Punct::Arrow, Punct::Minus])]
+    #[case::logical_vs_bitwise("a && b & c", &[Punct::And, Punct::Ampersand])]
+    #[case::alternating_ampersands("& && && &", &[Punct::Ampersand, Punct::And, Punct::And, Punct::Ampersand])]
+    #[case::pipes("a || b | c", &[Punct::Or, Punct::Pipe])]
+    #[case::equals_then_operator("a =- 1", &[Punct::Eq, Punct::Minus])]
+    #[case::ranges(". .. ..=", &[Punct::Dot, Punct::Range, Punct::RangeEq])]
+    fn operators_stop_at_their_own_end(#[case] src: &str, #[case] expected: &[Punct]) {
+        assert_eq!(puncts(src), expected);
     }
 
     #[test]
@@ -475,18 +467,6 @@ mod tests {
                 TokenKind::Identifier("foo"),
                 TokenKind::Identifier("_bar"),
                 TokenKind::Identifier("x1"),
-            ]
-        );
-    }
-
-    #[test]
-    fn range_punctuation() {
-        assert_eq!(
-            kinds(". .. ..="),
-            vec![
-                TokenKind::Punct(Punct::Dot),
-                TokenKind::Punct(Punct::Range),
-                TokenKind::Punct(Punct::RangeEq),
             ]
         );
     }
@@ -562,19 +542,6 @@ mod tests {
     fn quad_slash_is_an_ordinary_comment() {
         let ks = kinds("//// not docs\n7");
         assert_eq!(ks, vec![TokenKind::Integer(7)]);
-    }
-
-    #[test]
-    fn slash_is_still_division() {
-        let ks = kinds("a / b");
-        assert_eq!(
-            ks,
-            vec![
-                TokenKind::Identifier("a"),
-                TokenKind::Punct(Punct::Slash),
-                TokenKind::Identifier("b"),
-            ]
-        );
     }
 
     #[test]

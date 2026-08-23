@@ -72,10 +72,11 @@ pub enum Keyword {
 /// Punctuators and operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Punct {
-    Plus,  // +
-    Minus, // -
-    Star,  // *
-    Slash, // /
+    Plus,    // +
+    Minus,   // -
+    Star,    // *
+    Slash,   // /
+    Percent, // %
 
     Eq,     // =
     EqEq,   // ==
@@ -100,6 +101,7 @@ pub enum Punct {
     MinusEq,     // -=
     StarEq,      // *=
     SlashEq,     // /=
+    PercentEq,   // %=
     AmpersandEq, // &=
     PipeEq,      // |=
     CaretEq,     // ^=
@@ -315,6 +317,7 @@ impl Punct {
             Self::Minus => "-",
             Self::Star => "*",
             Self::Slash => "/",
+            Self::Percent => "%",
             Self::Eq => "=",
             Self::EqEq => "==",
             Self::Bang => "!",
@@ -334,6 +337,7 @@ impl Punct {
             Self::MinusEq => "-=",
             Self::StarEq => "*=",
             Self::SlashEq => "/=",
+            Self::PercentEq => "%=",
             Self::AmpersandEq => "&=",
             Self::PipeEq => "|=",
             Self::CaretEq => "^=",
