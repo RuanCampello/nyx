@@ -84,7 +84,17 @@ This document outlines the implementation status and roadmap for Nyx. It include
 - [x] Bitwise Operators
   - [x] Logic (`&`, `|`, `^`, `!`)
   - [x] Shifts (`>>`, `<<`)
-- [ ] Module operator (`%`)
+- [x] Module operator (`%`)
+  - [x] Truncated remainder on integers and floats
+  - [x] Assignment (`%=`)
+  - [ ] Precise float remainder: the current `a - trunc(a / b) * b` expansion is inexact
+        once `a / b` outgrows the mantissa and returns `NaN` for a finite dividend over an infinite divisor
+  - [ ] Division fault semantics: `x86_64` `idiv` raises `SIGFPE` on a zero divisor and 
+        on `INT_MIN / -1`, AArch64 `sdiv` silently returns zero and wraps
+  - [ ] `msub` on AArch64: `sdiv` + `msub` is one instruction shorter than `sdiv` + `mul` + `sub`, 
+        but `msub` has three source operands and the emitter has only two scratch registers (X16/X17)
+  - [ ] Strength-reduce a constant divisor: shifts and masks for powers of two,
+        magic-number multiplication otherwise. Applies to `/` as much as `%` neither is optimised today
 - [x] Variable Assignment (`=`)
 - [x] Function Calls
 - [x] Reference Operators
