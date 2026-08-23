@@ -517,6 +517,30 @@ mod tests {
     };
 
     use super::*;
+    use rstest::rstest;
+
+    fn shape(expr: &Expression<'_>) -> String {
+        use Expression::*;
+        match expr {
+            Identifier(name, _) => (*name).to_string(),
+            Integer(value, _) => value.to_string(),
+            Float(value, _) => value.to_string(),
+            Unary { operator, expr, .. } => format!("({}{})", operator.as_str(), shape(expr)),
+            Binary { left, operator, right, .. } => {
+                format!("({} {} {})", shape(left), operator.as_str(), shape(right))
+            },
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn expression_shape(source: &str) -> String {
+        let statements = Parser::new(source).parse().unwrap();
+        let [Statement::Expr { expr, .. }] = statements.as_slice() else {
+            panic!("expected a single expression statement, got {statements:?}");
+        };
+
+        shape(expr)
+    }
 
     fn recovered(source: &str) -> (Vec<Statement<'_>>, Vec<ParserError<'_>>) {
         let parsed = Parser::new(source).parse();
@@ -606,7 +630,7 @@ mod tests {
 
     #[test]
     fn recovery_surfaces_a_lexical_error_and_carries_on() {
-        let (statements, errors) = recovered("fn a() { let x = 1 % 2; }\nstruct P { x: i32 }");
+        let (statements, errors) = recovered("fn a() { let x = 1 ` 2; }\nstruct P { x: i32 }");
 
         assert!(
             errors.iter().any(|error| matches!(error.kind, ParseErrorKind::Lexical(_))),
@@ -1135,30 +1159,43 @@ mod tests {
         assert!(matches!(**value, Expression::Binary { operator: BinaryOperator::Mul, .. }));
     }
 
-    #[test]
-    fn every_compound_operator_parses() {
-        let cases = [
-            ("a += b;", BinaryOperator::Add),
-            ("a -= b;", BinaryOperator::Sub),
-            ("a *= b;", BinaryOperator::Mul),
-            ("a /= b;", BinaryOperator::Div),
-            ("a &= b;", BinaryOperator::BitAnd),
-            ("a |= b;", BinaryOperator::BitOr),
-            ("a ^= b;", BinaryOperator::BitXor),
-            ("a <<= b;", BinaryOperator::Shl),
-            ("a >>= b;", BinaryOperator::Shr),
-        ];
+    #[rstest]
+    #[case::add("a += b;", BinaryOperator::Add)]
+    #[case::sub("a -= b;", BinaryOperator::Sub)]
+    #[case::mul("a *= b;", BinaryOperator::Mul)]
+    #[case::div("a /= b;", BinaryOperator::Div)]
+    #[case::rem("a %= b;", BinaryOperator::Rem)]
+    #[case::bit_and("a &= b;", BinaryOperator::BitAnd)]
+    #[case::bit_or("a |= b;", BinaryOperator::BitOr)]
+    #[case::bit_xor("a ^= b;", BinaryOperator::BitXor)]
+    #[case::shl("a <<= b;", BinaryOperator::Shl)]
+    #[case::shr("a >>= b;", BinaryOperator::Shr)]
+    fn every_compound_operator_parses(#[case] source: &str, #[case] expected: BinaryOperator) {
+        let statements = Parser::new(source).parse().unwrap();
+        let [Statement::Expr { expr: Expression::CompoundAssignment { operator, .. }, .. }] =
+            statements.as_slice()
+        else {
+            panic!("expected a compound assignment for {source:?}, got {statements:?}");
+        };
 
-        for (source, expected) in cases {
-            let statements = Parser::new(source).parse().unwrap();
-            let [Statement::Expr { expr: Expression::CompoundAssignment { operator, .. }, .. }] =
-                statements.as_slice()
-            else {
-                panic!("expected a compound assignment for {source:?}, got {statements:?}");
-            };
+        assert_eq!(*operator, expected);
+    }
 
-            assert_eq!(*operator, expected, "wrong operator for {source:?}");
-        }
+    #[rstest]
+    #[case::product_over_sum("a + b * c;", "(a + (b * c))")]
+    #[case::remainder_over_sum("a + b % c;", "(a + (b % c))")]
+    #[case::remainder_before_sum("a % b + c;", "((a % b) + c)")]
+    #[case::remainder_ties_with_product("a * b % c;", "((a * b) % c)")]
+    #[case::remainder_ties_with_division("a % b / c;", "((a % b) / c)")]
+    #[case::division_then_remainder("a / b % c;", "((a / b) % c)")]
+    #[case::remainder_left_associates("a % b % c;", "((a % b) % c)")]
+    #[case::product_left_associates("a * b * c;", "((a * b) * c)")]
+    #[case::negation_binds_tighter("-a % b;", "((-a) % b)")]
+    #[case::remainder_over_comparison("a % b == c;", "((a % b) == c)")]
+    #[case::remainder_over_shift("a << b % c;", "(a << (b % c))")]
+    #[case::parentheses_win("(a + b) % c;", "((a + b) % c)")]
+    fn precedence_and_associativity(#[case] source: &str, #[case] expected: &str) {
+        assert_eq!(expression_shape(source), expected);
     }
 
     #[test]

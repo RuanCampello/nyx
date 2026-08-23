@@ -108,7 +108,7 @@ pub enum UnaryOperator {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[rustfmt::skip]
 pub enum BinaryOperator {
-    Add, Sub, Div, Mul,
+    Add, Sub, Div, Mul, Rem,
     Eq, Ne,
     Lt, LtEq, Gt, GtEq,
     And, Or,
@@ -773,6 +773,7 @@ impl BinaryOperator {
             Self::Sub => Punct::Minus,
             Self::Mul => Punct::Star,
             Self::Div => Punct::Slash,
+            Self::Rem => Punct::Percent,
             Self::Eq => Punct::EqEq,
             Self::Ne => Punct::BangEq,
             Self::Lt => Punct::Lt,
@@ -796,6 +797,7 @@ impl BinaryOperator {
             Punct::MinusEq => Self::Sub,
             Punct::StarEq => Self::Mul,
             Punct::SlashEq => Self::Div,
+            Punct::PercentEq => Self::Rem,
             Punct::AmpersandEq => Self::BitAnd,
             Punct::PipeEq => Self::BitOr,
             Punct::CaretEq => Self::BitXor,
@@ -813,6 +815,7 @@ impl BinaryOperator {
             Punct::Minus => Self::Sub,
             Punct::Star => Self::Mul,
             Punct::Slash => Self::Div,
+            Punct::Percent => Self::Rem,
             Punct::EqEq => Self::Eq,
             Punct::BangEq => Self::Ne,
             Punct::Lt => Self::Lt,
@@ -844,7 +847,7 @@ impl BinaryOperator {
             Self::BitAnd => Precedence::BitAnd,
             Self::Shl | Self::Shr => Precedence::Shift,
             Self::Add | Self::Sub => Precedence::Sum,
-            Self::Mul | Self::Div => Precedence::Product,
+            Self::Mul | Self::Div | Self::Rem => Precedence::Product,
         }
     }
 
