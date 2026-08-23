@@ -6,7 +6,7 @@
 use crate::{
     hir::{Type, TypeKind},
     mir::Const,
-    parser::expression::{BinaryOperator, UnaryOperator},
+    parser::expression::{BinaryOperator as Binary, UnaryOperator as Unary},
 };
 use std::cmp::Ordering;
 
@@ -30,12 +30,10 @@ pub(super) enum Panic {
 }
 
 pub(super) fn diagnose<'hir>(
-    operation: BinaryOperator,
+    operation: Binary,
     lhs: Const<'hir>,
     rhs: Const<'hir>,
 ) -> Option<Panic> {
-    use BinaryOperator as Op;
-
     let (Const::Int(a, typ), Const::Int(b, _)) = (lhs, rhs) else {
         return None;
     };
@@ -45,24 +43,21 @@ pub(super) fn diagnose<'hir>(
     let overflows = |exact: i128| (!repr.holds(exact)).then_some(Panic::Overflow);
 
     match operation {
-        Op::Add => overflows(repr.widen(a) + repr.widen(b)),
-        Op::Sub => overflows(repr.widen(a) - repr.widen(b)),
-        Op::Mul => overflows(repr.widen(a) * repr.widen(b)),
+        Binary::Add => overflows(repr.widen(a) + repr.widen(b)),
+        Binary::Sub => overflows(repr.widen(a) - repr.widen(b)),
+        Binary::Mul => overflows(repr.widen(a) * repr.widen(b)),
 
-        Op::Div if b == 0 => Some(Panic::DivisionByZero),
-        Op::Div if repr.is_division_overflow(a, b) => Some(Panic::DivisionOverflow),
+        Binary::Div | Binary::Rem if b == 0 => Some(Panic::DivisionByZero),
+        Binary::Div | Binary::Rem if repr.is_div_overflow(a, b) => Some(Panic::DivisionOverflow),
 
-        Op::Shl | Op::Shr if !repr.is_shift_in_range(b) => Some(Panic::ShiftOutOfRange),
+        Binary::Shl | Binary::Shr if !repr.is_shift_in_range(b) => Some(Panic::ShiftOutOfRange),
 
         _ => None,
     }
 }
 
-pub(super) fn diagnose_unary<'hir>(
-    operation: UnaryOperator,
-    operand: Const<'hir>,
-) -> Option<Panic> {
-    let (UnaryOperator::Neg, Const::Int(value, typ)) = (operation, operand) else {
+pub(super) fn diagnose_unary<'hir>(operation: Unary, operand: Const<'hir>) -> Option<Panic> {
+    let (Unary::Neg, Const::Int(value, typ)) = (operation, operand) else {
         return None;
     };
 
@@ -74,7 +69,7 @@ pub(super) fn diagnose_unary<'hir>(
 }
 
 pub(super) fn binary<'hir>(
-    operation: BinaryOperator,
+    operation: Binary,
     lhs: Const<'hir>,
     rhs: Const<'hir>,
 ) -> Option<Const<'hir>> {
@@ -86,15 +81,15 @@ pub(super) fn binary<'hir>(
     }
 }
 
-pub(super) fn unary<'hir>(operation: UnaryOperator, operand: Const<'hir>) -> Option<Const<'hir>> {
+pub(super) fn unary<'hir>(operation: Unary, operand: Const<'hir>) -> Option<Const<'hir>> {
     match (operation, operand) {
-        (UnaryOperator::Neg, Const::Int(value, typ)) => {
+        (Unary::Neg, Const::Int(value, typ)) => {
             let repr = IntRepr::of(typ)?;
             Some(Const::Int(repr.normalise(value.wrapping_neg()), typ))
         },
-        (UnaryOperator::Neg, Const::Float(value, typ)) => Some(Const::Float(-value, typ)),
-        (UnaryOperator::Not, Const::Bool(value)) => Some(Const::Bool(!value)),
-        (UnaryOperator::Not, Const::Int(value, typ)) => {
+        (Unary::Neg, Const::Float(value, typ)) => Some(Const::Float(-value, typ)),
+        (Unary::Not, Const::Bool(value)) => Some(Const::Bool(!value)),
+        (Unary::Not, Const::Int(value, typ)) => {
             let repr = IntRepr::of(typ)?;
             Some(Const::Int(repr.normalise(!value), typ))
         },
@@ -128,14 +123,7 @@ pub(super) fn cast<'hir>(value: Const<'hir>, target: Type<'hir>) -> Option<Const
     }
 }
 
-fn integer<'hir>(
-    operation: BinaryOperator,
-    a: i64,
-    b: i64,
-    typ: Type<'hir>,
-) -> Option<Const<'hir>> {
-    use BinaryOperator as Op;
-
+fn integer<'hir>(operation: Binary, a: i64, b: i64, typ: Type<'hir>) -> Option<Const<'hir>> {
     let repr = IntRepr::of(typ)?;
     let (a, b) = (repr.normalise(a), repr.normalise(b));
 
@@ -143,12 +131,12 @@ fn integer<'hir>(
     let compare = |ordering: Ordering| repr.compare(a, b) == ordering;
 
     match operation {
-        Op::Add => arithmetic(a.wrapping_add(b)),
-        Op::Sub => arithmetic(a.wrapping_sub(b)),
-        Op::Mul => arithmetic(a.wrapping_mul(b)),
+        Binary::Add => arithmetic(a.wrapping_add(b)),
+        Binary::Sub => arithmetic(a.wrapping_sub(b)),
+        Binary::Mul => arithmetic(a.wrapping_mul(b)),
 
-        // both faults are raised by the hardware; folding would erase them
-        Op::Div => match (b, repr.is_division_overflow(a, b)) {
+        // both faults are raised by the hardware, folding would erase them
+        Binary::Div => match (b, repr.is_div_overflow(a, b)) {
             (0, _) | (_, true) => None,
             _ => match repr.signed {
                 true => arithmetic(a.wrapping_div(b)),
@@ -156,68 +144,77 @@ fn integer<'hir>(
             },
         },
 
-        Op::BitAnd => arithmetic(a & b),
-        Op::BitOr => arithmetic(a | b),
-        Op::BitXor => arithmetic(a ^ b),
-
-        // the two targets mask out-of-range counts differently for sub-word types
-        Op::Shl | Op::Shr if !repr.is_shift_in_range(b) => None,
-        Op::Shl => arithmetic(a.wrapping_shl(b as u32)),
-        Op::Shr => match repr.signed {
-            true => arithmetic(a.wrapping_shr(b as u32)),
-            false => arithmetic(((a as u64).wrapping_shr(b as u32)) as i64),
+        // 'INT_MIN % -1' is zero in exact arithmetic, but 'idiv' still raises #DE
+        // on it, so folding would erase a fault the program would have taken
+        Binary::Rem => match (b, repr.is_div_overflow(a, b)) {
+            (0, _) | (_, true) => None,
+            _ => match repr.signed {
+                true => arithmetic(a.wrapping_rem(b)),
+                false => arithmetic(((a as u64).wrapping_rem(b as u64)) as i64),
+            },
         },
 
-        Op::Eq => Some(Const::Bool(a == b)),
-        Op::Ne => Some(Const::Bool(a != b)),
-        Op::Lt => Some(Const::Bool(compare(Ordering::Less))),
-        Op::Gt => Some(Const::Bool(compare(Ordering::Greater))),
-        Op::LtEq => Some(Const::Bool(!compare(Ordering::Greater))),
-        Op::GtEq => Some(Const::Bool(!compare(Ordering::Less))),
+        Binary::BitAnd => arithmetic(a & b),
+        Binary::BitOr => arithmetic(a | b),
+        Binary::BitXor => arithmetic(a ^ b),
 
-        Op::And | Op::Or => None,
+        // the two targets mask out-of-range counts differently for sub-word types
+        Binary::Shl | Binary::Shr if !repr.is_shift_in_range(b) => None,
+        Binary::Shl => arithmetic(a.wrapping_shl(b as u32)),
+        Binary::Shr => match repr.signed {
+            true => arithmetic(a.wrapping_shr(b as u32)),
+            _ => arithmetic(((a as u64).wrapping_shr(b as u32)) as i64),
+        },
+
+        Binary::Eq => Some(Const::Bool(a == b)),
+        Binary::Ne => Some(Const::Bool(a != b)),
+        Binary::Lt => Some(Const::Bool(compare(Ordering::Less))),
+        Binary::Gt => Some(Const::Bool(compare(Ordering::Greater))),
+        Binary::LtEq => Some(Const::Bool(!compare(Ordering::Greater))),
+        Binary::GtEq => Some(Const::Bool(!compare(Ordering::Less))),
+
+        Binary::And | Binary::Or => None,
     }
 }
 
-fn float<'hir>(operation: BinaryOperator, a: f64, b: f64, typ: Type<'hir>) -> Option<Const<'hir>> {
-    use BinaryOperator as Op;
-
+fn float<'hir>(operation: Binary, a: f64, b: f64, typ: Type<'hir>) -> Option<Const<'hir>> {
     let single = matches!(typ.kind(), TypeKind::F32);
     let arithmetic = |wide: fn(f64, f64) -> f64, narrow: fn(f32, f32) -> f32| {
         let value = match single {
-            true => narrow(a as f32, b as f32) as f64,
+            true => narrow(a as _, b as _) as _,
             false => wide(a, b),
         };
         Some(Const::Float(value, typ))
     };
 
     match operation {
-        Op::Add => arithmetic(|a, b| a + b, |a, b| a + b),
-        Op::Sub => arithmetic(|a, b| a - b, |a, b| a - b),
-        Op::Mul => arithmetic(|a, b| a * b, |a, b| a * b),
-        Op::Div => arithmetic(|a, b| a / b, |a, b| a / b),
+        Binary::Add => arithmetic(|a, b| a + b, |a, b| a + b),
+        Binary::Sub => arithmetic(|a, b| a - b, |a, b| a - b),
+        Binary::Mul => arithmetic(|a, b| a * b, |a, b| a * b),
+        Binary::Div => arithmetic(|a, b| a / b, |a, b| a / b),
+        Binary::Rem => arithmetic(|a, b| a % b, |a, b| a % b),
 
-        Op::Eq => Some(Const::Bool(a == b)),
-        Op::Ne => Some(Const::Bool(a != b)),
-        Op::Lt => Some(Const::Bool(a < b)),
-        Op::Gt => Some(Const::Bool(a > b)),
-        Op::LtEq => Some(Const::Bool(a <= b)),
-        Op::GtEq => Some(Const::Bool(a >= b)),
+        Binary::Eq => Some(Const::Bool(a == b)),
+        Binary::Ne => Some(Const::Bool(a != b)),
+        Binary::Lt => Some(Const::Bool(a < b)),
+        Binary::Gt => Some(Const::Bool(a > b)),
+        Binary::LtEq => Some(Const::Bool(a <= b)),
+        Binary::GtEq => Some(Const::Bool(a >= b)),
 
         _ => None,
     }
 }
 
 #[inline]
-const fn boolean<'hir>(operation: BinaryOperator, a: bool, b: bool) -> Option<Const<'hir>> {
+const fn boolean<'hir>(operation: Binary, a: bool, b: bool) -> Option<Const<'hir>> {
     match operation {
-        BinaryOperator::And => Some(Const::Bool(a && b)),
-        BinaryOperator::Or => Some(Const::Bool(a || b)),
-        BinaryOperator::Eq => Some(Const::Bool(a == b)),
-        BinaryOperator::Ne => Some(Const::Bool(a != b)),
-        BinaryOperator::BitAnd => Some(Const::Bool(a & b)),
-        BinaryOperator::BitOr => Some(Const::Bool(a | b)),
-        BinaryOperator::BitXor => Some(Const::Bool(a ^ b)),
+        Binary::And => Some(Const::Bool(a && b)),
+        Binary::Or => Some(Const::Bool(a || b)),
+        Binary::Eq => Some(Const::Bool(a == b)),
+        Binary::Ne => Some(Const::Bool(a != b)),
+        Binary::BitAnd => Some(Const::Bool(a & b)),
+        Binary::BitOr => Some(Const::Bool(a | b)),
+        Binary::BitXor => Some(Const::Bool(a ^ b)),
         _ => None,
     }
 }
@@ -296,7 +293,7 @@ impl IntRepr {
     }
 
     #[inline]
-    const fn is_division_overflow(self, a: i64, b: i64) -> bool {
+    const fn is_div_overflow(self, a: i64, b: i64) -> bool {
         self.signed && b == -1 && a == self.normalise(1i64 << (self.bits - 1))
     }
 
@@ -309,6 +306,8 @@ impl IntRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::expression::{BinaryOperator, UnaryOperator};
+    use rstest::rstest;
 
     fn int(value: i64, kind: TypeKind) -> Const {
         Const::Int(value, Type::from(kind))
@@ -333,19 +332,64 @@ mod tests {
         assert_eq!(folded, Some(int(0, TypeKind::I32)));
     }
 
-    #[test]
-    fn division_by_zero_is_left_to_trap() {
-        assert_eq!(binary(BinaryOperator::Div, int(1, TypeKind::I32), int(0, TypeKind::I32)), None);
+    /// both faults are raised by the hardware, so folding either away would erase a trap the program was going to take
+    #[rstest]
+    #[case::divide_by_zero(BinaryOperator::Div, 1, 0, TypeKind::I32)]
+    #[case::remainder_by_zero(BinaryOperator::Rem, 1, 0, TypeKind::I32)]
+    #[case::unsigned_divide_by_zero(BinaryOperator::Div, 1, 0, TypeKind::U64)]
+    #[case::unsigned_remainder_by_zero(BinaryOperator::Rem, 1, 0, TypeKind::U64)]
+    #[case::divide_min_by_minus_one(BinaryOperator::Div, i32::MIN as i64, -1, TypeKind::I32)]
+    #[case::remainder_min_by_minus_one(BinaryOperator::Rem, i32::MIN as i64, -1, TypeKind::I32)]
+    #[case::narrow_min_by_minus_one(BinaryOperator::Rem, i8::MIN as i64, -1, TypeKind::I8)]
+    fn faulting_division_is_left_to_trap(
+        #[case] operation: BinaryOperator,
+        #[case] a: i64,
+        #[case] b: i64,
+        #[case] kind: TypeKind,
+    ) {
+        assert_eq!(binary(operation, int(a, kind), int(b, kind)), None);
+        assert!(diagnose(operation, int(a, kind), int(b, kind)).is_some());
     }
 
-    #[test]
-    fn signed_division_overflow_is_left_to_trap() {
-        let folded = binary(
-            BinaryOperator::Div,
-            int(i32::MIN as i64, TypeKind::I32),
-            int(-1, TypeKind::I32),
+    /// the sign of a truncated remainder follows the dividend, never the divisor
+    #[rstest]
+    #[case::positive_by_positive(7, 3, 1)]
+    #[case::negative_by_positive(-7, 3, -1)]
+    #[case::positive_by_negative(7, -3, 1)]
+    #[case::negative_by_negative(-7, -3, -1)]
+    #[case::exact(9, 3, 0)]
+    #[case::divisor_larger_than_dividend(3, 9, 3)]
+    #[case::negative_divisor_larger_than_dividend(-3, 9, -3)]
+    #[case::by_one(7, 1, 0)]
+    #[case::by_minus_one(7, -1, 0)]
+    #[case::min_by_two(i32::MIN as i64, 2, 0)]
+    #[case::min_by_three(i32::MIN as i64, 3, -2)]
+    #[case::max_by_two(i32::MAX as i64, 2, 1)]
+    fn signed_remainder_takes_the_sign_of_the_dividend(
+        #[case] a: i64,
+        #[case] b: i64,
+        #[case] expected: i64,
+    ) {
+        let folded = binary(BinaryOperator::Rem, int(a, TypeKind::I32), int(b, TypeKind::I32));
+        assert_eq!(folded, Some(int(expected, TypeKind::I32)));
+    }
+
+    /// an unsigned remainder must not read the top bit as a sign
+    #[rstest]
+    #[case::max_by_ten(u32::MAX as i64, 10, 5, TypeKind::U32)]
+    #[case::above_the_signed_maximum(0x8000_0000, 3, 2, TypeKind::U32)]
+    #[case::u8_wraps_nothing(255, 16, 15, TypeKind::U8)]
+    #[case::u64_max(u64::MAX as i64, 10, 5, TypeKind::U64)]
+    fn unsigned_remainder_ignores_the_sign_bit(
+        #[case] a: i64,
+        #[case] b: i64,
+        #[case] expected: i64,
+        #[case] kind: TypeKind,
+    ) {
+        assert_eq!(
+            binary(BinaryOperator::Rem, int(a, kind), int(b, kind)),
+            Some(int(expected, kind))
         );
-        assert_eq!(folded, None);
     }
 
     #[test]
@@ -409,6 +453,33 @@ mod tests {
         let typ = Type::from(TypeKind::F64);
         let folded = binary(BinaryOperator::Div, Const::Float(1.0, typ), Const::Float(0.0, typ));
         assert_eq!(folded, Some(Const::Float(f64::INFINITY, typ)));
+    }
+
+    #[rstest]
+    #[case::positive(7.5, 2.0, 1.5)]
+    #[case::negative_dividend(-7.5, 2.0, -1.5)]
+    #[case::negative_divisor(7.5, -2.0, 1.5)]
+    #[case::exact(8.0, 2.0, 0.0)]
+    #[case::divisor_larger_than_dividend(1.5, 4.0, 1.5)]
+    fn float_remainder_takes_the_sign_of_the_dividend(
+        #[case] a: f64,
+        #[case] b: f64,
+        #[case] expected: f64,
+    ) {
+        let typ = Type::from(TypeKind::F64);
+        let folded = binary(BinaryOperator::Rem, Const::Float(a, typ), Const::Float(b, typ));
+        assert_eq!(folded, Some(Const::Float(expected, typ)));
+    }
+
+    #[test]
+    fn float_remainder_by_zero_folds_to_nan() {
+        let typ = Type::from(TypeKind::F64);
+        let folded = binary(BinaryOperator::Rem, Const::Float(1.0, typ), Const::Float(0.0, typ));
+        let Some(Const::Float(value, _)) = folded else {
+            panic!("expected a folded float, got {folded:?}");
+        };
+
+        assert!(value.is_nan());
     }
 
     #[test]

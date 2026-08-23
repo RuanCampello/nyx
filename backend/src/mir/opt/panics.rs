@@ -82,6 +82,9 @@ fn binary_detail(operation: BinaryOperator, lhs: Const, rhs: Const) -> String {
         (BinaryOperator::Div, Const::Int(0, _)) => {
             format!("attempt to divide `{}` by zero", show(lhs))
         },
+        (BinaryOperator::Rem, Const::Int(0, _)) => {
+            format!("attempt to take the remainder of `{}` divided by zero", show(lhs))
+        },
         _ => format!(
             "attempt to compute `{} {} {}`, which overflows `{}`",
             show(lhs),
@@ -108,6 +111,7 @@ const fn symbol(operation: BinaryOperator) -> &'static str {
         BinaryOperator::Sub => "-",
         BinaryOperator::Mul => "*",
         BinaryOperator::Div => "/",
+        BinaryOperator::Rem => "%",
         BinaryOperator::Shl => "<<",
         BinaryOperator::Shr => ">>",
         // no other operator can be diagnosed, so none can reach this
@@ -143,6 +147,7 @@ impl Panic {
 #[cfg(test)]
 mod tests {
     use crate::{hir, lints::Lint, mir, optimisation, parser::Parser};
+    use rstest::rstest;
 
     fn lints_of(source: &str, level: optimisation::Level) -> Vec<Lint> {
         optimisation::set(level);
@@ -172,9 +177,16 @@ mod tests {
         assert_eq!(debug, max);
     }
 
-    #[test]
-    fn provable_division_by_zero_is_reported() {
-        let source = "fn main(): i32 { let z: i32 = 0; let q = 10 / z; q }";
+    #[rstest]
+    #[case::division("fn main(): i32 { let z: i32 = 0; let q = 10 / z; q }")]
+    #[case::remainder("fn main(): i32 { let z: i32 = 0; let q = 10 % z; q }")]
+    #[case::division_overflow(
+        "fn main(): i32 { let d: i32 = -1; let n: i32 = -2147483648; let q = n / d; q }"
+    )]
+    #[case::remainder_overflow(
+        "fn main(): i32 { let d: i32 = -1; let n: i32 = -2147483648; let q = n % d; q }"
+    )]
+    fn a_provable_division_fault_is_reported(#[case] source: &str) {
         assert_eq!(lints_of(source, optimisation::Level::Sane), vec![Lint::UnconditionalPanic]);
     }
 

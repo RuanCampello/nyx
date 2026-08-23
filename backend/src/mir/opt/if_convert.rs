@@ -321,7 +321,7 @@ const fn speculatable(kind: &InstructionKind<'_>) -> bool {
         | InstructionKind::Select { .. } => true,
 
         InstructionKind::Binary { operation, checked, .. } => {
-            !*checked && !matches!(operation, BinaryOperator::Div)
+            !*checked && !matches!(operation, BinaryOperator::Div | BinaryOperator::Rem)
         },
 
         _ => false,
@@ -385,6 +385,7 @@ mod tests {
         optimisation,
         parser::Parser,
     };
+    use rstest::rstest;
 
     fn lower(source: &'static str, target: TargetArch, level: Level) -> Mir<'static> {
         let arena = Box::leak(Box::new(bumpalo::Bump::new()));
@@ -507,21 +508,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_division_in_an_arm_is_never_speculated() {
-        let source = r#"
-            fn guarded(d: i32): i32 {
-                let mut r: i32 = -1;
-                if d != 0 { r = 100 / d; }
-                r
-            }
-            fn main(): i32 { guarded(0) }
-        "#;
-
-        for target in [TargetArch::X86_64, TargetArch::AArch64] {
-            let mir = lower(source, target, Level::Max);
-            assert!(selects_in(&mir, "nyx::guarded").is_empty(), "{target:?} speculated a divide");
-        }
+    /// both halves of idiv fault on a zero divisor, so neither may run
+    /// on a path the branch was guarding against
+    #[rstest]
+    #[case::division(
+        r#"fn guarded(d: i32): i32 { let mut r: i32 = -1; if d != 0 { r = 100 / d; } r }
+        fn main(): i32 { guarded(0) }"#
+    )]
+    #[case::remainder(
+        r#"fn guarded(d: i32): i32 { let mut r: i32 = -1; if d != 0 { r = 100 % d; } r }
+        fn main(): i32 { guarded(0) }"#
+    )]
+    fn a_faulting_division_in_an_arm_is_never_speculated(
+        #[case] source: &'static str,
+        #[values(TargetArch::X86_64, TargetArch::AArch64)] target: TargetArch,
+    ) {
+        let mir = lower(source, target, Level::Max);
+        assert!(selects_in(&mir, "nyx::guarded").is_empty(), "{target:?} speculated a fault");
     }
 
     #[test]
