@@ -1,5 +1,6 @@
 use fmt::{FormatOptions, Indentation, format};
 use indoc::indoc;
+use rstest::rstest;
 use std::str::FromStr;
 
 const LONG_BODY: &str =
@@ -1330,6 +1331,66 @@ fn keeps_the_terminator_of_a_conditional_expression_body() {
             } else {
                 0
             };
+        "},
+    );
+}
+
+#[rstest]
+#[case::add("+")]
+#[case::sub("-")]
+#[case::mul("*")]
+#[case::div("/")]
+#[case::rem("%")]
+#[case::bit_and("&")]
+#[case::bit_or("|")]
+#[case::bit_xor("^")]
+#[case::shl("<<")]
+#[case::shr(">>")]
+#[case::and("&&")]
+#[case::or("||")]
+#[case::eq("==")]
+#[case::ne("!=")]
+#[case::lt("<")]
+#[case::le("<=")]
+#[case::gt(">")]
+#[case::ge(">=")]
+fn every_binary_operator_gets_one_space_on_each_side(#[case] operator: &str) {
+    let source = format!("fn f(a:i32,b:i32):i32=a{operator}b;\n");
+    let expected = format!("fn f(a: i32, b: i32): i32 = a {operator} b;\n");
+
+    assert_formats(&source, &expected);
+    assert_idempotent(&source);
+}
+
+#[rstest]
+#[case::add("+=")]
+#[case::sub("-=")]
+#[case::mul("*=")]
+#[case::div("/=")]
+#[case::rem("%=")]
+#[case::bit_and("&=")]
+#[case::bit_or("|=")]
+#[case::bit_xor("^=")]
+#[case::shl("<<=")]
+#[case::shr(">>=")]
+fn every_compound_assignment_gets_one_space_on_each_side(#[case] operator: &str) {
+    let source = format!("fn f(){{let mut a=1;a{operator}2;}}\n");
+    let expected = format!("fn f() {{\n    let mut a = 1;\n    a {operator} 2;\n}}\n");
+
+    assert_formats(&source, &expected);
+    assert_idempotent(&source);
+}
+
+#[test]
+fn remainder_binds_as_tightly_as_multiplication() {
+    assert_formats(
+        indoc! {"
+            fn main():i32{1+(2%3)}
+        "},
+        indoc! {"
+            fn main(): i32 {
+                1 + 2 % 3
+            }
         "},
     );
 }
