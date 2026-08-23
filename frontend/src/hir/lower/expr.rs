@@ -522,6 +522,7 @@ where
                     | BinaryOperator::Sub
                     | BinaryOperator::Mul
                     | BinaryOperator::Div
+                    | BinaryOperator::Rem
                     | BinaryOperator::Lt
                     | BinaryOperator::LtEq
                     | BinaryOperator::Gt
@@ -1485,7 +1486,8 @@ where
             BinaryOperator::Add
             | BinaryOperator::Sub
             | BinaryOperator::Mul
-            | BinaryOperator::Div => {
+            | BinaryOperator::Div
+            | BinaryOperator::Rem => {
                 if !self.check_type_at(left, right, span, None)? {
                     return Ok(self.scope.types.common.error);
                 }

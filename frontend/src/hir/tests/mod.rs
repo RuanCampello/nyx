@@ -3,6 +3,7 @@ use crate::{
     hir::error::{ConstFnViolationKind, HirErrorKind},
     parser::Parser,
 };
+use rstest::rstest;
 
 fn with_lowered<R>(src: &str, f: impl for<'a> FnOnce(Hir<'a>) -> R) -> R {
     let arena = bumpalo::Bump::new();
@@ -2124,4 +2125,32 @@ fn a_binding_covers_everything() {
 fn a_float_match_always_needs_a_wildcard() {
     let source = "fn code(x: f64): i32 { match x { 1.0 -> 0, } }\nfn main(): i32 { code(1.0) }";
     assert_eq!(missing_pattern(source).as_deref(), Some("_"));
+}
+
+#[rstest]
+#[case::i8("let a: i8 = 7; let b: i8 = a % 3;")]
+#[case::i32("let a: i32 = 7; let b: i32 = a % 3;")]
+#[case::i64("let a: i64 = 7; let b: i64 = a % 3;")]
+#[case::u8("let a: u8 = 7; let b: u8 = a % 3;")]
+#[case::u64("let a: u64 = 7; let b: u64 = a % 3;")]
+#[case::f32("let a: f32 = 7.5; let b: f32 = a % 2.0;")]
+#[case::f64("let a: f64 = 7.5; let b: f64 = a % 2.0;")]
+#[case::inferred("let a = 7; let b = a % 3;")]
+#[case::compound_assignment("let mut a: i32 = 7; a %= 3;")]
+fn remainder_accepts_every_number(#[case] body: &str) {
+    let source = format!("fn main() {{ {body} }}");
+    with_lowered(&source, |_| ());
+}
+
+#[rstest]
+#[case::bool("let a: bool = true; let b: bool = a % a;")]
+#[case::char("let a: char = 'x'; let b: char = a % a;")]
+#[case::mixed_widths("let a: i32 = 7; let b: i64 = 3; let c: i32 = a % b;")]
+#[case::mixed_signedness("let a: i32 = 7; let b: u32 = 3; let c: i32 = a % b;")]
+#[case::float_and_integer("let a: f64 = 7.5; let b: i32 = 2; let c: f64 = a % b;")]
+fn remainder_rejects_non_numbers_and_mixed_operands(#[case] body: &str) {
+    let source = format!("fn main() {{ {body} }}");
+    with_lowered_err(&source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }), "got {:?}", err.kind);
+    });
 }
