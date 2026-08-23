@@ -445,18 +445,31 @@ mod tests {
         assert!(emitted.iter().any(|f| f == "nyx.odd"), "{emitted:?}");
     }
 
+    fn pick_blocks(source: &str) -> usize {
+        assembly(source)
+            .lines()
+            .filter(|line| line.trim_start().starts_with(".L_block_nyx.pick_"))
+            .count()
+    }
+
     #[test]
     fn the_merge_block_after_a_diverging_branch_is_dropped() {
+        let source = "
+            fn pick(a: i32, b: i32): i32 { if a < b { return a; } else { return b; } }
+            fn main(): i32 { pick(1, 2) }
+        ";
+
+        assert_eq!(pick_blocks(source), 2, "both arms return, so the merge is unreachable");
+    }
+
+    #[test]
+    fn a_tail_if_returns_through_its_merge_block() {
         let source = "
             fn pick(a: i32, b: i32): i32 { if a < b { a } else { b } }
             fn main(): i32 { pick(1, 2) }
         ";
-        let labels = assembly(source)
-            .lines()
-            .filter(|line| line.trim_start().starts_with(".L_block_nyx.pick_"))
-            .count();
 
-        assert_eq!(labels, 2, "both arms return, so the merge block is unreachable");
+        assert_eq!(pick_blocks(source), 3, "the merge carries the value the function returns");
     }
 
     #[test]
