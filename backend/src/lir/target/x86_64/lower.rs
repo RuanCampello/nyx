@@ -145,10 +145,21 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                         self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
                         self.lir.push_instr(id, X86Instr::DivFloat { dest, src: rhs, bytes });
                     }
-                    B::Div => {
+                    B::Div | B::Rem if !is_float => {
                         let dividend = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
+                        let remainder = matches!(operation, B::Rem);
                         self.lir.push_instr(id, X86Instr::Mov { dest: dividend, src: lhs, bytes });
-                        self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes, is_signed));
+                        self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes, is_signed, remainder));
+                    }
+
+                    B::Rem => {
+                        let quotient = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
+                        self.lir.push_instr(id, X86Instr::MovFloat { dest: quotient, src: lhs.clone(), bytes });
+                        self.lir.push_instr(id, X86Instr::DivFloat { dest: quotient, src: rhs.clone(), bytes });
+                        self.lir.push_instr(id, X86Instr::TruncFloat { dest: quotient, src: quotient, bytes });
+                        self.lir.push_instr(id, X86Instr::MulFloat { dest: quotient, src: rhs, bytes });
+                        self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
+                        self.lir.push_instr(id, X86Instr::SubFloat { dest, src: X86Operand::VReg(quotient), bytes });
                     }
 
                     // two-operand 'imul' has no one-byte form at all, and its overflow

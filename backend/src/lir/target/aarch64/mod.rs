@@ -76,6 +76,8 @@ pub enum A64Instr {
     FMul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
     FDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
     FNeg { dest: VReg, src: VReg, bytes: u8 },
+    /// `frintz`, rounding towards zero
+    FTrunc { dest: VReg, src: VReg, bytes: u8 },
 
     // float comparison
     FCmp { lhs: VReg, rhs: VReg, bytes: u8 },
@@ -484,7 +486,8 @@ impl Instruction<AArch64> for A64Instr {
             | Self::FMov { dest, .. } | Self::FLiteral { dest, .. }
             | Self::FAdd { dest, .. } | Self::FSub { dest, .. }
             | Self::FMul { dest, .. } | Self::FDiv { dest, .. }
-            | Self::FNeg { dest, .. } | Self::FieldLoad { dest, .. }
+            | Self::FNeg { dest, .. } | Self::FTrunc { dest, .. }
+            | Self::FieldLoad { dest, .. }
             | Self::StackAddr { dest, .. } | Self::PtrLoad { dest, .. }
             | Self::Extend { dest, .. } => std::slice::from_ref(dest),
 
@@ -504,7 +507,9 @@ impl Instruction<AArch64> for A64Instr {
         match self {
             Self::Mov { src, .. } | Self::Neg { src, .. }
             | Self::Mvn { src, .. } | Self::FMov { src, .. }
-            | Self::Extend { src, .. } | Self::FNeg { src, .. } => uses.push(*src),
+            | Self::Extend { src, .. } | Self::FNeg { src, .. }
+            | Self::FTrunc { src, .. } => uses.push(*src),
+
 
             Self::Add { lhs, rhs, .. } | Self::Sub { lhs, rhs, .. }
             | Self::And { lhs, rhs, .. } | Self::Or { lhs, rhs, .. }
@@ -596,7 +601,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Cset { .. } | Self::Csel { .. }
             | Self::FMov { .. } | Self::FLiteral { .. }
             | Self::FAdd { .. } | Self::FSub { .. } | Self::FMul { .. }
-            | Self::FDiv { .. } | Self::FNeg { .. } | Self::Adr { .. }
+            | Self::FDiv { .. } | Self::FNeg { .. } | Self::FTrunc { .. } | Self::Adr { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. } | Self::StackAddr { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. } => false,
 

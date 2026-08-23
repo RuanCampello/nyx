@@ -520,6 +520,13 @@ impl Function<AArch64> {
                 }
             },
 
+            A64Instr::FTrunc { dest, src, bytes } => {
+                let dest = alloc.location(dest, bytes);
+                let src = alloc.location(src, bytes);
+
+                emit!(out, "frintz  {dest}, {src}");
+            },
+
             A64Instr::Neg { dest, src, bytes } | A64Instr::FNeg { dest, src, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let src = alloc.location(src, bytes);

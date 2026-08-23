@@ -15,7 +15,7 @@
 use crate::{
     hir::{EnumRepr, SymbolTable, Type, TypeKind},
     lir::{
-        self, BlockId, TypeExt, VReg,
+        self, BlockId, MachineType, TypeExt, VReg,
         target::{
             self, AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
@@ -208,6 +208,12 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                     },
                                 };
                                 self.lir.push_instr(id, instr);
+                            },
+
+                            B::Rem => {
+                                let rhs = self.ensure_vreg(rhs, lhs_type, id);
+                                let mt = lhs_type.machine_type(self.layouts);
+                                self.lower_remainder(id, dest, lhs, rhs, mt);
                             },
 
                             B::And | B::BitAnd => {
@@ -435,6 +441,28 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 };
 
                 self.lir.push_instr(id, instr);
+            },
+        }
+    }
+
+    #[rustfmt::skip]
+    fn lower_remainder(&mut self, id: &BlockId, dest: VReg, lhs: VReg, rhs: VReg, mt: MachineType) {
+        let quotient = self.lir.new_vreg(mt);
+        let bytes = mt.bytes();
+
+        match matches!(mt, MachineType::Float { .. }) {
+            true => {
+                self.lir.push_instr(id, A64Instr::FDiv { dest: quotient, lhs, rhs, bytes });
+                self.lir.push_instr(id, A64Instr::FTrunc { dest: quotient, src: quotient, bytes });
+                self.lir.push_instr(id, A64Instr::FMul { dest: quotient, lhs: quotient, rhs, bytes });
+                self.lir.push_instr(id, A64Instr::FSub { dest, lhs, rhs: quotient, bytes });
+            },
+
+            false => {
+                let signed = mt.is_signed();
+                self.lir.push_instr(id, A64Instr::SDiv { dest: quotient, lhs, rhs, bytes, signed });
+                self.lir.push_instr(id, A64Instr::Mul { dest: quotient, lhs: quotient, rhs, bytes, checked: false });
+                self.lir.push_instr(id, A64Instr::Sub { dest, lhs, rhs: A64Operand::VReg(quotient), bytes, checked: false });
             },
         }
     }

@@ -75,6 +75,8 @@ pub enum X86Instr {
         /// `idiv` sign-extends into `rdx` and treats the top bit as a sign, so
         /// an unsigned dividend above the signed maximum needs `div` instead
         signed: bool,
+        /// read the result out of the remainder register instead of the quotient one
+        remainder: bool,
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
@@ -83,6 +85,8 @@ pub enum X86Instr {
     SubFloat { dest: VReg, src: X86Operand, bytes: u8 },
     MulFloat{ dest: VReg, src: X86Operand, bytes: u8 },
     DivFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    /// `roundss`/`roundsd` truncating towards zero, the float half of a remainder
+    TruncFloat { dest: VReg, src: VReg, bytes: u8 },
     XorFloat { dest: VReg, src: X86Operand, bytes: u8 },
 
     // comparison
@@ -419,7 +423,8 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Setcc { dest, .. } | Self::Cmov { dest, .. }
             | Self::AddFloat { dest, .. }
             | Self::SubFloat { dest, .. } | Self::MulFloat { dest, .. }
-            | Self::DivFloat { dest, .. } | Self::FieldLoad { dest, .. }
+            | Self::DivFloat { dest, .. } | Self::TruncFloat { dest, .. }
+            | Self::FieldLoad { dest, .. }
             | Self::PtrLoad { dest, .. } | Self::XorFloat { dest, .. }
             | Self::Not { dest, .. } | Self::Shl { dest, .. }
             | Self::Shr { dest, .. }
@@ -448,6 +453,8 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Movzx { src: X86Operand::VReg(v), .. }
             | Self::Movsx { src: X86Operand::VReg(v), .. }
             | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
+
+            Self::TruncFloat { src, .. } => uses.push(*src),
 
             // 2-address: dest is read+write, src is read-only
             Self::Add { src: X86Operand::VReg(v), .. }
@@ -573,7 +580,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Movzx { .. } | Self::Movsx { .. }
             | Self::Not { .. } | Self::Setcc { .. } | Self::Cmov { .. }
             | Self::AddFloat { .. } | Self::SubFloat { .. } | Self::MulFloat { .. }
-            | Self::DivFloat { .. } | Self::XorFloat { .. }
+            | Self::DivFloat { .. } | Self::XorFloat { .. } | Self::TruncFloat { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. }
         )
@@ -642,6 +649,7 @@ impl X86Instr {
         divisor: X86Operand,
         bytes: u8,
         signed: bool,
+        remainder: bool,
     ) -> Self {
         Self::IDiv {
             bytes,
@@ -649,6 +657,7 @@ impl X86Instr {
             dividend,
             divisor,
             signed,
+            remainder,
             precoloured_uses: [(dividend, X86Reg::Rax)],
         }
     }

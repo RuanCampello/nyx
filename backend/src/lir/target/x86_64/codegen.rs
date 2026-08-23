@@ -473,7 +473,7 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::IDiv { result, dividend, divisor, bytes, signed, .. } => {
+            Inst::IDiv { result, dividend, divisor, bytes, signed, remainder, .. } => {
                 let suffix = suffix(bytes);
                 let rax = format!("%{}", X86Reg::Rax.name(*bytes));
                 let mnemonic = match signed {
@@ -493,6 +493,13 @@ impl Function<X86_64> {
                     (false, 4) => "xorl    %edx, %edx",
                     (false, 8) => "xorq    %rdx, %rdx",
                     _ => panic!("invalid idiv size: {bytes}"),
+                };
+                // the quotient lands in `rax` and the remainder in `rdx`, and one-byte
+                // division is the exception: it writes both halves into `ax`
+                let source = match (remainder, bytes) {
+                    (true, 1) => "%ah".to_string(),
+                    (true, _) => format!("%{}", X86Reg::Rdx.name(*bytes)),
+                    (false, _) => rax.clone(),
                 };
                 let dividend = alloc.location(dividend, bytes);
                 let result = alloc.location(result, bytes);
@@ -517,9 +524,21 @@ impl Function<X86_64> {
                     },
                 }
 
-                if result != rax {
-                    emit!(out, "mov{suffix}    {rax}, {result}");
+                if result != source {
+                    emit!(out, "mov{suffix}    {source}, {result}");
                 }
+            },
+
+            Inst::TruncFloat { dest, src, bytes } => {
+                let mnemonic = match *bytes == 4 {
+                    true => "roundss",
+                    _ => "roundsd",
+                };
+                let dest = alloc.location(dest, bytes);
+                let src = alloc.location(src, bytes);
+
+                // mode 3 truncates towards zero, bit 3 suppresses the inexact exception
+                emit!(out, "{mnemonic} $11, {src}, {dest}");
             },
 
             Inst::XorFloat { dest, src, bytes } => {
