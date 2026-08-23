@@ -148,7 +148,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                     B::Div => {
                         let dividend = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
                         self.lir.push_instr(id, X86Instr::Mov { dest: dividend, src: lhs, bytes });
-                        self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes));
+                        self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes, is_signed));
                     }
 
                     // two-operand 'imul' has no one-byte form at all, and its overflow

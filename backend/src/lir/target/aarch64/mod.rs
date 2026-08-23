@@ -44,7 +44,9 @@ pub enum A64Instr {
     Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
     Sub { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
     Mul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8, checked: bool },
-    SDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
+    /// `sdiv` treats the top bit as a sign, so an unsigned dividend above the
+    /// signed maximum needs `udiv` instead
+    SDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8, signed: bool },
     Neg { dest: VReg, src: VReg, bytes: u8 },
 
     // logical operations

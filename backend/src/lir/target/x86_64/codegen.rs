@@ -473,14 +473,25 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::IDiv { result, dividend, divisor, bytes, .. } => {
+            Inst::IDiv { result, dividend, divisor, bytes, signed, .. } => {
                 let suffix = suffix(bytes);
                 let rax = format!("%{}", X86Reg::Rax.name(*bytes));
-                let extend = match bytes {
-                    1 => "cbtw",
-                    2 => "cwtd",
-                    4 => "cltd",
-                    8 => "cqto",
+                let mnemonic = match signed {
+                    true => "idiv",
+                    _ => "div",
+                };
+
+                // signed division sign-extends the dividend into `rdx`
+                // unsigned division needs those bits clear instead
+                let extend = match (signed, bytes) {
+                    (true, 1) => "cbtw",
+                    (true, 2) => "cwtd",
+                    (true, 4) => "cltd",
+                    (true, 8) => "cqto",
+                    (false, 1) => "movzbw  %al, %ax",
+                    (false, 2) => "xorw    %dx, %dx",
+                    (false, 4) => "xorl    %edx, %edx",
+                    (false, 8) => "xorq    %rdx, %rdx",
                     _ => panic!("invalid idiv size: {bytes}"),
                 };
                 let dividend = alloc.location(dividend, bytes);
@@ -496,13 +507,13 @@ impl Function<X86_64> {
                         let div = self.operand(alloc, divisor, bytes);
                         emit!(out, "subq    $8, %rsp");
                         emit!(out, "mov{suffix}    {div}, (%rsp)");
-                        emit!(out, "idiv{suffix}    (%rsp)");
+                        emit!(out, "{mnemonic}{suffix}    (%rsp)");
                         emit!(out, "addq    $8, %rsp");
                     },
 
                     _ => {
                         let div = self.operand(alloc, divisor, bytes);
-                        emit!(out, "idiv{suffix}    {div}");
+                        emit!(out, "{mnemonic}{suffix}    {div}");
                     },
                 }
 

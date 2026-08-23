@@ -390,7 +390,7 @@ impl Function<AArch64> {
 
             #[rustfmt::skip]
             A64Instr::Mul { dest, lhs, rhs, bytes, .. }
-            | A64Instr::SDiv { dest, lhs, rhs, bytes } => {
+            | A64Instr::SDiv { dest, lhs, rhs, bytes, .. } => {
                 let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = alloc.location(rhs, bytes);
@@ -398,7 +398,10 @@ impl Function<AArch64> {
 
                 match instruction {
                     A64Instr::Mul { .. } => emit!(out, "mul     {dest}, {lhs}, {rhs}"),
-                    A64Instr::SDiv { .. } => emit!(out, "sdiv    {dest}, {lhs}, {rhs}"),
+                    A64Instr::SDiv { signed: true, .. } => {
+                        emit!(out, "sdiv    {dest}, {lhs}, {rhs}")
+                    },
+                    A64Instr::SDiv { .. } => emit!(out, "udiv    {dest}, {lhs}, {rhs}"),
                     _ => unsafe { std::hint::unreachable_unchecked() },
                 }
 

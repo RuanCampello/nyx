@@ -63,7 +63,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
     }
 
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
-        use crate::mir::InstructionKind;
+        use crate::mir::InstructionKind as I;
 
         let dest = self.value[instruction.dest.id];
         let typ = instruction.dest.typ;
@@ -74,7 +74,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         let is_float = typ.is_float();
 
         match &instruction.kind {
-            InstructionKind::Assign(operand) => {
+            I::Assign(operand) => {
                 let value = &self.value;
                 let layouts = self.layouts;
                 if let Some(instr) = target::lower_assign(
@@ -91,7 +91,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 }
             },
 
-            InstructionKind::Unary { operation, rhs } => {
+            I::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
 
                 let src = self.operand(rhs, id);
@@ -118,7 +118,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 }
             },
 
-            InstructionKind::Binary { operation, rhs, lhs, checked, wrapping: _ } => {
+            I::Binary { operation, rhs, lhs, checked, wrapping: _ } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();
@@ -201,7 +201,11 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
                                 let instr = match is_float {
                                     true => A64Instr::FDiv { dest, lhs, rhs, bytes },
-                                    false => A64Instr::SDiv { dest, lhs, rhs, bytes },
+                                    false => {
+                                        let signed =
+                                            lhs_type.machine_type(self.layouts).is_signed();
+                                        A64Instr::SDiv { dest, lhs, rhs, bytes, signed }
+                                    },
                                 };
                                 self.lir.push_instr(id, instr);
                             },
@@ -237,10 +241,8 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                     },
                 }
             },
-
-            InstructionKind::Call { callee, args } => self.lower_call(id, dest, *callee, args),
-
-            InstructionKind::Syscall { code, args, returns } => {
+            I::Call { callee, args } => self.lower_call(id, dest, *callee, args),
+            I::Syscall { code, args, returns } => {
                 let value = &self.value;
                 let layouts = self.layouts;
                 let (syscall_moves, syscall_uses) = lir::target::prepare_syscall_args(
@@ -262,8 +264,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                     },
                 );
             },
-
-            InstructionKind::FieldLoad { src, offset, typ } => {
+            I::FieldLoad { src, offset, typ } => {
                 if typ.is_aggregate_lir(self.layouts) {
                     let origin = match src {
                         Operand::Place(p) => self.value[p.id],
@@ -309,7 +310,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 }
             },
 
-            InstructionKind::FieldStore { value, offset } => {
+            I::FieldStore { value, offset } => {
                 let offset = *offset as i32;
 
                 if value.typ().is_aggregate_lir(self.layouts) {
@@ -319,14 +320,15 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
 
                     let src_vreg = self.value[src.id];
                     let size = value.typ().machine_type(self.layouts).stack_size() as u32;
+                    let (src_ref, dest_ref) = (src.typ.is_pointer(), typ.is_pointer());
                     return aggregate_copy(
                         &mut self.lir,
                         id,
                         AggregateCopy {
                             src: src_vreg,
                             dest,
-                            src_ref: src.typ.is_pointer(),
-                            dest_ref: typ.is_pointer(),
+                            src_ref,
+                            dest_ref,
                             src_base: 0,
                             dest_base: offset,
                             size,
@@ -344,30 +346,25 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 self.lir.push_instr(id, instruction);
             },
 
-            InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
+            I::ElementLoad { base, index, bound, stride, typ } => {
                 self.lower_element_load(id, dest, base, index, bound, *stride, *typ)
             },
-
-            InstructionKind::ElementStore { index, bound, value, stride } => {
+            I::ElementStore { index, bound, value, stride } => {
                 self.lower_element_store(id, dest, typ, index, bound, value, *stride)
             },
 
-            InstructionKind::ElementAddr { base, index, bound, stride } => {
+            I::ElementAddr { base, index, bound, stride } => {
                 self.lower_element_addr(id, dest, base, index, bound, *stride)
             },
 
-            InstructionKind::StaticAddr { id: static_id } => {
+            I::StaticAddr { id: static_id } => {
                 let label = lir::static_label(*static_id);
                 let load = AArch64::load_label(dest, label, false, 8);
 
                 self.lir.push_instr(id, load);
             },
-
-            InstructionKind::AddressOf { src, offset } => {
-                self.lower_address_of(id, dest, src, *offset)
-            },
-
-            InstructionKind::Select { condition, then_value, else_value } => {
+            I::AddressOf { src, offset } => self.lower_address_of(id, dest, src, *offset),
+            I::Select { condition, then_value, else_value } => {
                 let lhs = self.operand(then_value, id);
                 let rhs = self.operand(else_value, id);
                 let condition_bytes = condition.typ().machine_type(self.layouts).bytes();
@@ -386,7 +383,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                     .push_instr(id, A64Instr::Csel { dest, lhs, rhs, cond: A64Cond::Ne, bytes });
             },
 
-            InstructionKind::Cast { src, typ } => {
+            I::Cast { src, typ } => {
                 use std::cmp::Ordering;
 
                 let src_mt = src.typ().machine_type(self.layouts);
@@ -474,8 +471,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         self.lir.push_instr(id, A64Instr::Cset { dest, cond });
     }
 
-    /// if the operand is already a `VReg`, return it
-    /// otherwise materialise into a new `VReg`
+    /// if the operand is already a `VReg`, return it otherwise materialise into a new `VReg`
     #[inline(always)]
     fn ensure_vreg(&mut self, op: A64Operand, hint_type: Type, block: &BlockId) -> VReg {
         match op {
@@ -493,13 +489,12 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let mt = hint_type.machine_type(self.layouts);
                 let vreg = self.lir.new_vreg(mt);
 
-                if hint_type.is_float() {
-                    self.lir.push_instr(
+                match hint_type.is_float() {
+                    true => self.lir.push_instr(
                         block,
                         A64Instr::FLiteral { dest: vreg, label, bytes: mt.bytes() },
-                    );
-                } else {
-                    self.lir.push_instr(block, A64Instr::Adr { dest: vreg, label });
+                    ),
+                    _ => self.lir.push_instr(block, A64Instr::Adr { dest: vreg, label }),
                 }
 
                 vreg
@@ -533,8 +528,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         self.lir.push_instr(block, instr);
     }
 
-    /// for AND/ORR/EOR: only valid bitmask immediates can be encoded inline,
-    /// everything else is materialised into a register
+    /// for AND/ORR/EOR: only valid bitmask immediates can be encoded inline, everything else is materialised into a register
     #[inline(always)]
     fn fit_logical_operand(
         &mut self,

@@ -72,6 +72,9 @@ pub enum X86Instr {
         dividend: VReg,
         divisor: X86Operand,
         bytes: u8,
+        /// `idiv` sign-extends into `rdx` and treats the top bit as a sign, so
+        /// an unsigned dividend above the signed maximum needs `div` instead
+        signed: bool,
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
@@ -633,12 +636,19 @@ impl X86Instr {
     }
 
     #[inline(always)]
-    pub const fn idiv(result: VReg, dividend: VReg, divisor: X86Operand, bytes: u8) -> Self {
+    pub const fn idiv(
+        result: VReg,
+        dividend: VReg,
+        divisor: X86Operand,
+        bytes: u8,
+        signed: bool,
+    ) -> Self {
         Self::IDiv {
             bytes,
             result,
             dividend,
             divisor,
+            signed,
             precoloured_uses: [(dividend, X86Reg::Rax)],
         }
     }
