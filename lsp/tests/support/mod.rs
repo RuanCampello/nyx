@@ -42,6 +42,7 @@ impl TestClient {
 
     /// same as [start](Self::start), for a client that advertises none of the
     /// optional capabilities: no snippet expansion, no nested outline symbols
+    #[allow(unused)]
     pub async fn start_minimal() -> Self {
         Self::boot(Some(vec![PositionEncodingKind::UTF8]), false).await
     }
