@@ -379,9 +379,11 @@ where
 
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut arg_types = Vec::with_capacity(args.len());
+        let mut arg_spans = Vec::with_capacity(args.len());
         for arg in args {
             let lowered = self.lower_expr(arg, None)?;
             arg_types.push(lowered.typ);
+            arg_spans.push(lowered.span);
             lowered_args.push(lowered.expr);
         }
         let lowered_args = self.arena.alloc_slice_copy(&lowered_args);
@@ -402,6 +404,11 @@ where
             }
         }
         self.check_bounds(&bounds, &substs, span)?;
+
+        for ((&open, &found), &at) in open_params.iter().zip(&arg_types).zip(&arg_spans) {
+            let expected = open.subst(&self.scope.types, &self.scope.arrays, &substs);
+            self.assert_type(expected, found, at)?;
+        }
 
         let return_type =
             signature.return_type.subst(&self.scope.types, &self.scope.arrays, &substs);
@@ -500,8 +507,8 @@ where
     }
 
     fn check_bounds(
-        &self,
-        generics: &[(usize, GenericBound<'src>)],
+        &mut self,
+        generics: &[(usize, GenericBound<'hir>)],
         args: &[Type<'hir>],
         span: Span,
     ) -> Result<(), HirError<'hir>> {
@@ -510,6 +517,7 @@ where
             let Some(&concrete_type) = args.get(slot) else {
                 continue;
             };
+            let concrete_type = self.infer.resolve_or_default(concrete_type);
             for bound in &param.bounds {
                 let interface_name = match bound.value_ref() {
                     statement::Type::Named(name) => name,
@@ -545,9 +553,104 @@ where
                         UnsatisfiedBound { type_name: concrete_type, bound_name: interface_name }
                     ));
                 }
+
+                self.check_bound_arguments(
+                    concrete_type,
+                    interface_name,
+                    bound.value_ref(),
+                    generics,
+                    args,
+                    span,
+                )?;
             }
         }
+
         Ok(())
+    }
+
+    /// holds `T: Interface<U>` to the `U` the implementation actually chose
+    fn check_bound_arguments(
+        &mut self,
+        concrete_type: Type<'hir>,
+        interface_name: &'hir str,
+        bound: &statement::Type<'hir>,
+        generics: &[(usize, GenericBound<'hir>)],
+        args: &[Type<'hir>],
+        span: Span,
+    ) -> Result<(), HirError<'hir>> {
+        let Some(interface_sym) = self.scope.symbols.get_id(interface_name) else {
+            return Ok(());
+        };
+        let Some(declared) = self.scope.interfaces.impl_args.get(&(concrete_type, interface_sym))
+        else {
+            return Ok(());
+        };
+        let Some(interface) = self.scope.interfaces.defs.get(&interface_sym) else {
+            return Ok(());
+        };
+
+        let written = match bound {
+            statement::Type::Generic(_, written) => written.as_slice(),
+            _ => &[],
+        };
+
+        let obligations: Vec<_> = declared
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &expected)| {
+                let found = match written.get(index) {
+                    Some(arg) => self.bound_argument(arg.value_ref(), generics, args)?,
+                    _ => match interface.generic_defaults.get(index).copied().flatten() {
+                        Some(default) => {
+                            substitute_self_type(&self.scope.types, default, concrete_type)
+                        },
+                        _ => concrete_type,
+                    },
+                };
+
+                Some((expected, found))
+            })
+            .collect();
+
+        for (expected, found) in obligations {
+            if found.is_error() || matches!(found.kind(), TypeKind::GenericParam(_)) {
+                continue;
+            }
+            if self.infer.unify(expected, found).is_ok() {
+                continue;
+            }
+
+            let found = self.infer.resolve_or_default(found);
+            let bound_name = self.arena.alloc_str(&format!("{interface_name}<{expected}>"));
+
+            return Err(hir_error!(span, UnsatisfiedBound { type_name: found, bound_name }));
+        }
+
+        Ok(())
+    }
+
+    fn bound_argument(
+        &self,
+        written: &statement::Type<'hir>,
+        generics: &[(usize, GenericBound<'hir>)],
+        args: &[Type<'hir>],
+    ) -> Option<Type<'hir>> {
+        match written {
+            statement::Type::SelfType => self.impl_ctx.self_type,
+            statement::Type::Named(name) => {
+                let slot =
+                    generics.iter().find(|(_, param)| param.name == *name).map(|&(slot, _)| slot);
+
+                match slot {
+                    Some(slot) => args.get(slot).copied(),
+                    _ => self.scope.types.from_primitive_ast(written).or_else(|| {
+                        let symbol = self.scope.symbols.get_id(name)?;
+                        self.scope.nominal_type(symbol)
+                    }),
+                }
+            },
+            _ => None,
+        }
     }
 }
 
@@ -566,9 +669,13 @@ fn infer_type_args<'hir>(
 fn unify_generic<'hir>(param: Type<'hir>, actual: Type<'hir>, bindings: &mut [Option<Type<'hir>>]) {
     use TypeKind::*;
     match (param.kind(), actual.kind()) {
+        // a concrete argument outranks an open inference variable however they are
+        // ordered, so `assert_eq(count, 0)` takes its parameter from `count`
         (GenericParam(index), _) => {
-            if let Some(slot) = bindings.get_mut(index as usize) {
-                slot.get_or_insert(actual);
+            if let Some(slot) = bindings.get_mut(index as usize)
+                && slot.is_none_or(Type::is_infer)
+            {
+                *slot = Some(actual);
             }
         },
         (Ref { to: param, .. }, Ref { to: actual, .. })

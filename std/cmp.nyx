@@ -5,7 +5,7 @@ use std::optional::{Optional};
 /// The equality relation must satifies to the following conditions:
 /// - **Symmetry**: if `A: PartialEq<B>` and `B: PartialEq<A>`, then `a == b` implies `b == a`
 /// - **Transitivity**: `A: PartialEq<B>` and `B: PartialEq<C>` and `A: PartialEq<C>`, then `a == b` and `b == c` implies `a == c`
-pub interface PartialEq<Rhs> {
+pub interface PartialEq<Rhs = Self> {
     fn eq(&self, other: &Rhs): bool;
     fn ne(&self, other: &Rhs): bool {
         !self.eq(other)
@@ -24,7 +24,7 @@ pub interface PartialEq<Rhs> {
 pub interface Equatable: PartialEq {}
 
 /// Interface for types that from a `partial order`
-pub interface PartialOrd<Rhs>: PartialEq<Rhs> {
+pub interface PartialOrd<Rhs = Self>: PartialEq<Rhs> {
     fn partial_compare(&self, other: &Rhs): Optional<Ordering>;
 
     inline fn lt(&self, other: &Rhs): bool {
@@ -89,87 +89,59 @@ pub enum Ordering {
 } as i8
 
 impl i8 with PartialEq<i8> {
-    fn eq(&self, other: &i8): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &i8): bool = *self == *other;
 }
 
 impl u8 with PartialEq<u8> {
-    fn eq(&self, other: &u8): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &u8): bool = *self == *other;
 }
 
 impl i16 with PartialEq<i16> {
-    fn eq(&self, other: &i16): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &i16): bool = *self == *other;
 }
 
 impl u16 with PartialEq<u16> {
-    fn eq(&self, other: &u16): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &u16): bool = *self == *other;
 }
 
 impl i32 with PartialEq<i32> {
-    fn eq(&self, other: &i32): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &i32): bool = *self == *other;
 }
 
 impl u32 with PartialEq<u32> {
-    fn eq(&self, other: &u32): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &u32): bool = *self == *other;
 }
 
 impl i64 with PartialEq<i64> {
-    fn eq(&self, other: &i64): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &i64): bool = *self == *other;
 }
 
 impl u64 with PartialEq<u64> {
-    fn eq(&self, other: &u64): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &u64): bool = *self == *other;
 }
 
 impl char with PartialEq<char> {
-    fn eq(&self, other: &char): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &char): bool = *self == *other;
 }
 
 impl uptr with PartialEq<uptr> {
-    fn eq(&self, other: &uptr): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &uptr): bool = *self == *other;
 }
 
 impl iptr with PartialEq<iptr> {
-    fn eq(&self, other: &iptr): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &iptr): bool = *self == *other;
 }
 
 impl bool with PartialEq<bool> {
-    fn eq(&self, other: &bool): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &bool): bool = *self == *other;
 }
 
 impl f32 with PartialEq<f32> {
-    fn eq(&self, other: &f32): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &f32): bool = *self == *other;
 }
 
 impl f64 with PartialEq<f64> {
-    fn eq(&self, other: &f64): bool {
-        *self == *other
-    }
+    fn eq(&self, other: &f64): bool = *self == *other;
 }
 
 impl i8 with PartialOrd<i8> {
