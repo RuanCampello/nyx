@@ -30,6 +30,7 @@ impl Lowerable for AArch64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
+        strings: &mir::StringPool,
         adt_layouts: &mir::Layouts<'_>,
         adt_reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
@@ -38,6 +39,7 @@ impl Lowerable for AArch64 {
             function,
             symbols,
             all_functions,
+            strings,
             adt_layouts,
             adt_reprs,
             array_layouts,
@@ -83,6 +85,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                     dest,
                     typ,
                     operand,
+                    self.strings,
                     layouts,
                     |vid| value[vid],
                     |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
@@ -118,7 +121,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 }
             },
 
-            I::Binary { operation, rhs, lhs, checked, wrapping: _ } => {
+            I::Binary { operation, rhs, lhs, overflow } => {
                 use crate::parser::expression::BinaryOperator as B;
 
                 let bytes = lhs.typ().machine_type(self.layouts).bytes();
@@ -127,7 +130,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
-                let checked = *checked;
+                let checked = overflow.is_checked();
 
                 match operation {
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {

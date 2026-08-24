@@ -58,6 +58,7 @@ pub trait Lowerable: Target {
         function: &mir::Function,
         symbols: &SymbolTable,
         all_functions: &[mir::Function],
+        strings: &mir::StringPool,
         layouts: &mir::Layouts<'_>,
         reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
@@ -237,6 +238,7 @@ pub(crate) struct Lower<'f, 'hir, T: Target> {
     pub(crate) value: Vec<VReg>,
     pub(crate) symbols: &'f SymbolTable,
     pub(crate) all_functions: &'f [Function<'hir>],
+    pub(crate) strings: &'f mir::StringPool,
     pub(crate) layouts: Layouts<'f, 'hir>,
     pub(crate) sret_ptr: Option<VReg>,
 }
@@ -370,6 +372,7 @@ impl<'f, 'hir, T: Target> Lower<'f, 'hir, T> {
         function: &'f Function<'hir>,
         symbols: &'f SymbolTable,
         all_functions: &'f [Function<'hir>],
+        strings: &'f mir::StringPool,
         adts: &'f mir::Layouts<'hir>,
         adt_reprs: &'f [Option<EnumRepr>],
         arrays: &'f [mir::Layout],
@@ -394,6 +397,7 @@ impl<'f, 'hir, T: Target> Lower<'f, 'hir, T> {
             value,
             symbols,
             all_functions,
+            strings,
             layouts,
             sret_ptr: None,
         }
@@ -679,12 +683,12 @@ where
             int_idx += 1;
         }
 
-        let value = &self.value;
-        let layouts = self.layouts;
+        let (value, layouts, strings) = (&self.value, self.layouts, self.strings);
         let (arg_moves, stack_args) = prepare_call_args(
             &mut self.lir,
             block,
             args,
+            strings,
             layouts,
             |vid| value[vid],
             |lir, op, block| operand(lir, op, block, layouts, |vid| value[vid]),
@@ -873,7 +877,7 @@ where
             let label = lir.new_float(bits, is_32);
             T::Operand::from_label(label)
         },
-        Operand::Const(Const::Str { id, .. }) => T::Operand::from_label(format!(".L_str_{id}")),
+        Operand::Const(Const::Str(id)) => T::Operand::from_label(format!(".L_str_{id}")),
         Operand::Const(Const::Unit) => unreachable!("unit operand"),
     }
 }
@@ -920,13 +924,14 @@ where
 pub fn lower_const_str_aggregate<T: TargetOps>(
     lir: &mut lir::Function<T>,
     block: &BlockId,
-    str_id: usize,
-    len: usize,
+    str_id: mir::StringId,
+    strings: &mir::StringPool,
     mut stack_addr: impl FnMut(&mut lir::Function<T>, &BlockId, VReg) -> VReg,
 ) -> VReg
 where
     T::Operand: TargetOperand,
 {
+    let len = strings.len_of(str_id);
     let temp = lir.new_vreg(MachineType::Struct { size: 16, align: 8 });
     let ptr = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
     let label = format!(".L_str_{str_id}");
@@ -945,6 +950,7 @@ pub fn lower_assign<T: TargetOps>(
     dest: VReg,
     typ: Type,
     op: &Operand,
+    strings: &mir::StringPool,
     layouts: Layouts,
     mut vreg_map: impl FnMut(ValueId) -> VReg,
     mut lower_operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
@@ -953,8 +959,8 @@ where
     T::Operand: TargetOperand,
 {
     if typ.is_aggregate_lir(layouts) {
-        if typ.kind() == TypeKind::Str && matches!(op, Operand::Const(Const::Str { .. })) {
-            let Operand::Const(Const::Str { id: str_id, len }) = op else {
+        if typ.kind() == TypeKind::Str && matches!(op, Operand::Const(Const::Str(_))) {
+            let Operand::Const(Const::Str(str_id)) = op else {
                 unreachable!()
             };
 
@@ -963,7 +969,7 @@ where
             lir.push_instr(block, T::load_label(ptr, label, false, 8));
 
             let src_ptr = T::Operand::from_vreg(ptr);
-            let src_len = T::Operand::from_imm(*len as i64);
+            let src_len = T::Operand::from_imm(strings.len_of(*str_id) as i64);
 
             lir.push_instr(block, T::field_store(dest, src_ptr, 0, 8, false));
             lir.push_instr(block, T::field_store(dest, src_len, 8, 8, false));
@@ -990,6 +996,7 @@ pub fn prepare_call_args<T: TargetOps>(
     lir: &mut lir::Function<T>,
     block: &BlockId,
     args: &[Operand],
+    strings: &mir::StringPool,
     layouts: Layouts,
     mut get_vreg: impl FnMut(ValueId) -> VReg,
     mut operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> VReg,
@@ -1008,8 +1015,8 @@ where
         if arg.typ().is_aggregate_lir(layouts) {
             let ptr = match arg {
                 Operand::Place(place) => stack_addr(lir, block, get_vreg(place.id)),
-                Operand::Const(Const::Str { id: str_id, len }) => {
-                    lower_const_str_aggregate(lir, block, *str_id, *len, &mut stack_addr)
+                Operand::Const(Const::Str(str_id)) => {
+                    lower_const_str_aggregate(lir, block, *str_id, strings, &mut stack_addr)
                 },
                 _ => unreachable!("invalid aggregate argument"),
             };

@@ -154,6 +154,7 @@ where
             function,
             &mir.symbols,
             &mir.functions,
+            &mir.strings,
             &mir.layouts,
             &mir.reprs,
             &mir.array_layouts,

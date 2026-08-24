@@ -25,12 +25,20 @@ impl Lowerable for X86_64 {
         function: &Function,
         symbols: &SymbolTable,
         all_functions: &[Function],
+        strings: &mir::StringPool,
         layouts: &mir::Layouts<'_>,
         reprs: &[Option<EnumRepr>],
         array_layouts: &[mir::Layout],
     ) -> lir::Function<Self> {
-        let mut lower =
-            Lower::<X86_64>::new(function, symbols, all_functions, layouts, reprs, array_layouts);
+        let mut lower = Lower::<X86_64>::new(
+            function,
+            symbols,
+            all_functions,
+            strings,
+            layouts,
+            reprs,
+            array_layouts,
+        );
 
         lower.lower_param_moves();
 
@@ -65,6 +73,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                     dest,
                     typ,
                     op,
+                    self.strings,
                     layouts,
                     |vid| value[vid],
                     |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
@@ -126,8 +135,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 operation,
                 rhs,
                 lhs,
-                checked,
-                wrapping: _,
+                overflow,
             } => {
                 use crate::parser::expression::BinaryOperator as B;
 
@@ -138,7 +146,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 let is_float = lhs_type.is_float();
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
-                let checked = *checked;
+                let checked = overflow.is_checked();
 
                 match operation {
                     B::Div if is_float => {
