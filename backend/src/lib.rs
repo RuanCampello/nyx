@@ -56,6 +56,10 @@ pub mod optimisation {
     pub fn get() -> Level {
         LEVEL.with(Cell::get)
     }
+
+    pub fn is_debug() -> bool {
+        matches!(get(), Level::Debug)
+    }
 }
 
 /// Target architecture for code generation

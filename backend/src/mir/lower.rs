@@ -8,7 +8,8 @@ use crate::{
     },
     mir::{
         self, Block, BlockId, Const, Function, Instruction, InstructionKind,
-        InstructionKind as Kind, Mir, Operand, Place, Terminator, ValueId, error::MirError,
+        InstructionKind as Kind, Mir, Operand, OverflowMode, Place, StringPool, Terminator,
+        ValueId, error::MirError,
     },
     optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
@@ -23,7 +24,7 @@ struct FunctionLower<'a, 'hir> {
     locals: Vec<(ValueId, Type<'hir>)>,
     types: &'a TyInterner<'hir>,
     symbols: &'a SymbolTable,
-    strings: &'a mut Vec<String>,
+    strings: &'a mut StringPool,
     adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
     arrays: &'a hir::ArrayTable<'hir>,
     typeck: &'a hir::TypeckResults<'hir>,
@@ -66,7 +67,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
     );
 
     let mut functions = Vec::with_capacity(hir.functions.len());
-    let mut strings = Vec::new();
+    let mut strings = StringPool::default();
     let adts = &hir.adts;
     let arrays = &hir.arrays;
     let symbols = hir.symbols;
@@ -200,7 +201,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         symbols: &'a SymbolTable,
         adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
         arrays: &'a hir::ArrayTable<'hir>,
-        strings: &'a mut Vec<String>,
+        strings: &'a mut StringPool,
         functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
         runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
     ) -> Result<mir::Function<'hir>, MirError> {
@@ -590,7 +591,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     ) {
         self.emit(
             dest,
-            InstructionKind::Binary { operation, lhs, rhs, checked: false, wrapping: false },
+            InstructionKind::Binary { operation, lhs, rhs, overflow: OverflowMode::Unchecked },
         );
     }
 
@@ -621,9 +622,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     L::Char(c) => Operand::Const(Const::Int(*c as i64, typ)),
                     L::Str(sym) => {
                         let s = self.symbols.get(*sym);
-                        let id = self.intern_string(s);
-                        let len = s.len();
-                        Operand::Const(Const::Str { id, len })
+                        let id = self.strings.intern(s);
+                        Operand::Const(Const::Str(id))
                     },
                 })
             },
@@ -792,13 +792,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     operator,
                     BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul
                 );
-                let is_on_debug = optimisation::Level::Debug == optimisation::get();
-                let checked = is_integer && is_arithmetic && is_on_debug;
+                let overflow = match is_integer && is_arithmetic && optimisation::is_debug() {
+                    true => OverflowMode::Checked,
+                    _ => OverflowMode::Unchecked,
+                };
 
-                self.emit(
-                    dest,
-                    Kind::Binary { operation: *operator, lhs, rhs, checked, wrapping: false },
-                );
+                self.emit(dest, Kind::Binary { operation: *operator, lhs, rhs, overflow });
 
                 Ok(Operand::Place(dest))
             },
@@ -999,9 +998,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             },
                             I::Syscall => unreachable!("syscall must carry Res::Syscall"),
                             I::Len => match self.lower_expr(args[0])? {
-                                Operand::Const(Const::Str { len, .. }) => {
-                                    Ok(Operand::Const(Const::Int(len as i64, typ)))
-                                },
+                                Operand::Const(Const::Str(id)) => Ok(Operand::Const(Const::Int(
+                                    self.strings.len_of(id) as i64,
+                                    typ,
+                                ))),
                                 Operand::Place(place) => {
                                     let dest = self.fresh_temporary(typ);
                                     let instr = Kind::FieldLoad {
@@ -1021,9 +1021,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                                 let (lhs, rhs) =
                                     (self.lower_expr(args[0])?, self.lower_expr(args[1])?);
                                 let dest = self.fresh_temporary(typ);
-                                let (checked, wrapping) = (false, true);
+                                let overflow = OverflowMode::Wrapping;
 
-                                let op = Kind::Binary { operation, lhs, rhs, checked, wrapping };
+                                let op = Kind::Binary { operation, lhs, rhs, overflow };
                                 self.emit(dest, op);
                                 Ok(Operand::Place(dest))
                             },
@@ -1492,19 +1492,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
         let is_arithmetic =
             matches!(operator, BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul);
-        let checked =
-            typ.is_integer() && is_arithmetic && optimisation::Level::Debug == optimisation::get();
+        let overflow = match typ.is_integer() && is_arithmetic && optimisation::is_debug() {
+            true => OverflowMode::Checked,
+            _ => OverflowMode::Unchecked,
+        };
 
-        self.emit(
-            dest,
-            InstructionKind::Binary {
-                operation: operator,
-                lhs: old,
-                rhs,
-                checked,
-                wrapping: false,
-            },
-        );
+        self.emit(dest, InstructionKind::Binary { operation: operator, lhs: old, rhs, overflow });
 
         Ok(Operand::Place(dest))
     }
@@ -1891,16 +1884,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         else_block: BlockId,
     ) {
         let cond = self.fresh_temporary(TypeKind::Bool.into());
-        let (checked, wrapping) = (false, false);
         let rhs = Operand::Const(rhs);
-        let instr = InstructionKind::Binary { operation, lhs, rhs, checked, wrapping };
+        let overflow = OverflowMode::Unchecked;
+        let instr = InstructionKind::Binary { operation, lhs, rhs, overflow };
 
         self.emit(cond, instr);
-        self.terminate(Terminator::Branch {
-            condition: Operand::Place(cond),
-            then_block,
-            else_block,
-        });
+        let condition = Operand::Place(cond);
+        self.terminate(Terminator::Branch { condition, then_block, else_block });
     }
 
     #[inline(always)]
@@ -2126,7 +2116,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         typ: Type<'hir>,
     ) -> Operand<'hir> {
         let dest = self.fresh_temporary(typ);
-        self.emit(dest, Kind::Binary { operation, lhs, rhs, checked: false, wrapping: true });
+        self.emit(dest, Kind::Binary { operation, lhs, rhs, overflow: OverflowMode::Wrapping });
 
         Operand::Place(dest)
     }
@@ -2139,7 +2129,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         _typ: Type<'hir>,
     ) -> Operand<'hir> {
         let dest = self.fresh_temporary(self.types.common.bool);
-        self.emit(dest, Kind::Binary { operation, lhs, rhs, checked: false, wrapping: true });
+        self.emit(dest, Kind::Binary { operation, lhs, rhs, overflow: OverflowMode::Unchecked });
 
         Operand::Place(dest)
     }
@@ -2244,7 +2234,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     fn emit_write_string(&mut self, text: String) {
         let len = text.len();
-        let id = self.intern_owned_string(text);
+        let id = self.strings.intern(text);
         let dest = self.fresh_temporary(TypeKind::I32.into());
 
         self.emit(
@@ -2253,7 +2243,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 code: hir::Syscall::Write,
                 args: vec![
                     Operand::Const(Const::Int(1, TypeKind::I32.into())),
-                    Operand::Const(Const::Str { id, len }),
+                    Operand::Const(Const::Str(id)),
                     Operand::Const(Const::Int(len as i64, TypeKind::I32.into())),
                 ],
                 returns: false,
@@ -2292,28 +2282,6 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             ExpressionKind::Local(id) => self.constant_locals[*id].clone(),
             _ => None,
         }
-    }
-
-    #[inline]
-    fn intern_string(&mut self, value: &str) -> usize {
-        if let Some(id) = self.strings.iter().position(|existing| existing == value) {
-            return id;
-        }
-
-        let id = self.strings.len();
-        self.strings.push(value.to_owned());
-        id
-    }
-
-    #[inline(always)]
-    fn intern_owned_string(&mut self, value: String) -> usize {
-        if let Some(id) = self.strings.iter().position(|existing| existing == &value) {
-            return id;
-        }
-
-        let id = self.strings.len();
-        self.strings.push(value);
-        id
     }
 
     fn emit_variant(
