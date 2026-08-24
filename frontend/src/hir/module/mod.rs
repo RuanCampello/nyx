@@ -214,6 +214,8 @@ impl<'hir, F: FileSystem> ModuleLoader<'hir, F> {
             collector.extend_items(&declarations[idx], arena);
         }
 
+        collector.settle_bounds();
+
         let declaration_arrays = collector.arrays.snapshot();
         structs::compute_layouts(&mut collector.adts.defs, &declaration_arrays);
 

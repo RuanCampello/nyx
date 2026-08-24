@@ -513,6 +513,15 @@ pub enum HirErrorKind<'h> {
     UnsatisfiedBound { type_name: Type<'h>, bound_name: &'h str },
 
     #[diagnostic(
+        code = "E165",
+        message = "Generic parameter {name!} has no default but follows one that does",
+        primary = "{name~} would have to be given whenever the default is taken",
+        note = "Arguments are matched left to right, so every parameter after the first defaulted one must be defaulted too",
+        help = "Give {name!} a default, or declare it before the defaulted parameters"
+    )]
+    RequiredAfterDefaultedGeneric { name: &'h str },
+
+    #[diagnostic(
         code = "E143",
         message = "Operator {op!} requires {interface_name*}",
         primary = "{type_name~} does not implement {interface_name*}",

@@ -2,7 +2,7 @@ use crate::{
     diagnostic,
     hir::{
         self, AdtDef, AdtId, ArrayId, ArrayType, Constant, FnDef, FunctionId, Owner, Static,
-        StaticId, SymbolId, SymbolTable, TyInterner, Type, TypeKind,
+        StaticId, SymbolId, SymbolTable, TyInterner, Type, TypeKind, def,
         diagnostics::Diagnostics,
         error::{HirError, HirErrorKind, hir_error},
         ids::IndexVec,
@@ -43,6 +43,9 @@ pub(in crate::hir) struct ItemTable<'hir> {
     pub interfaces: InterfaceNamespace<'hir>,
     pub values: ValueNamespace<'hir>,
     pub editor: EditorIndex<'hir>,
+    /// bounds that could not be checked where they were written, because the `impl`
+    /// discharging them may only be collected later, or in a later module
+    pub pending_bounds: RefCell<Vec<PendingBound<'hir>>>,
     /// Whether the module currently being collected/lowered belongs to std,
     /// set per module by the loader, gates intrinsics and `syscall`
     pub in_std: Cell<bool>,
@@ -79,6 +82,9 @@ pub(in crate::hir) struct FunctionNamespace<'hir> {
 pub(in crate::hir) struct InterfaceNamespace<'hir> {
     pub defs: Interfaces<'hir>,
     pub impls: InterfaceImpls<'hir>,
+    /// `(implementing type, interface) -> the interface's type arguments`, so a bound
+    /// written `T: Interface<U>` can be held to the `U` the implementation chose
+    pub impl_args: HashMap<(Type<'hir>, SymbolId), Vec<Type<'hir>>>,
     /// `(implementing type, associated name) -> bound type`, the `type Output = T;`
     /// of every implementation, keyed so `Self::Output` resolves per receiver
     pub associated_types: HashMap<(Type<'hir>, SymbolId), Type<'hir>>,
@@ -126,12 +132,23 @@ pub struct InterfaceSignature<'hir> {
     pub methods: Vec<InterfaceMethodSignature<'hir>>,
     pub constants: Vec<InterfaceConstSignature<'hir>>,
     pub generic_params: Vec<SymbolId>,
+    /// each parameter's declared default, positional with [Self::generic_params]
+    /// an absent one stands for `Self`, the type carrying the bound
+    pub generic_defaults: Vec<Option<Type<'hir>>>,
     /// declaration order of `type X;`, which is the order their implicit parameter
     /// slots follow [Self::generic_params]
     pub associated_types: Vec<SymbolId>,
     pub decl_span: Span,
     /// the declared name alone, where goto-definition lands
     pub name_span: Span,
+}
+
+/// One `T: Bound` obligation, held until every implementation is known
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingBound<'hir> {
+    pub typ: Type<'hir>,
+    pub bound: SymbolId,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -197,6 +214,7 @@ impl<'hir> ItemTable<'hir> {
             interfaces: InterfaceNamespace::default(),
             values: ValueNamespace::default(),
             editor: EditorIndex::default(),
+            pending_bounds: RefCell::default(),
             in_std: Cell::new(false),
             diagnostics: RefCell::new(Diagnostics::default()),
             #[cfg(test)]
@@ -434,38 +452,39 @@ impl<'hir> ItemTable<'hir> {
             _ => return Err(hir_error!(span, UnknownType { name: self.arena.alloc_str(name) })),
         };
 
-        self.check_generic_args(self.arena.alloc_str(name), id, args, span)?;
+        let mut filled = Vec::new();
+        let args =
+            self.complete_generic_args(self.arena.alloc_str(name), id, args, &mut filled, span)?;
+
         Ok(self.types.adt(id, args))
     }
 
-    fn check_generic_args(
+    /// checks `args` against the parameters of `id`, filling in the defaults of any the caller left off
+    fn complete_generic_args<'a>(
         &self,
         name: &'hir str,
         id: AdtId,
-        args: &[Type<'hir>],
+        args: &'a [Type<'hir>],
+        filled: &'a mut Vec<Type<'hir>>,
         span: Span,
-    ) -> Result<(), HirError<'hir>> {
+    ) -> Result<&'a [Type<'hir>], HirError<'hir>> {
         let generics = &self.adts.defs[id].generics;
-        if generics.len() != args.len() {
-            let (expected, found) = (generics.len(), args.len());
-            return Err(hir_error!(span, ArityMismatch { name, expected, found, decl: None }));
-        }
+        let args = def::complete_generic_args(generics, args, filled, &self.types, &self.arrays)
+            .map_err(|expected| {
+                let found = args.len();
+                hir_error!(span, ArityMismatch { name, expected, found, decl: None })
+            })?;
 
-        for (param, &concrete_type) in generics.iter().zip(args) {
-            for &bound in &param.bounds {
-                let satisfied = matches!(concrete_type.kind(), TypeKind::GenericParam(_))
-                    || self.implements_interface(concrete_type, bound);
-
-                if !satisfied {
-                    let (bound_name, type_name) =
-                        (self.arena.alloc_str(self.symbols.get(bound)), concrete_type);
-
-                    return Err(hir_error!(span, UnsatisfiedBound { type_name, bound_name }));
-                }
+        for (param, &typ) in generics.iter().zip(args) {
+            if matches!(typ.kind(), TypeKind::GenericParam(_)) {
+                continue;
             }
+
+            let pending = param.bounds.iter().map(|&bound| PendingBound { typ, bound, span });
+            self.pending_bounds.borrow_mut().extend(pending);
         }
 
-        Ok(())
+        Ok(args)
     }
 
     pub(in crate::hir) fn instance_symbol(&self, base: &str, args: &[Type<'hir>]) -> String {

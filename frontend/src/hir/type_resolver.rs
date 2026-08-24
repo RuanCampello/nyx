@@ -8,6 +8,7 @@ use crate::{
     hir::{
         AdtDef, AdtId, SymbolId, SymbolTable, TyInterner, Type,
         collect::{self, ArrayTable, Enums, GenericEnv, Structs},
+        def,
         error::{HirError, hir_error},
         ids::IndexVec,
     },
@@ -158,15 +159,15 @@ impl<'a, 'h, 'hir> TypeResolver<'h, 'hir> for ResolveCtx<'a, 'hir> {
             })
             .ok_or_else(|| hir_error!(span, UnknownType { name }))?;
 
-        let expected = self.adts[id].generics.len();
-        if expected != args.len() {
-            return Err(hir_error!(
-                span,
-                ArityMismatch { name, expected, found: args.len(), decl: None }
-            ));
-        }
+        let (mut filled, generics) = (Vec::new(), &self.adts[id].generics);
+        let complete =
+            def::complete_generic_args(generics, args, &mut filled, self.types, self.arrays)
+                .map_err(|expected| {
+                    let found = args.len();
+                    hir_error!(span, ArityMismatch { name, expected, found, decl: None })
+                })?;
 
-        Ok(self.types.adt(id, args))
+        Ok(self.types.adt(id, complete))
     }
 
     fn self_type(&mut self, _span: Span) -> Result<Type<'hir>, HirError<'h>> {

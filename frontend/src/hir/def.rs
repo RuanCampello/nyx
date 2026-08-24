@@ -1,6 +1,8 @@
 use crate::{
-    hir::{EnumRepr, FunctionKind, Layout, Owner, SymbolId, Type},
-    lexer::token::Span,
+    hir::{
+        EnumRepr, FunctionKind, Layout, Owner, SymbolId, Type, collect::ArrayTable, ty::TyInterner,
+    },
+    lexer::{Spanned, token::Span},
     parser::statement::{self, StructRepr},
 };
 use std::collections::HashMap;
@@ -13,13 +15,14 @@ pub struct AdtDef<'hir> {
     pub name_span: Span,
     pub kind: AdtKind<'hir>,
     pub layout: Layout,
-    pub generics: Vec<GenericParamDef>,
+    pub generics: Vec<GenericParamDef<'hir>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GenericParamDef {
+pub struct GenericParamDef<'hir> {
     pub name: SymbolId,
     pub bounds: Vec<SymbolId>,
+    pub default: Option<Spanned<Type<'hir>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,4 +142,35 @@ impl<'hir> AdtDef<'hir> {
             "payload offset requested from struct definition"
         )
     }
+}
+
+pub(in crate::hir) fn complete_generic_args<'a, 'hir>(
+    generics: &[GenericParamDef<'hir>],
+    args: &'a [Type<'hir>],
+    filled: &'a mut Vec<Type<'hir>>,
+    types: &TyInterner<'hir>,
+    arrays: &ArrayTable<'hir>,
+) -> Result<&'a [Type<'hir>], usize> {
+    let required = generics.iter().take_while(|param| param.default.is_none()).count();
+    if args.len() < required {
+        return Err(required);
+    }
+    if args.len() > generics.len() {
+        return Err(generics.len());
+    }
+    if args.len() == generics.len() {
+        return Ok(args);
+    }
+
+    filled.extend_from_slice(args);
+    for param in &generics[args.len()..] {
+        let default = param
+            .default
+            .expect("a parameter trailing a defaulted one must be defaulted")
+            .value();
+
+        filled.push(default.subst(types, arrays, filled));
+    }
+
+    Ok(filled.as_slice())
 }

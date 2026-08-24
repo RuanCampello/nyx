@@ -1,7 +1,7 @@
 use crate::{
     hir::{
-        AdtDef, AdtId, AdtKind, ArrayId, ArrayType, FieldDef, GenericParamDef, Layout, SymbolId,
-        SymbolTable, TyInterner, Type, TypeKind,
+        AdtDef, AdtId, AdtKind, ArrayId, ArrayType, FieldDef, Layout, SymbolId, SymbolTable,
+        TyInterner, Type, TypeKind,
         collect::{ArrayTable, Enums, GenericEnv, Structs},
         diagnostics::Diagnostics,
         error::{HirError, hir_error},
@@ -434,23 +434,7 @@ impl<'a, 'h, 'hir> Lowering<'a, 'h, 'hir> {
             name_span: declaration.name_span,
             kind: AdtKind::Struct { fields, repr: declaration.repr },
             layout: Layout::default(),
-            generics: declaration
-                .generics
-                .iter()
-                .map(|generic| GenericParamDef {
-                    name: self.symbols.get_id(generic.name).expect("generic is interned"),
-                    bounds: generic
-                        .bounds
-                        .iter()
-                        .filter_map(|bound| match bound.value_ref() {
-                            statement::Type::Named(name) | statement::Type::Generic(name, _) => {
-                                self.symbols.get_id(name)
-                            },
-                            _ => None,
-                        })
-                        .collect(),
-                })
-                .collect(),
+            generics: self.adts[self.struct_map[&name]].generics.clone(),
         });
 
         self.states[id] = Visit::Visited;

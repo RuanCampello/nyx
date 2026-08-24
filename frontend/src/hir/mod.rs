@@ -478,6 +478,7 @@ pub fn lower<'hir>(
     }
 
     scope.extend(&declarations, arena);
+    scope.settle_bounds();
     let functions = scope.lower_matching_functions(&declarations, |_| true, false, arena);
     let templates = scope.lower_generic_templates(&functions, arena, false);
     let functions = mono::monomorphise(functions, &templates, &scope);

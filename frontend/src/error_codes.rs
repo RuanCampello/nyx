@@ -1071,6 +1071,22 @@ Interpolate the parts that do print — `"{p.x}, {p.y}"` — until a formatting
 interface exists.
 "#;
 
+E165 => "required generic after a defaulted one", r#"
+Generic arguments are matched left to right, so a parameter that may be omitted
+cannot be followed by one that must be given, there would be no way to supply
+the later argument without also supplying the earlier one.
+
+```nyx
+struct Vec<A: Allocator = Heap, T> { }  // error: T has no default but follows A
+```
+
+Declare the required parameters first, and let the defaulted ones trail:
+
+```nyx
+struct Vec<T, A: Allocator = Heap> { }
+```
+"#;
+
 E150 => "unknown intrinsic", r#"
 A declaration marked `@intrinsic` claims the compiler supplies its body, but no
 implementation is registered under that name.

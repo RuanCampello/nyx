@@ -12,7 +12,10 @@ pub use table::*;
 use crate::{
     hir::{
         self, Function, FunctionId, FunctionKind, Owner, SymbolId, constants,
-        declarations::Declarations, error::HirErrorKind, ids::IndexVec, interfaces, lower, statics,
+        declarations::Declarations,
+        error::{HirErrorKind, hir_error},
+        ids::IndexVec,
+        interfaces, lower, statics,
     },
     lexer::token::Span,
     parser::statement,
@@ -45,6 +48,16 @@ impl<'hir> ItemTable<'hir> {
             self.soft(error);
             Vec::new()
         });
+
+        let enum_defaults = enums
+            .iter()
+            .map(|(id, _, _, declaration)| (*id, declaration.generics.as_slice()));
+        let defaults = structs
+            .iter()
+            .map(|(id, declaration)| (*id, declaration.generics.as_slice()))
+            .chain(enum_defaults);
+        self.resolve_generic_defaults(defaults);
+
         if let Err(error) = self.lower_structs(&structs) {
             self.soft(error);
         }
@@ -74,6 +87,21 @@ impl<'hir> ItemTable<'hir> {
         }
         if let Err(error) = interfaces::validate(self, declarations) {
             self.soft(error);
+        }
+    }
+
+    /// reports every bound that collection deferred, once no further `impl` can appear
+    pub(in crate::hir) fn settle_bounds(&mut self) {
+        self.check_generic_defaults();
+
+        for pending in self.pending_bounds.take() {
+            if self.implements_interface(pending.typ, pending.bound) {
+                continue;
+            }
+
+            let bound_name = self.arena.alloc_str(self.symbols.get(pending.bound));
+            let (type_name, span) = (pending.typ, pending.span);
+            self.soft(hir_error!(span, UnsatisfiedBound { type_name, bound_name }));
         }
     }
 

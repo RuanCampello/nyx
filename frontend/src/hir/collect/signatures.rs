@@ -130,6 +130,19 @@ impl<'hir> ItemTable<'hir> {
                 });
             }
 
+            let generic_defaults = interface
+                .generics
+                .iter()
+                .map(|generic| {
+                    let default = generic.default.as_ref()?;
+                    let resolved = self
+                        .resolve_type(default.value_ref(), default.span(), None, base_env)
+                        .unwrap_or_else(|error| self.poison(error));
+
+                    Some(resolved)
+                })
+                .collect();
+
             let signature = InterfaceSignature {
                 name,
                 is_pub: interface.is_pub,
@@ -137,6 +150,7 @@ impl<'hir> ItemTable<'hir> {
                 methods,
                 constants,
                 generic_params,
+                generic_defaults,
                 associated_types,
                 decl_span: interface.span,
                 name_span: interface.name_span,
@@ -432,7 +446,11 @@ impl<'hir> ItemTable<'hir> {
         });
         self.functions.methods.insert((ctx.receiver_type, method_symbol), id);
         if let Owner::Interface { interface, .. } = ctx.owner {
-            self.functions.interface_methods.entry((interface, method_symbol)).or_default().push(id);
+            self.functions
+                .interface_methods
+                .entry((interface, method_symbol))
+                .or_default()
+                .push(id);
         }
         Ok(())
     }
@@ -481,7 +499,11 @@ impl<'hir> ItemTable<'hir> {
         self.functions.by_name.insert(mangled, id);
         if let Owner::Interface { interface, .. } = ctx.owner {
             let short_name = self.symbols.insert(method.name);
-            self.functions.interface_functions.entry((interface, short_name)).or_default().push(id);
+            self.functions
+                .interface_functions
+                .entry((interface, short_name))
+                .or_default()
+                .push(id);
         }
         Ok(())
     }
@@ -593,15 +615,17 @@ impl<'hir> ItemTable<'hir> {
             _ => Vec::new(),
         };
 
-        let interface_env: GenericEnv<'hir> = generic_params
-            .into_iter()
-            .enumerate()
-            .map(|(i, sym)| {
-                let name = self.symbols.get(sym).to_owned();
-                let typ = explicit_args.get(i).copied().unwrap_or(receiver_type);
-                (name, typ)
-            })
+        let args: Vec<_> = (0..generic_params.len())
+            .map(|i| explicit_args.get(i).copied().unwrap_or(receiver_type))
             .collect();
+
+        let interface_env: GenericEnv<'_> = generic_params
+            .into_iter()
+            .zip(&args)
+            .map(|(sym, &typ)| (self.symbols.get(sym).to_owned(), typ))
+            .collect();
+
+        self.interfaces.impl_args.insert((receiver_type, interface_sym), args);
         base.extend(interface_env);
 
         Ok(Some(base))
