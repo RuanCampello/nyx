@@ -56,6 +56,12 @@ This document outlines the implementation status and roadmap for Nyx. It include
   - [x] Generics with monomorphisation (`<T>`)
     - [x] Interface bounds / constraints (`where` clause)
     - [x] Generic methods on interfaces and impls (`fn hash<H: Hasher>`)
+    - [x] Default type parameters (`struct Vec<T, A: Allocator = Heap>`)
+    - [x] Arguments checked against their substituted parameter, so an unannotated
+          literal takes its type from the call instead of defaulting to `i32`
+    - [x] Bound type arguments held to the implementation's choice
+    - [ ] Infer a generic struct's arguments from its annotation, so a literal needs no turbofish
+    - [ ] Arity-check a generic type named without arguments
   - [ ] Polymorphism (`Interface`)
     - [x] Static dispatch
     - [ ] Dynamic dispatch
