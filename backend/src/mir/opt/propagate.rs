@@ -313,12 +313,11 @@ impl<'a, 'hir> Solver<'a, 'hir> {
         let rewritten = match kind {
             Assign(source) => Assign(operand(*source)),
             Unary { operation, rhs } => Unary { operation: *operation, rhs: operand(*rhs) },
-            Binary { operation, lhs, rhs, checked, wrapping } => Binary {
+            Binary { operation, lhs, rhs, overflow } => Binary {
                 operation: *operation,
                 lhs: operand(*lhs),
                 rhs: operand(*rhs),
-                checked: *checked,
-                wrapping: *wrapping,
+                overflow: *overflow,
             },
             Cast { src, typ } => Cast { src: operand(*src), typ: *typ },
             Call { callee, args } => Call {

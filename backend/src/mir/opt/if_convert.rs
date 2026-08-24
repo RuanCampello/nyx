@@ -15,7 +15,6 @@ use crate::{
         Terminator as Term, ValueId, cfg,
     },
     optimisation::Level,
-    parser::expression::BinaryOperator,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -228,8 +227,9 @@ fn match_diamond<'hir>(
             .chain(&function.blocks[else_arm].instructions)
     };
 
-    let convertible = arms()
-        .all(|instruction| speculatable(&instruction.kind) && selectable(instruction.dest.typ));
+    let convertible = arms().all(|instruction| {
+        instruction.kind.properties().speculatable && selectable(instruction.dest.typ)
+    });
 
     // the selects run in sequence, so a condition an arm
     // overwrites would be read by the second select after the
@@ -294,7 +294,7 @@ fn read_outside(function: &Function<'_>, then_arm: usize, else_arm: usize) -> Ha
             });
 
             // a store reads its destination aggregate rather than replacing it
-            if instruction.kind.writes_through_dest() {
+            if instruction.kind.properties().writes_through_dest {
                 read.insert(instruction.dest.id);
             }
         }
@@ -309,23 +309,6 @@ fn read_outside(function: &Function<'_>, then_arm: usize, else_arm: usize) -> Ha
     }
 
     read
-}
-
-/// instructions that may run on a path that would not have reached then
-#[inline(always)]
-const fn speculatable(kind: &InstructionKind<'_>) -> bool {
-    match kind {
-        InstructionKind::Assign(_)
-        | InstructionKind::Unary { .. }
-        | InstructionKind::Cast { .. }
-        | InstructionKind::Select { .. } => true,
-
-        InstructionKind::Binary { operation, checked, .. } => {
-            !*checked && !matches!(operation, BinaryOperator::Div | BinaryOperator::Rem)
-        },
-
-        _ => false,
-    }
 }
 
 /// types a target select can hold

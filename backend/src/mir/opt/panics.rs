@@ -47,7 +47,7 @@ fn examine<'hir>(
     };
 
     let (panic, detail) = match &instruction.kind {
-        InstructionKind::Binary { wrapping: true, .. } => return None,
+        InstructionKind::Binary { overflow, .. } if overflow.is_wrapping() => return None,
         InstructionKind::Binary { operation, lhs, rhs, .. } => {
             let (lhs, rhs) = (resolve(*lhs)?, resolve(*rhs)?);
             (fold::diagnose(*operation, lhs, rhs)?, binary_detail(*operation, lhs, rhs))
@@ -100,7 +100,7 @@ fn show(value: Const) -> String {
         Const::Int(value, _) => value.to_string(),
         Const::Bool(value) => value.to_string(),
         Const::Float(value, _) => format!("{value:?}"),
-        Const::Str { id, .. } => format!("<str:{id}>"),
+        Const::Str(id) => format!("<str:{id}>"),
         Const::Unit => "()".to_string(),
     }
 }

@@ -144,7 +144,7 @@ impl Body for Instructions {
                     read.insert(src.id);
                 }
 
-                if instruction.kind.writes_through_dest() {
+                if instruction.kind.properties().writes_through_dest {
                     read.insert(instruction.dest.id);
                 }
             }
@@ -158,7 +158,7 @@ impl Body for Instructions {
         for block in &mut function.blocks {
             let before = block.instructions.len();
             block.instructions.retain(|instruction| {
-                !pure(&instruction.kind) || read.contains(&instruction.dest.id)
+                !instruction.kind.can_discard() || read.contains(&instruction.dest.id)
             });
             removed |= block.instructions.len() != before;
         }
@@ -170,131 +170,47 @@ impl Body for Instructions {
 impl Program for Strings {
     /// drop string constants nothing refers to, renumbering the survivors
     fn sweep(&self, mir: &mut Mir) {
-        let mut used = HashSet::new();
+        let mut used = vec![false; mir.strings.len()];
 
         for function in &mir.functions {
             for block in &function.blocks {
                 for instruction in &block.instructions {
                     instruction.kind.each_operand(|operand| {
-                        if let Operand::Const(Const::Str { id, .. }) = operand {
-                            used.insert(*id);
+                        if let Operand::Const(Const::Str(id)) = operand {
+                            used[id.index()] = true;
                         }
                     });
                 }
 
-                if let Some(Operand::Const(Const::Str { id, .. })) =
-                    terminator_operand(&block.terminator)
+                if let Some(Operand::Const(Const::Str(id))) = terminator_operand(&block.terminator)
                 {
-                    used.insert(*id);
+                    used[id.index()] = true;
                 }
             }
         }
 
-        if used.len() == mir.strings.len() {
+        if used.iter().all(|live| *live) {
             return;
         }
 
-        let mut renumbered = vec![0; mir.strings.len()];
-        let mut next = 0;
-        for (old, slot) in renumbered.iter_mut().enumerate() {
-            *slot = next;
-            next += usize::from(used.contains(&old));
-        }
-
-        let mut old = 0;
-        mir.strings.retain(|_| {
-            old += 1;
-            used.contains(&(old - 1))
-        });
+        let renumbered = mir.strings.retain_and_remap(&used);
 
         for function in &mut mir.functions {
             for block in &mut function.blocks {
                 for instruction in &mut block.instructions {
                     instruction.kind.each_operand_mut(|operand| {
-                        if let Operand::Const(Const::Str { id, .. }) = operand {
-                            *id = renumbered[*id];
+                        if let Operand::Const(Const::Str(id)) = operand {
+                            *id = renumbered[id.index()];
                         }
                     });
                 }
 
-                if let Some(Operand::Const(Const::Str { id, .. })) =
+                if let Some(Operand::Const(Const::Str(id))) =
                     terminator_operand_mut(&mut block.terminator)
                 {
-                    *id = renumbered[*id];
+                    *id = renumbered[id.index()];
                 }
             }
-        }
-    }
-}
-
-impl<'hir> InstructionKind<'hir> {
-    #[inline(always)]
-    pub(in crate::mir) const fn writes_through_dest(&self) -> bool {
-        matches!(self, InstructionKind::FieldStore { .. } | InstructionKind::ElementStore { .. })
-    }
-
-    pub(in crate::mir) fn each_operand(&self, mut visit: impl FnMut(&Operand<'hir>)) {
-        use InstructionKind::*;
-        match self {
-            Assign(operand)
-            | Unary { rhs: operand, .. }
-            | FieldLoad { src: operand, .. }
-            | FieldStore { value: operand, .. }
-            | Cast { src: operand, .. } => visit(operand),
-            Binary { lhs, rhs, .. } => {
-                visit(lhs);
-                visit(rhs);
-            },
-            ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
-                visit(base);
-                visit(index);
-                visit(bound);
-            },
-            ElementStore { index, bound, value, .. } => {
-                visit(index);
-                visit(bound);
-                visit(value);
-            },
-            Call { args, .. } | Syscall { args, .. } => args.iter().for_each(visit),
-            Select { condition, then_value, else_value } => {
-                visit(condition);
-                visit(then_value);
-                visit(else_value);
-            },
-            AddressOf { .. } | StaticAddr { .. } => {},
-        }
-    }
-
-    pub(in crate::mir) fn each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand<'hir>)) {
-        use InstructionKind::*;
-
-        match self {
-            Assign(operand)
-            | Unary { rhs: operand, .. }
-            | FieldLoad { src: operand, .. }
-            | FieldStore { value: operand, .. }
-            | Cast { src: operand, .. } => visit(operand),
-            Binary { lhs, rhs, .. } => {
-                visit(lhs);
-                visit(rhs);
-            },
-            ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
-                visit(base);
-                visit(index);
-                visit(bound);
-            },
-            ElementStore { index, bound, value, .. } => {
-                visit(index);
-                visit(bound);
-                visit(value);
-            },
-            Call { args, .. } | Syscall { args, .. } => args.iter_mut().for_each(visit),
-            Select { condition, then_value, else_value } => {
-                visit(condition);
-                visit(then_value);
-                visit(else_value);
-            },
-            AddressOf { .. } | StaticAddr { .. } => {},
         }
     }
 }
@@ -318,22 +234,6 @@ fn callees<'a>(function: &'a Function<'_>) -> impl Iterator<Item = FunctionId> +
             InstructionKind::Call { callee, .. } => Some(*callee),
             _ => None,
         })
-}
-
-/// whether dropping the instruction can change what the program does
-#[inline(always)]
-const fn pure(kind: &InstructionKind<'_>) -> bool {
-    matches!(
-        kind,
-        InstructionKind::Assign(_)
-            | InstructionKind::Unary { .. }
-            | InstructionKind::Binary { checked: false, .. }
-            | InstructionKind::FieldLoad { .. }
-            | InstructionKind::AddressOf { .. }
-            | InstructionKind::StaticAddr { .. }
-            | InstructionKind::Cast { .. }
-            | InstructionKind::Select { .. }
-    )
 }
 
 #[inline(always)]

@@ -173,7 +173,7 @@ impl Hash for Key<'_> {
                 Const::Int(value, typ) => (0, *value as u64, typ).hash(state),
                 Const::Float(value, typ) => (1, value.to_bits(), typ).hash(state),
                 Const::Bool(value) => (2, u64::from(*value)).hash(state),
-                Const::Str { id, len } => (3, *id, *len).hash(state),
+                Const::Str(id) => (3, *id).hash(state),
                 Const::Unit => 4.hash(state),
             }
         }
