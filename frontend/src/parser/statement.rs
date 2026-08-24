@@ -106,9 +106,9 @@ pub struct Match<'i> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm<'i> {
-    /// Single pattern, multiple `|` alternatives are wrapped in [`Pattern::Or`].
+    /// Single pattern, multiple `|` alternatives are wrapped in [Pattern::Or]
     pub pattern: Spanned<Pattern<'i>>,
-    /// Optional `if <guard>` condition.
+    /// Optional `if <guard>` condition
     pub guard: Option<Expression<'i>>,
     pub body: ArmBody<'i>,
     pub span: Span,
@@ -138,7 +138,7 @@ pub enum LoopHeader<'i> {
     Iterable { binding: LoopBinding<'i>, iterable: Expression<'i> },
 }
 
-/// An inline literal value in a pattern position.
+/// An inline literal value in a pattern position
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PatternLit {
     Int(i64),
@@ -188,8 +188,14 @@ pub struct PatternField<'i> {
 pub struct GenericBound<'i> {
     pub name: &'i str,
     pub bounds: Vec<Spanned<Type<'i>>>,
+    /// only ever set in declaration position, never by a `where` clause
+    pub default: Option<Spanned<Type<'i>>>,
     pub span: Span,
 }
+
+/// A generic parameter as written between the angle brackets of a declaration
+#[derive(Debug, PartialEq, Clone)]
+struct GenericParam<'i>(GenericBound<'i>);
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function<'i> {
@@ -1000,7 +1006,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, name_span) = parser.expect_identifier()?;
 
-        let mut generics = parse_generics::<GenericBound>(parser)?;
+        let mut generics = parse_generic_params(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
         let (receiver, params) = parse_receiver_and_params(parser, fn_token.span)?;
@@ -1154,7 +1160,7 @@ impl<'i> Parsable<'i> for Struct<'i> {
         let struct_token = parser.expect_token(Keyword::Struct)?;
         let (name, name_span) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericBound>(parser)?;
+        let generics = parse_generic_params(parser)?;
 
         parser.expect_token(Punct::OpenBrace)?;
 
@@ -1191,7 +1197,7 @@ impl<'i> Parsable<'i> for Enum<'i> {
         let is_pub = parser.consume_token(Keyword::Pub)?;
         let enum_token = parser.expect_token(Keyword::Enum)?;
         let (name, name_span) = parser.expect_identifier()?;
-        let generics = parse_generics::<GenericBound>(parser)?;
+        let generics = parse_generic_params(parser)?;
         parser.expect_token(Punct::OpenBrace)?;
 
         let mut member_docs = Vec::new();
@@ -1266,7 +1272,7 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let interface_token = parser.expect_token(Keyword::Interface)?;
         let (name, name_span) = parser.expect_identifier()?;
 
-        let generics = parse_generics::<GenericBound>(parser)?;
+        let generics = parse_generic_params(parser)?;
 
         let mut superinterfaces = Vec::new();
         if parser.consume_token(Punct::Colon)? {
@@ -1389,7 +1395,7 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let fn_token = parser.expect_token(Keyword::Fn)?;
         let (name, name_span) = parser.expect_identifier()?;
 
-        let mut generics = parse_generics::<GenericBound>(parser)?;
+        let mut generics = parse_generic_params(parser)?;
 
         parser.expect_token(Punct::OpenParen)?;
         let (receiver, params) = parse_receiver_and_params(parser, fn_token.span)?;
@@ -1623,7 +1629,20 @@ impl<'i> Parsable<'i> for GenericBound<'i> {
                 }
             }
         }
-        Ok(GenericBound { name: param_name, bounds, span: bound_span })
+        Ok(GenericBound { name: param_name, bounds, default: None, span: bound_span })
+    }
+}
+
+impl<'i> Parsable<'i> for GenericParam<'i> {
+    fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
+        let mut bound = GenericBound::parse(parser)?;
+        if parser.consume_token(Punct::Eq)? {
+            let default = parser.parse_node::<Spanned<Type>>()?;
+            bound.span = bound.span + default.span();
+            bound.default = Some(default);
+        }
+
+        Ok(Self(bound))
     }
 }
 
@@ -2091,6 +2110,13 @@ pub(crate) fn parse_generics<'i, T: Parsable<'i>>(
         true => parse_angle_bracketed(parser),
         _ => Ok(Vec::new()),
     }
+}
+
+fn parse_generic_params<'i>(
+    parser: &mut Parser<'i>,
+) -> Result<Vec<GenericBound<'i>>, ParserError<'i>> {
+    let params = parse_generics::<GenericParam>(parser)?;
+    Ok(params.into_iter().map(|param| param.0).collect())
 }
 
 /// A `}`-terminated member list

@@ -1939,4 +1939,73 @@ mod tests {
 
         assert_eq!(named, ["add", "Point", "Msg"], "the name alone, not the keyword");
     }
+
+    fn type_shape(typ: &Type<'_>) -> String {
+        match typ {
+            Type::Named(name) => (*name).to_string(),
+            Type::SelfType => "Self".to_string(),
+            Type::Generic(name, args) => {
+                let args: Vec<_> = args.iter().map(|arg| type_shape(arg.value_ref())).collect();
+                format!("{name}<{}>", args.join(", "))
+            },
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn generic_shape(generic: &statement::GenericBound<'_>) -> String {
+        let mut rendered = generic.name.to_string();
+        for bound in &generic.bounds {
+            rendered.push_str(&format!(": {}", type_shape(bound.value_ref())));
+        }
+        if let Some(default) = &generic.default {
+            rendered.push_str(&format!(" = {}", type_shape(default.value_ref())));
+        }
+
+        rendered
+    }
+
+    fn declared_generics(source: &str) -> Vec<String> {
+        let statements = Parser::new(source).parse().unwrap();
+        let Statement::Item(Item { kind, .. }) = &statements[0] else {
+            panic!("expected an item, got {statements:?}");
+        };
+
+        let generics = match kind {
+            ItemKind::Struct(declaration) => &declaration.generics,
+            ItemKind::Enum(declaration) => &declaration.generics,
+            ItemKind::Interface(declaration) => &declaration.generics,
+            ItemKind::Fn(declaration) => &declaration.generics,
+            other => panic!("expected a generic declaration, got {other:?}"),
+        };
+
+        generics.iter().map(generic_shape).collect()
+    }
+
+    #[rstest]
+    #[case::bare("struct Bag<T> { x: T }", &["T"])]
+    #[case::bounded("struct Bag<T: Clone> { x: T }", &["T: Clone"])]
+    #[case::defaulted(
+        "struct Vec<T, A: Allocator = Heap> { x: T }",
+        &["T", "A: Allocator = Heap"]
+    )]
+    #[case::defaulted_without_a_bound("struct Pair<T, U = T> { x: T }", &["T", "U = T"])]
+    #[case::enumerable("enum Slot<T, U = T> { Empty }", &["T", "U = T"])]
+    #[case::interface("interface Eq<Rhs = Self> {}", &["Rhs = Self"])]
+    #[case::generic_default("struct Boxed<T, S = Vec<T>> { x: T }", &["T", "S = Vec<T>"])]
+    fn a_generic_parameter_carries_its_default(#[case] source: &str, #[case] expected: &[&str]) {
+        assert_eq!(declared_generics(source), expected);
+    }
+
+    #[test]
+    fn a_where_clause_leaves_a_single_expression_body_alone() {
+        let source = "fn identity<T>(x: T): T where T: Clone = x;";
+        let statements = Parser::new(source).parse().unwrap();
+        let Statement::Item(Item { kind: ItemKind::Fn(function), .. }) = &statements[0] else {
+            panic!("expected a function, got {statements:?}");
+        };
+
+        assert_eq!(generic_shape(&function.generics[0]), "T: Clone");
+        assert!(function.generics[0].default.is_none(), "a where clause never sets a default");
+        assert!(!function.body.statements.is_empty(), "the body must survive the where clause");
+    }
 }
