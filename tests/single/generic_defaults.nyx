@@ -1,0 +1,86 @@
+use std::panic::{assert_eq};
+
+interface Allocator {
+    fn grow(&self, n: uptr): uptr;
+}
+
+struct Heap {
+    id: i32,
+}
+
+impl Heap with Allocator {
+    fn grow(&self, n: uptr): uptr = n * 2;
+}
+
+struct Arena {
+    id: i32,
+}
+
+impl Arena with Allocator {
+    fn grow(&self, n: uptr): uptr = n * 3;
+}
+
+struct Vec<T, A: Allocator = Heap> {
+    len: uptr,
+    allocator: A,
+}
+
+struct Pair<T, U = T> {
+    left: T,
+    right: U,
+}
+
+struct Registry {
+    vec: Vec<i32>,
+}
+
+fn grown(v: Vec<i32>): uptr = v.allocator.grow(v.len);
+
+fn grown_in(v: Vec<i32, Arena>): uptr = v.allocator.grow(v.len);
+
+interface Near<Rhs = Self> {
+    fn near(&self, other: &Rhs): bool;
+}
+
+struct Metres {
+    v: i64,
+}
+
+struct Feet {
+    v: i64,
+}
+
+impl Metres with Near<Feet> {
+    fn near(&self, other: &Feet): bool = self.v == other.v * 3;
+}
+
+impl Feet with Near {
+    fn near(&self, other: &Feet): bool = self.v == other.v;
+}
+
+fn close<A, B>(a: A, b: B): bool where A: Near<B> = a.near(&b);
+
+fn urem(a: u64, b: u64): u64 = a % b;
+
+fn main(): i32 {
+    let heaped = Vec::<i32> { len: 5, allocator: Heap { id: 0 } };
+    let arena = Vec::<i32, Arena> { len: 5, allocator: Arena { id: 1 } };
+
+    assert_eq(grown(heaped), 10 as uptr);
+    assert_eq(grown_in(arena), 15 as uptr);
+
+    let same = Pair::<i32> { left: 3, right: 4 };
+    let mixed = Pair::<i32, bool> { left: 3, right: true };
+    assert_eq(same.left + same.right, 7);
+    assert_eq(mixed.right, true);
+
+    let registry = Registry { vec: Vec::<i32> { len: 1, allocator: Heap { id: 2 } } };
+    assert_eq(registry.vec.len, 1 as uptr);
+
+    assert_eq(close(Metres { v: 9 }, Feet { v: 3 }), true);
+    assert_eq(close(Feet { v: 4 }, Feet { v: 4 }), true);
+
+    assert_eq(urem(18446744073709551615, 10), 5);
+
+    42
+}

@@ -2154,3 +2154,86 @@ fn remainder_rejects_non_numbers_and_mixed_operands(#[case] body: &str) {
         assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }), "got {:?}", err.kind);
     });
 }
+
+const TAGGED: &str = r#"
+    interface Tag { fn tag(&self): i32; }
+    struct Quiet { v: i32 }
+    impl Quiet with Tag { fn tag(&self): i32 { 0 } }
+    struct Loud { v: i32 }
+    impl Loud with Tag { fn tag(&self): i32 { 1 } }
+    struct Bag<T, A: Tag = Quiet> { n: i32, a: A }
+"#;
+
+#[rstest]
+#[case::default_taken("fn size(b: Bag<i32>): i32 { b.n }")]
+#[case::default_written_out("fn size(b: Bag<i32, Quiet>): i32 { b.n }")]
+#[case::default_overridden("fn size(b: Bag<i32, Loud>): i32 { b.n }")]
+#[case::default_in_a_field("struct Holder { bag: Bag<i32> }")]
+#[case::default_naming_an_earlier_parameter(
+    "struct Pair<T, U = T> { a: T, b: U } fn f(p: Pair<i32>): i32 { p.b }"
+)]
+fn a_generic_default_fills_in_the_arguments_left_off(#[case] user: &str) {
+    with_lowered(&format!("{TAGGED} {user} fn main() {{}}"), |_| ());
+}
+
+#[rstest]
+#[case::below_the_required_count(
+    "struct Trio<T, U, A: Tag = Quiet> { t: T, u: U, a: A } fn size(x: Trio<i32>): i32 { x.t }"
+)]
+#[case::past_the_declared_count("fn size(b: Bag<i32, Loud, Quiet>): i32 { b.n }")]
+fn a_default_does_not_make_the_argument_count_free(#[case] user: &str) {
+    with_lowered_err(&format!("{TAGGED} {user} fn main() {{}}"), |err| {
+        assert!(matches!(err.kind, HirErrorKind::ArityMismatch { .. }), "got {:?}", err.kind);
+    });
+}
+
+#[test]
+fn a_default_has_to_satisfy_the_bound_of_its_own_parameter() {
+    let source = format!("{TAGGED} struct Bad<T, A: Tag = i32> {{ a: A }} fn main() {{}}");
+    with_lowered_err(&source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::UnsatisfiedBound { .. }), "got {:?}", err.kind);
+    });
+}
+
+#[test]
+fn a_required_parameter_may_not_follow_a_defaulted_one() {
+    let source = format!("{TAGGED} struct Bad<A: Tag = Quiet, T> {{ a: A, t: T }} fn main() {{}}");
+    with_lowered_err(&source, |err| {
+        assert!(
+            matches!(err.kind, HirErrorKind::RequiredAfterDefaultedGeneric { name: "T" }),
+            "got {:?}",
+            err.kind
+        );
+    });
+}
+
+const NEAR: &str = r#"
+    interface Near<Rhs = Self> { fn near(&self, other: &Rhs): bool; }
+    struct Metres { v: i64 }
+    struct Feet { v: i64 }
+    impl Metres with Near<Feet> { fn near(&self, other: &Feet): bool { self.v == other.v } }
+    fn check<A, B>(a: A, b: B): bool where A: Near<B> { a.near(&b) }
+"#;
+
+#[test]
+fn a_bound_is_held_to_the_arguments_its_implementation_chose() {
+    let source = format!("{NEAR} fn main() {{ check(Metres {{ v: 1 }}, Feet {{ v: 1 }}); }}");
+    with_lowered(&source, |_| ());
+}
+
+#[test]
+fn a_bound_with_the_wrong_argument_is_rejected() {
+    let source = format!("{NEAR} fn main() {{ check(Metres {{ v: 1 }}, Metres {{ v: 1 }}); }}");
+    with_lowered_err(&source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::UnsatisfiedBound { .. }), "got {:?}", err.kind);
+    });
+}
+
+#[test]
+fn a_generic_argument_is_checked_against_its_substituted_parameter() {
+    let source = "fn same<T>(a: T, b: T): bool { true } \
+                  fn main() { let flag: bool = true; same(1, flag); }";
+    with_lowered_err(source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }), "got {:?}", err.kind);
+    });
+}
