@@ -46,7 +46,7 @@ mod opt;
 pub struct Mir<'hir> {
     pub(in crate::mir) types: TyInterner<'hir>,
     pub(crate) symbols: SymbolTable,
-    pub(crate) strings: Vec<String>,
+    pub(crate) strings: StringPool,
     /// module-level globals, in [StaticId] order, laid out by the backend
     pub(crate) statics: Vec<Static<'hir>>,
     pub(crate) functions: Vec<Function<'hir>>,
@@ -109,15 +109,7 @@ pub enum InstructionKind<'hir> {
         operation: BinaryOperator,
         rhs: Operand<'hir>,
         lhs: Operand<'hir>,
-        /// emit a runtime overflow check: set by the optimisation level, read by the
-        /// backends. It says nothing about intent — below `sane` *every* arithmetic
-        /// instruction is unchecked
-        checked: bool,
-        /// the program asked for modular arithmetic, via one of the `wrapping_*`
-        /// intrinsics. Kept apart from `checked` because that flag varies with the
-        /// optimisation level and this one must not: it is what lets the known-panics
-        /// lint stay silent about an overflow that was deliberate
-        wrapping: bool,
+        overflow: OverflowMode,
     },
     /// load `typ` bytes from an aggregate place at byte `offset`
     FieldLoad { src: Operand<'hir>, offset: u32, typ: Type<'hir> },
@@ -199,9 +191,39 @@ pub enum Const<'hir> {
     Int(i64, Type<'hir>),
     Float(f64, Type<'hir>),
     Bool(bool),
-    // A string literal interned into the function's string pool
-    Str { id: usize, len: usize },
+    Str(StringId),
     Unit,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OverflowMode {
+    Checked,
+    Unchecked,
+    Wrapping,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(in crate::mir) struct InstructionProperties {
+    pub effect: Effect,
+    pub may_trap: bool,
+    pub writes_through_dest: bool,
+    pub speculatable: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct StringId(u32);
+
+#[derive(Debug, Default, PartialEq)]
+pub struct StringPool {
+    values: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(in crate::mir) enum Effect {
+    None,
+    MemoryRead,
+    MemoryWrite,
+    External,
 }
 
 /// The last instruction of a [basic block](self::Block)
@@ -245,7 +267,7 @@ impl<'hir> Const<'hir> {
             Self::Int(_, typ) => *typ,
             Self::Float(_, typ) => *typ,
             Self::Bool(_) => Type::from(TypeKind::Bool),
-            Self::Str { .. } => Type::from(TypeKind::Str),
+            Self::Str(_) => Type::from(TypeKind::Str),
             Self::Unit => Type::from(TypeKind::Unit),
         }
     }
@@ -261,9 +283,181 @@ impl<'hir> Const<'hir> {
                 }
             ),
             Const::Unit => unreachable!("Unit constant has no runtime representation"),
-            Const::Str { .. } => panic!("string constant must be resolved through the string pool"),
+            Const::Str(_) => panic!("string constant must be resolved through the string pool"),
             Const::Float(_, _) => panic!("float constant must be interned into the pool"),
         }
+    }
+}
+
+impl StringPool {
+    #[inline]
+    pub(in crate::mir) fn intern<'s>(
+        &mut self,
+        value: impl Into<std::borrow::Cow<'s, str>>,
+    ) -> StringId {
+        let value = value.into();
+        if let Some(index) = self.values.iter().position(|existing| existing == value.as_ref()) {
+            return StringId(index as u32);
+        }
+
+        self.push(value.into_owned())
+    }
+
+    #[inline(always)]
+    pub(crate) fn get(&self, id: StringId) -> &str {
+        self.values
+            .get(id.index())
+            .map(String::as_str)
+            .expect("string ID must refer to an interned string")
+    }
+
+    #[inline(always)]
+    pub(crate) fn len_of(&self, id: StringId) -> usize {
+        self.get(id).len()
+    }
+
+    #[inline(always)]
+    pub(crate) const fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    #[inline(always)]
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    #[inline(always)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &str> {
+        self.values.iter().map(String::as_str)
+    }
+
+    pub(crate) fn retain_and_remap(&mut self, used: &[bool]) -> Vec<StringId> {
+        assert_eq!(used.len(), self.values.len(), "string liveness map must cover the pool");
+
+        let mut next = 0;
+        let remapped = used
+            .iter()
+            .map(|live| {
+                let id = StringId(next);
+                next += u32::from(*live);
+                id
+            })
+            .collect();
+
+        let mut index = 0;
+        self.values.retain(|_| {
+            let live = used[index];
+            index += 1;
+            live
+        });
+
+        remapped
+    }
+
+    #[inline]
+    fn push(&mut self, value: String) -> StringId {
+        let id = StringId(self.values.len().try_into().expect("pool exceeded u32::MAX entries"));
+        self.values.push(value);
+        id
+    }
+}
+
+impl OverflowMode {
+    #[inline(always)]
+    pub const fn is_checked(self) -> bool {
+        matches!(self, Self::Checked)
+    }
+
+    #[inline(always)]
+    pub const fn is_wrapping(self) -> bool {
+        matches!(self, Self::Wrapping)
+    }
+}
+
+macro_rules! visit_operands {
+    ($self:expr, $visit:expr, $iter:ident) => {{
+        use InstructionKind::*;
+        match $self {
+            Assign(operand)
+            | Unary { rhs: operand, .. }
+            | FieldLoad { src: operand, .. }
+            | FieldStore { value: operand, .. }
+            | Cast { src: operand, .. } => $visit(operand),
+            Binary { lhs, rhs, .. } => {
+                $visit(lhs);
+                $visit(rhs);
+            },
+            ElementLoad { base, index, bound, .. } | ElementAddr { base, index, bound, .. } => {
+                $visit(base);
+                $visit(index);
+                $visit(bound);
+            },
+            ElementStore { index, bound, value, .. } => {
+                $visit(index);
+                $visit(bound);
+                $visit(value);
+            },
+            Call { args, .. } | Syscall { args, .. } => args.$iter().for_each($visit),
+            Select { condition, then_value, else_value } => {
+                $visit(condition);
+                $visit(then_value);
+                $visit(else_value);
+            },
+            AddressOf { .. } | StaticAddr { .. } => {},
+        }
+    }};
+}
+
+impl<'hir> InstructionKind<'hir> {
+    #[inline]
+    pub(in crate::mir) fn properties(&self) -> InstructionProperties {
+        use InstructionKind::*;
+
+        let (effect, may_trap, writes_through_dest, speculatable) = match self {
+            Assign(_) | Unary { .. } | Cast { .. } | Select { .. } => {
+                (Effect::None, false, false, true)
+            },
+            Binary { operation, overflow, .. } => {
+                let may_trap = overflow.is_checked()
+                    || matches!(operation, BinaryOperator::Div | BinaryOperator::Rem);
+                (Effect::None, may_trap, false, !may_trap)
+            },
+            FieldLoad { .. } => (Effect::MemoryRead, false, false, false),
+            ElementLoad { .. } | ElementAddr { .. } => (Effect::MemoryRead, true, false, false),
+            AddressOf { .. } | StaticAddr { .. } => (Effect::None, false, false, false),
+            FieldStore { .. } => (Effect::MemoryWrite, false, true, false),
+            ElementStore { .. } => (Effect::MemoryWrite, true, true, false),
+            Call { .. } | Syscall { .. } => (Effect::External, true, false, false),
+        };
+
+        InstructionProperties { effect, may_trap, writes_through_dest, speculatable }
+    }
+
+    #[inline(always)]
+    pub(in crate::mir) fn can_discard(&self) -> bool {
+        let properties = self.properties();
+        matches!(properties.effect, Effect::None | Effect::MemoryRead) && !properties.may_trap
+    }
+
+    pub(in crate::mir) fn each_operand(&self, mut visit: impl FnMut(&Operand<'hir>)) {
+        visit_operands!(self, visit, iter)
+    }
+
+    pub(in crate::mir) fn each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand<'hir>)) {
+        visit_operands!(self, visit, iter_mut)
+    }
+}
+
+impl StringId {
+    #[inline(always)]
+    pub(crate) const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl std::fmt::Display for StringId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.index().fmt(f)
     }
 }
 
@@ -272,7 +466,7 @@ impl std::fmt::Display for Const<'_> {
         match self {
             Const::Int { .. } | Const::Bool { .. } => write!(f, "{}", (*self).to_string()),
             Const::Float(v, _) => write!(f, "{v:?}"),
-            Const::Str { id, .. } => write!(f, "<str:{id}>"),
+            Const::Str(id) => write!(f, "<str:{}>", id.index()),
             Const::Unit => unreachable!(),
         }
     }
@@ -291,6 +485,41 @@ mod tests {
         let hir = hir::lower(statements, arena).unwrap();
 
         mir::lower(hir).unwrap()
+    }
+
+    #[test]
+    fn string_pool_owns_identity_and_length() {
+        let mut strings = StringPool::default();
+        let first = strings.intern("nyx");
+        let duplicate = strings.intern("nyx");
+
+        assert_eq!(first, duplicate);
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings.len_of(first), 3);
+    }
+
+    #[test]
+    fn instruction_properties_distinguish_checked_and_wrapping_arithmetic() {
+        let operand = Operand::Const(Const::Int(1, TypeKind::I32.into()));
+        let checked = InstructionKind::Binary {
+            operation: BinaryOperator::Add,
+            lhs: operand,
+            rhs: operand,
+            overflow: OverflowMode::Checked,
+        };
+        let wrapping = InstructionKind::Binary {
+            operation: BinaryOperator::Add,
+            lhs: operand,
+            rhs: operand,
+            overflow: OverflowMode::Wrapping,
+        };
+
+        assert!(checked.properties().may_trap);
+        assert!(!checked.can_discard());
+        assert!(!checked.properties().speculatable);
+        assert!(!wrapping.properties().may_trap);
+        assert!(wrapping.can_discard());
+        assert!(wrapping.properties().speculatable);
     }
 
     #[test]
