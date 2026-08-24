@@ -1,0 +1,84 @@
+use std::panic;
+
+const WRAPPED: i32 = 17 % 5;
+
+// compile-time evaluation must agree with the hardware
+const fn wrap(value: i32, limit: i32): i32 = value % limit;
+
+fn rem(a: i32, b: i32): i32 = a % b;
+
+fn urem(a: u64, b: u64): u64 = a % b;
+
+fn frem(a: f64, b: f64): f64 = a % b;
+
+fn is_even(n: i32): bool = n % 2 == 0;
+
+fn gcd(a: i32, b: i32): i32 {
+    let mut x = a;
+    let mut y = b;
+
+    loop {
+        if y == 0 break;
+
+        let t = x % y;
+        x = y;
+        y = t;
+    }
+
+    x
+}
+
+fn main(): i32 {
+    panic::assert_eq(7 % 3, 1);
+    panic::assert_eq(rem(0 - 7, 3), 0 - 1);
+    panic::assert_eq(rem(7, 0 - 3), 1);
+    panic::assert_eq(rem(0 - 7, 0 - 3), 0 - 1);
+
+    // an exact division leaves nothing behind
+    panic::assert_eq(rem(9, 3), 0);
+    // a divisor larger than the dividend leaves the dividend
+    panic::assert_eq(rem(3, 9), 3);
+    panic::assert_eq(rem(0 - 3, 9), 0 - 3);
+
+    // `%` binds as tightly as `*` and `/`, and left-associates with them
+    panic::assert_eq(2 + 7 % 3, 3);
+    panic::assert_eq(7 % 3 * 4, 4);
+    panic::assert_eq(100 / 7 % 5, 4);
+
+    panic::assert_eq(urem(18446744073709551615, 10), 5);
+    panic::assert_eq(urem(9223372036854775808, 3), 2);
+
+    let mut counter: i32 = 17;
+    counter %= 5;
+    panic::assert_eq(counter, 2);
+
+    let mut wide: u64 = 1000;
+    wide %= 7;
+    panic::assert_eq(wide, 6);
+
+    panic::assert_eq(is_even(4), true);
+    panic::assert_eq(is_even(7), false);
+
+    panic::assert_eq(gcd(1071, 462), 21);
+
+    panic::assert_eq(WRAPPED, 2);
+    panic::assert_eq(wrap(0 - 17, 5), 0 - 2);
+
+    panic::assert_eq(frem(7.5, 2.0), 1.5);
+    panic::assert_eq(frem(0.0 - 7.5, 2.0), 0.0 - 1.5);
+    panic::assert_eq(frem(7.5, 0.0 - 2.0), 1.5);
+    panic::assert_eq(frem(8.0, 2.0), 0.0);
+
+    let small: f32 = 5.5;
+    let small_rem: f32 = 1.5;
+    panic::assert_eq(small % 2.0, small_rem);
+
+    // sub-word remainders stay inside their own width
+    let byte: i8 = 0 - 100;
+    panic::assert_eq(byte % 7, 0 - 2);
+
+    let short: i16 = 30000;
+    panic::assert_eq(short % 7, 5);
+
+    42
+}
