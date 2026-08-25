@@ -9,7 +9,7 @@
 
 use crate::{
     Span, TargetArch,
-    hir::{Type, TypeKind},
+    hir::{Type, TypeKind, ids::IndexVec},
     mir::{
         Block, BlockId, Function, Instruction, InstructionKind, Mir, Operand, Place,
         Terminator as Term, ValueId, cfg,
@@ -20,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A branch whose two arms rejoin immediately and belong to nobody else
 struct Diamond<'hir> {
-    then_arm: usize,
-    else_arm: usize,
-    join: usize,
+    then_arm: BlockId,
+    else_arm: BlockId,
+    join: BlockId,
     condition: Operand<'hir>,
 }
 
@@ -82,7 +82,7 @@ impl Budget {
         &self,
         function: &Function<'_>,
         diamond: &Diamond<'_>,
-        head: usize,
+        head: BlockId,
     ) -> Option<Vec<ValueId>> {
         let count = function.blocks[diamond.then_arm].instructions.len()
             + function.blocks[diamond.else_arm].instructions.len();
@@ -146,7 +146,7 @@ impl Block<'_> {
 fn convert_one(function: &mut Function<'_>, budget: &Budget) -> bool {
     let predecessors = cfg::predecessors(function, None);
 
-    for head in 0..function.blocks.len() {
+    for head in function.blocks.indices() {
         let Some(diamond) = match_diamond(function, head, &predecessors) else {
             continue;
         };
@@ -177,7 +177,7 @@ fn convert_one(function: &mut Function<'_>, budget: &Budget) -> bool {
         }
 
         function.blocks[head].instructions.append(&mut speculated);
-        function.blocks[head].terminator = Term::Jump(BlockId(join as u32));
+        cfg::CfgEditor::new(function).replace_terminator(head, Term::Jump(join));
 
         return true;
     }
@@ -187,8 +187,8 @@ fn convert_one(function: &mut Function<'_>, budget: &Budget) -> bool {
 
 fn match_diamond<'hir>(
     function: &Function<'hir>,
-    head: usize,
-    predecessors: &[Vec<usize>],
+    head: BlockId,
+    predecessors: &IndexVec<BlockId, Vec<BlockId>>,
 ) -> Option<Diamond<'hir>> {
     let Term::Branch { condition, then_block, else_block } = &function.blocks[head].terminator
     else {
@@ -196,7 +196,7 @@ fn match_diamond<'hir>(
     };
     let (condition, then_block, else_block) = (*condition, *then_block, *else_block);
 
-    let (then_arm, else_arm) = (then_block.0 as usize, else_block.0 as usize);
+    let (then_arm, else_arm) = (then_block, else_block);
     if then_arm == else_arm || then_arm == head || else_arm == head {
         return None;
     }
@@ -204,8 +204,8 @@ fn match_diamond<'hir>(
     let (then_term, else_term) =
         (&function.blocks[then_arm].terminator, &function.blocks[else_arm].terminator);
     let join = match (then_term, else_term) {
-        (Term::Jump(then_target), Term::Jump(else_target)) if then_target.0 == else_target.0 => {
-            then_target.0 as usize
+        (Term::Jump(then_target), Term::Jump(else_target)) if then_target == else_target => {
+            *then_target
         },
         _ => return None,
     };
@@ -245,7 +245,7 @@ fn match_diamond<'hir>(
 /// copy an arm's instructions onto `into`, renaming every destination to a fresh local
 fn speculate<'hir>(
     function: &mut Function<'hir>,
-    arm: usize,
+    arm: BlockId,
     selected: &[ValueId],
     into: &mut Vec<Instruction<'hir>>,
 ) -> BTreeMap<ValueId, Operand<'hir>> {
@@ -278,10 +278,10 @@ fn speculate<'hir>(
 }
 
 /// every value read anywhere but inside the two arms
-fn read_outside(function: &Function<'_>, then_arm: usize, else_arm: usize) -> HashSet<ValueId> {
+fn read_outside(function: &Function<'_>, then_arm: BlockId, else_arm: BlockId) -> HashSet<ValueId> {
     let mut read = HashSet::new();
 
-    for (index, block) in function.blocks.iter().enumerate() {
+    for (index, block) in function.blocks.iter_enumerated() {
         if index == then_arm || index == else_arm {
             continue;
         }
@@ -332,7 +332,7 @@ const fn selectable(typ: Type<'_>) -> bool {
     )
 }
 
-fn assigned(function: &Function<'_>, arm: usize) -> BTreeSet<ValueId> {
+fn assigned(function: &Function<'_>, arm: BlockId) -> BTreeSet<ValueId> {
     function.blocks[arm]
         .instructions
         .iter()
@@ -341,7 +341,7 @@ fn assigned(function: &Function<'_>, arm: usize) -> BTreeSet<ValueId> {
 }
 
 /// whether `head` is reachable from `join`, for exmaple the diamond sits inside a loop
-fn cyclic(function: &Function<'_>, head: usize, join: usize) -> bool {
+fn cyclic(function: &Function<'_>, head: BlockId, join: BlockId) -> bool {
     let mut seen = HashSet::from([join]);
     let mut queue = vec![join];
 
