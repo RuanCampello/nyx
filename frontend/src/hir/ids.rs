@@ -1,7 +1,7 @@
 //! A thin `Vec<T>` wrapper that only accepts a typed index `I`
 
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut, Index, IndexMut};
+use std::ops::{Index, IndexMut};
 
 pub trait Idx: Copy {
     fn from_usize(index: usize) -> Self;
@@ -105,12 +105,44 @@ impl<I, T> IndexVec<I, T> {
         self.raw.get(idx.to_usize())
     }
 
+    pub fn get_mut(&mut self, idx: I) -> Option<&mut T>
+    where
+        I: Idx,
+    {
+        self.raw.get_mut(idx.to_usize())
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.raw.iter()
     }
 
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.raw.iter_mut()
+    }
+
+    pub fn iter_enumerated(&self) -> impl Iterator<Item = (I, &T)>
+    where
+        I: Idx,
+    {
+        self.raw.iter().enumerate().map(|(index, value)| (I::from_usize(index), value))
+    }
+
+    pub fn iter_enumerated_mut(&mut self) -> impl Iterator<Item = (I, &mut T)>
+    where
+        I: Idx,
+    {
+        self.raw
+            .iter_mut()
+            .enumerate()
+            .map(|(index, value)| (I::from_usize(index), value))
+    }
+
+    pub fn indices(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + use<I, T>
+    where
+        I: Idx,
+    {
+        let len = self.raw.len();
+        (0..len).map(I::from_usize)
     }
 
     pub fn as_slice(&self) -> &[T] {
@@ -141,30 +173,12 @@ impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
     }
 }
 
+#[cfg(test)]
 impl<I, T> Index<usize> for IndexVec<I, T> {
     type Output = T;
-    fn index(&self, idx: usize) -> &T {
+
+    fn index(&self, idx: usize) -> &Self::Output {
         &self.raw[idx]
-    }
-}
-
-impl<I, T> IndexMut<usize> for IndexVec<I, T> {
-    fn index_mut(&mut self, idx: usize) -> &mut T {
-        &mut self.raw[idx]
-    }
-}
-
-impl<I, T> Deref for IndexVec<I, T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        &self.raw
-    }
-}
-
-impl<I, T> DerefMut for IndexVec<I, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.raw
     }
 }
 
@@ -185,6 +199,14 @@ impl<'a, I, T> IntoIterator for &'a IndexVec<I, T> {
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
         self.raw.iter()
+    }
+}
+
+impl<'a, I, T> IntoIterator for &'a mut IndexVec<I, T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.raw.iter_mut()
     }
 }
 

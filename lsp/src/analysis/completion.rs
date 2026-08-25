@@ -387,7 +387,7 @@ impl GenericSlots<'_> {
 impl Importable {
     pub(super) fn name_span(self, hir: &Snapshot<'_>) -> Span {
         match self {
-            Self::Function(at) => hir.functions[at as usize].name_span,
+            Self::Function(at) => hir.functions[hir::FunctionId(at)].name_span,
             Self::Constant(at) => hir.constants[at as usize].name_span,
             Self::Type(id) => hir.adts.get(id).map(|def| def.name_span).unwrap_or_default(),
         }

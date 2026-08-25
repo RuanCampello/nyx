@@ -70,7 +70,7 @@ impl<'hir> Snapshot<'hir> {
         use HoverTarget as H;
 
         let generics = |function: Option<u32>| match function {
-            Some(at) => self.functions[at as usize].generics.as_slice(),
+            Some(at) => self.functions[hir::FunctionId(at)].generics.as_slice(),
             None => &[],
         };
 
@@ -80,7 +80,7 @@ impl<'hir> Snapshot<'hir> {
                 .nominal_hover(typ, map)
                 .unwrap_or_else(|| self.type_info(typ, generics(function))),
             H::Local { function, local, form } => self.local_hover(function, local, form),
-            H::Function(at) => self.fn_hover(&self.functions[at as usize], map),
+            H::Function(at) => self.fn_hover(&self.functions[hir::FunctionId(at)], map),
             H::Constant(at) => self.const_hover(&self.constants[at as usize], map),
             H::Struct(id) => self.nominal_hover_of(id, map),
             H::Field { structure, field } => self.field_hover(structure, field, map),
@@ -100,7 +100,7 @@ impl<'hir> Snapshot<'hir> {
 
     /// the type an inlay hint annotates a binding with
     pub(super) fn hint(&self, typ: hir::Type<'hir>, function: u32) -> String {
-        format_type(typ, self, &self.functions[function as usize].generics)
+        format_type(typ, self, &self.functions[hir::FunctionId(function)].generics)
     }
 
     #[inline]
@@ -130,7 +130,7 @@ impl<'hir> Snapshot<'hir> {
     /// a binding read back as it was declared, so it shows its `let`, its
     /// mutability and its inferred type at once
     fn local_hover(&self, function: u32, local: LocalId, form: Binding) -> HoverInfo {
-        let func = &self.functions[function as usize];
+        let func = &self.functions[hir::FunctionId(function)];
         let local = &func.locals[local];
         let prefix = match (form, local.mutable) {
             (Binding::Let, true) => "let mut ",

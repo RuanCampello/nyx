@@ -192,7 +192,7 @@ impl<'hir> ItemTable<'hir> {
     }
 
     pub(super) fn check_generic_defaults(&mut self) {
-        for id in 0..self.adts.defs.len() {
+        for id in self.adts.defs.indices() {
             for index in 0..self.adts.defs[id].generics.len() {
                 let Some(declared) = self.adts.defs[id].generics[index].default else {
                     continue;
