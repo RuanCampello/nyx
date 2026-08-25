@@ -6,7 +6,7 @@
 
 use crate::{
     hir::FunctionId,
-    mir::{BlockId, Const, Function, InstructionKind, Mir, Operand, Terminator as Term, cfg},
+    mir::{Const, Function, InstructionKind, Mir, Operand, Terminator as Term, cfg},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -87,40 +87,7 @@ impl Program for Functions {
 impl Body for Blocks {
     /// drop blocks no path from the entry reaches, renumbering the survivors
     fn sweep(&self, function: &mut Function) -> bool {
-        let count = function.blocks.len();
-        let reachable = cfg::reachable(function);
-
-        if reachable.iter().all(|live| *live) {
-            return false;
-        }
-
-        let mut renumbered = vec![0u32; count];
-        let mut next = 0;
-        for (old, live) in reachable.iter().enumerate() {
-            renumbered[old] = next;
-            next += u32::from(*live);
-        }
-
-        let mut old = 0;
-        function.blocks.retain(|_| {
-            old += 1;
-            reachable[old - 1]
-        });
-
-        for (position, block) in function.blocks.iter_mut().enumerate() {
-            block.id = BlockId(position as u32);
-
-            match &mut block.terminator {
-                Term::Jump(target) => *target = BlockId(renumbered[target.0 as usize]),
-                Term::Branch { then_block, else_block, .. } => {
-                    *then_block = BlockId(renumbered[then_block.0 as usize]);
-                    *else_block = BlockId(renumbered[else_block.0 as usize]);
-                },
-                Term::Return(_) => {},
-            }
-        }
-
-        true
+        cfg::CfgEditor::new(function).remove_unreachable()
     }
 }
 
