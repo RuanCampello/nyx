@@ -532,6 +532,6 @@ impl std::ops::Index<mir::ValueId> for Vec<VReg> {
 
 impl From<mir::BlockId> for BlockId {
     fn from(value: mir::BlockId) -> Self {
-        Self(value.0)
+        Self(value.index() as u32)
     }
 }

@@ -17,8 +17,8 @@ use crate::{
 use std::collections::HashMap;
 
 struct FunctionLower<'a, 'hir> {
-    blocks: Vec<PartialBlock<'hir>>,
-    current: usize,
+    blocks: IndexVec<BlockId, PartialBlock<'hir>>,
+    current: BlockId,
     next: u32,
     local_map: IndexVec<LocalId, ValueId>,
     locals: Vec<(ValueId, Type<'hir>)>,
@@ -48,7 +48,6 @@ struct InlineContext<'a, 'hir> {
 }
 
 struct PartialBlock<'hir> {
-    id: BlockId,
     instructions: Vec<Instruction<'hir>>,
     terminator: Option<Terminator<'hir>>,
 }
@@ -226,8 +225,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let next = locals.len() as u32;
 
         let mut builder = FunctionLower {
-            blocks: Vec::new(),
-            current: 0,
+            blocks: IndexVec::new(),
+            current: BlockId::ENTRY,
             local_map,
             locals,
             next,
@@ -270,10 +269,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn new_block(&mut self) -> BlockId {
-        let id = BlockId(self.blocks.len() as u32);
-        self.blocks.push(PartialBlock::new(id));
-
-        id
+        self.blocks.push(PartialBlock::new())
     }
 
     fn lower_block(&mut self, block: &hir::Block<'hir>) -> Result<(), MirError> {
@@ -1645,10 +1641,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     fn terminate(&mut self, term: Terminator<'hir>) {
-        debug_assert!(
+        assert!(
             !self.blocks[self.current].is_terminated(),
             "double-termination of block {:?}",
-            self.blocks[self.current].id
+            self.current
         );
 
         self.blocks[self.current].terminator = Some(term);
@@ -1678,12 +1674,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     const fn switch_to(&mut self, id: BlockId) {
-        self.current = id.0 as usize;
+        self.current = id;
     }
 
     #[inline(always)]
     fn current_block_id(&self) -> BlockId {
-        BlockId(self.current as u32)
+        self.current
     }
 
     fn lower_pattern_match(
@@ -2430,8 +2426,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 }
 
 impl<'hir> PartialBlock<'hir> {
-    fn new(id: BlockId) -> Self {
-        Self { id, instructions: Vec::new(), terminator: None }
+    fn new() -> Self {
+        Self { instructions: Vec::new(), terminator: None }
     }
 
     #[inline(always)]
@@ -2441,7 +2437,6 @@ impl<'hir> PartialBlock<'hir> {
 
     fn finalise(self) -> Block<'hir> {
         Block {
-            id: self.id,
             instructions: self.instructions,
             terminator: self.terminator.expect("block missing terminator"),
         }

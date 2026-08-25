@@ -23,6 +23,7 @@ use crate::{
     hir::{
         EnumRepr, FunctionId, Intrinsic, Static, StaticId, SymbolId, SymbolTable, Syscall,
         TyInterner, Type, TypeKind,
+        ids::{Idx, IndexVec},
     },
     parser::expression::{BinaryOperator, UnaryOperator},
 };
@@ -81,7 +82,7 @@ pub struct Function<'hir> {
     /// having to guess which locals were params
     pub(crate) params: Vec<(ValueId, Type<'hir>)>,
     pub(crate) locals: Vec<(ValueId, Type<'hir>)>,
-    pub(crate) blocks: Vec<Block<'hir>>,
+    pub(crate) blocks: IndexVec<BlockId, Block<'hir>>,
 }
 
 /// A single-entry, single-exit sequence of instructions.
@@ -91,7 +92,6 @@ pub struct Function<'hir> {
 /// This invariant allow code generation to translate blocks independently.
 #[derive(Debug, PartialEq)]
 pub struct Block<'hir> {
-    id: BlockId,
     pub(crate) instructions: Vec<Instruction<'hir>>,
     pub(crate) terminator: Terminator<'hir>,
 }
@@ -246,9 +246,9 @@ pub enum Terminator<'hir> {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct ValueId(pub u32);
 
-/// Stable index into a function's [blocks](Function::blocks) vec
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub struct BlockId(pub u32);
+/// Stable index into a function's basic-block table
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct BlockId(u32);
 
 pub(crate) type Layouts<'hir> = HashMap<Type<'hir>, Layout>;
 
@@ -448,6 +448,41 @@ impl<'hir> InstructionKind<'hir> {
     }
 }
 
+impl Terminator<'_> {
+    fn each_target_mut(&mut self, mut visit: impl FnMut(&mut BlockId)) {
+        match self {
+            Self::Jump(target) => visit(target),
+            Self::Branch { then_block, else_block, .. } => {
+                visit(then_block);
+                visit(else_block);
+            },
+            Self::Return(_) => {},
+        }
+    }
+}
+
+impl BlockId {
+    pub(in crate::mir) const ENTRY: Self = Self(0);
+
+    #[inline(always)]
+    pub(crate) const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Idx for BlockId {
+    #[inline(always)]
+    fn from_usize(index: usize) -> Self {
+        assert!(index <= u32::MAX as usize, "block index exceeds u32 capacity");
+        Self(index as u32)
+    }
+
+    #[inline(always)]
+    fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 impl StringId {
     #[inline(always)]
     pub(crate) const fn index(self) -> usize {
@@ -531,8 +566,8 @@ mod tests {
 
         assert_eq!(function.return_type, TypeKind::Unit.into());
         assert_eq!(function.blocks.len(), 1);
-        assert_eq!(function.blocks[0].instructions.len(), 0);
-        assert_eq!(function.blocks[0].terminator, Terminator::Return(None));
+        assert_eq!(function.blocks[BlockId::ENTRY].instructions.len(), 0);
+        assert_eq!(function.blocks[BlockId::ENTRY].terminator, Terminator::Return(None));
     }
 
     #[test]
@@ -541,7 +576,7 @@ mod tests {
         let f = &mir.functions[0];
         assert_eq!(f.return_type, TypeKind::I32.into());
 
-        let assigns: Vec<_> = f.blocks[0]
+        let assigns: Vec<_> = f.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .filter(|i| matches!(i.kind, InstructionKind::Assign(_)))
@@ -561,7 +596,7 @@ mod tests {
         );
 
         let main = &mir.functions[1];
-        let has_call = main.blocks[0]
+        let has_call = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
@@ -579,14 +614,14 @@ mod tests {
         );
 
         let main = &mir.functions[1];
-        let has_call = main.blocks[0]
+        let has_call = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .any(|i| matches!(i.kind, InstructionKind::Call { .. }));
 
         assert!(!has_call, "expected no call instruction in main since add is inlined");
 
-        let has_add = main.blocks[0].instructions.iter().any(|i| {
+        let has_add = main.blocks[BlockId::ENTRY].instructions.iter().any(|i| {
             matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
         });
         assert!(has_add, "expected inlined binary(add) instruction in main");
@@ -600,12 +635,12 @@ mod tests {
         assert!(f.locals.len() >= 2);
         assert!(f.locals.iter().all(|(_, t)| *t == TypeKind::I32.into()));
 
-        let has_add = f.blocks[0].instructions.iter().any(|i| {
+        let has_add = f.blocks[BlockId::ENTRY].instructions.iter().any(|i| {
             matches!(i.kind, InstructionKind::Binary { operation: BinaryOperator::Add, .. })
         });
         assert!(has_add, "expected Binary(Add) instruction");
 
-        assert!(matches!(f.blocks[0].terminator, Terminator::Return(Some(_))));
+        assert!(matches!(f.blocks[BlockId::ENTRY].terminator, Terminator::Return(Some(_))));
     }
 
     #[test]
@@ -618,7 +653,7 @@ mod tests {
         );
 
         let main = &mir.functions[0];
-        let offsets = main.blocks[0]
+        let offsets = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .filter_map(|instruction| match &instruction.kind {
@@ -640,7 +675,7 @@ mod tests {
         );
 
         let main = &mir.functions[0];
-        let offsets = main.blocks[0]
+        let offsets = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .filter_map(|instruction| match &instruction.kind {
@@ -674,7 +709,7 @@ mod tests {
             .find(|function| mir.symbols.get(function.name_symbol) == "nyx::main")
             .unwrap();
 
-        let constants = main.blocks[0]
+        let constants = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .flat_map(|instruction| match &instruction.kind {
@@ -706,7 +741,7 @@ mod tests {
         );
 
         let main = &mir.functions[0];
-        let has_combined_load = main.blocks[0].instructions.iter().any(|instruction| {
+        let has_combined_load = main.blocks[BlockId::ENTRY].instructions.iter().any(|instruction| {
             matches!(
                 instruction.kind,
                 InstructionKind::FieldLoad { offset: 16, typ, .. } if typ == TypeKind::I64.into()
@@ -733,7 +768,7 @@ mod tests {
         );
 
         let main = &mir.functions[0];
-        let has_assignment = main.blocks[0].instructions.iter().any(|instruction| {
+        let has_assignment = main.blocks[BlockId::ENTRY].instructions.iter().any(|instruction| {
             matches!(
                 &instruction.kind,
                 InstructionKind::FieldStore {
@@ -760,7 +795,7 @@ mod tests {
         );
 
         let main = &mir.functions[1];
-        let call = main.blocks[0]
+        let call = main.blocks[BlockId::ENTRY]
             .instructions
             .iter()
             .find_map(|instruction| match &instruction.kind {
