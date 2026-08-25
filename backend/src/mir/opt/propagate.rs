@@ -15,7 +15,7 @@
 //! worklist always terminates
 
 use crate::{
-    hir::FunctionId,
+    hir::{FunctionId, ids::IndexVec},
     mir::{
         Block, BlockId, Const, Function, Instruction, InstructionKind, Operand, Terminator, cfg,
         opt::{Edit, Program, fold, identical, interpret},
@@ -27,8 +27,8 @@ struct Solver<'a, 'hir> {
     program: &'a Program<'a, 'hir>,
     function: &'a Function<'hir>,
     level: Level,
-    entry: Vec<Vec<Lattice<'hir>>>,
-    reachable: Vec<bool>,
+    entry: IndexVec<BlockId, Vec<Lattice<'hir>>>,
+    reachable: IndexVec<BlockId, bool>,
     escaped: Vec<bool>,
     worklist: Vec<BlockId>,
 }
@@ -76,7 +76,7 @@ pub(super) fn walk<'hir>(
     let mut solver = Solver::new(program, function, level);
     solver.solve();
 
-    for (id, block) in function.blocks.iter().enumerate() {
+    for (id, block) in function.blocks.iter_enumerated() {
         if !solver.reachable[id] {
             continue;
         }
@@ -94,10 +94,10 @@ pub(super) fn exit_states<'hir>(
     program: &Program<'_, 'hir>,
     index: usize,
     level: Level,
-) -> Vec<Option<Vec<Lattice<'hir>>>> {
+) -> IndexVec<BlockId, Option<Vec<Lattice<'hir>>>> {
     let function = program.at(index);
     if function.blocks.is_empty() || function.locals.len() > VALUE_LIMIT {
-        return Vec::new();
+        return IndexVec::new();
     }
 
     let mut solver = Solver::new(program, function, level);
@@ -105,8 +105,7 @@ pub(super) fn exit_states<'hir>(
 
     function
         .blocks
-        .iter()
-        .enumerate()
+        .iter_enumerated()
         .map(|(id, block)| {
             solver.reachable[id].then(|| {
                 let mut state = solver.entry[id].clone();
@@ -142,11 +141,11 @@ impl<'a, 'hir> Solver<'a, 'hir> {
             }
         }
 
-        let mut entry = vec![vec![Lattice::Top; values]; blocks];
-        entry[0] = initial;
+        let mut entry = IndexVec::from_elem(vec![Lattice::Top; values], blocks);
+        entry[BlockId::ENTRY] = initial;
 
-        let mut reachable = vec![false; blocks];
-        reachable[0] = true;
+        let mut reachable = IndexVec::from_elem(false, blocks);
+        reachable[BlockId::ENTRY] = true;
 
         Self {
             program,
@@ -155,14 +154,14 @@ impl<'a, 'hir> Solver<'a, 'hir> {
             entry,
             reachable,
             escaped,
-            worklist: vec![BlockId(0)],
+            worklist: vec![BlockId::ENTRY],
         }
     }
 
     fn solve(&mut self) {
-        while let Some(BlockId(id)) = self.worklist.pop() {
-            let block = &self.function.blocks[id as usize];
-            let mut state = self.entry[id as usize].clone();
+        while let Some(id) = self.worklist.pop() {
+            let block = &self.function.blocks[id];
+            let mut state = self.entry[id].clone();
 
             for instruction in &block.instructions {
                 self.step(instruction, &mut state);
@@ -232,8 +231,7 @@ impl<'a, 'hir> Solver<'a, 'hir> {
         }
     }
 
-    fn merge_into(&mut self, BlockId(id): BlockId, incoming: &[Lattice<'hir>]) {
-        let id = id as usize;
+    fn merge_into(&mut self, id: BlockId, incoming: &[Lattice<'hir>]) {
         let first = !self.reachable[id];
         self.reachable[id] = true;
 
@@ -249,15 +247,15 @@ impl<'a, 'hir> Solver<'a, 'hir> {
             }
         }
 
-        if changed && !self.worklist.contains(&BlockId(id as u32)) {
-            self.worklist.push(BlockId(id as u32));
+        if changed && !self.worklist.contains(&id) {
+            self.worklist.push(id);
         }
     }
 
     fn rewrite(&self) -> Vec<Edit<'hir>> {
         let mut edits = Vec::new();
 
-        for (id, block) in self.function.blocks.iter().enumerate() {
+        for (id, block) in self.function.blocks.iter_enumerated() {
             if !self.reachable[id] {
                 continue;
             }
@@ -416,7 +414,7 @@ fn lift2<'hir>(
 
 fn successors(terminator: &Terminator<'_>, state: &[Lattice<'_>]) -> Vec<BlockId> {
     let Terminator::Branch { condition, then_block, else_block } = terminator else {
-        return cfg::successors(terminator).into_iter().map(|b| BlockId(b as u32)).collect();
+        return cfg::successors(terminator);
     };
 
     match condition {

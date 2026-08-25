@@ -10,7 +10,7 @@
 use crate::{
     TargetArch,
     hir::FunctionId,
-    mir::{Const, Function, InstructionKind, Mir, Terminator},
+    mir::{BlockId, Const, Function, InstructionKind, Mir, Terminator, cfg},
     optimisation::{self, Level},
 };
 use std::{
@@ -47,8 +47,8 @@ struct Key<'hir> {
 
 /// A rewrite the analysis justified, applied once its borrow of the program ends
 enum Edit<'hir> {
-    Instruction { block: usize, index: usize, kind: InstructionKind<'hir> },
-    Terminator { block: usize, terminator: Terminator<'hir> },
+    Instruction { block: BlockId, index: usize, kind: InstructionKind<'hir> },
+    Terminator { block: BlockId, terminator: Terminator<'hir> },
 }
 
 /// passes re-enable each other, but in practice everything settles in two or three
@@ -107,7 +107,7 @@ fn apply<'hir>(function: &mut Function<'hir>, edits: Vec<Edit<'hir>>) -> bool {
                 function.blocks[block].instructions[index].kind = kind;
             },
             Edit::Terminator { block, terminator } => {
-                function.blocks[block].terminator = terminator;
+                cfg::CfgEditor::new(function).replace_terminator(block, terminator);
             },
         }
     }

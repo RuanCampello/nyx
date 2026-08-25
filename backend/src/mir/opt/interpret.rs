@@ -3,7 +3,7 @@
 use crate::{
     hir::FunctionId,
     mir::{
-        Const, Function, InstructionKind, Operand, Terminator,
+        self, Const, Function, InstructionKind, Operand, Terminator,
         opt::{Key, Program, fold},
     },
     optimisation::Level,
@@ -64,7 +64,7 @@ impl<'hir> Interpreter<'_, '_, 'hir> {
             env[id.0 as usize] = Some(value);
         }
 
-        let mut block = 0usize;
+        let mut block = mir::BlockId::ENTRY;
         loop {
             let current = function.blocks.get(block)?;
 
@@ -76,14 +76,14 @@ impl<'hir> Interpreter<'_, '_, 'hir> {
             }
 
             match &current.terminator {
-                Terminator::Jump(target) => block = target.0 as usize,
+                Terminator::Jump(target) => block = *target,
                 Terminator::Branch { condition, then_block, else_block } => {
                     let taken = match self.operand(*condition, &env)? {
                         Const::Bool(true) => then_block,
                         Const::Bool(false) => else_block,
                         _ => return None,
                     };
-                    block = taken.0 as usize;
+                    block = *taken;
                 },
                 Terminator::Return(value) => return self.operand((*value)?, &env),
             }
