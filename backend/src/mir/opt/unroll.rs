@@ -6,19 +6,21 @@
 
 use crate::{
     Span,
+    hir::ids::IndexVec,
     mir::{
         BlockId, Const, Function, Instruction, InstructionKind, Operand, Place, Terminator,
-        ValueId, cfg,
+        ValueId,
+        cfg::{self, CfgEditor},
         opt::{fold, propagate::Lattice},
     },
 };
 
 /// one natural loop, with the single block that enters it from outside
 struct Loop {
-    header: usize,
+    header: BlockId,
     /// membership by block index, so the containment test is an index
-    blocks: Vec<bool>,
-    preheader: usize,
+    blocks: IndexVec<BlockId, bool>,
+    preheader: BlockId,
 }
 
 /// what running the loop produced: where control left, and the final value of everything
@@ -34,13 +36,13 @@ const STEP_BUDGET: u32 = 100_000;
 
 pub(super) fn run<'hir>(
     function: &mut Function<'hir>,
-    exits: &[Option<Vec<Lattice<'hir>>>],
+    exits: &IndexVec<BlockId, Option<Vec<Lattice<'hir>>>>,
 ) -> bool {
     if exits.len() != function.blocks.len() {
         return false;
     }
 
-    let reachable: Vec<_> = exits.iter().map(Option::is_some).collect();
+    let reachable: IndexVec<_, _> = exits.iter().map(Option::is_some).collect();
     let predecessors = cfg::predecessors(function, Some(&reachable));
     let dominators = dominators(function, &predecessors);
 
@@ -79,11 +81,11 @@ fn evaluate<'hir>(
         }
 
         block = match &function.blocks[block].terminator {
-            Terminator::Jump(target) => target.0 as usize,
+            Terminator::Jump(target) => *target,
             Terminator::Branch { condition, then_block, else_block } => {
                 match resolve(*condition, &env)? {
-                    Const::Bool(true) => then_block.0 as usize,
-                    Const::Bool(false) => else_block.0 as usize,
+                    Const::Bool(true) => *then_block,
+                    Const::Bool(false) => *else_block,
                     _ => return None,
                 }
             },
@@ -97,7 +99,7 @@ fn evaluate<'hir>(
         .filter_map(|(slot, span)| Some((ValueId(slot as u32), env[slot]?, (*span)?)))
         .collect();
 
-    Some(Evaluated { exit: BlockId(block as u32), writes })
+    Some(Evaluated { exit: block, writes })
 }
 
 fn step<'hir>(kind: &InstructionKind<'hir>, env: &[Option<Const<'hir>>]) -> Option<Const<'hir>> {
@@ -130,37 +132,38 @@ fn replace<'hir>(function: &mut Function<'hir>, target: &Loop, evaluated: Evalua
         })
         .collect();
 
-    let preheader = &mut function.blocks[target.preheader];
-    preheader.instructions.extend(settled);
-    preheader.terminator = Terminator::Jump(evaluated.exit);
+    function.blocks[target.preheader].instructions.extend(settled);
+    CfgEditor::new(function).replace_terminator(target.preheader, Terminator::Jump(evaluated.exit));
 }
 
 fn loops(
     function: &Function<'_>,
-    predecessors: &[Vec<usize>],
-    dominators: &[Vec<bool>],
-    reachable: &[bool],
+    predecessors: &IndexVec<BlockId, Vec<BlockId>>,
+    dominators: &IndexVec<BlockId, IndexVec<BlockId, bool>>,
+    reachable: &IndexVec<BlockId, bool>,
 ) -> Vec<Loop> {
-    let count = function.blocks.len();
     let mut found = Vec::new();
 
-    for (latch, block) in function.blocks.iter().enumerate().filter(|(id, _)| reachable[*id]) {
+    for (latch, block) in function.blocks.iter_enumerated().filter(|(id, _)| reachable[*id]) {
         for header in
             cfg::successors(&block.terminator).into_iter().filter(|&h| dominators[latch][h])
         {
-            let blocks = natural_loop(header, latch, predecessors, count);
+            let blocks = natural_loop(function, header, latch, predecessors);
 
             let mut outside = predecessors[header].iter().filter(|&&block| !blocks[block]);
             let (Some(&preheader), None) = (outside.next(), outside.next()) else {
                 continue;
             };
 
-            if function.blocks[preheader].terminator != Terminator::Jump(BlockId(header as u32)) {
+            if function.blocks[preheader].terminator != Terminator::Jump(header) {
                 continue;
             }
 
-            let breached =
-                (0..count).filter(|&block| reachable[block] && !blocks[block]).any(|block| {
+            let breached = function
+                .blocks
+                .indices()
+                .filter(|&block| reachable[block] && !blocks[block])
+                .any(|block| {
                     cfg::successors(&function.blocks[block].terminator)
                         .iter()
                         .any(|&edge| edge != header && blocks[edge])
@@ -176,12 +179,12 @@ fn loops(
 }
 
 fn natural_loop(
-    header: usize,
-    latch: usize,
-    predecessors: &[Vec<usize>],
-    count: usize,
-) -> Vec<bool> {
-    let mut blocks = vec![false; count];
+    function: &Function<'_>,
+    header: BlockId,
+    latch: BlockId,
+    predecessors: &IndexVec<BlockId, Vec<BlockId>>,
+) -> IndexVec<BlockId, bool> {
+    let mut blocks = IndexVec::from_elem(false, function.blocks.len());
     blocks[header] = true;
 
     let mut stack = Vec::new();
@@ -202,24 +205,27 @@ fn natural_loop(
     blocks
 }
 
-fn dominators(function: &Function<'_>, predecessors: &[Vec<usize>]) -> Vec<Vec<bool>> {
+fn dominators(
+    function: &Function<'_>,
+    predecessors: &IndexVec<BlockId, Vec<BlockId>>,
+) -> IndexVec<BlockId, IndexVec<BlockId, bool>> {
     let count = function.blocks.len();
 
-    let mut dominators = vec![vec![true; count]; count];
-    dominators[0] = vec![false; count];
-    dominators[0][0] = true;
+    let mut dominators = IndexVec::from_elem(IndexVec::from_elem(true, count), count);
+    dominators[BlockId::ENTRY] = IndexVec::from_elem(false, count);
+    dominators[BlockId::ENTRY][BlockId::ENTRY] = true;
 
     let mut changed = true;
     while changed {
         changed = false;
 
-        for block in 1..count {
+        for block in function.blocks.indices().skip(1) {
             // unreachable blocks dominate nothing, any loop they form has an unreachable
             // preheader, so no rewrite can come of it
-            let mut next = vec![!predecessors[block].is_empty(); count];
+            let mut next = IndexVec::from_elem(!predecessors[block].is_empty(), count);
 
             for &predecessor in &predecessors[block] {
-                for (slot, dominated) in next.iter_mut().enumerate() {
+                for (slot, dominated) in next.iter_enumerated_mut() {
                     *dominated &= dominators[predecessor][slot];
                 }
             }
