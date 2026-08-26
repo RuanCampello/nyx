@@ -1,0 +1,40 @@
+use std::panic::{assert};
+
+// runtime values: constant folding must not be what makes these pass
+fn u8_id(x: u8): u8 { x }
+fn u16_id(x: u16): u16 { x }
+fn u32_id(x: u32): u32 { x }
+fn u64_id(x: u64): u64 { x }
+fn i8_id(x: i8): i8 { x }
+
+fn main(): i32 {
+    let a: u8 = u8::MAX;
+    assert(a > 1);
+    let b: u16 = u16::MAX;
+    assert(b > 1);
+    let c: u32 = u32::MAX;
+    assert(c > 1);
+    let d = u64::MAX;
+    assert(d > 1);
+
+    let high = u8_id(u8::MAX);
+    let low = u8_id(1);
+    assert(high > low);
+    assert(high >= low);
+    assert(low < high);
+    assert(low <= high);
+    assert(!(high < low));
+    assert(!(low > high));
+
+    assert(u16_id(u16::MAX) > u16_id(1));
+    assert(u32_id(u32::MAX) > u32_id(1));
+    assert(u64_id(u64::MAX) > u64_id(1));
+
+    let negative = i8_id(0 - 1);
+    let positive = i8_id(1);
+    assert(negative < positive);
+    assert(positive > negative);
+    assert(!(negative > positive));
+
+    42
+}

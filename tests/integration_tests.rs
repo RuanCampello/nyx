@@ -42,6 +42,7 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         | "expression_blocks"
         | "interpolation"
         | "unsigned_division"
+        | "unsigned_relational_comparison"
         | "remainder"
         | "generic_defaults"
         | "compact_forms" => Some(42),
