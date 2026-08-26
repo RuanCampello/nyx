@@ -758,8 +758,10 @@ impl Condition {
         }
     }
 
-    pub fn new(operator: &BinaryOperator, is_float: bool) -> Self {
-        match (operator, is_float) {
+    /// `unsigned` selects the below/above codes: they are correct both for unsigned
+    /// integers and for the CF/ZF flags `ucomis` produces
+    pub const fn new(operator: &BinaryOperator, unsigned: bool) -> Self {
+        match (operator, unsigned) {
             (BinaryOperator::Eq, _) => Self::E,
             (BinaryOperator::Ne, _) => Self::Ne,
 
@@ -775,7 +777,7 @@ impl Condition {
             (BinaryOperator::GtEq, true) => Self::Ae,
             (BinaryOperator::GtEq, false) => Self::Ge,
 
-            _ => unreachable!("invalid combination of binary operator and float flag"),
+            _ => panic!("invalid comparison operator"),
         }
     }
 }

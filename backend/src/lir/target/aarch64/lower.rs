@@ -124,25 +124,17 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
             I::Binary { operation, rhs, lhs, overflow } => {
                 use crate::parser::expression::BinaryOperator as B;
 
-                let bytes = lhs.typ().machine_type(self.layouts).bytes();
-                let lhs_type = lhs.typ();
-                let rhs_type = rhs.typ();
-                let is_float = lhs_type.is_float();
+                let (lhs_type, rhs_type) = (lhs.typ(), rhs.typ());
+                let lhs_mt = lhs_type.machine_type(self.layouts);
+                let (is_signed, is_float) = (lhs_mt.is_signed(), lhs_type.is_float());
+                let (bytes, checked) = (lhs_mt.bytes(), overflow.is_checked());
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
-                let checked = overflow.is_checked();
 
                 match operation {
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
-                        self.lower_cmp(
-                            id,
-                            dest,
-                            lhs,
-                            rhs,
-                            bytes,
-                            is_float,
-                            A64Cond::new(comp, is_float),
-                        );
+                        let cond = A64Cond::new(comp, is_float || !is_signed);
+                        self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, cond);
                     },
 
                     _ => {

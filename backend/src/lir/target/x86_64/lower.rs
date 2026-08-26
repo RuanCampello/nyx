@@ -178,16 +178,10 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                         self.lir.push_instr(id, X86Instr::wide_mul(dest, factor, rhs, bytes, is_signed, checked));
                     }
 
-                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => self.lower_cmp(
-                        id,
-                        dest,
-                        lhs,
-                        rhs,
-                        bytes,
-                        is_float,
-                        Condition::new(comp, is_float),
-                    ),
-
+                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
+                        let cond = Condition::new(comp, is_float || !is_signed);
+                        self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, cond)
+                    },
                     _ => {
                         let copy = match is_float {
                             true => X86Instr::MovFloat { dest, bytes, src: lhs },

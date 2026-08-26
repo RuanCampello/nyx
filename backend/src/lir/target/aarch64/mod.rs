@@ -143,7 +143,7 @@ pub enum A64Instr {
 /// AArch64 condition codes for `cset` / `b.cond`
 ///
 /// float comparisons (`fcmp`) set NZCV with unsigned semantics,
-/// so we use `Lo`/`Ls`/`Hi`/`Hs` for float ordering
+/// so `Lo`/`Ls`/`Hi`/`Hs` cover both float ordering and unsigned integers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[rustfmt::skip]
 pub enum A64Cond {
@@ -178,8 +178,10 @@ impl A64Cond {
         }
     }
 
-    pub fn new(operator: &BinaryOperator, is_float: bool) -> Self {
-        match (operator, is_float) {
+    /// `unsigned` selects the `Lo`/`Ls`/`Hi`/`Hs` codes: they are correct both for
+    /// unsigned integers and for the NZCV flags `fcmp` produces
+    pub const fn new(operator: &BinaryOperator, unsigned: bool) -> Self {
+        match (operator, unsigned) {
             (BinaryOperator::Eq, _) => Self::Eq,
             (BinaryOperator::Ne, _) => Self::Ne,
 
@@ -195,7 +197,7 @@ impl A64Cond {
             (BinaryOperator::GtEq, true) => Self::Hs,
             (BinaryOperator::GtEq, false) => Self::Ge,
 
-            _ => unreachable!("invalid comparison operator"),
+            _ => panic!("invalid comparison operator"),
         }
     }
 }
