@@ -439,10 +439,17 @@ where
         let mut stack_idx = 0;
 
         if T::uses_sret(self.function.return_type, self.layouts) {
-            let ptr = self.lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+            let mt = MachineType::Int { bytes: 8, signed: false };
+            let abi_vreg = self.lir.new_vreg(mt);
             let reg = T::param(int_idx, RegClass::Int)
                 .expect("sret pointer must fit in the first integer argument register");
-            self.lir.add_precolour(ptr, reg);
+            self.lir.add_precolour(abi_vreg, reg);
+
+            // the pointer is live until the return, so it cannot stay pinned to the
+            // caller-saved argument register that a nested call reuses for its own args
+            let ptr = self.lir.new_vreg(mt);
+            self.lir.push_instr(&entry, T::load_param_reg(ptr, abi_vreg, mt));
+
             self.sret_ptr = Some(ptr);
             int_idx += 1;
         }
