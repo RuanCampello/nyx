@@ -1,0 +1,35 @@
+// a large aggregate is returned through a hidden sret pointer in the first argument
+// register
+// any call in the body reuses that register for its own arguments
+use std::panic::{assert_eq};
+
+struct S {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+fn bump(n: i64): i64 = n + 1;
+
+fn indirect(n: i64): S {
+    let k = bump(n);
+    S { a: k, b: k, c: k }
+}
+
+fn down(n: i64): S = match n == 0 {
+    true -> S { a: 1, b: 2, c: 3 },
+    _ -> {
+        let s = down(n - 1);
+        S { a: s.a + 1, b: s.b + 1, c: s.c + 1 }
+    },
+};
+
+fn main(): i32 {
+    let i = indirect(6);
+
+    assert_eq(i.a, 7);
+    assert_eq(i.c, 7);
+
+    let s = down(12);
+    (s.a + s.b + s.c) as i32
+}
