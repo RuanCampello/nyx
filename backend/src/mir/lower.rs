@@ -3,44 +3,60 @@
 use crate::{
     Span,
     hir::{
-        self, Expression, ExpressionKind, FunctionId, Hir, Layout, LocalId, Statement, SymbolId,
-        SymbolTable, TyInterner, Type, TypeKind, ids::IndexVec, lang::PrintKind,
+        self, Expression, ExpressionKind, FunctionId, Hir, LocalId, Statement, SymbolId,
+        SymbolTable, TyInterner, Type, TypeKind, ids::IndexVec,
     },
     mir::{
-        self, Block, BlockId, Const, Function, Instruction, InstructionKind,
-        InstructionKind as Kind, Mir, Operand, OverflowMode, Place, StringPool, Terminator,
-        ValueId, error::MirError,
+        self, Block, BlockId, Const, Function, Instruction, InstructionKind, Mir, Operand,
+        OverflowMode, Place, StringPool, Terminator, ValueId, error::MirError,
     },
     optimisation,
     parser::expression::{BinaryOperator, TypeIntrinsicKind, UnaryOperator},
 };
-use std::collections::HashMap;
+
+use builtin::BuiltinLowering;
+use constants::ConstantValues;
+use layout::LayoutCollector;
+
+mod builtin;
+mod constants;
+mod layout;
+mod runtime_uses;
 
 struct FunctionLower<'a, 'hir> {
+    context: LoweringContext<'a, 'hir>,
+    build: FunctionBuildState<'hir>,
+    strings: &'a mut StringPool,
+    local_map: IndexVec<LocalId, ValueId>,
+    typeck: &'a hir::TypeckResults<'hir>,
+    local_symbols: IndexVec<LocalId, SymbolId>,
+    constants: ConstantValues<'a>,
+    runtime_local_uses: IndexVec<LocalId, bool>,
+    inlined_return_target: Option<(BlockId, Option<Place<'hir>>)>,
+}
+
+#[derive(Clone, Copy)]
+struct LoweringContext<'a, 'hir> {
+    types: &'a TyInterner<'hir>,
+    symbols: &'a SymbolTable,
+    adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
+    arrays: &'a hir::ArrayTable<'hir>,
+    functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
+    runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
+}
+
+struct FunctionBuildState<'hir> {
     blocks: IndexVec<BlockId, PartialBlock<'hir>>,
     current: BlockId,
     next: u32,
-    local_map: IndexVec<LocalId, ValueId>,
     locals: Vec<(ValueId, Type<'hir>)>,
-    types: &'a TyInterner<'hir>,
-    symbols: &'a SymbolTable,
-    strings: &'a mut StringPool,
-    adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
-    arrays: &'a hir::ArrayTable<'hir>,
-    typeck: &'a hir::TypeckResults<'hir>,
-    local_symbols: IndexVec<LocalId, SymbolId>,
-    constant_locals: IndexVec<LocalId, Option<String>>,
-    runtime_local_uses: IndexVec<LocalId, bool>,
-    functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
-    runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
-    inlined_return_target: Option<(BlockId, Option<Place<'hir>>)>,
     loop_targets: Vec<LoopTargets>,
     span: Span,
 }
 
 struct InlineContext<'a, 'hir> {
     local_map: IndexVec<LocalId, ValueId>,
-    constant_locals: IndexVec<LocalId, Option<String>>,
+    constants: ConstantValues<'a>,
     runtime_local_uses: IndexVec<LocalId, bool>,
     local_symbols: IndexVec<LocalId, SymbolId>,
     inlined_return_target: Option<(BlockId, Option<Place<'hir>>)>,
@@ -73,46 +89,25 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
     let types = &hir.types;
 
     let mut runtime_uses = IndexVec::with_capacity(hir.functions.len());
-    for f in &hir.functions {
-        let id = runtime_uses.push(collect_runtime_local_uses(f));
-        debug_assert_eq!(id, f.id);
+    for function in &hir.functions {
+        let id = runtime_uses.push(runtime_uses::collect(function));
+        debug_assert_eq!(id, function.id);
     }
+
+    let context = LoweringContext {
+        types,
+        symbols: &symbols,
+        adts,
+        arrays,
+        functions: &hir.functions,
+        runtime_uses: &runtime_uses,
+    };
 
     for function in &hir.functions {
-        functions.push(FunctionLower::run(
-            function,
-            types,
-            &symbols,
-            adts,
-            arrays,
-            &mut strings,
-            &hir.functions,
-            &runtime_uses,
-        )?);
+        functions.push(FunctionLower::run(function, context, &mut strings)?);
     }
 
-    let mut adt_layouts = HashMap::new();
-    for function in &functions {
-        collect_adt_layout(function.return_type, types, adts, arrays, &mut adt_layouts);
-        for &(_, typ) in &function.locals {
-            collect_adt_layout(typ, types, adts, arrays, &mut adt_layouts);
-        }
-    }
-    for item in hir.statics.iter() {
-        collect_adt_layout(item.typ, types, adts, arrays, &mut adt_layouts);
-    }
-
-    // taken last: substituting a generic array field above may have minted
-    // fresh entries in `arrays`, so this snapshot must see the final table
-    let array_layouts = arrays
-        .snapshot()
-        .iter()
-        .map(|array| {
-            let (size, align) = hir::type_layout(array.element, types, adts, arrays);
-            let contains_float = hir::type_contains_float(array.element, types, adts, arrays);
-            Layout::new(size * array.len, align, contains_float)
-        })
-        .collect();
+    let layouts = LayoutCollector::new(types, adts, arrays).collect(&functions, &hir.statics);
 
     Ok(Mir {
         types: hir.types,
@@ -120,7 +115,7 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
         symbols,
         strings,
         statics: hir.statics.iter().copied().collect(),
-        layouts: adt_layouts,
+        layouts: layouts.adts,
         reprs: hir
             .adts
             .iter()
@@ -129,61 +124,8 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
                 hir::AdtKind::Struct { .. } => None,
             })
             .collect(),
-        array_layouts,
+        array_layouts: layouts.arrays,
     })
-}
-
-fn collect_adt_layout<'hir>(
-    typ: Type<'hir>,
-    types: &TyInterner<'hir>,
-    adts: &IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
-    arrays: &hir::ArrayTable<'hir>,
-    layouts: &mut HashMap<Type<'hir>, Layout>,
-) {
-    match typ.kind() {
-        TypeKind::Adt(id, args) => {
-            if layouts.contains_key(&typ) {
-                return;
-            }
-            let (size, align) = hir::type_layout(typ, types, adts, arrays);
-            let contains_float = hir::type_contains_float(typ, types, adts, arrays);
-            layouts.insert(typ, Layout::new(size, align, contains_float));
-            match &adts[id].kind {
-                hir::AdtKind::Struct { fields, .. } => {
-                    for field in fields {
-                        collect_adt_layout(
-                            field.typ.subst(types, arrays, args),
-                            types,
-                            adts,
-                            arrays,
-                            layouts,
-                        );
-                    }
-                },
-                hir::AdtKind::Enum { variants, .. } => {
-                    for payload in variants.iter().filter_map(|variant| variant.payload) {
-                        collect_adt_layout(
-                            payload.subst(types, arrays, args),
-                            types,
-                            adts,
-                            arrays,
-                            layouts,
-                        );
-                    }
-                },
-            }
-        },
-        TypeKind::Array(id) => {
-            collect_adt_layout(arrays.get(id).element, types, adts, arrays, layouts);
-        },
-        TypeKind::Ref { to, .. } | TypeKind::Raw { to, .. } => {
-            collect_adt_layout(Type::from(to), types, adts, arrays, layouts);
-        },
-        TypeKind::Slice { element, .. } => {
-            collect_adt_layout(Type::from(element), types, adts, arrays, layouts);
-        },
-        _ => {},
-    }
 }
 
 fn temp_value_type<'hir>(typ: Type<'hir>) -> Type<'hir> {
@@ -196,13 +138,8 @@ fn temp_value_type<'hir>(typ: Type<'hir>) -> Type<'hir> {
 impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn run(
         function: &hir::Function<'hir>,
-        types: &'a TyInterner<'hir>,
-        symbols: &'a SymbolTable,
-        adts: &'a IndexVec<hir::AdtId, hir::AdtDef<'hir>>,
-        arrays: &'a hir::ArrayTable<'hir>,
+        context: LoweringContext<'a, 'hir>,
         strings: &'a mut StringPool,
-        functions: &'a IndexVec<FunctionId, hir::Function<'hir>>,
-        runtime_uses: &'a IndexVec<FunctionId, IndexVec<LocalId, bool>>,
     ) -> Result<mir::Function<'hir>, MirError> {
         let id = function.id;
         let intrinsic = function.kind.intrinsic();
@@ -224,36 +161,35 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
         let next = locals.len() as u32;
 
-        let mut builder = FunctionLower {
+        let build = FunctionBuildState {
             blocks: IndexVec::new(),
             current: BlockId::ENTRY,
-            local_map,
-            locals,
             next,
-            types,
-            symbols,
-            strings,
-            adts,
-            arrays,
-            typeck: &function.typeck,
-            local_symbols,
-            constant_locals: IndexVec::from_elem(None, n_hir_locals),
-            runtime_local_uses: runtime_uses[id].clone(),
-            functions,
-            runtime_uses,
-            inlined_return_target: None,
+            locals,
             loop_targets: Vec::new(),
             span: function.decl_span,
         };
 
-        builder.new_block();
-        builder.lower_block(&function.body)?;
+        let mut lower = FunctionLower {
+            context,
+            build,
+            strings,
+            local_map,
+            typeck: &function.typeck,
+            local_symbols,
+            constants: ConstantValues::new(context.symbols, n_hir_locals),
+            runtime_local_uses: context.runtime_uses[id].clone(),
+            inlined_return_target: None,
+        };
 
-        if !builder.blocks[builder.current].is_terminated() {
-            builder.terminate(Terminator::Return(None));
+        lower.build.new_block();
+        lower.lower_block(&function.body)?;
+
+        if !lower.build.is_terminated() {
+            lower.build.terminate(Terminator::Return(None));
         }
 
-        let blocks = builder.blocks.into_iter().map(PartialBlock::finalise).collect();
+        let (blocks, locals) = lower.build.finish();
 
         Ok(Function {
             id,
@@ -263,18 +199,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             return_type,
             params,
             name_symbol,
-            locals: builder.locals,
+            locals,
         })
-    }
-
-    #[inline(always)]
-    fn new_block(&mut self) -> BlockId {
-        self.blocks.push(PartialBlock::new())
     }
 
     fn lower_block(&mut self, block: &hir::Block<'hir>) -> Result<(), MirError> {
         for statement in block.statements {
-            if self.is_terminated() {
+            if self.build.is_terminated() {
                 break;
             }
 
@@ -290,9 +221,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         match statement {
             Stmt::LetInit { id, init } => {
                 let init = *init;
-                self.constant_locals[*id] = self.capture_constant_expr(init);
+                let constant = self.constants.capture(init);
+                self.constants.record(*id, constant);
 
-                if !self.runtime_local_uses(*id) && self.constant_locals[*id].is_some() {
+                if !self.runtime_local_uses(*id) && self.constants.get(*id).is_some() {
                     return Ok(());
                 }
 
@@ -324,11 +256,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
             Stmt::Loop { kind, body } => self.lower_loop(*kind, body)?,
             Stmt::Break => {
-                let target = self.loop_targets.last().expect("break without an enclosing loop");
+                let target =
+                    self.build.loop_targets.last().expect("break without an enclosing loop");
                 self.terminate(Terminator::Jump(target.break_target));
             },
             Stmt::Continue => {
-                let target = self.loop_targets.last().expect("continue without an enclosing loop");
+                let target =
+                    self.build.loop_targets.last().expect("continue without an enclosing loop");
                 self.terminate(Terminator::Jump(target.continue_target));
             },
         }
@@ -362,11 +296,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         self.terminate(Terminator::Jump(body_block));
 
         self.switch_to(body_block);
-        self.loop_targets
+        self.build
+            .loop_targets
             .push(LoopTargets { break_target: exit, continue_target: header });
         self.lower_block(body)?;
-        self.loop_targets.pop();
-        if !self.is_terminated() {
+        self.build.loop_targets.pop();
+        if !self.build.is_terminated() {
             self.terminate(Terminator::Jump(header));
         }
 
@@ -439,11 +374,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             let destination = self.place_for_local(binding, typ);
             self.emit(destination, InstructionKind::Assign(Operand::Place(counter)));
         }
-        self.loop_targets
+        self.build
+            .loop_targets
             .push(LoopTargets { break_target: exit, continue_target: step });
         self.lower_block(body)?;
-        self.loop_targets.pop();
-        if !self.is_terminated() {
+        self.build.loop_targets.pop();
+        if !self.build.is_terminated() {
             self.terminate(Terminator::Jump(step));
         }
 
@@ -544,11 +480,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 typ: element,
             },
         );
-        self.loop_targets
+        self.build
+            .loop_targets
             .push(LoopTargets { break_target: exit, continue_target: step });
         self.lower_block(body)?;
-        self.loop_targets.pop();
-        if !self.is_terminated() {
+        self.build.loop_targets.pop();
+        if !self.build.is_terminated() {
             self.terminate(Terminator::Jump(step));
         }
 
@@ -592,9 +529,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     fn lower_expr(&mut self, expr: &'hir Expression<'hir>) -> Result<Operand<'hir>, MirError> {
-        let outer = std::mem::replace(&mut self.span, expr.span);
+        let outer = std::mem::replace(&mut self.build.span, expr.span);
         let lowered = self.lower_expr_inner(expr);
-        self.span = outer;
+        self.build.span = outer;
 
         lowered
     }
@@ -617,7 +554,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     L::Bool(b) => Operand::Const(Const::Bool(*b)),
                     L::Char(c) => Operand::Const(Const::Int(*c as i64, typ)),
                     L::Str(sym) => {
-                        let s = self.symbols.get(*sym);
+                        let s = self.context.symbols.get(*sym);
                         let id = self.strings.intern(s);
                         Operand::Const(Const::Str(id))
                     },
@@ -722,7 +659,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             // `&array` builds a (ptr, len) fat pointer
                             true => {
                                 let (_, _, len) = self.array_info(self.typeck.type_of(inner.id));
-                                let pointer = self.types.refer(self.types.common.u8, false);
+                                let pointer =
+                                    self.context.types.refer(self.context.types.common.u8, false);
                                 let ptr = self.fresh_temporary(pointer);
                                 self.emit(ptr, Kind::AddressOf { src, offset: 0 });
 
@@ -841,7 +779,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
 
                 if let ExpressionKind::Local(local) = &target.kind {
-                    self.constant_locals[*local] = self.capture_constant_expr(value_expr);
+                    let constant = self.constants.capture(value_expr);
+                    self.constants.record(*local, constant);
                 }
 
                 let src = self.lower_expr(value_expr)?;
@@ -922,7 +861,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         // so its updated value is handed straight back
                         let updated =
                             self.combine(operator, Operand::Place(dest), value_expr, typ)?;
-                        self.constant_locals[*local] = None;
+                        self.constants.clear(*local);
 
                         match self.runtime_local_uses(*local) {
                             true => {
@@ -979,7 +918,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                                     match self.constant_text(arg) {
                                         Some(text) => pending.push_str(&text),
                                         _ => {
-                                            self.flush_text(&mut pending);
+                                            self.builtin().flush_text(&mut pending);
                                             self.emit_write_value(arg)?;
                                         },
                                     }
@@ -988,7 +927,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                                 if intrinsic == I::PrintLn {
                                     pending.push('\n');
                                 }
-                                self.flush_text(&mut pending);
+                                self.builtin().flush_text(&mut pending);
 
                                 Ok(Operand::Const(Const::Unit))
                             },
@@ -1066,7 +1005,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
 
             ExpressionKind::TypeIntrinsic { kind, typ: target } => {
-                let (size, align) = hir::type_layout(*target, self.types, self.adts, self.arrays);
+                let LoweringContext { types, adts, arrays, .. } = self.context;
+                let (size, align) = hir::type_layout(*target, types, adts, arrays);
                 let value = match kind {
                     TypeIntrinsicKind::SizeOf => size as i64,
                     TypeIntrinsicKind::AlignOf => align as i64,
@@ -1079,13 +1019,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let dest = self.fresh_temporary(typ);
 
                 for (sym, value) in *fields {
-                    let layout = hir::struct_field(typ, *sym, self.types, self.adts, self.arrays);
+                    let LoweringContext { types, adts, arrays, .. } = self.context;
+                    let layout = hir::struct_field(typ, *sym, types, adts, arrays);
                     let value_operand = self.lower_expr(value)?;
 
-                    self.emit(
-                        dest,
-                        Kind::FieldStore { value: value_operand, offset: layout.offset },
-                    );
+                    let instr = Kind::FieldStore { value: value_operand, offset: layout.offset };
+                    self.emit(dest, instr);
                 }
 
                 Ok(Operand::Place(dest))
@@ -1136,7 +1075,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
             ExpressionKind::Block { statements, tail } => {
                 for statement in *statements {
-                    if self.is_terminated() {
+                    if self.build.is_terminated() {
                         break;
                     }
 
@@ -1144,7 +1083,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
 
                 match tail {
-                    Some(tail) if !self.is_terminated() => self.lower_expr(tail),
+                    Some(tail) if !self.build.is_terminated() => self.lower_expr(tail),
                     _ => Ok(Operand::Const(Const::Unit)),
                 }
             },
@@ -1164,7 +1103,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 // a branch that leaves the function never reaches the merge, so it contributes no value to unify
                 let branch = |this: &mut Self, block: &'hir Expression<'hir>| {
                     let value = this.lower_expr(block)?;
-                    Ok::<_, MirError>(if !this.is_terminated() {
+                    Ok::<_, MirError>(if !this.build.is_terminated() {
                         if let Some(place) = result {
                             this.emit(place, Kind::Assign(value));
                         }
@@ -1271,13 +1210,17 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         },
 
                         hir::ArmBody::Break => {
-                            let target =
-                                self.loop_targets.last().expect("break without an enclosing loop");
+                            let target = self
+                                .build
+                                .loop_targets
+                                .last()
+                                .expect("break without an enclosing loop");
                             self.terminate(Terminator::Jump(target.break_target));
                         },
 
                         hir::ArmBody::Continue => {
                             let target = self
+                                .build
                                 .loop_targets
                                 .last()
                                 .expect("continue without an enclosing loop");
@@ -1352,11 +1295,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             let TypeKind::Slice { mutable, .. } = typ.kind() else {
                 unreachable!("array_coerced_to_slice only returns Some for slice targets")
             };
-            let (_, _, len) = self.array_info(self.types.array(array_id));
+            let (_, _, len) = self.array_info(self.context.types.array(array_id));
             let src = match self.is_place_expr(left) {
                 true => {
                     let (origin, offset, _) = self.place_info(left);
-                    let ptr = self.fresh_temporary(self.types.refer(self.types.common.u8, mutable));
+                    let ptr = self.fresh_temporary(
+                        self.context.types.refer(self.context.types.common.u8, mutable),
+                    );
                     self.emit(ptr, InstructionKind::AddressOf { src: origin, offset });
                     ptr
                 },
@@ -1365,7 +1310,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     let value = self.fresh_temporary(self.typeck.type_of(left.id));
                     self.emit(value, InstructionKind::Assign(lowered));
 
-                    let ptr = self.fresh_temporary(self.types.refer(self.types.common.u8, mutable));
+                    let ptr = self.fresh_temporary(
+                        self.context.types.refer(self.context.types.common.u8, mutable),
+                    );
                     self.emit(ptr, InstructionKind::AddressOf { src: value, offset: 0 });
                     ptr
                 },
@@ -1432,12 +1379,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let TypeKind::Array(id) = self.typeck.type_of(expr.id).kind() else {
             return None;
         };
-        (self.arrays.get(id).element == element.into()).then_some(id)
+        (self.context.arrays.get(id).element == element.into()).then_some(id)
     }
 
     #[inline(always)]
     fn local_type(&self, id: LocalId) -> Type<'hir> {
-        self.locals[self.local_map[id].0 as usize].1
+        self.build.locals[self.local_map[id].0 as usize].1
     }
 
     #[inline(always)]
@@ -1452,7 +1399,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     /// A temporary holding the address of `id`, typed as a mutable raw pointer
     /// so the LIR picks pointer addressing rather than a frame-slot offset
     fn static_address(&mut self, id: hir::StaticId, typ: Type<'hir>) -> Place<'hir> {
-        let dest = self.fresh_temporary(self.types.raw(typ, true));
+        let dest = self.fresh_temporary(self.context.types.raw(typ, true));
 
         self.emit(dest, InstructionKind::StaticAddr { id });
 
@@ -1467,8 +1414,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             },
             ExpressionKind::Field { base, field } => {
                 let (origin, base_offset, base_type) = self.place_info(base);
-                let layout =
-                    hir::struct_field(base_type, *field, self.types, self.adts, self.arrays);
+                let LoweringContext { types, adts, arrays, .. } = self.context;
+                let layout = hir::struct_field(base_type, *field, types, adts, arrays);
                 (origin, base_offset + layout.offset, layout.typ)
             },
             _ => panic!("place_info called on non-place expression: {:?}", expr),
@@ -1507,8 +1454,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
             ExpressionKind::Field { base, field } => {
                 let (origin, base_offset, base_type) = self.place_parts(base)?;
-                let layout =
-                    hir::struct_field(base_type, *field, self.types, self.adts, self.arrays);
+                let LoweringContext { types, adts, arrays, .. } = self.context;
+                let layout = hir::struct_field(base_type, *field, types, adts, arrays);
 
                 Ok((origin, base_offset + layout.offset, layout.typ))
             },
@@ -1527,8 +1474,10 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     fn array_info(&self, array_type: Type<'hir>) -> (Type<'hir>, u32, u32) {
         match array_type.kind() {
             TypeKind::Array(id) => {
-                let array = self.arrays.get(id);
-                let (size, _) = hir::type_layout(array.element, self.types, self.adts, self.arrays);
+                let context = self.context;
+                let array = context.arrays.get(id);
+                let (size, _) =
+                    hir::type_layout(array.element, context.types, context.adts, context.arrays);
                 (array.element, size, array.len)
             },
             _ => unreachable!("array_info on a non-array type"),
@@ -1538,11 +1487,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     /// `(element, element_size)` of an indexable type (array or slice)
     fn element_info(&self, typ: Type<'hir>) -> (Type<'hir>, u32) {
         let element = match typ.kind() {
-            TypeKind::Array(id) => self.arrays.get(id).element,
+            TypeKind::Array(id) => self.context.arrays.get(id).element,
             TypeKind::Slice { element, .. } => element.into(),
             _ => unreachable!("element_info on a non-indexable type: {typ}"),
         };
-        let (stride, _) = hir::type_layout(element, self.types, self.adts, self.arrays);
+        let LoweringContext { types, arrays, adts, .. } = self.context;
+        let (stride, _) = hir::type_layout(element, types, adts, arrays);
         (element, stride)
     }
 
@@ -1550,7 +1500,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         &mut self,
         expr: &'hir Expression<'hir>,
     ) -> Result<Option<Place<'hir>>, MirError> {
-        let pointer = self.types.refer(self.types.common.u8, true);
+        let pointer = self.context.types.refer(self.context.types.common.u8, true);
 
         match &expr.kind {
             ExpressionKind::Local(_) | ExpressionKind::Field { .. } => {
@@ -1609,7 +1559,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                     Operand::Place(place) => place,
                     Operand::Const(_) => unreachable!("indexing a constant slice"),
                 };
-                let pointer = self.types.refer(self.types.common.u8, false);
+                let pointer = self.context.types.refer(self.context.types.common.u8, false);
                 let ptr = self.fresh_temporary(pointer);
                 let instr = InstructionKind::FieldLoad {
                     src: Operand::Place(slice),
@@ -1641,13 +1591,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     }
 
     fn terminate(&mut self, term: Terminator<'hir>) {
-        assert!(
-            !self.blocks[self.current].is_terminated(),
-            "double-termination of block {:?}",
-            self.current
-        );
-
-        self.blocks[self.current].terminator = Some(term);
+        self.build.terminate(term);
     }
 
     #[inline(always)]
@@ -1657,29 +1601,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn fresh_temporary(&mut self, typ: Type<'hir>) -> Place<'hir> {
-        assert!(
-            !matches!(typ.kind(), TypeKind::Unit),
-            "internal error: unit type temporary created"
-        );
-        let id = ValueId(self.next);
-        self.next += 1;
-        self.locals.push((id, typ));
-        Place { id, typ }
+        self.build.fresh_temporary(typ)
     }
 
     #[inline(always)]
-    fn is_terminated(&self) -> bool {
-        self.blocks[self.current].is_terminated()
-    }
-
-    #[inline(always)]
-    const fn switch_to(&mut self, id: BlockId) {
-        self.current = id;
-    }
-
-    #[inline(always)]
-    fn current_block_id(&self) -> BlockId {
-        self.current
+    fn switch_to(&mut self, id: BlockId) {
+        self.build.switch_to(id);
     }
 
     fn lower_pattern_match(
@@ -1767,8 +1694,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 }
 
                 for (i, (field, sub)) in fields.iter().enumerate() {
-                    let layout =
-                        hir::struct_field(place.typ, *field, self.types, self.adts, self.arrays);
+                    let LoweringContext { types, adts, arrays, .. } = self.context;
+                    let layout = hir::struct_field(place.typ, *field, types, adts, arrays);
                     let (offset, typ) = (layout.offset, layout.typ);
 
                     let field_place = self.fresh_temporary(typ);
@@ -1789,7 +1716,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(())
             },
             PatternKind::Or(alternatives) => {
-                let mut check = self.current_block_id();
+                let mut check = self.build.current_block_id();
                 let n = alternatives.len();
                 for (i, alt) in alternatives.iter().enumerate() {
                     self.switch_to(check);
@@ -1804,17 +1731,15 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 Ok(())
             },
             PatternKind::Variant { id: enum_id, variant_idx, sub } => {
-                let enum_def = &self.adts[*enum_id];
+                let enum_def = &self.context.adts[*enum_id];
                 let variant = enum_def.variants()[*variant_idx];
                 let tag_val = variant.value;
                 let tag_ty = enum_def.enum_repr().typ();
 
                 // load discriminant tag from offset 0
                 let tag_place = self.fresh_temporary(tag_ty);
-                self.emit(
-                    tag_place,
-                    Kind::FieldLoad { src: Operand::Place(place), offset: 0, typ: tag_ty },
-                );
+                let instr = Kind::FieldLoad { src: Operand::Place(place), offset: 0, typ: tag_ty };
+                self.emit(tag_place, instr);
                 let tag_const = Const::Int(tag_val, tag_ty);
                 let tag_place = Operand::Place(tag_place);
 
@@ -1826,8 +1751,9 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                         self.emit_eq_branch(tag_place, tag_const, sub_block, fail_block);
                         self.switch_to(sub_block);
 
-                        let offset =
-                            hir::enum_payload_offset(place.typ, self.types, self.adts, self.arrays);
+                        let LoweringContext { types, adts, arrays, .. } = self.context;
+                        let offset = hir::enum_payload_offset(place.typ, types, adts, arrays);
+
                         let typ = variant
                             .payload
                             .expect("variant must have payload type since it has subpattern");
@@ -1839,7 +1765,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                             },
                             _ => unreachable!("variant pattern place must be an enum"),
                         };
-                        let typ = typ.subst(self.types, self.arrays, args);
+                        let typ = typ.subst(self.context.types, self.context.arrays, args);
                         let payload_place = self.fresh_temporary(typ);
                         let instr = Kind::FieldLoad { src: Operand::Place(place), offset, typ };
                         self.emit(payload_place, instr);
@@ -1891,16 +1817,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     #[inline(always)]
     fn emit(&mut self, dest: Place<'hir>, kind: InstructionKind<'hir>) {
-        let span = self.span;
-        self.blocks[self.current].instructions.push(Instruction { dest, kind, span });
+        self.build.emit(dest, kind);
     }
 
-    /// emits the pending run of compile-time text, if any, and clears it
-    #[inline]
-    fn flush_text(&mut self, pending: &mut String) {
-        if !pending.is_empty() {
-            self.emit_write_string(std::mem::take(pending));
-        }
+    fn builtin(&mut self) -> BuiltinLowering<'_, 'a, 'hir> {
+        BuiltinLowering::new(self.context, &mut self.build, self.strings)
     }
 
     fn emit_write_value(&mut self, expr: &'hir Expression<'hir>) -> Result<(), MirError> {
@@ -1908,376 +1829,22 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let kind = hir::lang::print_kind(typ).expect("HIR rejects an interpolated value");
         let operand = self.lower_expr(expr)?;
 
-        match kind {
-            PrintKind::Str => self.emit_write_str(operand),
-            PrintKind::Bool => self.emit_write_bool(operand),
-            PrintKind::Char => self.emit_write_char(operand),
-            PrintKind::Int => self.emit_write_digits(operand, true),
-            PrintKind::Uint => self.emit_write_digits(operand, false),
-        }
+        self.builtin().emit_value(kind, operand);
 
         Ok(())
     }
-
-    /// a `str` is a pointer and a length side by side, so writing one is the syscall and nothing else
-    fn emit_write_str(&mut self, operand: Operand<'hir>) {
-        let uptr = self.types.common.uptr;
-        let pointer = self.fresh_temporary(uptr);
-        self.emit(pointer, Kind::FieldLoad { src: operand.clone(), offset: 0, typ: uptr });
-
-        let len = self.fresh_temporary(uptr);
-        self.emit(len, Kind::FieldLoad { src: operand, offset: 8, typ: uptr });
-
-        self.emit_write(Operand::Place(pointer), Operand::Place(len));
-    }
-
-    fn emit_write_bool(&mut self, condition: Operand<'hir>) {
-        let (then_id, else_id, merge_id) = (self.new_block(), self.new_block(), self.new_block());
-
-        self.terminate(Terminator::Branch { condition, then_block: then_id, else_block: else_id });
-
-        self.switch_to(then_id);
-        self.emit_write_string("true".to_owned());
-        self.terminate(Terminator::Jump(merge_id));
-
-        self.switch_to(else_id);
-        self.emit_write_string("false".to_owned());
-        self.terminate(Terminator::Jump(merge_id));
-
-        self.switch_to(merge_id);
-    }
-
-    /// encodes a `char` as UTF-8
-    fn emit_write_char(&mut self, point: Operand<'hir>) {
-        let (u32, buffer) = (self.types.common.u32, self.byte_buffer(4));
-
-        let point = self.cast(point, u32);
-        let one = self.compare(BinaryOperator::Lt, point, self.int(128, u32), u32);
-        let two = self.compare(BinaryOperator::Lt, point, self.int(2048, u32), u32);
-        let three = self.compare(BinaryOperator::Lt, point, self.int(65536, u32), u32);
-
-        // the continuation bytes of each width, low six bits first
-        let low = self.trailing_byte(point, 1, u32);
-        let mid = self.trailing_byte(point, 64, u32);
-        let high = self.trailing_byte(point, 4096, u32);
-
-        let lead_two = self.lead_byte(point, 64, 192, u32);
-        let lead_three = self.lead_byte(point, 4096, 224, u32);
-        let lead_four = self.lead_byte(point, 262144, 240, u32);
-
-        let byte0 = self.select3(&one, &two, &three, point, lead_two, lead_three, lead_four, u32);
-        let byte1 = self.select3(&one, &two, &three, low, low, mid, high, u32);
-        let byte2 = self.select3(&one, &two, &three, low, low, low, mid, u32);
-        let byte3 = self.select3(&one, &two, &three, low, low, low, low, u32);
-
-        for (index, byte) in [byte0, byte1, byte2, byte3].into_iter().enumerate() {
-            self.store_byte(buffer, index as i64, byte, 4);
-        }
-
-        let len = self.select3(
-            &one,
-            &two,
-            &three,
-            self.int(1, u32),
-            self.int(2, u32),
-            self.int(3, u32),
-            self.int(4, u32),
-            u32,
-        );
-
-        let pointer = self.element_address(buffer, self.int(0, self.types.common.uptr), 4);
-        self.emit_write(pointer, len);
-    }
-
-    /// writes an integer as decimal
-    fn emit_write_digits(&mut self, value: Operand<'hir>, signed: bool) {
-        const WIDTH: u32 = 24;
-        let (uptr, typ) = (self.types.common.uptr, self.types.common.u64);
-        let buffer = self.byte_buffer(WIDTH);
-
-        let index = self.fresh_temporary(uptr);
-        self.emit(index, Kind::Assign(self.int(WIDTH as i64, uptr)));
-
-        let rest = self.fresh_temporary(typ);
-        let negative = match signed {
-            true => {
-                let signed_typ = self.types.common.i64;
-                let value = self.cast(value, signed_typ);
-                let zero = self.int(0, signed_typ);
-                let negative = self.compare(BinaryOperator::Lt, value, zero, signed_typ);
-
-                let raw = self.cast(value, typ);
-                let flipped = self.binary(BinaryOperator::Sub, self.int(0, typ), raw, typ);
-                let magnitude = self.fresh_temporary(typ);
-
-                self.emit(
-                    magnitude,
-                    Kind::Select { condition: negative, then_value: flipped, else_value: raw },
-                );
-                self.emit(rest, Kind::Assign(Operand::Place(magnitude)));
-
-                Some(negative)
-            },
-            _ => {
-                let value = self.cast(value, typ);
-                self.emit(rest, Kind::Assign(value));
-                None
-            },
-        };
-
-        let (body_id, done_id) = (self.new_block(), self.new_block());
-        self.terminate(Terminator::Jump(body_id));
-        self.switch_to(body_id);
-
-        let next = self.binary(BinaryOperator::Sub, Operand::Place(index), self.int(1, uptr), uptr);
-        self.emit(index, Kind::Assign(next));
-
-        let quotient =
-            self.binary(BinaryOperator::Div, Operand::Place(rest), self.int(10, typ), typ);
-        let scaled = self.binary(BinaryOperator::Mul, quotient, self.int(10, typ), typ);
-        let digit = self.binary(BinaryOperator::Sub, Operand::Place(rest), scaled, typ);
-        let character = self.binary(BinaryOperator::Add, digit, self.int(48, typ), typ);
-
-        self.store_byte_at(buffer, Operand::Place(index), character, WIDTH);
-        self.emit(rest, Kind::Assign(quotient));
-
-        let finished =
-            self.compare(BinaryOperator::Eq, Operand::Place(rest), self.int(0, typ), typ);
-        self.terminate(Terminator::Branch {
-            condition: finished,
-            then_block: done_id,
-            else_block: body_id,
-        });
-
-        self.switch_to(done_id);
-
-        if let Some(negative) = negative {
-            let (sign_id, write_id) = (self.new_block(), self.new_block());
-            self.terminate(Terminator::Branch {
-                condition: negative,
-                then_block: sign_id,
-                else_block: write_id,
-            });
-
-            self.switch_to(sign_id);
-            let before =
-                self.binary(BinaryOperator::Sub, Operand::Place(index), self.int(1, uptr), uptr);
-            self.emit(index, Kind::Assign(before));
-            self.store_byte_at(buffer, Operand::Place(index), self.int(45, typ), WIDTH);
-            self.terminate(Terminator::Jump(write_id));
-
-            self.switch_to(write_id);
-        }
-
-        let pointer = self.element_address(buffer, Operand::Place(index), WIDTH);
-        let len = self.binary(
-            BinaryOperator::Sub,
-            self.int(WIDTH as i64, uptr),
-            Operand::Place(index),
-            uptr,
-        );
-
-        self.emit_write(pointer, len);
-    }
-
-    fn byte_buffer(&mut self, len: u32) -> Place<'hir> {
-        let id = self.arrays.intern(self.types.common.u8, len);
-        self.fresh_temporary(self.types.array(id))
-    }
-
-    fn emit_write(&mut self, pointer: Operand<'hir>, len: Operand<'hir>) {
-        let i32 = self.types.common.i32;
-        let dest = self.fresh_temporary(i32);
-
-        self.emit(
-            dest,
-            Kind::Syscall {
-                code: hir::Syscall::Write,
-                args: vec![Operand::Const(Const::Int(1, i32)), pointer, len],
-                returns: false,
-            },
-        );
-    }
-
-    #[inline]
-    fn int(&self, value: i64, typ: Type<'hir>) -> Operand<'hir> {
-        Operand::Const(Const::Int(value, typ))
-    }
-
-    fn binary(
-        &mut self,
-        operation: BinaryOperator,
-        lhs: Operand<'hir>,
-        rhs: Operand<'hir>,
-        typ: Type<'hir>,
-    ) -> Operand<'hir> {
-        let dest = self.fresh_temporary(typ);
-        self.emit(dest, Kind::Binary { operation, lhs, rhs, overflow: OverflowMode::Wrapping });
-
-        Operand::Place(dest)
-    }
-
-    fn compare(
-        &mut self,
-        operation: BinaryOperator,
-        lhs: Operand<'hir>,
-        rhs: Operand<'hir>,
-        _typ: Type<'hir>,
-    ) -> Operand<'hir> {
-        let dest = self.fresh_temporary(self.types.common.bool);
-        self.emit(dest, Kind::Binary { operation, lhs, rhs, overflow: OverflowMode::Unchecked });
-
-        Operand::Place(dest)
-    }
-
-    fn cast(&mut self, src: Operand<'hir>, typ: Type<'hir>) -> Operand<'hir> {
-        let dest = self.fresh_temporary(typ);
-        self.emit(dest, Kind::Cast { src, typ });
-
-        Operand::Place(dest)
-    }
-
-    /// `128 + (point / shift) % 64`, one UTF-8 continuation byte
-    fn trailing_byte(
-        &mut self,
-        point: Operand<'hir>,
-        shift: i64,
-        typ: Type<'hir>,
-    ) -> Operand<'hir> {
-        let shifted = self.binary(BinaryOperator::Div, point, self.int(shift, typ), typ);
-        let folded = self.binary(BinaryOperator::Div, shifted, self.int(64, typ), typ);
-        let scaled = self.binary(BinaryOperator::Mul, folded, self.int(64, typ), typ);
-        let low = self.binary(BinaryOperator::Sub, shifted, scaled, typ);
-
-        self.binary(BinaryOperator::Add, low, self.int(128, typ), typ)
-    }
-
-    /// `marker + point / shift`, the leading byte of a multi-byte encoding
-    fn lead_byte(
-        &mut self,
-        point: Operand<'hir>,
-        shift: i64,
-        marker: i64,
-        typ: Type<'hir>,
-    ) -> Operand<'hir> {
-        let shifted = self.binary(BinaryOperator::Div, point, self.int(shift, typ), typ);
-        self.binary(BinaryOperator::Add, shifted, self.int(marker, typ), typ)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn select3(
-        &mut self,
-        one: &Operand<'hir>,
-        two: &Operand<'hir>,
-        three: &Operand<'hir>,
-        a: Operand<'hir>,
-        b: Operand<'hir>,
-        c: Operand<'hir>,
-        d: Operand<'hir>,
-        typ: Type<'hir>,
-    ) -> Operand<'hir> {
-        let inner = self.fresh_temporary(typ);
-        self.emit(inner, Kind::Select { condition: *three, then_value: c, else_value: d });
-
-        let middle = self.fresh_temporary(typ);
-        let else_value = Operand::Place(inner);
-        self.emit(middle, Kind::Select { condition: *two, then_value: b, else_value });
-
-        let outer = self.fresh_temporary(typ);
-        let else_value = Operand::Place(middle);
-        self.emit(outer, Kind::Select { condition: *one, then_value: a, else_value });
-
-        Operand::Place(outer)
-    }
-
-    #[inline]
-    fn store_byte(&mut self, buffer: Place<'hir>, index: i64, value: Operand<'hir>, bound: u32) {
-        let uptr = self.types.common.uptr;
-        self.store_byte_at(buffer, self.int(index, uptr), value, bound);
-    }
-
-    fn store_byte_at(
-        &mut self,
-        buffer: Place<'hir>,
-        index: Operand<'hir>,
-        value: Operand<'hir>,
-        bound: u32,
-    ) {
-        let uptr = self.types.common.uptr;
-        let byte = self.cast(value, self.types.common.u8);
-        let bound = self.int(bound as i64, uptr);
-
-        self.emit(buffer, Kind::ElementStore { index, bound, value: byte, stride: 1 });
-    }
-
-    fn element_address(
-        &mut self,
-        buffer: Place<'hir>,
-        index: Operand<'hir>,
-        bound: u32,
-    ) -> Operand<'hir> {
-        let uptr = self.types.common.uptr;
-        let dest = self.fresh_temporary(uptr);
-        let bound = self.int(bound as i64, uptr);
-
-        self.emit(
-            dest,
-            Kind::ElementAddr { base: Operand::Place(buffer), index, bound, stride: 1 },
-        );
-
-        Operand::Place(dest)
-    }
-
-    fn emit_write_string(&mut self, text: String) {
-        let len = text.len();
-        let id = self.strings.intern(text);
-        let dest = self.fresh_temporary(TypeKind::I32.into());
-
-        self.emit(
-            dest,
-            InstructionKind::Syscall {
-                code: hir::Syscall::Write,
-                args: vec![
-                    Operand::Const(Const::Int(1, TypeKind::I32.into())),
-                    Operand::Const(Const::Str(id)),
-                    Operand::Const(Const::Int(len as i64, TypeKind::I32.into())),
-                ],
-                returns: false,
-            },
-        );
-    }
-
     #[inline]
     fn constant_text(&self, expr: &Expression<'hir>) -> Option<String> {
         hir::lang::print_kind(self.typeck.type_of(expr.id))?;
-
-        self.capture_constant_expr(expr)
+        self.constants.capture(expr)
     }
 
     #[inline]
     fn get_fn_unchecked(&self, id: &FunctionId) -> &'a hir::Function<'hir> {
-        self.functions
+        self.context
+            .functions
             .get(*id)
             .unwrap_or_else(|| panic!("callee function {:?} not found", id))
-    }
-
-    #[inline]
-    fn capture_constant_expr(&self, expr: &Expression<'hir>) -> Option<String> {
-        match &expr.kind {
-            ExpressionKind::Literal(lit) => {
-                use hir::Literal as L;
-                Some(match lit {
-                    L::Int(n) => n.to_string(),
-                    L::Float(f) => f.to_string(),
-                    L::Bool(b) => b.to_string(),
-                    L::Char(c) => c.to_string(),
-                    L::Str(sym) => self.symbols.get(*sym).to_owned(),
-                    L::Unit => String::new(),
-                })
-            },
-            ExpressionKind::Local(id) => self.constant_locals[*id].clone(),
-            _ => None,
-        }
     }
 
     fn emit_variant(
@@ -2289,8 +1856,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     ) -> Result<Operand<'hir>, MirError> {
         let dest = self.fresh_temporary(typ);
 
-        let tag_ty = self.adts[id].enum_repr().typ();
-        let tag = self.adts[id].variants()[index].value;
+        let tag_ty = self.context.adts[id].enum_repr().typ();
+        let tag = self.context.adts[id].variants()[index].value;
         self.emit(
             dest,
             InstructionKind::FieldStore {
@@ -2300,7 +1867,8 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         );
 
         if let Some(payload) = payload {
-            let offset = hir::enum_payload_offset(typ, self.types, self.adts, self.arrays);
+            let context = self.context;
+            let offset = hir::enum_payload_offset(typ, context.types, context.adts, context.arrays);
             let value = self.lower_expr(payload)?;
             self.emit(dest, InstructionKind::FieldStore { value, offset });
         }
@@ -2332,7 +1900,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         callee_id: FunctionId,
         lowered_args: Vec<Operand<'hir>>,
     ) -> Result<Operand<'hir>, MirError> {
-        let callee = &self.functions[callee_id];
+        let callee = &self.context.functions[callee_id];
 
         let inline_ret_place = match callee.return_type.kind() != TypeKind::Unit {
             true => Some(self.fresh_temporary(callee.return_type)),
@@ -2346,7 +1914,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
             assert!(
                 local.typ.kind() != TypeKind::Unit,
                 "internal error: inline callee {} has unit local {:?}",
-                self.symbols.get(callee.name),
+                self.context.symbols.get(callee.name),
                 local.id
             );
             let place = self.fresh_temporary(local.typ);
@@ -2365,7 +1933,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
         self.lower_block(&callee.body)?;
 
-        if !self.is_terminated() {
+        if !self.build.is_terminated() {
             self.terminate(Terminator::Jump(exit_block_id));
         }
 
@@ -2391,13 +1959,13 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
         InlineContext {
             local_map: replace(&mut self.local_map, local_map),
-            constant_locals: replace(
-                &mut self.constant_locals,
-                IndexVec::from_elem(None, callee.locals.len()),
+            constants: replace(
+                &mut self.constants,
+                ConstantValues::new(self.context.symbols, callee.locals.len()),
             ),
             runtime_local_uses: replace(
                 &mut self.runtime_local_uses,
-                self.runtime_uses[callee.id].clone(),
+                self.context.runtime_uses[callee.id].clone(),
             ),
             local_symbols: replace(
                 &mut self.local_symbols,
@@ -2412,7 +1980,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
 
     fn restore_inline_context(&mut self, context: InlineContext<'a, 'hir>) {
         self.local_map = context.local_map;
-        self.constant_locals = context.constant_locals;
+        self.constants = context.constants;
         self.runtime_local_uses = context.runtime_local_uses;
         self.local_symbols = context.local_symbols;
         self.inlined_return_target = context.inlined_return_target;
@@ -2422,6 +1990,62 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
     #[inline(always)]
     fn runtime_local_uses(&self, id: LocalId) -> bool {
         self.runtime_local_uses.get(id).copied().unwrap_or(false)
+    }
+
+    #[inline(always)]
+    fn new_block(&mut self) -> BlockId {
+        self.build.new_block()
+    }
+}
+
+impl<'hir> FunctionBuildState<'hir> {
+    #[inline(always)]
+    fn new_block(&mut self) -> BlockId {
+        self.blocks.push(PartialBlock::new())
+    }
+
+    fn terminate(&mut self, terminator: Terminator<'hir>) {
+        assert!(!self.is_terminated(), "double-termination of block {:?}", self.current);
+        self.blocks[self.current].terminator = Some(terminator);
+    }
+
+    #[inline(always)]
+    fn fresh_temporary(&mut self, typ: Type<'hir>) -> Place<'hir> {
+        assert!(
+            !matches!(typ.kind(), TypeKind::Unit),
+            "internal error: unit type temporary created"
+        );
+        let id = ValueId(self.next);
+        self.next += 1;
+        self.locals.push((id, typ));
+        Place { id, typ }
+    }
+
+    #[inline(always)]
+    fn is_terminated(&self) -> bool {
+        self.blocks[self.current].is_terminated()
+    }
+
+    #[inline(always)]
+    const fn switch_to(&mut self, id: BlockId) {
+        self.current = id;
+    }
+
+    #[inline(always)]
+    const fn current_block_id(&self) -> BlockId {
+        self.current
+    }
+
+    #[inline(always)]
+    fn emit(&mut self, dest: Place<'hir>, kind: InstructionKind<'hir>) {
+        self.blocks[self.current]
+            .instructions
+            .push(Instruction { dest, kind, span: self.span });
+    }
+
+    fn finish(self) -> (IndexVec<BlockId, Block<'hir>>, Vec<(ValueId, Type<'hir>)>) {
+        let blocks = self.blocks.into_iter().map(PartialBlock::finalise).collect();
+        (blocks, self.locals)
     }
 }
 
@@ -2440,148 +2064,6 @@ impl<'hir> PartialBlock<'hir> {
             instructions: self.instructions,
             terminator: self.terminator.expect("block missing terminator"),
         }
-    }
-}
-
-fn collect_runtime_local_uses(function: &hir::Function<'_>) -> IndexVec<LocalId, bool> {
-    let mut uses = IndexVec::from_elem(false, function.locals.len());
-    visit_block_runtime_uses(&function.body, &mut uses);
-
-    uses
-}
-
-fn visit_block_runtime_uses(block: &hir::Block<'_>, uses: &mut IndexVec<LocalId, bool>) {
-    for statement in block.statements {
-        visit_statement_runtime_uses(statement, uses);
-    }
-}
-
-fn visit_statement_runtime_uses(statement: &Statement<'_>, uses: &mut IndexVec<LocalId, bool>) {
-    match statement {
-        Statement::LetUninit { .. } | Statement::Return(None) => {},
-        Statement::LetInit { init, .. } => visit_expr_runtime_uses(init, uses),
-        Statement::Expr(expr) => visit_expr_runtime_uses(expr, uses),
-        Statement::Return(Some(expr)) => visit_expr_runtime_uses(expr, uses),
-        Statement::Loop { kind, body } => {
-            match kind {
-                hir::LoopKind::Infinite => {},
-                hir::LoopKind::Range { binding, start, end, .. } => {
-                    if let Some(binding) = binding {
-                        uses[*binding] = true;
-                    }
-                    visit_expr_runtime_uses(start, uses);
-                    visit_expr_runtime_uses(end, uses);
-                },
-                hir::LoopKind::Iterable { binding, iterable } => {
-                    uses[*binding] = true;
-                    visit_expr_runtime_uses(iterable, uses);
-                },
-            }
-            visit_block_runtime_uses(body, uses);
-        },
-        Statement::Break | Statement::Continue => {},
-    }
-}
-
-fn visit_expr_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
-    use ExpressionKind::*;
-    match &expr.kind {
-        Local(id) => uses[*id] = true,
-        // a constant's tree has its own local space, nothing here can
-        // reference the enclosing body's locals
-        Const(_) | ParamConst { .. } | Static(_) => {},
-        Unary { expr: inner, .. } => visit_expr_runtime_uses(inner, uses),
-        Cast { from, .. } => visit_expr_runtime_uses(from, uses),
-        Binary { left, right, .. } => {
-            visit_expr_runtime_uses(left, uses);
-            visit_expr_runtime_uses(right, uses);
-        },
-        Block { statements, tail } => {
-            for statement in *statements {
-                visit_statement_runtime_uses(statement, uses);
-            }
-            if let Some(tail) = tail {
-                visit_expr_runtime_uses(tail, uses);
-            }
-        },
-        If { condition, then_block, else_block } => {
-            visit_expr_runtime_uses(condition, uses);
-            visit_expr_runtime_uses(then_block, uses);
-            if let Some(else_block) = else_block {
-                visit_expr_runtime_uses(else_block, uses);
-            }
-        },
-        Assign { target, value } => {
-            if !matches!(&target.kind, Local(_)) {
-                visit_place_runtime_uses(target, uses);
-            }
-            visit_expr_runtime_uses(value, uses);
-        },
-        // unlike a plain assignment the target is read before it is written, so even a local target counts as a use
-        CompoundAssign { target, value, .. } => {
-            visit_expr_runtime_uses(target, uses);
-            visit_expr_runtime_uses(value, uses);
-        },
-        Struct { fields, .. } => {
-            for &(_, value) in *fields {
-                visit_expr_runtime_uses(value, uses);
-            }
-        },
-        Call { args, .. } => {
-            for arg in *args {
-                visit_expr_runtime_uses(arg, uses);
-            }
-        },
-        MethodCall { receiver, args, .. } => {
-            let receiver = *receiver;
-            let is_place = matches!(&receiver.kind, Local(_) | Field { .. });
-
-            match is_place {
-                true => visit_place_runtime_uses(receiver, uses),
-                _ => visit_expr_runtime_uses(receiver, uses),
-            }
-
-            for arg in *args {
-                visit_expr_runtime_uses(arg, uses);
-            }
-        },
-        Field { .. } => visit_place_runtime_uses(expr, uses),
-        Array { elements } => {
-            for element in *elements {
-                visit_expr_runtime_uses(element, uses);
-            }
-        },
-        ArrayRepeat { value, .. } => visit_expr_runtime_uses(value, uses),
-        Index { base, index } => {
-            visit_place_runtime_uses(base, uses);
-            visit_expr_runtime_uses(index, uses);
-        },
-        TypeIntrinsic { .. } | Literal(_) | Path(_) => {},
-        Match { scrutinee, arms } => {
-            visit_expr_runtime_uses(scrutinee, uses);
-            for arm in *arms {
-                if let Some(guard) = arm.guard {
-                    visit_expr_runtime_uses(guard, uses);
-                }
-                if let Some(body) = arm.body.value() {
-                    visit_expr_runtime_uses(body, uses);
-                }
-            }
-        },
-    }
-}
-
-fn visit_place_runtime_uses(expr: &hir::Expression<'_>, uses: &mut IndexVec<LocalId, bool>) {
-    use ExpressionKind::*;
-    match &expr.kind {
-        Local(local) => uses[*local] = true,
-        Field { base, .. } => visit_place_runtime_uses(base, uses),
-        Index { base, index } => {
-            visit_place_runtime_uses(base, uses);
-            visit_expr_runtime_uses(index, uses);
-        },
-        Unary { operator: UnaryOperator::Deref, expr } => visit_expr_runtime_uses(expr, uses),
-        _ => visit_expr_runtime_uses(expr, uses),
     }
 }
 
