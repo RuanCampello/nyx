@@ -1,0 +1,63 @@
+use std::panic;
+
+pub struct Point {
+    x: i64,
+    y: i64,
+}
+
+pub struct Segment {
+    from: Point,
+    to: Point,
+}
+
+impl Point {
+    pub fn new(x: i64, y: i64): Point = Point { x, y };
+
+    pub fn mirrored(&self): Point {
+        let x = self.y;
+        let y = self.x;
+        Point { x, y }
+    }
+}
+
+impl Segment {
+    pub fn spanning(from: Point, to: Point): Segment = Segment { from, to };
+
+    pub fn width(&self): i64 = self.to.x - self.from.x;
+}
+
+fn is_origin(p: Point): bool = p.x == 0 && p.y == 0;
+
+fn main(): i32 {
+    let p = Point::new(30, 12);
+    panic::assert(p.x == 30);
+    panic::assert(p.y == 12);
+
+    let m = p.mirrored();
+    panic::assert(m.x == 12);
+    panic::assert(m.y == 30);
+
+    // one field written long-hand beside a shorthand
+    let y = 7;
+    let mixed = Point { x: 1, y };
+    panic::assert(mixed.x == 1);
+    panic::assert(mixed.y == 7);
+
+    let from = Point::new(0, 0);
+    let to = Point::new(5, 5);
+    let segment = Segment::spanning(from, to);
+    panic::assert(segment.width() == 5);
+
+    // a literal inside a call still parses in the head of an if
+    let x = 0;
+    let zero = 0;
+    if is_origin(Point { x, y: zero }) panic::assert(true);
+
+    // a block whose body is a bare name is still a block, not a literal
+    let flag = true;
+    let mut picked = 0;
+    if flag picked = p.x;
+
+    panic::assert(picked == 30);
+    (p.x + p.y) as i32
+}

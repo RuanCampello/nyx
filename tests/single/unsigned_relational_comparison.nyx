@@ -1,11 +1,15 @@
 use std::panic::{assert};
 
 // runtime values: constant folding must not be what makes these pass
-fn u8_id(x: u8): u8 { x }
-fn u16_id(x: u16): u16 { x }
-fn u32_id(x: u32): u32 { x }
-fn u64_id(x: u64): u64 { x }
-fn i8_id(x: i8): i8 { x }
+fn u8_id(x: u8): u8 = x;
+
+fn u16_id(x: u16): u16 = x;
+
+fn u32_id(x: u32): u32 = x;
+
+fn u64_id(x: u64): u64 = x;
+
+fn i8_id(x: i8): i8 = x;
 
 fn main(): i32 {
     let a: u8 = u8::MAX;
