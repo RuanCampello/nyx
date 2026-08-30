@@ -1,3 +1,5 @@
+use std::panic::{assert, assert_eq};
+
 interface Bounded {
     const LIMIT: i64;
     const fn peak(&self): i64;
@@ -50,38 +52,28 @@ fn main(): i64 {
     let rect = Rectangle { width: 4, height: 5 };
 
     // area = 4 * 5 = 20
-    if rect.area() != 20 return 1;
-
+    assert_eq(rect.area(), 20);
     // perimeter = 2*4 + 2*5 = 18
-    if rect.perimeter() != 18 return 2;
-
+    assert_eq(rect.perimeter(), 18);
     // 20 > 15 = true
-    if !rect.is_larger_than(15) return 3;
-
+    assert(rect.is_larger_than(15));
     // 20 > 25 = false
-    if rect.is_larger_than(25) return 4;
+    assert(!rect.is_larger_than(25));
 
     let circle = Circle { radius: 3 };
-
     // area = 3 * 3 * 3 = 27
-    if circle.area() != 27 return 5;
-
+    assert_eq(circle.area(), 27);
     // perimeter = 2 * 3 * 3 = 18
-    if circle.perimeter() != 18 return 6;
-
+    assert_eq(circle.perimeter(), 18);
     // 27 > 20 = true
-    if !circle.is_larger_than(20) return 7;
-
+    assert(circle.is_larger_than(20));
     // 27 > 30 = false
-    if circle.is_larger_than(30) return 8;
-
+    assert(!circle.is_larger_than(30));
     // cross-check rect.area() < circle.area()
-    if rect.area() >= circle.area() return 9;
-
-    if circle.peak() != 30 return 10;
-    if circle.headroom() != 29 return 11;
-    if rect.tag() != 7 return 12;
+    assert(rect.area() < circle.area());
+    assert_eq(circle.peak(), 30);
+    assert_eq(circle.headroom(), 29);
+    assert_eq(rect.tag(), 7);
 
     0
 }
-
