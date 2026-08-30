@@ -259,6 +259,18 @@ Name what should be printed — any expression will do, including a field access
 or a calculation — or write `{{}}` for a literal pair of braces.
 "#;
 
+E034 => "unbound implementation generic", r#"
+An implementation `where` clause can only constrain generic parameters that
+appear in the receiver type.
+
+```nyx
+impl Pair<L, R> where T: PartialEq { } // error: `T` is not bound by `Pair<L, R>`
+```
+
+Use one of the receiver's parameters, or add the parameter to the receiver
+type when that type declares it.
+"#;
+
 E031 => "expression-bodied function needs a return type", r#"
 An expression-bodied function must declare the type produced by its expression.
 

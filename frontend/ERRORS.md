@@ -216,6 +216,18 @@ io::println("value = {}");  // error: nothing to print here
 Name what should be printed — any expression will do, including a field access
 or a calculation — or write `{{}}` for a literal pair of braces.
 
+### E034: unbound implementation generic
+
+An implementation `where` clause can only constrain generic parameters that
+appear in the receiver type.
+
+```rust
+impl Pair<L, R> where T: PartialEq { } // error: `T` is not bound by `Pair<L, R>`
+```
+
+Use one of the receiver's parameters, or add the parameter to the receiver
+type when that type declares it.
+
 ### E031: expression-bodied function needs a return type
 
 An expression-bodied function must declare the type produced by its expression.
@@ -1035,7 +1047,7 @@ interface exists.
 ### E165: required generic after a defaulted one
 
 Generic arguments are matched left to right, so a parameter that may be omitted
-cannot be followed by one that must be given — there would be no way to supply
+cannot be followed by one that must be given, there would be no way to supply
 the later argument without also supplying the earlier one.
 
 ```rust

@@ -202,6 +202,7 @@ pub struct Function<'i> {
     pub name: &'i str,
     /// the declared name alone, where goto-definition lands
     pub name_span: Span,
+    pub impl_generics: Vec<GenericBound<'i>>,
     pub generics: Vec<GenericBound<'i>>,
     pub impl_type: Option<&'i str>,
     pub receiver: Option<Receiver>,
@@ -1020,6 +1021,7 @@ impl<'i> Parsable<'i> for Function<'i> {
         Ok(Function {
             name,
             name_span,
+            impl_generics: Vec::new(),
             generics,
             impl_type: None,
             receiver,
@@ -1040,10 +1042,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
         use crate::hir::SLICE_IMPL_NAME;
 
         let impl_token = parser.expect_token(Keyword::Impl)?;
-
         let receiver = parser.parse_node::<Spanned<Type>>()?;
-        let generics = Vec::new();
-        // slices have no nominal name, so `impl [T]` blocks share a reserved one
         let name = match receiver.value_ref() {
             Type::Slice(..) => SLICE_IMPL_NAME,
             other => other.name().ok_or_else(|| {
@@ -1069,12 +1068,20 @@ impl<'i> Parsable<'i> for Impl<'i> {
             interface = Some(interface_name);
         }
 
+        let mut generics = Vec::new();
+        parse_where_clause(parser, &mut generics)?;
+        if let Some(unbound) = generics
+            .iter()
+            .find(|generic| !impl_receiver_binds(receiver.value_ref(), generic.name))
+        {
+            let kind = ParseErrorKind::UnboundImplGeneric { name: unbound.name };
+            return Err(ParserError::new(kind, unbound.span));
+        }
+
         parser.expect_token(Punct::OpenBrace)?;
 
-        let mut methods = Vec::new();
-        let mut constants = Vec::new();
-        let mut types = Vec::new();
-        let mut member_docs = Vec::new();
+        let (mut methods, mut constants) = (Vec::new(), Vec::new());
+        let (mut types, mut member_docs) = (Vec::new(), Vec::new());
 
         let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
             Some(Ok(_)) if parser.is_const_decl() => Ok({
@@ -1093,6 +1100,7 @@ impl<'i> Parsable<'i> for Impl<'i> {
                 let mut method = parser.parse_node::<Function>()?;
                 push_member_docs(&mut member_docs, method.span, docs);
                 method.impl_type = Some(name);
+                method.impl_generics = generics.clone();
                 methods.push(method);
             }),
 
@@ -1135,6 +1143,7 @@ impl<'i> Impl<'i> {
                 m.body.as_ref().map(|body| Function {
                     name: m.name,
                     name_span: m.name_span,
+                    impl_generics: self.generics.clone(),
                     generics: Vec::new(),
                     impl_type: Some(self.name),
                     receiver: m.receiver,
@@ -1248,8 +1257,6 @@ impl<'i> Parsable<'i> for Enum<'i> {
         })?;
 
         let repr = parser.consume_token(Keyword::As)?.then(|| parser.parse_node()).transpose()?;
-        // span the whole declaration (keyword .. closing brace / repr), so the
-        // name is covered for hover/goto, matching how structs are spanned
         let end = parser.last_span().unwrap_or(enum_token.span);
         let span = enum_token.span + end;
 
@@ -1277,18 +1284,13 @@ impl<'i> Parsable<'i> for Interface<'i> {
         let mut superinterfaces = Vec::new();
         if parser.consume_token(Punct::Colon)? {
             loop {
-                // parse as a full type so generic args (`PartialEq<Rhs>`) are consumed,
-                // then keep only the bare interface name
                 let bound = parser.parse_node::<Spanned<Type>>()?;
                 let name = match bound.value() {
                     Type::Named(name) | Type::Generic(name, _) => name,
                     _ => {
-                        return Err(ParserError::new(
-                            ParseErrorKind::ExpectedIdentifier {
-                                found: TokenKind::Punct(Punct::Colon),
-                            },
-                            bound.span(),
-                        ));
+                        let found = TokenKind::Punct(Punct::Colon);
+                        let kind = ParseErrorKind::ExpectedIdentifier { found };
+                        return Err(ParserError::new(kind, bound.span()));
                     },
                 };
                 superinterfaces.push(name);
@@ -1301,30 +1303,25 @@ impl<'i> Parsable<'i> for Interface<'i> {
 
         parser.expect_token(Punct::OpenBrace)?;
 
-        let mut methods = Vec::new();
-        let mut constants = Vec::new();
-        let mut types = Vec::new();
-        let mut member_docs = Vec::new();
+        let (mut methods, mut constants) = (Vec::new(), Vec::new());
+        let (mut types, mut member_docs) = (Vec::new(), Vec::new());
 
-        let close = parse_braced_members(parser, |parser, docs| match parser.peek_nth(0) {
-            Some(Ok(_)) if parser.is_const_decl() => {
-                let constant = InterfaceConst::parse(parser)?;
-                push_member_docs(&mut member_docs, constant.span, docs);
-                constants.push(constant);
-                Ok(())
-            },
-            Some(Ok(token)) if token.is_kind(Keyword::Type) => {
-                let associated = InterfaceType::parse(parser)?;
-                push_member_docs(&mut member_docs, associated.span, docs);
-                types.push(associated);
-                Ok(())
-            },
-            _ => {
-                let method = InterfaceMethod::parse(parser)?;
-                push_member_docs(&mut member_docs, method.span, docs);
-                methods.push(method);
-                Ok(())
-            },
+        let close = parse_braced_members(parser, |parser, docs| {
+            if parser.is_const_decl() {
+                let item = InterfaceConst::parse(parser)?;
+                push_member_docs(&mut member_docs, item.span, docs);
+                constants.push(item);
+            } else if matches!(parser.peek_token()?, Some(t) if t.is_kind(Keyword::Type)) {
+                let item = InterfaceType::parse(parser)?;
+                push_member_docs(&mut member_docs, item.span, docs);
+                types.push(item);
+            } else {
+                let item = InterfaceMethod::parse(parser)?;
+                push_member_docs(&mut member_docs, item.span, docs);
+                methods.push(item);
+            }
+
+            Ok(())
         })?;
 
         Ok(Self {
@@ -1368,8 +1365,7 @@ impl<'i> Parsable<'i> for ImplType<'i> {
         let type_token = parser.expect_token(Keyword::Type)?;
         let (name, name_span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Eq)?;
-        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
-        let semi = parser.expect_semicolon();
+        let (typ, semi) = (parser.parse_node()?, parser.expect_semicolon());
 
         Ok(Self { name, name_span, typ, span: type_token.span + semi })
     }
@@ -1380,8 +1376,7 @@ impl<'i> Parsable<'i> for InterfaceConst<'i> {
         let const_token = parser.expect_token(Keyword::Const)?;
         let (name, name_span) = parser.expect_identifier()?;
         parser.expect_token(Punct::Colon)?;
-        let typ = parser.parse_node::<Spanned<Type<'i>>>()?;
-        let semi = parser.expect_semicolon();
+        let (typ, semi) = (parser.parse_node()?, parser.expect_semicolon());
 
         Ok(Self { name, name_span, typ, span: const_token.span + semi })
     }
@@ -1396,7 +1391,6 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
         let (name, name_span) = parser.expect_identifier()?;
 
         let mut generics = parse_generic_params(parser)?;
-
         parser.expect_token(Punct::OpenParen)?;
         let (receiver, params) = parse_receiver_and_params(parser, fn_token.span)?;
 
@@ -1404,12 +1398,11 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
             parser.consume_token(Punct::Colon)?.then(|| parser.parse_node()).transpose()?;
         parse_where_clause(parser, &mut generics)?;
 
-        let (body, span) = match parser.consume_token(Punct::Semicolon)? {
-            true => (None, fn_token.span + parser.last_span().unwrap_or_default()),
+        let (span, body) = match parser.consume_token(Punct::Semicolon)? {
+            true => (fn_token.span + parser.last_span().unwrap_or_default(), None),
             _ => {
                 let b = parse_function_body(parser, return_type.is_some())?;
-                let b_span = b.span;
-                (Some(b), fn_token.span + b_span)
+                (fn_token.span + b.span, Some(b))
             },
         };
 
@@ -1432,20 +1425,15 @@ impl<'i> Parsable<'i> for InterfaceMethod<'i> {
 impl<'i> Parsable<'i> for Block<'i> {
     fn parse(parser: &mut Parser<'i>) -> Result<Self, ParserError<'i>> {
         let open_brace = parser.expect_token(Punct::OpenBrace)?;
-        let mut statements = Vec::new();
-        let mut broken = false;
-
+        let (mut statements, mut broken) = (Vec::new(), false);
         let close_brace = loop {
-            let token = parser.peek().and_then(|result| result.as_ref().ok()).copied();
-
+            let token = parser.peek_token()?;
             match token {
-                Some(token) if token.is_kind(Punct::CloseBrace) => {
+                Some(t) if t.is_kind(Punct::CloseBrace) => {
                     break parser.expect_token(Punct::CloseBrace)?;
                 },
-                Some(token) if broken && opens_item(&token) => {
-                    break implicit_close(token.span.start);
-                },
-                Some(token) if !token.is_kind(TokenKind::Eof) => {},
+                Some(t) if broken && opens_item(&t) => break implicit_close(t.span.start),
+                Some(t) if !t.is_kind(TokenKind::Eof) => {},
                 _ => {
                     let span = token.map_or(open_brace.span, |token| token.span);
                     let error = ParserError::new(ParseErrorKind::UnexpectedEof, span);
@@ -1537,10 +1525,8 @@ impl Receiver {
         let (name, span) = parser.expect_identifier()?;
 
         if name != "self" {
-            return Err(ParserError::new(
-                ParseErrorKind::ExpectedIdentifier { found: TokenKind::Identifier(name) },
-                span,
-            ));
+            let kind = ParseErrorKind::ExpectedIdentifier { found: TokenKind::Identifier(name) };
+            return Err(ParserError::new(kind, span));
         }
 
         Ok(Self { mutable, by_ref: false, span: start + span })
@@ -1706,18 +1692,15 @@ impl<'i> Parsable<'i> for Spanned<Type<'i>> {
         }
 
         let (name, span) = parser.expect_identifier()?;
-
-        let mut generic_args = Vec::new();
-        let mut type_span = span;
+        let (mut generic_args, mut type_span) = (Vec::new(), span);
         if parser.consume_token(Punct::Lt)? {
             generic_args = parse_angle_bracketed(parser)?;
             type_span = span + parser.last_span().unwrap_or(span);
         }
 
-        let mut value = match !generic_args.is_empty() {
-            true => Type::Generic(name, generic_args),
-            _ => Type::from_str(name).unwrap_or(Type::Named(name)),
-        };
+        let mut value = (!generic_args.is_empty())
+            .then(|| Type::Generic(name, generic_args))
+            .unwrap_or_else(|| Type::from_str(name).unwrap_or(Type::Named(name)));
 
         while parser.consume_token(Punct::ColonColon)? {
             let (associated, end) = parser.expect_identifier()?;
@@ -1756,7 +1739,7 @@ fn parse_unsafe_block<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, Pars
             let kind = ParseErrorKind::MarkerIsNotABlock { name: marker.as_str() };
             return Err(ParserError::new(kind, span));
         },
-        None => return Err(ParserError::new(ParseErrorKind::UnknownMarker { name }, span)),
+        _ => return Err(ParserError::new(ParseErrorKind::UnknownMarker { name }, span)),
     }
 
     let block = Block::parse(parser)?;
@@ -1795,34 +1778,36 @@ fn parse_braceless_branch<'i>(
     parser: &mut Parser<'i>,
     blame: Span,
 ) -> Result<(Statement<'i>, BytePos), ParserError<'i>> {
-    match parser.peek() {
-        Some(Ok(token)) if token.is_kind(Keyword::Return) => {
+    let token = parser
+        .peek_token()?
+        .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, blame))?;
+
+    match token.kind {
+        TokenKind::Keyword(Keyword::Return) => {
             let returned = Return::parse(parser)?;
             let end = returned.span.end;
 
             Ok((Statement::Return(returned), end))
         },
-        Some(Ok(token)) if token.is_kind(Keyword::Break) => {
+        TokenKind::Keyword(Keyword::Break) => {
             let keyword = parser.expect_token(Keyword::Break)?;
             let semicolon = parser.expect_semicolon();
 
             Ok((Statement::Break(keyword.span + semicolon), semicolon.end))
         },
-        Some(Ok(token)) if token.is_kind(Keyword::Continue) => {
+        TokenKind::Keyword(Keyword::Continue) => {
             let keyword = parser.expect_token(Keyword::Continue)?;
             let semicolon = parser.expect_semicolon();
 
             Ok((Statement::Continue(keyword.span + semicolon), semicolon.end))
         },
-        Some(Ok(_)) => {
+        _ => {
             let expression = Expression::parse(parser)?;
             let semicolon = parser.expect_semicolon();
             let span = expression.span() + semicolon;
 
             Ok((Statement::Expr { expr: expression, span, semi: true }, semicolon.end))
         },
-        Some(Err(err)) => Err(err.into()),
-        _ => Err(ParserError::new(ParseErrorKind::UnexpectedEof, blame)),
     }
 }
 
@@ -1839,9 +1824,8 @@ fn parse_function_body<'i>(
         return Err(ParserError::new(ParseErrorKind::ExpressionBodyNeedsReturnType, equals));
     }
 
-    let expression = parser.parse_node::<Expression>()?;
-    let span = expression.span();
-    let statement = Statement::Expr { expr: expression, span, semi: false };
+    let expr = parser.parse_node::<Expression>()?;
+    let statement = Statement::Expr { span: expr.span(), expr, semi: false };
     let semicolon = parser.expect_semicolon();
 
     Ok(Block { statements: vec![statement], span: equals + semicolon })
@@ -1853,10 +1837,7 @@ fn parse_block_statement<'i>(parser: &mut Parser<'i>) -> Result<Statement<'i>, P
 
     // the value goes nowhere here, so a closing semicolon is accepted but never demanded
     let semi = parser.consume_token(Punct::Semicolon)?;
-    let end = match semi {
-        true => parser.last_span().unwrap_or(span).end,
-        _ => span.end,
-    };
+    let end = semi.then(|| parser.last_span().unwrap_or(span).end).unwrap_or(span.end);
 
     Ok(Statement::Expr { expr, span: Span::new(span.start, end), semi })
 }
@@ -1865,11 +1846,10 @@ fn parse_bracketed_type<'i>(
     parser: &mut Parser<'i>,
 ) -> Result<(Type<'i>, Option<u64>), ParserError<'i>> {
     let element = parser.parse_node::<Spanned<Type<'i>>>()?.value();
-
-    let length = match parser.consume_token(Punct::Semicolon)? {
-        true => Some(parser.expect_unsigned_literal()?),
-        false => None,
-    };
+    let length = parser
+        .consume_token(Punct::Semicolon)?
+        .then(|| parser.expect_unsigned_literal())
+        .transpose()?;
 
     Ok((element, length))
 }
@@ -1878,66 +1858,52 @@ fn parse_receiver_and_params<'i>(
     parser: &mut Parser<'i>,
     fn_span: Span,
 ) -> Result<(Option<Receiver>, Vec<Parameter<'i>>), ParserError<'i>> {
-    let mut params = Vec::new();
-    let mut receiver = None;
+    let (mut params, mut receiver) = (Vec::new(), None);
 
     loop {
         let token = parser
-            .peek()
+            .peek_token()?
             .ok_or_else(|| ParserError::new(ParseErrorKind::UnexpectedEof, fn_span))?;
 
-        match token {
-            Ok(token) if token.is_kind(Punct::CloseParen) => {
-                parser.expect_token(Punct::CloseParen)?;
-                break;
-            },
-
-            Ok(_) => {
-                if !params.is_empty() || receiver.is_some() {
-                    parser.expect_token(Punct::Comma)?;
-
-                    let is_close = matches!(parser.peek(), Some(Ok(token)) if token.is_kind(Punct::CloseParen));
-                    if is_close {
-                        parser.expect_token(Punct::CloseParen)?;
-                        break;
-                    }
-                }
-
-                if params.is_empty() && receiver.is_none() {
-                    if parser.consume_token(Punct::Ampersand)? {
-                        let amp_span = parser.last_span().unwrap_or_default();
-                        receiver = Some(Receiver::parse_after_amp(parser, amp_span)?);
-                        continue;
-                    }
-                    if peek_is_self(parser) {
-                        receiver = Some(Receiver::parse_by_value(parser)?);
-                        continue;
-                    }
-                }
-
-                params.push(parser.parse_node()?);
-            },
-
-            Err(err) => return Err(err.into()),
+        if token.is_kind(Punct::CloseParen) {
+            break;
         }
+
+        match (params.is_empty(), receiver.is_none()) {
+            (false, _) | (_, false) => {
+                parser.expect_token(Punct::Comma)?;
+
+                if matches!(parser.peek(), Some(Ok(t)) if t.is_kind(Punct::CloseParen)) {
+                    break;
+                }
+            },
+            (true, true) if parser.consume_token(Punct::Ampersand)? => {
+                let span = parser.last_span().unwrap_or_default();
+                receiver = Some(Receiver::parse_after_amp(parser, span)?);
+                continue;
+            },
+            (true, true) if peek_is_self(parser) => {
+                receiver = Some(Receiver::parse_by_value(parser)?);
+                continue;
+            },
+            _ => {},
+        }
+
+        params.push(parser.parse_node()?);
     }
 
+    parser.expect_token(Punct::CloseParen)?;
     Ok((receiver, params))
 }
 
 fn peek_is_self<'i>(parser: &mut Parser<'i>) -> bool {
-    let head = match parser.peek_nth(0) {
-        Some(Ok(t)) => t,
-        _ => return false,
-    };
-
-    match head.kind {
+    parser.peek_nth(0).and_then(Result::ok).is_some_and(|head| match head.kind {
         TokenKind::Identifier("self") => true,
         TokenKind::Keyword(Keyword::Mut) => {
             matches!(parser.peek_nth(1), Some(Ok(t)) if t.kind == TokenKind::Identifier("self"))
         },
         _ => false,
-    }
+    })
 }
 
 fn parse_where_clause<'i>(
@@ -1955,7 +1921,7 @@ fn parse_where_clause<'i>(
                 existing.span = existing.span + entry.span;
                 existing.bounds.extend(entry.bounds);
             },
-            None => generics.push(entry),
+            _ => generics.push(entry),
         }
 
         if !parser.consume_token(Punct::Comma)? {
@@ -1970,6 +1936,16 @@ fn parse_where_clause<'i>(
     }
 
     Ok(())
+}
+
+fn impl_receiver_binds(receiver: &Type<'_>, name: &str) -> bool {
+    match receiver {
+        Type::Generic(_, args) => args
+            .iter()
+            .any(|arg| matches!(arg.value_ref(), Type::Named(bound) if *bound == name)),
+        Type::Slice(el, _) => matches!(el.as_ref(), Type::Named(bound) if *bound == name),
+        _ => false,
+    }
 }
 
 #[inline(always)]
@@ -2127,16 +2103,15 @@ fn parse_braced_members<'i>(
     loop {
         let docs = parser.parse_outer_docs();
         match parser.peek() {
-            Some(Ok(token)) if token.is_kind(Punct::CloseBrace) => {
-                return parser.expect_token(Punct::CloseBrace);
+            Some(Ok(t)) if t.is_kind(Punct::CloseBrace) => break,
+            Some(Ok(t)) if t.is_kind(TokenKind::Eof) => {
+                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, t.span));
             },
-            Some(Ok(token)) if token.is_kind(TokenKind::Eof) => {
-                return Err(ParserError::new(ParseErrorKind::UnexpectedEof, token.span));
-            },
-            Some(Err(err)) => return Err(err.into()),
+            Some(Err(e)) => return Err(e.into()),
             _ => member(parser, docs)?,
         }
     }
+    parser.expect_token(Punct::CloseBrace)
 }
 
 impl<'i> ItemKind<'i> {

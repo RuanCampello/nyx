@@ -60,6 +60,13 @@ pub enum ParseErrorKind<'i> {
     )]
     EmptyInterpolation,
     #[diagnostic(
+        code = "E034",
+        message = "{name!} is not a generic parameter of this implementation",
+        primary = "this implementation does not bind {name!}",
+        help = "Only generic parameters appearing in the implementation receiver can be constrained here"
+    )]
+    UnboundImplGeneric { name: &'i str },
+    #[diagnostic(
         code = "E025",
         message = "Expected an expression, found {found!}",
         primary = "expression expected here"

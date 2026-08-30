@@ -242,6 +242,11 @@ impl<'i> Parser<'i> {
         self.buffer.front()
     }
 
+    #[inline(always)]
+    fn peek_token(&mut self) -> Result<Option<&Token<'i>>, ParserError<'i>> {
+        self.peek().map(Result::as_ref).transpose().map_err(Into::into)
+    }
+
     /// Record and drop the lexical errors at the head of the stream, so the rest
     /// of a parse only ever sees real tokens and can keep going
     fn skip_lexical_errors(&mut self) {
@@ -875,6 +880,51 @@ mod tests {
         assert!(
             matches!(implementation.receiver.value_ref(), Type::Generic("Pair", args) if args.len() == 2)
         );
+    }
+
+    #[test]
+    fn impl_where_bounds_are_attached_to_the_impl_and_its_methods() {
+        let statements = Parser::new(
+            r#"
+            struct Pair<L, R> { left: L, right: R }
+            impl Pair<L, R> with Equal where L: PartialEq, R: PartialEq + Clone {
+                fn equal(&self, other: &Self): bool = true;
+            }
+            "#,
+        )
+        .parse()
+        .unwrap();
+
+        let Statement::Item(Item { kind: ItemKind::Impl(implementation), .. }) = &statements[1]
+        else {
+            panic!("expected impl block");
+        };
+
+        let left = &implementation.generics[0];
+        let right = &implementation.generics[1];
+
+        assert_eq!(implementation.interface, Some("Equal"));
+        assert_eq!(implementation.generics.len(), 2);
+        assert_eq!(left.name, "L");
+        assert_eq!(left.bounds.len(), 1);
+        assert_eq!(right.name, "R");
+        assert_eq!(right.bounds.len(), 2);
+        assert_eq!(implementation.methods[0].impl_generics, implementation.generics);
+    }
+
+    #[test]
+    fn impl_where_bound_must_name_a_receiver_generic() {
+        let err = Parser::new(
+            r#"
+            struct Pair<L, R> { left: L, right: R }
+            impl Pair<L, R> where T: PartialEq {}
+            "#,
+        )
+        .parse()
+        .unwrap_err()
+        .remove(0);
+
+        assert_eq!(err.kind, ParseErrorKind::UnboundImplGeneric { name: "T" });
     }
 
     #[test]
