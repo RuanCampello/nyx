@@ -7,6 +7,7 @@ mod adts;
 mod signatures;
 mod table;
 
+pub(in crate::hir) use signatures::open_impl_env;
 pub use table::*;
 
 use crate::{
@@ -85,9 +86,7 @@ impl<'hir> ItemTable<'hir> {
         if let Err(error) = statics::extend(self, declarations, arena) {
             self.soft(error);
         }
-        if let Err(error) = interfaces::validate(self, declarations) {
-            self.soft(error);
-        }
+        interfaces::validate(self, declarations);
     }
 
     /// reports every bound that collection deferred, once no further `impl` can appear

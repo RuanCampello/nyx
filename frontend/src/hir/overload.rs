@@ -40,7 +40,7 @@ where
         if let TypeKind::GenericParam(param) = receiver.kind() {
             let interface_name = comparison.interface.to_string();
             let interface = self.scope.symbols.get_id(&interface_name);
-            let supported = self.generics.get(param as usize).is_some_and(|generic| {
+            let supported = self.resolve_param_generic(param).is_some_and(|generic| {
                 generic.bounds.iter().any(|bound| match bound.value_ref() {
                     statement::Type::Named(name) | statement::Type::Generic(name, _) => {
                         *name == interface_name
@@ -90,12 +90,16 @@ where
         };
 
         self.check_call_safety(function, span);
+        let substs = self.generic_receiver_substs(function, receiver, span)?;
         let lowered = self.alloc(
             ExpressionKind::Binary { operator, left: left.expr, right: right.expr },
             self.scope.types.common.bool,
             span,
         );
         self.typeck.type_dependent_defs.insert(lowered.expr.id, Res::Function(function));
+        if !substs.is_empty() {
+            self.typeck.node_args.insert(lowered.expr.id, substs);
+        }
 
         Ok(Some(lowered))
     }
@@ -108,6 +112,8 @@ where
     ) -> Result<Lowered<'hir>, HirError<'hir>> {
         let method =
             self.resolve_index_method(base.typ.strip_reference(), self.mutable_place, span)?;
+        let substs =
+            self.generic_receiver_substs(method.function, base.typ.strip_reference(), span)?;
         let index = self.lower_expr(index, Some(method.index))?;
         self.assert_type(method.index, index.typ, index.span)?;
 
@@ -126,6 +132,9 @@ where
         self.typeck
             .type_dependent_defs
             .insert(call.expr.id, Res::Function(method.function));
+        if !substs.is_empty() {
+            self.typeck.node_args.insert(call.expr.id, substs);
+        }
 
         Ok(self.alloc(
             ExpressionKind::Unary { operator: UnaryOperator::Deref, expr: call.expr },

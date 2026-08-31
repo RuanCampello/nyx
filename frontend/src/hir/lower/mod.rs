@@ -36,6 +36,7 @@ pub(in crate::hir) struct FunctionBuilder<'s, 'f, 'hir, 'src> {
     return_type_span: Option<Span>,
     function: Option<&'f statement::Function<'src>>,
     impl_ctx: ImplCtx<'hir, 'src>,
+    pub(super) impl_generics: &'f [statement::GenericBound<'src>],
     pub(super) generics: &'f [statement::GenericBound<'src>],
     function_id: FunctionId,
     next_local: u32,
@@ -119,6 +120,7 @@ where
         builder.impl_ctx.type_name = function.impl_type;
         builder.impl_ctx.template = function.impl_type;
         builder.impl_ctx.self_type = self_type;
+        builder.impl_generics = &function.impl_generics;
         builder.generics = &function.generics;
         builder.function_id = function_id;
         builder
@@ -152,6 +154,7 @@ where
             return_type_span: None,
             function: None,
             impl_ctx: ImplCtx::default(),
+            impl_generics: &[],
             generics: &[],
             function_id: FunctionId(0),
             next_local: 0,

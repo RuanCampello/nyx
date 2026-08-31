@@ -4,7 +4,7 @@ use crate::{
         Syscall, TyInterner, Type, TypeKind, collect,
         error::{HirError, hir_error},
         lower::{FunctionBuilder, Lowered},
-        type_resolver::{self, resolve_annotation},
+        type_resolver::resolve_annotation,
     },
     lexer::{Spanned, token::Span},
     parser::{
@@ -29,7 +29,7 @@ where
         param: u8,
         method: SymbolId,
     ) -> Option<(SymbolId, InterfaceMethodSignature<'hir>)> {
-        let generic = self.generics.get(param as usize)?;
+        let generic = self.resolve_param_generic(param)?;
         self.find_bound_signature(generic, |candidate| candidate.name == method)
     }
 
@@ -50,7 +50,15 @@ where
     }
 
     pub(super) fn resolve_generic(&self, qualifier: &str) -> Option<&GenericBound<'src>> {
-        self.generics.iter().find(|generic| generic.name == qualifier)
+        self.impl_generics.iter().chain(self.generics).find(|g| g.name == qualifier)
+    }
+
+    pub(in crate::hir) fn resolve_param_generic(&self, param: u8) -> Option<&GenericBound<'src>> {
+        let concrete = self.scope.types.generic_param(param);
+        self.impl_generics
+            .iter()
+            .chain(self.generics)
+            .find(|g| self.generic_env.get(g.name).copied() == Some(concrete))
     }
 
     /// find the first of `generic`'s bounds whose interface has an item `project` selects
@@ -318,14 +326,7 @@ where
             return Ok(Vec::new());
         }
 
-        let mut ctx = type_resolver::ResolveCtx::root(
-            &self.scope.symbols,
-            &self.scope.adts.struct_map,
-            &self.scope.adts.enum_map,
-            &self.scope.adts.defs,
-            &self.scope.arrays,
-            &self.scope.types,
-        );
+        let mut ctx = self.scope.root_ctx();
         if let Some(typ) = self.impl_ctx.self_type {
             ctx = ctx.with_self(typ);
         }
@@ -346,10 +347,17 @@ where
     ) -> Result<Lowered<'hir>, HirError<'hir>> {
         let signature = self.scope.functions.defs[function_id].clone();
         let fixed = &self.scope.functions.defs[function_id].generic_env;
-        let bounds: Vec<_> = self.scope.functions.defs[function_id]
+        let body = self.scope.functions.defs[function_id]
             .body
             .as_ref()
-            .expect("generic call target retains its source body")
+            .expect("generic call target retains its source body");
+        let impl_bounds = body.impl_generics.iter().filter_map(|generic| {
+            match fixed.get(generic.name).map(|typ| typ.kind()) {
+                Some(TypeKind::GenericParam(slot)) => Some((slot as usize, generic.clone())),
+                _ => None,
+            }
+        });
+        let method_bounds: Vec<_> = body
             .generics
             .iter()
             .enumerate()
@@ -359,6 +367,7 @@ where
                 _ => None,
             })
             .collect();
+        let bounds: Vec<_> = impl_bounds.chain(method_bounds.iter().cloned()).collect();
 
         let open_params = match syntax {
             GenericCall::Free => signature.params.as_slice(),
@@ -398,7 +407,7 @@ where
             },
         };
 
-        for (&(slot, _), typ) in bounds.iter().zip(self.resolve_turbofish(type_args)?) {
+        for (&(slot, _), typ) in method_bounds.iter().zip(self.resolve_turbofish(type_args)?) {
             if let Some(existing) = substs.get_mut(slot) {
                 *existing = typ;
             }
@@ -432,6 +441,36 @@ where
             substs,
             span,
         ))
+    }
+
+    pub(in crate::hir) fn generic_receiver_substs(
+        &mut self,
+        function_id: FunctionId,
+        receiver: Type<'hir>,
+        span: Span,
+    ) -> Result<Vec<Type<'hir>>, HirError<'hir>> {
+        let signature = self.scope.functions.defs[function_id].clone();
+        let Some(body) = signature.body.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let fixed = &signature.generic_env;
+        let bounds: Vec<_> = body
+            .impl_generics
+            .iter()
+            .filter_map(|generic| match fixed.get(generic.name).map(|typ| typ.kind()) {
+                Some(TypeKind::GenericParam(slot)) => Some((slot as usize, generic.clone())),
+                _ => None,
+            })
+            .collect();
+        let count = generic_arity(&signature.params, signature.return_type)
+            .max(bounds.iter().map(|&(slot, _)| slot + 1).max().unwrap_or(0));
+        let open_receiver = signature
+            .receiver_type()
+            .expect("generic receiver substitution requires a method")
+            .strip_reference();
+        let substs = infer_type_args(&[open_receiver], &[receiver], count);
+        self.check_bounds(&bounds, &substs, span)?;
+        Ok(substs)
     }
 
     pub(super) fn finish_call(
@@ -512,7 +551,6 @@ where
         args: &[Type<'hir>],
         span: Span,
     ) -> Result<(), HirError<'hir>> {
-        let current_generics = self.function.map(|f| f.generics.as_slice()).unwrap_or(&[]);
         for &(slot, ref param) in generics {
             let Some(&concrete_type) = args.get(slot) else {
                 continue;
@@ -526,13 +564,8 @@ where
                 };
 
                 let satisfied = match concrete_type.kind() {
-                    TypeKind::GenericParam(idx) => current_generics
-                        .get(idx as usize)
-                        .into_iter()
-                        .chain(self.generics.iter().filter(|generic| {
-                            self.generic_env.get(generic.name).copied() == Some(concrete_type)
-                        }))
-                        .any(|param_bound| {
+                    TypeKind::GenericParam(idx) => {
+                        self.resolve_param_generic(idx).into_iter().any(|param_bound| {
                             param_bound.bounds.iter().any(|bound| {
                                 let name = match bound.value_ref() {
                                     statement::Type::Named(name)
@@ -541,7 +574,8 @@ where
                                 };
                                 name == *interface_name
                             })
-                        }),
+                        })
+                    },
                     _ => self.scope.symbols.get_id(interface_name).is_some_and(|interface_sym| {
                         self.scope.implements_interface(concrete_type, interface_sym)
                     }),

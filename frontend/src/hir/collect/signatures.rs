@@ -665,31 +665,30 @@ impl<'hir> ItemTable<'hir> {
     }
 }
 
-fn open_impl_env<'hir>(
+pub(in crate::hir) fn open_impl_env<'hir>(
     types: &TyInterner<'hir>,
     implementation: &statement::Impl<'_>,
 ) -> GenericEnv<'hir> {
     use statement::Type::*;
 
-    let mut names: Vec<_> = implementation.generics.iter().map(|g| g.name).collect();
-
-    let receiver_types = match implementation.receiver.value_ref() {
-        Generic(_, args) => args.iter().map(|arg| arg.value_ref()).collect::<Vec<_>>(),
-        Slice(element, _) => vec![element.as_ref()],
-        _ => Vec::new(),
+    let mut names: Vec<_> = Vec::new();
+    let mut push = |name| {
+        if !names.contains(&name) {
+            names.push(name);
+        }
     };
 
-    for ty in receiver_types {
-        if let Named(name) = ty {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
+    match implementation.receiver.value_ref() {
+        Generic(_, args) => args.iter().filter_map(|a| a.value_ref().named()).for_each(&mut push),
+        Slice(element, _) => element.named().into_iter().for_each(&mut push),
+        _ => {},
     }
+
+    implementation.generics.iter().map(|generic| generic.name).for_each(push);
 
     names
         .into_iter()
         .enumerate()
-        .map(|(i, name)| (name.to_owned(), types.generic_param(i as u8)))
+        .map(|(i, name)| (name.into(), types.generic_param(i as _)))
         .collect()
 }

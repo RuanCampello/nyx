@@ -200,4 +200,9 @@ impl<'a, 'hir> ResolveCtx<'a, 'hir> {
         self.self_type = Some(t);
         self
     }
+
+    pub fn with_env(mut self, env: &'a GenericEnv<'hir>) -> Self {
+        self.env = Some(env);
+        self
+    }
 }

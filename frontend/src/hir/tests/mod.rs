@@ -2229,10 +2229,119 @@ fn a_bound_with_the_wrong_argument_is_rejected() {
     });
 }
 
+const GENERIC_IMPL_BOUND: &str = r#"
+    interface Value { fn value(&self): i32; }
+    struct Number { inner: i32 }
+    impl Number with Value { fn value(&self): i32 = self.inner };
+    struct Wrapper<T> { inner: T }
+    impl Wrapper<T> where T: Value {
+        fn read(&self): i32 = self.inner.value();
+        fn tagged<U>(&self, value: U): U = value;
+    }
+"#;
+
+#[test]
+fn an_impl_bound_is_available_while_lowering_its_method_body() {
+    let source = format!(
+        r#"{GENERIC_IMPL_BOUND} fn main() {{
+         let wrapped = Wrapper::<Number> {{ inner: Number {{ inner: 7 }} }};
+         wrapped.read(); }}"#
+    );
+
+    with_lowered(&source, |_| ());
+}
+
+#[test]
+fn a_concrete_impl_instantiation_must_satisfy_its_bounds() {
+    let source = format!(
+        r#"{GENERIC_IMPL_BOUND} fn main() {{
+        let wrapped = Wrapper::<i32> {{ inner: 7 }};
+        wrapped.read(); }}"#
+    );
+
+    with_lowered_err(&source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::UnsatisfiedBound { .. }), "got {:?}", err.kind);
+    });
+}
+
+#[test]
+fn method_type_arguments_follow_impl_generics() {
+    let source = format!(
+        r#"{GENERIC_IMPL_BOUND} fn main() {{
+        let wrapped = Wrapper::<Number> {{ inner: Number {{ inner: 7 }} }};
+        let tagged: bool = wrapped.tagged::<bool>(true); }}"#
+    );
+
+    with_lowered(&source, |_| ());
+}
+
+#[test]
+fn impl_bound_order_does_not_change_receiver_generic_slots() {
+    let source = r#"
+        interface Value { fn value(&self): i32; }
+        struct Left { inner: i32 }
+        impl Left with Value { fn value(&self): i32 = self.inner; }
+        struct Right { inner: i32 }
+        impl Right with Value { fn value(&self): i32 = self.inner; }
+        struct Pair<L, R> { left: L, right: R }
+        impl Pair<L, R> where R: Value, L: Value {
+            fn sum(&self): i32 = self.left.value() + self.right.value();
+        }
+        fn main() {
+            let pair = Pair::<Left, Right> {
+                left: Left { inner: 1 },
+                right: Right { inner: 2 },
+            };
+            pair.sum();
+        }
+    "#;
+
+    with_lowered(source, |_| ());
+}
+
+const GENERIC_INTERFACE_IMPL: &str = r#"
+    interface Value { fn value(&self): i32; }
+    struct Number { inner: i32 }
+    impl Number with Value { fn value(&self): i32 = self.inner; }
+    struct Wrapper<T> { inner: T }
+    impl Wrapper<T> with Value where T: Value {
+        fn value(&self): i32 { self.inner.value() }
+    }
+"#;
+
+#[test]
+fn a_generic_interface_impl_is_validated_with_its_open_receiver() {
+    let source = format!(
+        r#"{GENERIC_INTERFACE_IMPL} fn main() {{
+        let wrapped = Wrapper::<Number> {{ inner: Number {{ inner: 7 }} }};
+        wrapped.value(); }}"#
+    );
+
+    with_lowered(&source, |_| ());
+}
+
+#[test]
+fn a_generic_interface_impl_rejects_an_unsatisfied_receiver_argument() {
+    let source = format!(
+        r#"{GENERIC_INTERFACE_IMPL} fn main() {{
+         let wrapped = Wrapper::<i32> {{ inner: 7 }};
+         wrapped.value(); }}"#
+    );
+
+    with_lowered_err(&source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::UnsatisfiedBound { .. }), "got {:?}", err.kind);
+    });
+}
+
 #[test]
 fn a_generic_argument_is_checked_against_its_substituted_parameter() {
-    let source = "fn same<T>(a: T, b: T): bool { true } \
-                  fn main() { let flag: bool = true; same(1, flag); }";
+    let source = r#"
+    fn same<T>(a: T, b: T): bool = true;
+    fn main() {
+        let flag: bool = true; 
+        same(1, flag);
+    }
+    "#;
     with_lowered_err(source, |err| {
         assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }), "got {:?}", err.kind);
     });

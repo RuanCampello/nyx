@@ -1940,10 +1940,8 @@ fn parse_where_clause<'i>(
 
 fn impl_receiver_binds(receiver: &Type<'_>, name: &str) -> bool {
     match receiver {
-        Type::Generic(_, args) => args
-            .iter()
-            .any(|arg| matches!(arg.value_ref(), Type::Named(bound) if *bound == name)),
-        Type::Slice(el, _) => matches!(el.as_ref(), Type::Named(bound) if *bound == name),
+        Type::Generic(_, args) => args.iter().any(|arg| arg.value_ref().named() == Some(name)),
+        Type::Slice(el, _) => el.named() == Some(name),
         _ => false,
     }
 }
@@ -2203,6 +2201,13 @@ impl<'i> Type<'i> {
             Type::Unit => Some("unit"),
             Type::Never => Some("!"),
             other => other.primitive_name(),
+        }
+    }
+
+    pub const fn named(&self) -> Option<&str> {
+        match self {
+            Self::Named(name) => Some(name),
+            _ => None,
         }
     }
 }
