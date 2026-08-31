@@ -67,16 +67,7 @@ where
     for symbol_id in sorted {
         let decl = &decls[&symbol_id];
         let resolved = {
-            let (structs, enums, arrays) =
-                (&scope.adts.struct_map, &scope.adts.enum_map, &scope.arrays);
-            let ctx = type_resolver::ResolveCtx::root(
-                &scope.symbols,
-                structs,
-                enums,
-                &scope.adts.defs,
-                arrays,
-                &scope.types,
-            );
+            let ctx = scope.root_ctx();
             type_resolver::resolve_annotation(&ctx, &decl.ast.typ.value(), decl.ast.typ.span())
         };
         let expected_type = resolved.unwrap_or_else(|error| scope.poison(error));

@@ -301,6 +301,13 @@ impl<'hir> ItemTable<'hir> {
         }
     }
 
+    /// a type-resolution context over the whole namespace, without `Self` or a generic environment bound
+    pub(in crate::hir) fn root_ctx(&self) -> type_resolver::ResolveCtx<'_, 'hir> {
+        let ItemTable { symbols, adts, arrays, types, .. } = self;
+        let (structs, enums, defs) = (&adts.struct_map, &adts.enum_map, &adts.defs);
+        type_resolver::ResolveCtx::root(symbols, structs, enums, defs, arrays, types)
+    }
+
     /// Record `error` and yield a poison [Type<'hir>] so analysis can continue
     pub(in crate::hir) fn poison(&self, error: HirError<'hir>) -> Type<'hir> {
         #[cfg(test)]

@@ -41,17 +41,7 @@ where
         let symbol = scope.symbols.insert(&mangled);
 
         let resolved = {
-            let (structs, enums, arrays) =
-                (&scope.adts.struct_map, &scope.adts.enum_map, &scope.arrays);
-
-            let ctx = type_resolver::ResolveCtx::root(
-                &scope.symbols,
-                structs,
-                enums,
-                &scope.adts.defs,
-                arrays,
-                &scope.types,
-            );
+            let ctx = scope.root_ctx();
             type_resolver::resolve_annotation(
                 &ctx,
                 &declaration.typ.value(),
