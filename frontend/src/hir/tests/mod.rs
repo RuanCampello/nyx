@@ -2232,7 +2232,7 @@ fn a_bound_with_the_wrong_argument_is_rejected() {
 const GENERIC_IMPL_BOUND: &str = r#"
     interface Value { fn value(&self): i32; }
     struct Number { inner: i32 }
-    impl Number with Value { fn value(&self): i32 = self.inner };
+    impl Number with Value { fn value(&self): i32 = self.inner; }
     struct Wrapper<T> { inner: T }
     impl Wrapper<T> where T: Value {
         fn read(&self): i32 = self.inner.value();

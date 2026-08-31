@@ -1,0 +1,76 @@
+use std::cmp::{Equatable, Orderable, Ordering, PartialEq, PartialOrd};
+use std::optional::{Optional};
+use std::panic::{assert};
+
+struct Number {
+    value: i32,
+}
+
+impl Number with PartialEq {
+    fn eq(&self, other: &Self): bool = self.value == other.value;
+}
+
+impl Number with Equatable {
+}
+
+impl Number with PartialOrd {
+    fn partial_compare(&self, other: &Self): Optional<Ordering> = Optional::Some(self.compare(other));
+}
+
+impl Number with Orderable {
+    fn compare(&self, other: &Self): Ordering {
+        if self.value < other.value return Ordering::Less;
+        if self.value > other.value return Ordering::Greater;
+        Ordering::Equal
+    }
+
+    fn max(self, other: Self): Self = other;
+
+    fn min(self, other: Self): Self = other;
+
+    fn clamp(self, min: Self, max: Self): Self = min;
+}
+
+struct Entry<K, V> {
+    key: K,
+    value: V,
+}
+
+impl Entry<K, V> with PartialEq
+where K: PartialEq, V: PartialEq {
+    fn eq(&self, other: &Self): bool = self.key == other.key && self.value == other.value;
+}
+
+impl Entry<K, V> with Equatable
+where K: Equatable, V: Equatable {}
+
+impl Entry<K, V> with PartialOrd
+where K: Orderable, V: Orderable {
+    fn partial_compare(&self, other: &Self): Optional<Ordering> = Optional::Some(self.compare(other));
+}
+
+impl Entry<K, V> with Orderable
+where K: Orderable, V: Orderable {
+    fn compare(&self, other: &Self): Ordering {
+        let key_order = self.key.compare(&other.key);
+        match key_order {
+            Ordering::Equal -> self.value.compare(&other.value),
+            _ -> key_order,
+        }
+    }
+}
+
+fn main(): i32 {
+    let one = Number { value: 1 };
+    let two = Number { value: 2 };
+    let three = Number { value: 3 };
+    let left = Entry::<Number, Number> { key: one, value: three };
+    let same = Entry::<Number, Number> { key: one, value: three };
+    let greater_key = Entry::<Number, Number> { key: two, value: one };
+    let greater_value = Entry::<Number, Number> { key: one, value: two };
+
+    assert(left == same);
+    assert(left < greater_key);
+    assert(greater_value < left);
+    0
+}
