@@ -1,0 +1,89 @@
+use sorted_table::entry::{Entry};
+use std::cmp::{Ordering};
+
+pub struct SortedTable<K: Orderable, V: Equatable> {
+    entries: [Entry<K, V>; 8],
+    len: uptr,
+}
+
+impl SortedTable<K, V> {
+    pub fn new(fallback: Entry<K, V>): SortedTable<K, V> = SortedTable { entries: [fallback; 8], len: 0 };
+
+    pub inline const fn len(&self): uptr = self.len;
+
+    pub fn get_at(&self, index: uptr): Optional<Entry<K, V>> {
+        match index < self.len {
+            true -> Optional::Some(self.entries[index]),
+            _ -> Optional::None,
+        }
+    }
+
+    pub fn find(&self, key: &K): Optional<V> {
+        if self.len == 0 return Optional::None;
+
+        let mut low = 0;
+        let mut high = self.len - 1;
+
+        loop {
+            // do we have any syntax to better express a thing like this?
+            // would be 'while low <= high'
+            if low == high break;
+            let mid = low + (high - low) / 2;
+            let ord = self.entries[mid].key.compare(key);
+
+            match ord {
+                Ordering::Equal -> return Optional::Some(self.entries[mid].value),
+                Ordering::Less -> low = mid + 1,
+                Ordering::Greater -> match mid == 0 {
+                    true -> break,
+                    _ -> high = mid - 1,
+                },
+            }
+        }
+
+        Optional::None
+    }
+
+    pub fn insert(&mut self, key: K, value: V): bool {
+        let mut i = 0;
+        // same thing where but would be 'while i < self.len'
+        loop {
+            if i == self.len break;
+
+            if self.entries[i].key.eq(&key) {
+                self.entries[i].value = value;
+                return true;
+            }
+
+            i = i + 1
+        }
+
+        if self.len >= 8 return false;
+
+        let mut insert_position = self.len;
+        let mut j = 0;
+
+        loop {
+            if j = self.len break;
+
+            if self.entries[j].key < key {
+                insert_position = j;
+                break;
+            }
+
+            j = j + 1;
+        }
+
+        let mut shift = self.len;
+        loop {
+            if shift = insert_position break;
+            self.entries[shift] = self.entries[shift - 1];
+            shift = shift - 1;
+        }
+
+        self.entries[insert_position] = Entry { key, value };
+        self.len = self.len + 1;
+
+        true
+    }
+}

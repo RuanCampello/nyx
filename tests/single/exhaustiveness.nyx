@@ -1,0 +1,10 @@
+const fn f(n: i32): i32 = match n {
+    0 -> 1,
+    1 -> 2,
+    // only reports -2147483648..=-1 not covered
+    // and don't mention 2..=2147483647 also uncovered
+};
+
+fn main() {
+    let x = f(5);
+}

@@ -1,0 +1,39 @@
+use std::cmp::{Orderable, Equatable};
+use sorted_table::table::{SortedTable};
+
+pub fn count_range<K: Orderable>(table: &SortedTable, max: &K, min: &K): uptr {
+    let mut count = 0;
+    let mut i = 0;
+
+    loop {
+        if i == table.len() break;
+
+        match table.get_at(i) {
+            Optional::Some(entry) -> {
+                if entry.key >= min && entry.key <= max count = count + 1;
+            },
+            Optional::None -> break,
+        }
+
+        i = i + 1;
+    }
+
+    count
+}
+
+pub fn merge<K: Orderable, V: Equatable>(dest: &mut SortedTable<K, V>, src: &SortedTable<K, V>): bool {
+    let mut i = 0;
+
+    loop {
+        if i == src.len() break;
+
+        match src.get_at(i) {
+            Optional::Some(entry) -> if !dest.insert(entry.key, entry.value) return false;,
+            Optional::None -> break,
+        }
+
+        i = i + 1;
+    }
+
+    true
+}

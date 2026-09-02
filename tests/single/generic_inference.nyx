@@ -1,0 +1,15 @@
+struct Box<T> {
+    val: T,
+}
+
+impl Box<T> {
+    fn get(&self): T = self.val;
+}
+
+fn add<T>(x: T): T = T + "oops";
+
+fn main(): i32 {
+    let b = Box { val: 77 };
+    let a = add(1);
+    b.get()
+}

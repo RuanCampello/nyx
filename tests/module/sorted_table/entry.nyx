@@ -1,0 +1,35 @@
+use std::cmp::{Equatable, Orderable, Ordering, PartialEq, PartialOrd};
+use std::optional::{Optional};
+
+pub struct Entry<K, V> {
+    key: K,
+    value: V,
+}
+
+impl Entry<K, V> with PartialEq
+where K: PartialEq, V: PartialEq {
+    fn eq(&self, other: &Self): bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+impl Entry<K, V> with Equatable
+where K: Equatable, V: Equatable {}
+
+impl Entry<K, V> with PartialOrd
+where K: Orderable, V: Orderable {
+    fn partial_compare(&self, other: &Self): Optional<Ordering> {
+        Optional::Some(self.compare(other))
+    }
+}
+
+impl Entry<K, V> with Orderable
+where K: Orderable, V: Orderable {
+    fn compare(&self, other: &Self): Ordering {
+        let key_order = self.key.compare(&other.key);
+        match key_order {
+            Ordering::Equal -> self.value.compare(&other.value),
+            _ -> key_order,
+        }
+    }
+}

@@ -1,0 +1,26 @@
+interface Base {
+    fn base_value(&self): i64;
+}
+
+interface Derived: Base {
+    fn derived_value(&self): i64;
+}
+
+struct S {
+    value: i64,
+}
+
+impl S with Base {
+    fn base_value(&self): i64 = self.value;
+}
+
+impl S with Derived {
+    fn derived_value(&self): i64 = self.value * 2;
+}
+
+fn use_derived<T: Derived>(x: T): i64 = x.derived_value() + x.base_value();
+
+fn main(): i32 {
+    std::panic::assert_eq(use_derived(S { value: 5 }), 15);
+    0
+}
