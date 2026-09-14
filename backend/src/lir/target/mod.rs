@@ -1092,3 +1092,12 @@ where
 
     (moves, uses)
 }
+
+impl From<bool> for RegClass {
+    fn from(is_float: bool) -> Self {
+        match is_float {
+            true => Self::Float,
+            _ => Self::Int,
+        }
+    }
+}
