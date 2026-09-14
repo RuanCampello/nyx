@@ -635,7 +635,8 @@ impl Literal {
             Literal::Float(value) => value == 0.0,
             Literal::Bool(value) => !value,
             Literal::Char(value) => value == '\0',
-            Literal::Unit | Literal::Str(_) => true,
+            Literal::Unit => true,
+            Literal::Str(_) => false,
         }
     }
 

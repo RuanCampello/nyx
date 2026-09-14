@@ -6,13 +6,12 @@
 //! mechanical. The register allocator works on VRegs and assigns them to
 //! physical registers or stack slots.
 
-#![allow(clippy::too_many_arguments)]
 use crate::{
-    hir::{EnumRepr, Static, Type, TypeKind},
+    hir::{EnumRepr, Literal, Static, Type, TypeKind},
     lir::target::{CondCode, Emittable, Lowerable, RegClass, Target},
     mir::{self, Layout},
 };
-use frontend::hir::StaticId;
+use frontend::hir::{StaticId, SymbolTable};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
@@ -111,6 +110,7 @@ pub enum Panic {
     SubOverflow,
     MulOverflow,
     IndexOutOfBounds,
+    DivisionByZero,
 }
 
 pub trait TypeExt {
@@ -202,7 +202,7 @@ where
         adt_reprs: &mir.reprs,
         arrays: &mir.array_layouts,
     };
-    emit_statics(&mir.statics, layouts, &mut out);
+    emit_statics(&mir.statics, &mir.symbols, layouts, &mut out);
 
     out
 }
@@ -211,10 +211,28 @@ where
 ///
 /// a zero initialiser costs nothing in the image, so those go to `.bss` and the
 /// loader zeroes them, everything else has to carry its bytes in `.data`
-fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
+fn emit_statics(statics: &[Static], symbols: &SymbolTable, layouts: Layouts, out: &mut String) {
     let entries = statics.iter().enumerate().map(|(id, item)| (StaticId(id as u32), item));
     let (zeroed, initialised): (Vec<_>, Vec<_>) =
         entries.partition(|(_, item)| item.init.is_zero());
+
+    // a string static holds a pointer and a length, so its text needs a symbol of its own
+    let texts: Vec<_> = initialised
+        .iter()
+        .filter_map(|(id, item)| match item.init {
+            Literal::Str(symbol) => Some((*id, symbols.get(symbol))),
+            _ => None,
+        })
+        .collect();
+
+    if !texts.is_empty() {
+        label!(out, ".section .rodata");
+        for (id, text) in &texts {
+            label!(out, ".align 1");
+            label!(out, "{}_text:", static_label(*id));
+            label!(out, "    .asciz {text:?}");
+        }
+    }
 
     for (section, items) in [(".bss", zeroed), (".data", initialised)] {
         if items.is_empty() {
@@ -230,8 +248,12 @@ fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
             label!(out, ".align {align}");
             label!(out, "{}:", static_label(id));
 
-            match section {
-                ".bss" => label!(out, "    .zero {size}"),
+            match (section, item.init) {
+                (".bss", _) => label!(out, "    .zero {size}"),
+                (_, Literal::Str(symbol)) => {
+                    label!(out, "    .quad {}_text", static_label(id));
+                    label!(out, "    .quad {}", symbols.get(symbol).len());
+                },
                 _ => label!(out, "    {}", item.init.static_directive(size)),
             }
         }
@@ -239,8 +261,13 @@ fn emit_statics(statics: &[Static], layouts: Layouts, out: &mut String) {
 }
 
 impl Panic {
-    const ALL: [Self; 4] =
-        [Self::AddOverflow, Self::SubOverflow, Self::MulOverflow, Self::IndexOutOfBounds];
+    const ALL: [Self; 5] = [
+        Self::AddOverflow,
+        Self::SubOverflow,
+        Self::MulOverflow,
+        Self::IndexOutOfBounds,
+        Self::DivisionByZero,
+    ];
 
     #[inline]
     const fn bit(self) -> u8 {
@@ -254,6 +281,7 @@ impl Panic {
             Self::SubOverflow => "__nyx_panic_sub_overflow",
             Self::MulOverflow => "__nyx_panic_mul_overflow",
             Self::IndexOutOfBounds => "__nyx_panic_index_out_of_bounds",
+            Self::DivisionByZero => "__nyx_panic_division_by_zero",
         }
     }
 
