@@ -112,9 +112,10 @@ impl Function<X86_64> {
                 label!(out, ".L_block_{name}_{idx}:");
             }
 
-            for instruction in &block.instructions {
-                self.emit_instruction(instruction, alloc, out);
-            }
+            block
+                .instructions
+                .iter()
+                .for_each(|instr| self.emit_instruction(instr, alloc, out));
 
             self.emit_terminator(alloc, &block.term, name, epilogue, idx == n - 1, out);
         }
@@ -173,10 +174,12 @@ impl Function<X86_64> {
                 mov_or_scratch(out, &src, &dest, suffix, true);
             },
 
-            Inst::MovFromStack { dest, rbp_offset, bytes } => {
-                let suffix = suffix(bytes);
+            Inst::MovFromStack { dest, rbp_offset, bytes, class } => {
+                let is_float = matches!(class, RegClass::Float);
+                let suffix = typed_suffix(bytes, is_float);
                 let dest = alloc.location(dest, bytes);
-                emit!(out, "mov{suffix}    {rbp_offset}(%rbp), {dest}");
+
+                mov_or_scratch(out, &format!("{rbp_offset}(%rbp)"), &dest, suffix, is_float);
             },
 
             Inst::Lea { dest, src } => {
@@ -552,6 +555,28 @@ impl Function<X86_64> {
                 emit!(out, "{operand}   {src}, {dest}");
             },
 
+            Inst::CmpEqFloat { dest, src, bytes } => {
+                let mnemonic = match *bytes == 4 {
+                    true => "cmpeqss",
+                    _ => "cmpeqsd",
+                };
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes);
+
+                emit!(out, "{mnemonic} {src}, {dest}");
+            },
+
+            Inst::AndNotFloat { dest, src, bytes } => {
+                let mnemonic = match *bytes == 4 {
+                    true => "andnps",
+                    _ => "andnpd",
+                };
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes);
+
+                emit!(out, "{mnemonic}  {src}, {dest}");
+            },
+
             Inst::Ucomis { lhs, rhs, bytes, .. } => {
                 let suffix = float_suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
@@ -564,7 +589,6 @@ impl Function<X86_64> {
 
             Inst::Setcc { dest, condition } => {
                 let dest = alloc.location(dest, &1);
-
                 emit!(out, "set{}  {dest}", condition.as_str())
             },
 
@@ -595,6 +619,15 @@ impl Function<X86_64> {
                 emit!(out, "cmp{suffix}    {rhs}, {lhs}");
             },
 
+            Inst::ZeroCheck { divisor, bytes } => {
+                let suffix = suffix(bytes);
+                let divisor = alloc.location(divisor, bytes);
+                let symbol = Panic::DivisionByZero.require();
+
+                emit!(out, "cmp{suffix}    $0, {divisor}");
+                emit!(out, "je      {symbol}");
+            },
+
             Inst::BoundsCheck { index, bound } => {
                 let index = alloc.location(index, &8);
                 let bound = self.operand(alloc, bound, &8);
@@ -605,126 +638,15 @@ impl Function<X86_64> {
             },
 
             Inst::Call { target, moves, ret, stack_args, .. } => {
-                let n_stack = stack_args.len();
-
-                if n_stack > 0 {
-                    for (i, (operand, mt)) in stack_args.iter().enumerate() {
-                        let bytes = mt.bytes();
-                        let is_float = matches!(mt, MachineType::Float { .. });
-                        let offset = i * 8;
-                        let dest = format!("{offset}(%rsp)");
-
-                        match operand {
-                            X86Operand::Imm(n) => {
-                                match *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
-                                    true => emit!(out, "movq    ${n}, {dest}"),
-                                    _ => {
-                                        emit!(out, "movabsq ${n}, %r11");
-                                        emit!(out, "movq    %r11, {dest}");
-                                    },
-                                }
-                            },
-                            X86Operand::RipRel(label) => match is_float {
-                                true => {
-                                    let suffix = float_suffix(&bytes);
-                                    emit!(out, "mov{suffix}    {label}, %xmm15");
-                                    emit!(out, "mov{suffix}    %xmm15, {dest}");
-                                },
-                                false => {
-                                    emit!(out, "leaq    {label}, %r11");
-                                    emit!(out, "movq    %r11, {dest}");
-                                },
-                            },
-                            X86Operand::VReg(vreg) => {
-                                let src = alloc.location(vreg, &bytes);
-
-                                match is_float {
-                                    true => {
-                                        let suffix = float_suffix(&bytes);
-                                        match src.contains("(%rbp)") {
-                                            true => {
-                                                emit!(out, "mov{suffix}    {src}, %xmm15");
-                                                emit!(out, "mov{suffix}    %xmm15, {dest}");
-                                            },
-
-                                            _ => emit!(out, "mov{suffix}    {src}, {dest}"),
-                                        }
-                                    },
-                                    false => {
-                                        let suffix = suffix(&bytes);
-                                        match bytes < 8 {
-                                            true => {
-                                                emit!(out, "movs{suffix}q   {src}, %r11");
-                                                emit!(out, "movq    %r11, {dest}");
-                                            },
-                                            _ => match src.contains("(%rbp)") {
-                                                true => {
-                                                    emit!(out, "movq    {src}, %r11");
-                                                    emit!(out, "movq    %r11, {dest}");
-                                                },
-                                                _ => {
-                                                    emit!(out, "movq    {src}, {dest}");
-                                                },
-                                            },
-                                        }
-                                    },
-                                }
-                            },
-                        }
-                    }
+                for (index, (operand, mt)) in stack_args.iter().enumerate() {
+                    let dest = format!("{}(%rsp)", index * 8);
+                    self.emit_stack_arg(alloc, operand, mt, &dest, out);
                 }
 
-                #[rustfmt::skip]
-                let arg_moves: Vec<_> = moves
-                    .iter()
-                    .map(|(vreg, reg)| {
-                        let bytes = self.reg_bytes(vreg);
-                        let is_float = self.is_float(vreg);
-                        let src = alloc.location(vreg, &bytes);
-                        let src_reg = alloc.reg(vreg);
-                        let dest = format!("%{}", reg.name(bytes));
-
-                        ParallelMove { src, src_reg, dest, dest_reg: *reg, bytes, is_float }
-                    })
-                    .collect();
-
-                resolve_parallel_moves(
-                    arg_moves,
-                    out,
-                    |out, m| {
-                        let suffix = typed_suffix(&m.bytes, m.is_float);
-                        mov_or_scratch(out, &m.src, &m.dest, suffix, m.is_float);
-                    },
-                    |out, m| {
-                        let suffix = typed_suffix(&m.bytes, m.is_float);
-                        let scratch = match m.is_float {
-                            true => "%xmm15",
-                            false => scratch_gpr(suffix),
-                        };
-
-                        emit!(out, "mov{suffix}    {}, {scratch}", m.src);
-                        m.src = scratch.to_string();
-                        m.src_reg = None;
-                    },
-                );
-
+                self.emit_arg_moves(alloc, moves, out);
                 emit!(out, "call    {target}");
-
                 if let Some(ret) = ret {
-                    let bytes = self.reg_bytes(ret);
-                    let is_float = self.is_float(ret);
-                    let class = match is_float {
-                        true => RegClass::Float,
-                        _ => RegClass::Int,
-                    };
-
-                    if let Some(abi_ret) = X86_64::ret(class) {
-                        let suffix = typed_suffix(&bytes, is_float);
-                        let src = format!("%{}", abi_ret.name(bytes));
-                        let dest = alloc.location(ret, &bytes);
-
-                        mov_or_scratch(out, &src, &dest, suffix, is_float);
-                    }
+                    self.emit_call_result(alloc, ret, out);
                 }
             },
 
@@ -792,6 +714,104 @@ impl Function<X86_64> {
         }
     }
 
+    /// place one argument in the outgoing stack-argument area
+    fn emit_stack_arg(
+        &self,
+        alloc: &Allocation<X86_64>,
+        operand: &X86Operand,
+        mt: &MachineType,
+        dest: &str,
+        out: &mut String,
+    ) {
+        use X86Operand::*;
+        let bytes = mt.bytes();
+        let is_float = matches!(mt, MachineType::Float { .. });
+
+        match operand {
+            Imm(value) if i32::try_from(*value).is_ok() => emit!(out, "movq    ${value}, {dest}"),
+            Imm(value) => {
+                emit!(out, "movabsq ${value}, %r11");
+                emit!(out, "movq    %r11, {dest}");
+            },
+            RipRel(label) if is_float => {
+                let suffix = float_suffix(&bytes);
+                emit!(out, "mov{suffix}    {label}, %xmm15");
+                emit!(out, "mov{suffix}    %xmm15, {dest}");
+            },
+            // an integer rip-relative operand is the address itself, not what it holds
+            RipRel(label) => {
+                emit!(out, "leaq    {label}, %r11");
+                emit!(out, "movq    %r11, {dest}");
+            },
+            VReg(vreg) => {
+                let src = alloc.location(vreg, &bytes);
+
+                match (is_float, bytes < 8) {
+                    (true, _) => mov_or_scratch(out, &src, dest, float_suffix(&bytes), true),
+                    (false, true) => {
+                        emit!(out, "movs{}q   {src}, %r11", suffix(&bytes));
+                        emit!(out, "movq    %r11, {dest}");
+                    },
+                    _ => mov_or_scratch(out, &src, dest, "q", false),
+                }
+            },
+        }
+    }
+
+    /// shuffle the register-passed arguments into their ABI registers at once
+    fn emit_arg_moves(
+        &self,
+        alloc: &Allocation<X86_64>,
+        moves: &[(VReg, X86Reg)],
+        out: &mut String,
+    ) {
+        let arg_moves: Vec<_> = moves
+            .iter()
+            .map(|(vreg, reg)| {
+                let (bytes, is_float) = (self.reg_bytes(vreg), self.is_float(vreg));
+                let (src, src_reg) = (alloc.location(vreg, &bytes), alloc.reg(vreg));
+                let dest = format!("%{}", reg.name(bytes));
+
+                ParallelMove { src, src_reg, dest, dest_reg: *reg, bytes, is_float }
+            })
+            .collect();
+
+        resolve_parallel_moves(
+            arg_moves,
+            out,
+            |out, m| {
+                let suffix = typed_suffix(&m.bytes, m.is_float);
+                mov_or_scratch(out, &m.src, &m.dest, suffix, m.is_float);
+            },
+            |out, m| {
+                let suffix = typed_suffix(&m.bytes, m.is_float);
+                let scratch = match m.is_float {
+                    true => "%xmm15",
+                    _ => scratch_gpr(suffix),
+                };
+                emit!(out, "mov{suffix}    {}, {scratch}", m.src);
+
+                m.src = scratch.to_string();
+                m.src_reg = None;
+            },
+        );
+    }
+
+    fn emit_call_result(&self, alloc: &Allocation<X86_64>, ret: &VReg, out: &mut String) {
+        let bytes = self.reg_bytes(ret);
+        let is_float = self.is_float(ret);
+
+        let Some(abi_ret) = X86_64::ret(is_float.into()) else {
+            return;
+        };
+
+        let suffix = typed_suffix(&bytes, is_float);
+        let src = format!("%{}", abi_ret.name(bytes));
+        let dest = alloc.location(ret, &bytes);
+
+        mov_or_scratch(out, &src, &dest, suffix, is_float);
+    }
+
     fn emit_terminator(
         &self,
         alloc: &Allocation<X86_64>,
@@ -838,12 +858,8 @@ impl Function<X86_64> {
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
                 let is_float = self.is_float(vreg);
-                let class = match is_float {
-                    true => RegClass::Float,
-                    _ => RegClass::Int,
-                };
 
-                if let Some(ret_reg) = X86_64::ret(class) {
+                if let Some(ret_reg) = X86_64::ret(is_float.into()) {
                     let suffix = typed_suffix(&bytes, is_float);
                     let src = alloc.location(vreg, &bytes);
                     let dest = format!("%{}", ret_reg.name(bytes));
@@ -949,7 +965,12 @@ fn mov_or_scratch(out: &mut String, src: &str, dest: &str, suffix: &str, is_floa
         .strip_prefix('$')
         .is_some_and(|v| v.parse::<i64>().is_ok_and(|n| i32::try_from(n).is_err()));
 
-    match (src.contains("(%rbp)") || wide_imm) && dest.contains("(%rbp)") {
+    // a rip-relative constant and an outgoing argument slot are memory just as
+    // much as a frame slot is, and no move has two memory operands
+    let src_is_memory = src.contains('(');
+    let dest_is_memory = dest.contains('(');
+
+    match (src_is_memory || wide_imm) && dest_is_memory {
         true => match is_float {
             true => {
                 emit!(out, "mov{suffix}    {src}, %xmm15");

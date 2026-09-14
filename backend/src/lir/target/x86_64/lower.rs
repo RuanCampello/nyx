@@ -19,6 +19,7 @@ use crate::lir::{
     },
 };
 use crate::mir::{self, Function, Operand};
+use crate::parser::expression::BinaryOperator;
 
 impl Lowerable for X86_64 {
     fn lower(
@@ -52,7 +53,7 @@ impl Lowerable for X86_64 {
 
 impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
     fn lower_instruction(&mut self, id: &BlockId, instruction: &mir::Instruction) {
-        use crate::mir::InstructionKind;
+        use crate::mir::InstructionKind as Inst;
 
         let dest = self.value[instruction.dest.id];
         let typ = instruction.dest.typ;
@@ -63,7 +64,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
         let is_float = typ.is_float();
 
         match &instruction.kind {
-            InstructionKind::Assign(op) => {
+            Inst::Assign(op) => {
                 let value = &self.value;
                 let layouts = self.layouts;
 
@@ -82,7 +83,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 }
             },
 
-            InstructionKind::Unary { operation, rhs } => {
+            Inst::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
 
                 const NEG_ZERO: u64 = (-0.0f64).to_bits();
@@ -131,7 +132,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
             },
 
             #[rustfmt::skip]
-            InstructionKind::Binary {
+            Inst::Binary {
                 operation,
                 rhs,
                 lhs,
@@ -154,18 +155,35 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                         self.lir.push_instr(id, X86Instr::DivFloat { dest, src: rhs, bytes });
                     }
                     B::Div | B::Rem if !is_float => {
-                        let dividend = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
+                        let mt = lhs_type.machine_type(self.layouts);
+                        let dividend = self.lir.new_vreg(mt);
                         let remainder = matches!(operation, B::Rem);
+
+                        if let Some(divisor) = self.divisor_check(id, &rhs, mt) {
+                            self.lir.push_instr(id, X86Instr::ZeroCheck { divisor, bytes });
+                        }
+
                         self.lir.push_instr(id, X86Instr::Mov { dest: dividend, src: lhs, bytes });
                         self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes, is_signed, remainder));
                     }
 
                     B::Rem => {
-                        let quotient = self.lir.new_vreg(lhs_type.machine_type(self.layouts));
+                        let mt = lhs_type.machine_type(self.layouts);
+                        let quotient = self.lir.new_vreg(mt);
+                        let product = self.lir.new_vreg(mt);
+                        let zero = self.lir.new_float(0, lhs_type.is_32_bit());
+
                         self.lir.push_instr(id, X86Instr::MovFloat { dest: quotient, src: lhs.clone(), bytes });
                         self.lir.push_instr(id, X86Instr::DivFloat { dest: quotient, src: rhs.clone(), bytes });
                         self.lir.push_instr(id, X86Instr::TruncFloat { dest: quotient, src: quotient, bytes });
-                        self.lir.push_instr(id, X86Instr::MulFloat { dest: quotient, src: rhs, bytes });
+                        self.lir.push_instr(id, X86Instr::MovFloat { dest: product, src: X86Operand::VReg(quotient), bytes });
+                        self.lir.push_instr(id, X86Instr::MulFloat { dest: product, src: rhs, bytes });
+
+                        // a zero quotient means the remainder is the dividend itself, and
+                        // an infinite divisor would have turned that zero into a NaN
+                        self.lir.push_instr(id, X86Instr::CmpEqFloat { dest: quotient, src: X86Operand::RipRel(format!("{zero}(%rip)")), bytes });
+                        self.lir.push_instr(id, X86Instr::AndNotFloat { dest: quotient, src: X86Operand::VReg(product), bytes });
+
                         self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
                         self.lir.push_instr(id, X86Instr::SubFloat { dest, src: X86Operand::VReg(quotient), bytes });
                     }
@@ -178,9 +196,9 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                         self.lir.push_instr(id, X86Instr::wide_mul(dest, factor, rhs, bytes, is_signed, checked));
                     }
 
-                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
-                        let cond = Condition::new(comp, is_float || !is_signed);
-                        self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, cond)
+                    comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => match is_float {
+                        true => self.lower_float_cmp(id, dest, lhs, rhs, bytes, comp),
+                        _ => self.lower_cmp(id, dest, lhs, rhs, bytes, Condition::new(comp, !is_signed)),
                     },
                     _ => {
                         let copy = match is_float {
@@ -246,7 +264,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 };
             },
 
-            InstructionKind::FieldLoad { src, offset, typ } => {
+            Inst::FieldLoad { src, offset, typ } => {
                 if typ.is_aggregate_lir(self.layouts) {
                     let origin = match src {
                         Operand::Place(p) => self.value[p.id],
@@ -272,8 +290,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
 
                 let mt = typ.machine_type(self.layouts);
                 let bytes = mt.bytes();
-                let is_float = typ.is_float();
-                let signed = mt.is_signed();
+                let (is_float, signed) = (typ.is_float(), mt.is_signed());
                 match src {
                     Operand::Place(place) => {
                         let origin = self.value[place.id];
@@ -292,7 +309,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 }
             },
 
-            InstructionKind::FieldStore { value, offset } => {
+            Inst::FieldStore { value, offset } => {
                 if value.typ().is_aggregate_lir(self.layouts) {
                     let Operand::Place(src) = value else {
                         unreachable!("aggregate field store source must be a place");
@@ -316,8 +333,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 }
 
                 let mt = value.typ().machine_type(self.layouts);
-                let bytes = mt.bytes();
-                let is_float = value.typ().is_float();
+                let (bytes, is_float) = (mt.bytes(), value.typ().is_float());
                 let src = self.lower_operand(value, id);
 
                 let instruction = X86_64::scalar_store(
@@ -331,32 +347,28 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 self.lir.push_instr(id, instruction);
             },
 
-            InstructionKind::ElementLoad { base, index, bound, stride, typ } => {
+            Inst::ElementLoad { base, index, bound, stride, typ } => {
                 self.lower_element_load(id, dest, base, index, bound, *stride, *typ)
             },
 
-            InstructionKind::ElementStore { index, bound, value, stride } => {
+            Inst::ElementStore { index, bound, value, stride } => {
                 self.lower_element_store(id, dest, typ, index, bound, value, *stride)
             },
 
-            InstructionKind::ElementAddr { base, index, bound, stride } => {
+            Inst::ElementAddr { base, index, bound, stride } => {
                 self.lower_element_addr(id, dest, base, index, bound, *stride)
             },
 
-            InstructionKind::StaticAddr { id: static_id } => {
+            Inst::StaticAddr { id: static_id } => {
                 let label = lir::static_label(*static_id);
                 let load = X86_64::load_label(dest, label, false, 8);
 
                 self.lir.push_instr(id, load);
             },
 
-            InstructionKind::AddressOf { src, offset } => {
-                self.lower_address_of(id, dest, src, *offset)
-            },
-
-            InstructionKind::Call { callee, args } => self.lower_call(id, dest, *callee, args),
-
-            InstructionKind::Syscall { code, args, returns } => {
+            Inst::AddressOf { src, offset } => self.lower_address_of(id, dest, src, *offset),
+            Inst::Call { callee, args } => self.lower_call(id, dest, *callee, args),
+            Inst::Syscall { code, args, returns } => {
                 let value = &self.value;
                 let layouts = self.layouts;
                 let (syscall_moves, syscall_uses) = target::prepare_syscall_args(
@@ -379,7 +391,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 );
             },
 
-            InstructionKind::Select { condition, then_value, else_value } => {
+            Inst::Select { condition, then_value, else_value } => {
                 let src = self.lower_operand(else_value, id);
                 self.lir.push_instr(id, X86Instr::Mov { dest, src, bytes });
 
@@ -394,7 +406,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 self.lir.push_instr(id, instr);
             },
 
-            InstructionKind::Cast { src, typ } => {
+            Inst::Cast { src, typ } => {
                 let src_mt = src.typ().machine_type(self.layouts);
                 let src_bytes = src_mt.bytes();
                 let src_signed = src_mt.is_signed();
@@ -413,7 +425,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                     (true, _) | (false, true) => X86Instr::Mov { dest, src: src_op, bytes: dest_bytes },
                     // upcasting a register/label requires extension based on signedness
                     (false, false) if src_signed => X86Instr::Movsx { dest, src: src_op, src_bytes, dest_bytes},
-                    (false, false) => X86Instr::Movzx { dest, src: src_op, src_bytes, dest_bytes },
+                    _ => X86Instr::Movzx { dest, src: src_op, src_bytes, dest_bytes },
                 };
 
                 self.lir.push_instr(id, instr);
@@ -428,36 +440,103 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
         lhs: X86Operand,
         rhs: X86Operand,
         bytes: u8,
-        is_float: bool,
         condition: Condition,
     ) {
-        // 1-byte result of setcc, then zero-extended into dest
-        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
-
-        match is_float {
-            true => {
-                let X86Operand::VReg(lhs) = lhs else {
-                    panic!("float lhs must be a virtual register");
-                };
-                self.lir.push_instr(id, X86Instr::Ucomis { lhs, rhs, bytes });
-            },
-
+        let lhs = match lhs {
+            X86Operand::VReg(reg) => reg,
             _ => {
-                let lhs = match lhs {
-                    X86Operand::VReg(reg) => reg,
-                    _ => {
-                        let dest = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
-                        self.lir.push_instr(id, X86Instr::Mov { dest, src: lhs, bytes });
+                let dest = self.lir.new_vreg(MachineType::Int { bytes, signed: false });
+                self.lir.push_instr(id, X86Instr::Mov { dest, src: lhs, bytes });
 
-                        dest
-                    },
-                };
-
-                self.lir.push_instr(id, X86Instr::Cmp { lhs, rhs, bytes });
+                dest
             },
-        }
+        };
+
+        self.lir.push_instr(id, X86Instr::Cmp { lhs, rhs, bytes });
+
+        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
+        self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
+        self.widen_flag(id, dest, flag);
+    }
+
+    /// IEEE requires every ordered comparison with NaN to be false, and `NaN != NaN` to be true
+    fn lower_float_cmp(
+        &mut self,
+        id: &BlockId,
+        dest: VReg,
+        lhs: X86Operand,
+        rhs: X86Operand,
+        bytes: u8,
+        operator: &BinaryOperator,
+    ) {
+        use BinaryOperator as B;
+
+        let (lhs, rhs) = match operator {
+            B::Lt | B::LtEq => {
+                let swapped = self.float_reg(id, rhs, bytes);
+                (swapped, X86Operand::VReg(self.float_reg(id, lhs, bytes)))
+            },
+            _ => (self.float_reg(id, lhs, bytes), rhs),
+        };
+
+        self.lir.push_instr(id, X86Instr::Ucomis { lhs, rhs, bytes });
+
+        let flag = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
+        let condition = match operator {
+            B::Eq => Condition::E,
+            B::Ne => Condition::Ne,
+            B::Lt | B::Gt => Condition::A,
+            _ => Condition::Ae,
+        };
 
         self.lir.push_instr(id, X86Instr::Setcc { dest: flag, condition });
+
+        if let B::Eq | B::Ne = operator {
+            let parity = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
+            let src = X86Operand::VReg(parity);
+
+            let (condition, combine) = match operator {
+                B::Eq => (Condition::Np, X86Instr::And { dest: flag, src, bytes: 1 }),
+                _ => (Condition::P, X86Instr::Or { dest: flag, src, bytes: 1 }),
+            };
+
+            self.lir.push_instr(id, X86Instr::Setcc { dest: parity, condition });
+            self.lir.push_instr(id, combine);
+        }
+
+        self.widen_flag(id, dest, flag);
+    }
+
+    /// the register an integer division must test before it runs
+    fn divisor_check(&mut self, id: &BlockId, rhs: &X86Operand, mt: MachineType) -> Option<VReg> {
+        match rhs {
+            X86Operand::VReg(reg) => Some(*reg),
+            X86Operand::Imm(0) => {
+                let divisor = self.lir.new_vreg(mt);
+                let src = X86Operand::Imm(0);
+                self.lir.push_instr(id, X86Instr::Mov { dest: divisor, src, bytes: mt.bytes() });
+
+                Some(divisor)
+            },
+            _ => None,
+        }
+    }
+
+    /// `ucomis` only compares against a register, so a constant operand is loaded first
+    fn float_reg(&mut self, id: &BlockId, operand: X86Operand, bytes: u8) -> VReg {
+        match operand {
+            X86Operand::VReg(reg) => reg,
+            src => {
+                let dest = self.lir.new_vreg(MachineType::Float { bytes });
+                self.lir.push_instr(id, X86Instr::MovFloat { dest, src, bytes });
+
+                dest
+            },
+        }
+    }
+
+    /// zero-extend the 1-byte `setcc` result into the i32 the comparison produces
+    fn widen_flag(&mut self, id: &BlockId, dest: VReg, flag: VReg) {
         self.lir.push_instr(
             id,
             X86Instr::Movzx {
@@ -468,7 +547,6 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
             },
         );
 
-        // movzx widens 1-byte setcc result to i32, so we need to update dest's type
         self.lir.set_vreg_type(dest, MachineType::Int { bytes: 4, signed: false });
     }
 

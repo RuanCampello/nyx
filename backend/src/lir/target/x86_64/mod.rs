@@ -37,6 +37,7 @@ pub enum X86Instr {
         /// positive offset from %rbp (always >= 16)
         rbp_offset: i32,
         bytes: u8,
+        class: RegClass,
     },
     Lea { dest: VReg, src: X86Operand },
     /// materialise the frame-pointer-relative address of a stack aggregate
@@ -88,11 +89,17 @@ pub enum X86Instr {
     /// `roundss`/`roundsd` truncating towards zero, the float half of a remainder
     TruncFloat { dest: VReg, src: VReg, bytes: u8 },
     XorFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    /// `cmpeqss`/`cmpeqsd`: leaves an all-ones mask in `dest` when the operands are equal
+    CmpEqFloat { dest: VReg, src: X86Operand, bytes: u8 },
+    /// `andnps`/`andnpd`: `dest = !dest & src`
+    AndNotFloat { dest: VReg, src: X86Operand, bytes: u8 },
 
     // comparison
     Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: X86Operand },
+    /// abort through the division-by-zero handler when `divisor` is zero
+    ZeroCheck { divisor: VReg, bytes: u8 },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8 },
@@ -110,35 +117,11 @@ pub enum X86Instr {
     Sar { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
 
     /// load a scalar field struct on the stack
-    FieldLoad {
-        dest: VReg,
-        origin: VReg,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
+    FieldLoad { dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool },
     // store a scalar value into a field of a struct on the stack
-    FieldStore {
-        origin: VReg,
-        src: X86Operand,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
-    PtrLoad {
-        dest: VReg,
-        ptr: VReg,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
-    PtrStore {
-        ptr: VReg,
-        src: X86Operand,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
+    FieldStore { origin: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool },
+    PtrLoad { dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool },
+    PtrStore { ptr: VReg, src: X86Operand, offset: i32, bytes: u8, is_float: bool },
 
     Call {
         target: String,
@@ -182,6 +165,8 @@ pub enum Condition {
     G, Ge,
     B, Be,
     A, Ae,
+    /// parity: the unordered result of `ucomis`
+    P, Np,
 }
 
 impl Target for X86_64 {
@@ -360,7 +345,12 @@ impl TargetOps for X86_64 {
 
     #[inline(always)]
     fn load_param_stack(dest: VReg, offset: i32, mt: MachineType) -> X86Instr {
-        X86Instr::MovFromStack { dest, rbp_offset: offset, bytes: mt.bytes() }
+        X86Instr::MovFromStack {
+            dest,
+            rbp_offset: offset,
+            bytes: mt.bytes(),
+            class: mt.class(),
+        }
     }
 
     #[inline(always)]
@@ -426,6 +416,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::DivFloat { dest, .. } | Self::TruncFloat { dest, .. }
             | Self::FieldLoad { dest, .. }
             | Self::PtrLoad { dest, .. } | Self::XorFloat { dest, .. }
+            | Self::CmpEqFloat { dest, .. } | Self::AndNotFloat { dest, .. }
             | Self::Not { dest, .. } | Self::Shl { dest, .. }
             | Self::Shr { dest, .. }
             | Self::Sar { dest, .. } => std::slice::from_ref(dest),
@@ -434,7 +425,8 @@ impl Instruction<X86_64> for X86Instr {
 
             Self::FieldStore { .. } | Self::PtrStore { .. }
             | Self::Cmp { .. }
-            | Self::Ucomis { .. } | Self::BoundsCheck { .. } => &[],
+            | Self::Ucomis { .. } | Self::BoundsCheck { .. }
+            | Self::ZeroCheck { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
@@ -457,36 +449,27 @@ impl Instruction<X86_64> for X86Instr {
             Self::TruncFloat { src, .. } => uses.push(*src),
 
             // 2-address: dest is read+write, src is read-only
-            Self::Add { src: X86Operand::VReg(v), .. }
-            | Self::Sub { src: X86Operand::VReg(v), .. }
-            | Self::Imul { src: X86Operand::VReg(v), .. }
-            | Self::And { src: X86Operand::VReg(v), .. }
-            | Self::Or { src: X86Operand::VReg(v), .. }
-            | Self::Xor { src: X86Operand::VReg(v), .. }
-            | Self::AddFloat { src: X86Operand::VReg(v), .. }
-            | Self::SubFloat { src: X86Operand::VReg(v), .. }
-            | Self::MulFloat { src: X86Operand::VReg(v), .. }
-            | Self::DivFloat { src: X86Operand::VReg(v), .. }
-            | Self::XorFloat { src: X86Operand::VReg(v), .. }
-            | Self::Shl { src: X86Operand::VReg(v), .. }
-            | Self::Shr { src: X86Operand::VReg(v), .. }
-            | Self::Sar { src: X86Operand::VReg(v), .. } => uses.push(*v),
-
-            // immediate-source 2-address: only dest is used
-            Self::Add { dest, .. }
-            | Self::Sub { dest, .. }
-            | Self::Imul { dest, .. }
-            | Self::And { dest, .. }
-            | Self::Or { dest, .. }
-            | Self::Xor { dest, .. }
-            | Self::AddFloat { dest, .. }
-            | Self::SubFloat { dest, .. }
-            | Self::MulFloat { dest, .. }
-            | Self::DivFloat { dest, .. }
-            | Self::XorFloat { dest, .. }
-            | Self::Shl { dest, .. }
-            | Self::Shr { dest, .. }
-            | Self::Sar { dest, .. } => uses.push(*dest),
+            Self::Add { dest, src, .. }
+            | Self::Sub { dest, src, .. }
+            | Self::Imul { dest, src, .. }
+            | Self::And { dest, src, .. }
+            | Self::Or { dest, src, .. }
+            | Self::Xor { dest, src, .. }
+            | Self::AddFloat { dest, src, .. }
+            | Self::SubFloat { dest, src, .. }
+            | Self::MulFloat { dest, src, .. }
+            | Self::DivFloat { dest, src, .. }
+            | Self::XorFloat { dest, src, .. }
+            | Self::CmpEqFloat { dest, src, .. }
+            | Self::AndNotFloat { dest, src, .. }
+            | Self::Shl { dest, src, .. }
+            | Self::Shr { dest, src, .. }
+            | Self::Sar { dest, src, .. } => {
+                uses.push(*dest);
+                if let X86Operand::VReg(v) = src {
+                    uses.push(*v);
+                }
+            },
 
             Self::FieldStore { origin, src: X86Operand::VReg(vreg), .. } => {
                 uses.push(*origin);
@@ -516,6 +499,8 @@ impl Instruction<X86_64> for X86Instr {
                     uses.push(*rhs);
                 }
             }
+
+            Self::ZeroCheck { divisor, .. } => uses.push(*divisor),
 
             Self::BoundsCheck { index, bound } => {
                 uses.push(*index);
@@ -581,6 +566,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Not { .. } | Self::Setcc { .. } | Self::Cmov { .. }
             | Self::AddFloat { .. } | Self::SubFloat { .. } | Self::MulFloat { .. }
             | Self::DivFloat { .. } | Self::XorFloat { .. } | Self::TruncFloat { .. }
+            | Self::CmpEqFloat { .. } | Self::AndNotFloat { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. }
         )
@@ -589,7 +575,7 @@ impl Instruction<X86_64> for X86Instr {
     #[inline]
     fn flag_to_bool(&self) -> Option<(VReg, CondCode)> {
         match self {
-            Self::Setcc { dest, condition } => Some((*dest, condition.code())),
+            Self::Setcc { dest, condition } => Some((*dest, condition.code()?)),
             _ => None,
         }
     }
@@ -737,13 +723,14 @@ impl Checked for X86Instr {
 
 impl Condition {
     #[rustfmt::skip]
-    const fn code(self) -> CondCode {
+    const fn code(self) -> Option<CondCode> {
         match self {
-            Self::E => CondCode::Eq, Self::Ne => CondCode::Ne,
-            Self::L => CondCode::Lt, Self::Le => CondCode::Le,
-            Self::G => CondCode::Gt, Self::Ge => CondCode::Ge,
-            Self::B => CondCode::Lo, Self::Be => CondCode::Ls,
-            Self::A => CondCode::Hi, Self::Ae => CondCode::Hs,
+            Self::E => Some(CondCode::Eq), Self::Ne => Some(CondCode::Ne),
+            Self::L => Some(CondCode::Lt), Self::Le => Some(CondCode::Le),
+            Self::G => Some(CondCode::Gt), Self::Ge => Some(CondCode::Ge),
+            Self::B => Some(CondCode::Lo), Self::Be => Some(CondCode::Ls),
+            Self::A => Some(CondCode::Hi), Self::Ae => Some(CondCode::Hs),
+            Self::P | Self::Np => None,
         }
     }
 
@@ -755,11 +742,11 @@ impl Condition {
             Self::G => "g", Self::Ge => "ge",
             Self::B => "b", Self::Be => "be",
             Self::A => "a", Self::Ae => "ae",
+            Self::P => "p", Self::Np => "np",
         }
     }
 
-    /// `unsigned` selects the below/above codes: they are correct both for unsigned
-    /// integers and for the CF/ZF flags `ucomis` produces
+    /// `unsigned` selects the below/above codes
     pub const fn new(operator: &BinaryOperator, unsigned: bool) -> Self {
         match (operator, unsigned) {
             (BinaryOperator::Eq, _) => Self::E,
