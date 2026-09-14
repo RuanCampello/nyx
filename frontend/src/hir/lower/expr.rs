@@ -640,6 +640,20 @@ where
 
             Expr::Field { expr: base, field, span } => {
                 let base_lowered = self.lower_expr(base, None)?;
+                if let ExpressionKind::Const(constant) = &base_lowered.expr.kind
+                    && let ExpressionKind::Struct { fields, .. } = &constant.value.kind
+                {
+                    let (symbol, typ) = self.lookup_field(base_lowered.typ, field, *span)?;
+                    let (_, value) = fields
+                        .iter()
+                        .find(|(name, _)| *name == symbol)
+                        .expect("a struct literal initialises every field");
+
+                    if let ExpressionKind::Literal(literal) = value.kind {
+                        return Ok(self.alloc(ExpressionKind::Literal(literal), typ, *span));
+                    }
+                }
+
                 let is_place = matches!(
                     &base_lowered.expr.kind,
                     ExpressionKind::Local(_)
@@ -652,11 +666,8 @@ where
                 }
 
                 let (field_symbol, typ) = self.lookup_field(base_lowered.typ, field, *span)?;
-                Ok(self.alloc(
-                    ExpressionKind::Field { base: base_lowered.expr, field: field_symbol },
-                    typ,
-                    *span,
-                ))
+                let kind = ExpressionKind::Field { base: base_lowered.expr, field: field_symbol };
+                Ok(self.alloc(kind, typ, *span))
             },
 
             Expr::Array { elements, span } => {
@@ -1319,11 +1330,9 @@ where
                 let binding = self.scope.symbols.insert("?");
                 let local = self.declare_local(binding, typ, false, span)?;
                 let carried = self.alloc(ExpressionKind::Local(local), typ, span).expr;
+                let arm = &*self.arena.alloc(Pattern { kind: PatternKind::Binding(local), span });
 
-                (
-                    Some(&*self.arena.alloc(Pattern { kind: PatternKind::Binding(local), span })),
-                    &*self.arena.alloc_slice_copy(&[carried]),
-                )
+                (Some(arm), &*self.arena.alloc_slice_copy(&[carried]))
             },
             _ => (None, &*self.arena.alloc_slice_copy(&[])),
         };
