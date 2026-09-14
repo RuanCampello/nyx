@@ -133,7 +133,10 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
 
                 match operation {
                     comp @ (B::Lt | B::LtEq | B::Gt | B::GtEq | B::Eq | B::Ne) => {
-                        let cond = A64Cond::new(comp, is_float || !is_signed);
+                        let cond = match is_float {
+                            true => A64Cond::float(comp),
+                            false => A64Cond::new(comp, !is_signed),
+                        };
                         self.lower_cmp(id, dest, lhs, rhs, bytes, is_float, cond);
                     },
 
@@ -193,7 +196,13 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                             },
 
                             B::Div => {
+                                let constant = rhs.clone();
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
+
+                                if !is_float {
+                                    self.zero_check(id, &constant, rhs, bytes);
+                                }
+
                                 let instr = match is_float {
                                     true => A64Instr::FDiv { dest, lhs, rhs, bytes },
                                     false => {
@@ -206,8 +215,14 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                             },
 
                             B::Rem => {
+                                let constant = rhs.clone();
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
                                 let mt = lhs_type.machine_type(self.layouts);
+
+                                if !is_float {
+                                    self.zero_check(id, &constant, rhs, bytes);
+                                }
+
                                 self.lower_remainder(id, dest, lhs, rhs, mt);
                             },
 
@@ -440,6 +455,16 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         }
     }
 
+    /// dividing by zero traps on x86_64 but yields zero on AArch64, so both targets
+    /// route it through the same panic instead
+    fn zero_check(&mut self, id: &BlockId, divisor: &A64Operand, reg: VReg, bytes: u8) {
+        if matches!(divisor, A64Operand::Imm(value) if *value != 0) {
+            return;
+        }
+
+        self.lir.push_instr(id, A64Instr::ZeroCheck { divisor: reg, bytes });
+    }
+
     #[rustfmt::skip]
     fn lower_remainder(&mut self, id: &BlockId, dest: VReg, lhs: VReg, rhs: VReg, mt: MachineType) {
         let quotient = self.lir.new_vreg(mt);
@@ -447,13 +472,24 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
 
         match matches!(mt, MachineType::Float { .. }) {
             true => {
+                let remainder = self.lir.new_vreg(mt);
+                let zero = self.lir.new_vreg(mt);
+                let label = self.lir.new_float(0, bytes == 4);
+
                 self.lir.push_instr(id, A64Instr::FDiv { dest: quotient, lhs, rhs, bytes });
                 self.lir.push_instr(id, A64Instr::FTrunc { dest: quotient, src: quotient, bytes });
-                self.lir.push_instr(id, A64Instr::FMul { dest: quotient, lhs: quotient, rhs, bytes });
-                self.lir.push_instr(id, A64Instr::FSub { dest, lhs, rhs: quotient, bytes });
+                self.lir.push_instr(id, A64Instr::FMul { dest: remainder, lhs: quotient, rhs, bytes });
+                self.lir.push_instr(id, A64Instr::FSub { dest: remainder, lhs, rhs: remainder, bytes });
+
+                // a zero quotient means the remainder is the dividend itself, and an
+                // infinite divisor would have turned that zero into a NaN
+                self.lir.push_instr(id, A64Instr::FLiteral { dest: zero, label, bytes });
+                self.lir.push_instr(id, A64Instr::FCmp { lhs: quotient, rhs: zero, bytes });
+                let instr = A64Instr::FCsel { dest, lhs, rhs: remainder, cond: A64Cond::Eq, bytes };
+                self.lir.push_instr(id, instr);
             },
 
-            false => {
+            _ => {
                 let signed = mt.is_signed();
                 self.lir.push_instr(id, A64Instr::SDiv { dest: quotient, lhs, rhs, bytes, signed });
                 self.lir.push_instr(id, A64Instr::Mul { dest: quotient, lhs: quotient, rhs, bytes, checked: false });
@@ -483,7 +519,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 self.lir.push_instr(id, A64Instr::FCmp { lhs, rhs, bytes });
             },
 
-            false => {
+            _ => {
                 let lhs = self.ensure_vreg(lhs, TypeKind::I64.into(), id);
                 let rhs = self.fit_add_sub_operand(rhs, TypeKind::I64.into(), id);
 

@@ -86,17 +86,13 @@ impl Function<AArch64> {
         emit_save_regs(out, &callee_saved_regs(alloc, RegClass::Int));
         emit_save_regs(out, &callee_saved_regs(alloc, RegClass::Float));
 
-        if frame_size > 0 {
-            emit!(out, "sub     sp, sp, #{frame_size}");
-        }
+        emit_frame_adjust(out, "sub", frame_size);
     }
 
     fn emit_epilogue(alloc: &Allocation<AArch64>, label: &str, frame_size: u32, out: &mut String) {
         label!(out, "{label}:");
 
-        if frame_size > 0 {
-            emit!(out, "add     sp, sp, #{frame_size}");
-        }
+        emit_frame_adjust(out, "add", frame_size);
 
         emit_restore_regs(out, &callee_saved_regs(alloc, RegClass::Float));
         emit_restore_regs(out, &callee_saved_regs(alloc, RegClass::Int));
@@ -297,10 +293,10 @@ impl Function<AArch64> {
                 let dest = alloc.location(dest, &8);
                 match is_mem(&dest) {
                     true => {
-                        emit!(out, "add     x16, x29, #{offset}");
+                        emit_frame_address(out, "x16", offset);
                         emit_store(out, "x16", &dest, 8);
                     },
-                    false => emit!(out, "add     {dest}, x29, #{offset}"),
+                    false => emit_frame_address(out, &dest, offset),
                 }
             },
 
@@ -410,7 +406,6 @@ impl Function<AArch64> {
                 }
             },
 
-            #[rustfmt::skip]
             A64Instr::And { dest, lhs, rhs, bytes }
             | A64Instr::Or { dest, lhs, rhs, bytes }
             | A64Instr::Eor { dest, lhs, rhs, bytes }
@@ -424,7 +419,7 @@ impl Function<AArch64> {
 
                 match instruction {
                     A64Instr::And { .. } => emit!(out, "and     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Or { .. }  => emit!(out, "orr     {dest}, {lhs}, {rhs}"),
+                    A64Instr::Or { .. } => emit!(out, "orr     {dest}, {lhs}, {rhs}"),
                     A64Instr::Eor { .. } => emit!(out, "eor     {dest}, {lhs}, {rhs}"),
                     A64Instr::Lsl { .. } => emit!(out, "lsl     {dest}, {lhs}, {rhs}"),
                     A64Instr::Lsr { .. } => emit!(out, "lsr     {dest}, {lhs}, {rhs}"),
@@ -478,6 +473,41 @@ impl Function<AArch64> {
                 }
             },
 
+            #[rustfmt::skip]
+            A64Instr::FCsel { dest, lhs, rhs, cond, bytes } => {
+                let destination = alloc.location(dest, bytes);
+                let lhs = alloc.location(lhs, bytes);
+                let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, true, A64Reg::X16, A64Reg::D16);
+                let rhs = alloc.location(rhs, bytes);
+                let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, true, A64Reg::X17, A64Reg::D17);
+
+                let cond = cond.as_str();
+
+                match is_mem(&destination) {
+                    true => {
+                        let scratch = A64Reg::D16.name(*bytes);
+                        emit!(out, "fcsel   {scratch}, {lhs}, {rhs}, {cond}");
+                        emit_store(out, scratch, &destination, *bytes);
+                    },
+                    false => emit!(out, "fcsel   {destination}, {lhs}, {rhs}, {cond}"),
+                }
+            },
+
+            A64Instr::ZeroCheck { divisor, bytes } => {
+                let divisor = alloc.location(divisor, bytes);
+                let divisor = load_src_if_mem_with_scratch(
+                    out,
+                    &divisor,
+                    *bytes,
+                    false,
+                    A64Reg::X16,
+                    A64Reg::D16,
+                );
+                let symbol = Panic::DivisionByZero.require();
+
+                emit!(out, "cbz     {divisor}, {symbol}");
+            },
+
             A64Instr::BoundsCheck { index, bound } => {
                 let b = 8;
                 let index = alloc.location(index, &b);
@@ -502,7 +532,6 @@ impl Function<AArch64> {
                 emit!(out, "fcmp    {lhs}, {rhs}");
             },
 
-            #[rustfmt::skip]
             A64Instr::FAdd { dest, lhs, rhs, bytes }
             | A64Instr::FSub { dest, lhs, rhs, bytes }
             | A64Instr::FMul { dest, lhs, rhs, bytes }
@@ -584,7 +613,6 @@ impl Function<AArch64> {
 
                 let n_moves = moves.len();
                 if n_moves > 0 {
-                    #[rustfmt::skip]
                     let arg_moves = moves
                         .iter()
                         .map(|(vreg, reg)| {
@@ -621,12 +649,8 @@ impl Function<AArch64> {
                 if let Some(ret) = ret {
                     let bytes = self.reg_bytes(ret);
                     let is_float = self.is_float(ret);
-                    let class = match is_float {
-                        true => RegClass::Float,
-                        _ => RegClass::Int,
-                    };
 
-                    if let Some(abi_ret) = AArch64::ret(class) {
+                    if let Some(abi_ret) = AArch64::ret(is_float.into()) {
                         let src = abi_ret.name(bytes);
                         let dest = alloc.location(ret, &bytes);
 
@@ -735,12 +759,8 @@ impl Function<AArch64> {
             Term::Return(Some(vreg)) => {
                 let bytes = self.reg_bytes(vreg);
                 let is_float = self.is_float(vreg);
-                let class = match is_float {
-                    true => RegClass::Float,
-                    _ => RegClass::Int,
-                };
 
-                if let Some(ret_reg) = AArch64::ret(class) {
+                if let Some(ret_reg) = AArch64::ret(is_float.into()) {
                     let src = alloc.location(vreg, &bytes);
                     let dest = ret_reg.name(bytes);
 
@@ -858,12 +878,66 @@ fn emit_move(out: &mut String, dest: &str, src: &str, bytes: u8, is_float: bool)
 
 fn emit_load(out: &mut String, dest: &str, src: &str, bytes: u8) {
     let suffix = mem_suffix(&bytes);
+    let src = frame_addr(out, src, bytes);
+
     emit!(out, "ldr{suffix}    {dest}, {src}");
 }
 
 fn emit_store(out: &mut String, src: &str, dest: &str, bytes: u8) {
     let suffix = mem_suffix(&bytes);
+    let dest = frame_addr(out, dest, bytes);
+
     emit!(out, "str{suffix}    {src}, {dest}");
+}
+
+/// A load or store addresses its base with a signed 9-bit byte offset, or a 12-bit
+/// offset scaled by the access size
+fn frame_addr<'a>(out: &mut String, addr: &'a str, bytes: u8) -> &'a str {
+    let Some(offset) = addr
+        .strip_prefix("[x29, #")
+        .and_then(|rest| rest.strip_suffix(']'))
+        .map(|offset| offset.parse::<i32>().expect("a frame offset is a decimal literal"))
+    else {
+        return addr;
+    };
+
+    let scaled = offset >= 0 && offset % bytes as i32 == 0 && offset / bytes as i32 <= 4095;
+
+    match (-256..=255).contains(&offset) || scaled {
+        true => addr,
+        _ => {
+            emit_frame_address(out, "x18", offset);
+            "[x18]"
+        },
+    }
+}
+
+/// move `sp` by a whole frame, whose size may exceed the 12-bit immediate
+fn emit_frame_adjust(out: &mut String, operation: &str, frame_size: u32) {
+    match frame_size {
+        0 => {},
+        1..=4095 => emit!(out, "{operation}     sp, sp, #{frame_size}"),
+        _ => {
+            emit_wide_immediate(out, "x16", frame_size as i64, 8);
+            emit!(out, "{operation}     sp, sp, x16");
+        },
+    }
+}
+
+/// `add`/`sub` take a 12-bit immediate, so a distant frame offset is materialised first
+fn emit_frame_address(out: &mut String, dest: &str, offset: i32) {
+    match offset.unsigned_abs() <= 4095 {
+        true => emit!(out, "add     {dest}, x29, #{offset}"),
+        _ => {
+            let operation = match offset < 0 {
+                true => "sub",
+                false => "add",
+            };
+
+            emit_wide_immediate(out, dest, offset.unsigned_abs() as i64, 8);
+            emit!(out, "{operation}     {dest}, x29, {dest}");
+        },
+    }
 }
 
 #[inline]
@@ -875,6 +949,8 @@ fn emit_load_reg(
     signed: bool,
     is_float: bool,
 ) {
+    let src_addr = frame_addr(out, src_addr, bytes);
+
     match is_float {
         true => emit!(out, "ldr     {dest_reg}, {src_addr}"),
         #[rustfmt::skip]
@@ -1043,17 +1119,31 @@ fn load_src_if_mem_with_scratch<'s>(
     scratch_gpr: A64Reg,
     scratch_fpr: A64Reg,
 ) -> &'s str {
-    match is_mem(src) {
-        true => {
-            let scratch = match is_float {
-                true => scratch_fpr.name(bytes),
-                false => scratch_gpr.name(bytes),
-            };
+    let scratch = match is_float {
+        true => scratch_fpr.name(bytes),
+        false => scratch_gpr.name(bytes),
+    };
+
+    match (is_mem(src), wide_immediate(src)) {
+        (true, _) => {
             emit_load(out, scratch, src, bytes);
             scratch
         },
-        false => src,
+        // `cmp`, `add` and `sub` only take a 12-bit immediate
+        (_, Some(value)) => {
+            emit_wide_immediate(out, scratch, value, bytes);
+            scratch
+        },
+        _ => src,
     }
+}
+
+/// the value of an immediate operand that no ALU instruction can encode inline
+fn wide_immediate(operand: &str) -> Option<i64> {
+    operand
+        .strip_prefix('#')
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| !(-4095..=4095).contains(value))
 }
 
 #[inline(always)]

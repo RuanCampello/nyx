@@ -63,8 +63,12 @@ pub enum A64Instr {
     Cset { dest: VReg, cond: A64Cond },
     /// `dest = cond ? lhs : rhs`
     Csel { dest: VReg, lhs: VReg, rhs: VReg, cond: A64Cond, bytes: u8 },
+    /// `Csel` for floats
+    FCsel { dest: VReg, lhs: VReg, rhs: VReg, cond: A64Cond, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: A64Operand },
+    /// abort through the division-by-zero handler when `divisor` is zero
+    ZeroCheck { divisor: VReg, bytes: u8 },
 
     // float movs
     FMov { dest: VReg, src: VReg, bytes: u8 },
@@ -84,40 +88,12 @@ pub enum A64Instr {
 
     Adr { dest: VReg, label: String },
 
-    FieldLoad {
-        dest: VReg,
-        origin: VReg,
-        offset: i32,
-        bytes: u8,
-        signed: bool,
-    },
-
-    FieldStore {
-        origin: VReg,
-        src: A64Operand,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
-
+    FieldLoad { dest: VReg, origin: VReg, offset: i32, bytes: u8, signed: bool },
+    FieldStore { origin: VReg, src: A64Operand, offset: i32, bytes: u8, is_float: bool },
     StackAddr { dest: VReg, origin: VReg },
 
-    PtrLoad {
-        dest: VReg,
-        ptr: VReg,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-        signed: bool,
-    },
-
-    PtrStore {
-        ptr: VReg,
-        src: A64Operand,
-        offset: i32,
-        bytes: u8,
-        is_float: bool,
-    },
+    PtrLoad { dest: VReg, ptr: VReg, offset: i32, bytes: u8, is_float: bool, signed: bool },
+    PtrStore { ptr: VReg, src: A64Operand, offset: i32, bytes: u8, is_float: bool },
 
     Call {
         target: String,
@@ -178,8 +154,20 @@ impl A64Cond {
         }
     }
 
-    /// `unsigned` selects the `Lo`/`Ls`/`Hi`/`Hs` codes: they are correct both for
-    /// unsigned integers and for the NZCV flags `fcmp` produces
+    /// IEEE requires every ordered comparison with NaN to be false, and `NaN != NaN` to be true
+    pub const fn float(operator: &BinaryOperator) -> Self {
+        match operator {
+            BinaryOperator::Eq => Self::Eq,
+            BinaryOperator::Ne => Self::Ne,
+            BinaryOperator::Lt => Self::Lo,
+            BinaryOperator::LtEq => Self::Ls,
+            BinaryOperator::Gt => Self::Gt,
+            BinaryOperator::GtEq => Self::Ge,
+            _ => panic!("invalid comparison operator"),
+        }
+    }
+
+    /// `unsigned` selects the `Lo`/`Ls`/`Hi`/`Hs` codes
     pub const fn new(operator: &BinaryOperator, unsigned: bool) -> Self {
         match (operator, unsigned) {
             (BinaryOperator::Eq, _) => Self::Eq,
@@ -484,7 +472,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Or { dest, .. } | Self::Eor { dest, .. }
             | Self::Lsl { dest, .. } | Self::Lsr { dest, .. }
             | Self::Asr { dest, .. } | Self::Cset { dest, .. }
-            | Self::Csel { dest, .. } | Self::Adr { dest, .. }
+            | Self::Csel { dest, .. } | Self::FCsel { dest, .. } | Self::Adr { dest, .. }
             | Self::FMov { dest, .. } | Self::FLiteral { dest, .. }
             | Self::FAdd { dest, .. } | Self::FSub { dest, .. }
             | Self::FMul { dest, .. } | Self::FDiv { dest, .. }
@@ -494,7 +482,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::Extend { dest, .. } => std::slice::from_ref(dest),
 
             Self::Cmp { .. } | Self::FCmp { .. }
-            | Self::BoundsCheck { .. } => &[],
+            | Self::BoundsCheck { .. } | Self::ZeroCheck { .. } => &[],
             Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
                std::slice::from_ref(r)
             },
@@ -537,6 +525,7 @@ impl Instruction<AArch64> for A64Instr {
                 }
             },
 
+            Self::ZeroCheck { divisor, .. } => uses.push(*divisor),
             Self::BoundsCheck { index, bound } => {
                 uses.push(*index);
                 if let A64Operand::VReg(bound) = bound {
@@ -544,7 +533,9 @@ impl Instruction<AArch64> for A64Instr {
                 }
             },
 
-            Self::FCmp { lhs, rhs, .. } | Self::Csel { lhs, rhs, .. } => {
+            Self::FCmp { lhs, rhs, .. }
+            | Self::Csel { lhs, rhs, .. }
+            | Self::FCsel { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 uses.push(*rhs);
             },
@@ -600,7 +591,7 @@ impl Instruction<AArch64> for A64Instr {
             | Self::LdrParam { .. } | Self::SDiv { .. } | Self::Neg { .. }
             | Self::And { .. } | Self::Or { .. } | Self::Eor { .. } | Self::Mvn { .. }
             | Self::Lsl { .. } | Self::Lsr { .. } | Self::Asr { .. }
-            | Self::Cset { .. } | Self::Csel { .. }
+            | Self::Cset { .. } | Self::Csel { .. } | Self::FCsel { .. }
             | Self::FMov { .. } | Self::FLiteral { .. }
             | Self::FAdd { .. } | Self::FSub { .. } | Self::FMul { .. }
             | Self::FDiv { .. } | Self::FNeg { .. } | Self::FTrunc { .. } | Self::Adr { .. }
