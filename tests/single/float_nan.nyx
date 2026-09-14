@@ -1,0 +1,75 @@
+// IEEE unordered comparison: every ordered comparison with NaN is false, and
+// `NaN != NaN` is true
+fn eq64(a: f64, b: f64): bool = a == b;
+
+fn ne64(a: f64, b: f64): bool = a != b;
+
+fn lt64(a: f64, b: f64): bool = a < b;
+
+fn le64(a: f64, b: f64): bool = a <= b;
+
+fn gt64(a: f64, b: f64): bool = a > b;
+
+fn ge64(a: f64, b: f64): bool = a >= b;
+
+fn eq32(a: f32, b: f32): bool = a == b;
+
+fn ne32(a: f32, b: f32): bool = a != b;
+
+fn lt32(a: f32, b: f32): bool = a < b;
+
+fn le32(a: f32, b: f32): bool = a <= b;
+
+fn gt32(a: f32, b: f32): bool = a > b;
+
+fn ge32(a: f32, b: f32): bool = a >= b;
+
+fn main(): i32 {
+    let zero: f64 = 0.0;
+    let nan = zero / zero;
+    let one: f64 = 1.0;
+
+    if eq64(nan, nan) return 1;
+    if !ne64(nan, nan) return 2;
+    if lt64(nan, one) return 3;
+    if le64(nan, one) return 4;
+    if gt64(nan, one) return 5;
+    if ge64(nan, one) return 6;
+    if lt64(one, nan) return 7;
+    if le64(one, nan) return 8;
+    if gt64(one, nan) return 9;
+    if ge64(one, nan) return 10;
+
+    let zero32: f32 = 0.0;
+    let nan32 = zero32 / zero32;
+    let one32: f32 = 1.0;
+
+    if eq32(nan32, nan32) return 11;
+    if !ne32(nan32, nan32) return 12;
+    if lt32(nan32, one32) return 13;
+    if le32(nan32, one32) return 14;
+    if gt32(nan32, one32) return 15;
+    if ge32(nan32, one32) return 16;
+    if lt32(one32, nan32) return 17;
+    if le32(one32, nan32) return 18;
+    if gt32(one32, nan32) return 19;
+    if ge32(one32, nan32) return 20;
+
+    // ordinary ordered comparisons keep their meaning, as constants and as values
+    if !(1.0 < 2.0) return 21;
+    if !(2.0 > 1.0) return 22;
+    if !(1.0 <= 1.0) return 23;
+    if !(1.0 >= 1.0) return 24;
+    if !(1.0 == 1.0) return 25;
+    if !(1.0 != 2.0) return 26;
+
+    let two: f64 = 2.0;
+    if !lt64(one, two) return 27;
+    if !gt64(two, one) return 28;
+    if !le64(one, one) return 29;
+    if !ge64(one, one) return 30;
+    if !eq64(one, one) return 31;
+    if !ne64(one, two) return 32;
+
+    42
+}

@@ -69,6 +69,13 @@ fn main(): i32 {
     panic::assert_eq(frem(7.5, 0.0 - 2.0), 1.5);
     panic::assert_eq(frem(8.0, 2.0), 0.0);
 
+    // a divisor the dividend cannot reach leaves the dividend untouched, even when that divisor is infinite
+    let zero: f64 = 0.0;
+    let one: f64 = 1.0;
+    let infinity = one / zero;
+    panic::assert_eq(frem(5.5, infinity), 5.5);
+    panic::assert_eq(frem(0.0 - 5.5, infinity), 0.0 - 5.5);
+
     let small: f32 = 5.5;
     let small_rem: f32 = 1.5;
     panic::assert_eq(small % 2.0, small_rem);

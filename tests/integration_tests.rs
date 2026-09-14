@@ -46,7 +46,10 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         | "aggregate_return_calls"
         | "remainder"
         | "generic_defaults"
-        | "compact_forms" => Some(42),
+        | "compact_forms"
+        | "float_nan"
+        | "float_stack_args"
+        | "large_frame" => Some(42),
         "factorial" | "const_factorial" => Some(120),
         "math" => Some(42),
         "nth_prime" => Some(229),
@@ -60,9 +63,8 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         "inlined_add" => Some(3),
         "inline_complex" => Some(38),
         "inline_methods" => Some(30),
-        "overflow" | "mul_overflow" | "narrow_overflow" | "array_oob_panic" | "slice_oob_panic" => {
-            Some(101)
-        },
+        "overflow" | "mul_overflow" | "narrow_overflow" | "array_oob_panic" | "slice_oob_panic"
+        | "division_by_zero" => Some(101),
         "string_len" => Some(11),
         "array_features" => Some(36),
         "array_sorting" | "slice_mut" => Some(12),

@@ -1,3 +1,12 @@
+struct Pair {
+    x: i32,
+    y: i32,
+}
+
+const PAIR: Pair = Pair { x: 40, y: 2 };
+
+static GREETING: &str = "hello";
+
 static LIMIT: i32 = 10;
 
 static mut CURSOR: i32 = 0;
@@ -37,6 +46,12 @@ fn main(): i32 {
     }
 
     if CURSOR != 10 return 8;
+
+    // a string static carries both halves of its fat pointer
+    if GREETING.len() != 5 return 9;
+
+    // a field of a constant struct is spliced in like any other constant
+    if PAIR.x + PAIR.y != 42 return 10;
 
     SEEDED as i32
 }

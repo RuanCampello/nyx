@@ -1,0 +1,17 @@
+// a frame larger than an instruction immediate can reach: every access needs
+// its address materialised, on AArch64 as much as the frame adjustment itself
+struct Big {
+    values: [i64; 5000],
+}
+
+fn main(): i32 {
+    let mut values = [0; 5000];
+    values[4999] = 20;
+    values[0] = 1;
+
+    let mut big = Big { values: [0; 5000] };
+    big.values[4999] = 16;
+
+    let text = "hello";
+    (values[4999] + values[0] + big.values[4999] + text.len() as i64) as i32
+}

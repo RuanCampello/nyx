@@ -1,0 +1,11 @@
+// dividing by zero traps on x86_64 and yields zero on AArch64, so both targets
+// are routed through the same panic instead
+fn div(a: i32, b: i32): i32 = a / b;
+
+fn main(): i32 {
+    if div(84, 2) != 42 return 1;
+    if div(0 - 84, 2) != 0 - 42 return 2;
+
+    let zero: i32 = 0;
+    div(1, zero)
+}

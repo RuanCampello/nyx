@@ -1,0 +1,25 @@
+// arguments beyond the eight float argument registers arrive on the caller's
+// stack, and a f32 there must be loaded with a float move
+fn ninth(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32, i: f32): f32 = i;
+
+fn ninth_via_local(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32, i: f32): f32 {
+    let local: f32 = i;
+    local
+}
+
+fn sum32(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32, i: f32, j: f32): f32 {
+    return a + b + c + d + e + f + g + h + i + j;
+}
+
+fn sum64(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64, j: f64): f64 {
+    return a + b + c + d + e + f + g + h + i + j;
+}
+
+fn main(): i32 {
+    if ninth(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 42.0) != 42.0 return 1;
+    if ninth_via_local(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 42.0) != 42.0 return 2;
+    if sum32(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0) != 55.0 return 3;
+    if sum64(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0) != 55.0 return 4;
+
+    42
+}
