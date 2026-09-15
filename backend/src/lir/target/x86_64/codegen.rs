@@ -13,7 +13,7 @@ use crate::{
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
             resolve_parallel_moves,
-            x86_64::{Condition, X86_64, X86Instr, X86Operand, X86Reg},
+            x86_64::{Condition, SuffixKind, X86_64, X86Instr, X86Operand, X86Reg},
         },
     },
 };
@@ -208,49 +208,35 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::Movzx { dest, src, src_bytes, dest_bytes } => {
+            Inst::Extend { dest, src, src_bytes, dest_bytes, signed } => {
                 let dest_loc = alloc.location(dest, dest_bytes);
                 let src_op = self.operand(alloc, src, src_bytes);
 
                 let needs_scratch = dest_loc.contains("(%rbp)");
+                // writing a 32-bit register already clears the upper half
+                let implicit = !*signed && *src_bytes == 4 && *dest_bytes == 8;
 
-                if *src_bytes == 4 && *dest_bytes == 8 {
-                    match needs_scratch {
-                        true => {
-                            emit!(out, "movl    {src_op}, %r11d");
-                            emit!(out, "movq    %r11, {dest_loc}");
-                        },
-                        false => {
-                            let dest_32 = alloc.location(dest, &4);
-                            emit!(out, "movl    {src_op}, {dest_32}");
-                        },
-                    }
-                } else {
-                    let name = zx_instr_name(*src_bytes, *dest_bytes);
-                    match needs_scratch {
-                        true => {
-                            let scratch = scratch_gpr(suffix(dest_bytes));
-                            emit!(out, "{name}   {src_op}, {scratch}");
-                            let dest_suffix = suffix(dest_bytes);
-                            emit!(out, "mov{dest_suffix}    {scratch}, {dest_loc}");
-                        },
-                        _ => emit!(out, "{name}   {src_op}, {dest_loc}"),
-                    }
-                }
-            },
+                match (implicit, needs_scratch) {
+                    (true, true) => {
+                        emit!(out, "movl    {src_op}, %r11d");
+                        emit!(out, "movq    %r11, {dest_loc}");
+                    },
+                    (true, false) => {
+                        let dest_32 = alloc.location(dest, &4);
+                        emit!(out, "movl    {src_op}, {dest_32}");
+                    },
+                    (false, true) => {
+                        let name = extend_name(*signed, *src_bytes, *dest_bytes);
+                        let suffix = suffix(dest_bytes);
+                        let scratch = scratch_gpr(suffix);
 
-            Inst::Movsx { dest, src, src_bytes, dest_bytes } => {
-                let dest_loc = alloc.location(dest, dest_bytes);
-                let src_op = self.operand(alloc, src, src_bytes);
-
-                let name = sx_instr_name(*src_bytes, *dest_bytes);
-                if dest_loc.contains("(%rbp)") {
-                    let scratch = scratch_gpr(suffix(dest_bytes));
-                    emit!(out, "{name}   {src_op}, {scratch}");
-                    let dest_suffix = suffix(dest_bytes);
-                    emit!(out, "mov{dest_suffix}    {scratch}, {dest_loc}");
-                } else {
-                    emit!(out, "{name}   {src_op}, {dest_loc}");
+                        emit!(out, "{name}   {src_op}, {scratch}");
+                        emit!(out, "mov{suffix}    {scratch}, {dest_loc}");
+                    },
+                    _ => {
+                        let name = extend_name(*signed, *src_bytes, *dest_bytes);
+                        emit!(out, "{name}   {src_op}, {dest_loc}");
+                    },
                 }
             },
 
@@ -353,10 +339,9 @@ impl Function<X86_64> {
                         emit!(out, "mov{suffix}    %xmm15, {offset}({ptr})");
                     },
                     (false, true, false) => {
-                        let scratch = if *bytes == 8 {
-                            "%r11"
-                        } else {
-                            "%r11d"
+                        let scratch = match *bytes == 8 {
+                            true => "%r11",
+                            _ => "%r11d",
                         };
                         emit!(out, "mov{suffix}    {src}, {scratch}");
                         emit!(out, "mov{suffix}    {scratch}, {offset}({ptr})");
@@ -365,75 +350,48 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::Add { dest, src, bytes, .. }
-            | Inst::Sub { dest, src, bytes, .. }
-            | Inst::Imul { dest, src, bytes, .. }
-            | Inst::AddFloat { dest, src, bytes }
-            | Inst::SubFloat { dest, src, bytes }
-            | Inst::MulFloat { dest, src, bytes }
-            | Inst::DivFloat { dest, src, bytes }
-            | Inst::And { dest, src, bytes }
-            | Inst::Or { dest, src, bytes }
-            | Inst::Xor { dest, src, bytes } => {
+            Inst::Alu { op, dest, src, bytes, .. } => {
                 let dest_vreg = dest;
-                let suffix = typed_suffix(bytes, self.is_float(dest));
+                let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, bytes);
 
-                match instruction {
-                    Inst::Add { .. } | Inst::AddFloat { .. } => {
-                        emit!(out, "add{suffix}    {src}, {dest}")
-                    },
-                    Inst::Sub { .. } | Inst::SubFloat { .. } => {
-                        emit!(out, "sub{suffix}    {src}, {dest}")
-                    },
-                    Inst::Imul { .. } => emit!(out, "imul{suffix}    {src}, {dest}"),
-                    Inst::MulFloat { .. } => emit!(out, "mul{suffix}    {src}, {dest}"),
-                    Inst::DivFloat { .. } => emit!(out, "div{suffix}    {src}, {dest}"),
-                    Inst::And { .. } => emit!(out, "and{suffix}    {src}, {dest}"),
-                    Inst::Or { .. } => emit!(out, "or{suffix}    {src}, {dest}"),
-                    Inst::Xor { .. } => emit!(out, "xor{suffix}    {src}, {dest}"),
-
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                };
+                emit!(out, "{}{suffix}    {src}, {dest}", op.mnemonic());
 
                 if let Some(panic) = instruction.overflow_panic() {
                     let symbol = panic.require();
-                    match (instruction, self.is_signed(dest_vreg)) {
-                        (Inst::Imul { .. }, _) | (_, true) => emit!(out, "jo      {symbol}"),
-                        (_, false) => emit!(out, "jc      {symbol}"),
+                    match op.overflows_signed() || self.is_signed(dest_vreg) {
+                        true => emit!(out, "jo      {symbol}"),
+                        _ => emit!(out, "jc      {symbol}"),
                     }
                 }
             },
 
-            Inst::Neg { dest, bytes } => {
+            Inst::AluFloat { op, dest, src, bytes } => {
+                let (mnemonic, kind) = op.mnemonic();
+                let suffix = match kind {
+                    SuffixKind::Scalar => float_suffix(bytes),
+                    SuffixKind::Packed => packed_suffix(bytes),
+                };
+                let dest = alloc.location(dest, bytes);
+                let src = self.operand(alloc, src, bytes);
+
+                emit!(out, "{mnemonic}{suffix}    {src}, {dest}");
+            },
+
+            Inst::Unary { op, dest, bytes } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
 
-                emit!(out, "neg{suffix}    {dest}");
+                emit!(out, "{}{suffix}    {dest}", op.mnemonic());
             },
 
-            Inst::Not { dest, bytes } => {
-                let suffix = suffix(bytes);
-                let dest = alloc.location(dest, bytes);
-
-                emit!(out, "not{suffix}    {dest}");
-            },
-
-            #[rustfmt::skip]
-            Inst::Shl { dest, src, bytes, .. }
-            | Inst::Shr { dest, src, bytes, .. }
-            | Inst::Sar { dest, src, bytes, .. } => {
+            Inst::Shift { op, dest, src, bytes, .. } => {
                 let suffix = suffix(bytes);
                 let dest = alloc.location(dest, bytes);
                 let src = self.operand(alloc, src, &1);
 
-                match instruction {
-                    Inst::Shl { .. } => emit!(out, "shl{suffix}    {src}, {dest}"),
-                    Inst::Shr { .. } => emit!(out, "shr{suffix}    {src}, {dest}"),
-                    Inst::Sar { .. } => emit!(out, "sar{suffix}    {src}, {dest}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
+                emit!(out, "{}{suffix}    {src}, {dest}", op.mnemonic());
             },
 
             Inst::WideMul { result, lhs, rhs, bytes, signed, .. } => {
@@ -542,39 +500,6 @@ impl Function<X86_64> {
 
                 // mode 3 truncates towards zero, bit 3 suppresses the inexact exception
                 emit!(out, "{mnemonic} $11, {src}, {dest}");
-            },
-
-            Inst::XorFloat { dest, src, bytes } => {
-                let operand = match *bytes == 4 {
-                    true => "xorps",
-                    _ => "xorpd",
-                };
-                let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes);
-
-                emit!(out, "{operand}   {src}, {dest}");
-            },
-
-            Inst::CmpEqFloat { dest, src, bytes } => {
-                let mnemonic = match *bytes == 4 {
-                    true => "cmpeqss",
-                    _ => "cmpeqsd",
-                };
-                let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes);
-
-                emit!(out, "{mnemonic} {src}, {dest}");
-            },
-
-            Inst::AndNotFloat { dest, src, bytes } => {
-                let mnemonic = match *bytes == 4 {
-                    true => "andnps",
-                    _ => "andnpd",
-                };
-                let dest = alloc.location(dest, bytes);
-                let src = self.operand(alloc, src, bytes);
-
-                emit!(out, "{mnemonic}  {src}, {dest}");
             },
 
             Inst::Ucomis { lhs, rhs, bytes, .. } => {
@@ -949,6 +874,14 @@ const fn suffix<'s>(bytes: &u8) -> &'s str {
 }
 
 #[inline(always)]
+const fn packed_suffix<'s>(bytes: &u8) -> &'s str {
+    match bytes {
+        4 => "ps",
+        _ => "pd",
+    }
+}
+
+#[inline(always)]
 const fn float_suffix<'s>(bytes: &u8) -> &'s str {
     match bytes {
         4 => "ss",
@@ -1000,26 +933,19 @@ fn scratch_gpr<'s>(suffix: &str) -> &'s str {
 }
 
 #[inline(always)]
-fn zx_instr_name<'s>(src_bytes: u8, dest_bytes: u8) -> &'s str {
-    match (src_bytes, dest_bytes) {
-        (1, 2) => "movzbw",
-        (1, 4) => "movzbl",
-        (1, 8) => "movzbq",
-        (2, 4) => "movzwl",
-        (2, 8) => "movzwq",
-        _ => panic!("invalid zero extension: {src_bytes} to {dest_bytes}"),
-    }
-}
-
-#[inline(always)]
-fn sx_instr_name<'s>(src_bytes: u8, dest_bytes: u8) -> &'s str {
-    match (src_bytes, dest_bytes) {
-        (1, 2) => "movsbw",
-        (1, 4) => "movsbl",
-        (1, 8) => "movsbq",
-        (2, 4) => "movswl",
-        (2, 8) => "movswq",
-        (4, 8) => "movslq",
-        _ => panic!("invalid sign extension: {src_bytes} to {dest_bytes}"),
+fn extend_name<'s>(signed: bool, src_bytes: u8, dest_bytes: u8) -> &'s str {
+    match (signed, src_bytes, dest_bytes) {
+        (false, 1, 2) => "movzbw",
+        (false, 1, 4) => "movzbl",
+        (false, 1, 8) => "movzbq",
+        (false, 2, 4) => "movzwl",
+        (false, 2, 8) => "movzwq",
+        (true, 1, 2) => "movsbw",
+        (true, 1, 4) => "movsbl",
+        (true, 1, 8) => "movsbq",
+        (true, 2, 4) => "movswl",
+        (true, 2, 8) => "movswq",
+        (true, 4, 8) => "movslq",
+        _ => panic!("invalid extension: {src_bytes} to {dest_bytes}, signed: {signed}"),
     }
 }

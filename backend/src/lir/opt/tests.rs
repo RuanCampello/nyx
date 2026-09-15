@@ -3,7 +3,7 @@ use crate::lir::{
     BlockId, Function, MachineType, Term, VReg,
     target::{
         CondCode, X86_64,
-        x86_64::{Condition, X86Instr, X86Operand},
+        x86_64::{AluOp, Condition, X86Instr, X86Operand},
     },
 };
 
@@ -24,15 +24,10 @@ fn comparison() -> (Function<X86_64>, BlockId, VReg) {
 
     function.push_instr(&entry, X86Instr::Cmp { lhs, rhs: X86Operand::VReg(rhs), bytes: 4 });
     function.push_instr(&entry, X86Instr::Setcc { dest: flag, condition: Condition::L });
-    function.push_instr(
-        &entry,
-        X86Instr::Movzx {
-            dest: cond,
-            src: X86Operand::VReg(flag),
-            src_bytes: 1,
-            dest_bytes: 4,
-        },
-    );
+
+    let src = X86Operand::VReg(flag);
+    let instr = X86Instr::Extend { dest: cond, src, src_bytes: 1, dest_bytes: 4, signed: false };
+    function.push_instr(&entry, instr);
     function.set_term(&entry, Term::Branch { cond, then_block, else_block });
 
     (function, entry, cond)
@@ -81,7 +76,8 @@ fn a_clobbered_flag_blocks_the_rewrite() {
     let victim = function.new_vreg(INT);
     function.push_instr(
         &entry,
-        X86Instr::Add {
+        X86Instr::Alu {
+            op: AluOp::Add,
             dest: victim,
             src: X86Operand::Imm(1),
             bytes: 4,

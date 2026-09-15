@@ -42,16 +42,17 @@ pub enum X86Instr {
     Lea { dest: VReg, src: X86Operand },
     /// materialise the frame-pointer-relative address of a stack aggregate
     StackAddr { dest: VReg, origin: VReg },
-    /// zero-extend -> dest_bytes
-    Movzx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
-    /// sign-extend -> dest_bytes
-    Movsx { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8 },
+    /// widen `src` to `dest_bytes`, zero-extending or sign-extending
+    Extend { dest: VReg, src: X86Operand, src_bytes: u8, dest_bytes: u8, signed: bool },
 
-    // integer arithmetic
-    Add { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
-    Sub { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
-    Imul { dest: VReg, src: X86Operand, bytes: u8, checked: bool },
-    Neg { dest: VReg, bytes: u8 },
+    /// 2-address integer arithmetic and logic: `dest = dest <op> src`
+    Alu { op: AluOp, dest: VReg, src: X86Operand, bytes: u8, checked: bool },
+    /// 2-address SSE arithmetic and logic, kept apart from [X86Instr::Alu] because
+    /// it lives in a different register file and leaves the integer flags alone
+    AluFloat { op: FloatOp, dest: VReg, src: X86Operand, bytes: u8 },
+    Unary { op: UnaryOp, dest: VReg, bytes: u8 },
+    /// `dest = dest <op> src`, where a register shift count must be in `%cl`
+    Shift { op: ShiftOp, dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
 
     /// one-operand multiply, `%rax * rhs -> %rdx:%rax`
     ///
@@ -81,18 +82,8 @@ pub enum X86Instr {
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
-    // float arithmetic
-    AddFloat { dest: VReg, src: X86Operand, bytes: u8 },
-    SubFloat { dest: VReg, src: X86Operand, bytes: u8 },
-    MulFloat{ dest: VReg, src: X86Operand, bytes: u8 },
-    DivFloat { dest: VReg, src: X86Operand, bytes: u8 },
     /// `roundss`/`roundsd` truncating towards zero, the float half of a remainder
     TruncFloat { dest: VReg, src: VReg, bytes: u8 },
-    XorFloat { dest: VReg, src: X86Operand, bytes: u8 },
-    /// `cmpeqss`/`cmpeqsd`: leaves an all-ones mask in `dest` when the operands are equal
-    CmpEqFloat { dest: VReg, src: X86Operand, bytes: u8 },
-    /// `andnps`/`andnpd`: `dest = !dest & src`
-    AndNotFloat { dest: VReg, src: X86Operand, bytes: u8 },
 
     // comparison
     Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
@@ -106,15 +97,6 @@ pub enum X86Instr {
     Setcc { dest: VReg, condition: Condition },
     /// `dest = condition ? src : dest`, so `dest` is read as well as written
     Cmov { dest: VReg, src: VReg, condition: Condition, bytes: u8 },
-
-    // logical operations
-    And { dest: VReg, src: X86Operand, bytes: u8 },
-    Or { dest: VReg, src: X86Operand, bytes: u8 },
-    Xor { dest: VReg, src: X86Operand, bytes: u8 },
-    Not { dest: VReg, bytes: u8 },
-    Shl { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
-    Shr { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
-    Sar { dest: VReg, src: X86Operand, bytes: u8, precoloured_uses: Vec<(VReg, X86Reg)> },
 
     /// load a scalar field struct on the stack
     FieldLoad { dest: VReg, origin: VReg, offset: i32, bytes: u8, is_float: bool },
@@ -141,6 +123,43 @@ pub enum X86Instr {
         uses: Vec<VReg>,
         ret: Option<VReg>,
     },
+}
+
+/// The operation of a 2-address [X86Instr::Alu], division is [X86Instr::IDiv], which needs fixed registers
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
+pub enum AluOp {
+    Add, Sub, Mul,
+    And, Or, Xor,
+}
+
+/// The operation of a 2-address [X86Instr::AluFloat]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
+pub enum FloatOp {
+    Add, Sub, Mul, Div,
+    Xor, AndNot, CmpEq,
+}
+
+/// Which mnemonic suffix family an operation takes: `l`/`q` and `ss`/`sd` are
+/// scalar, `ps`/`pd` are packed
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SuffixKind {
+    Scalar,
+    Packed,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ShiftOp {
+    Left,
+    Right,
+    ArithmeticRight,
 }
 
 /// Physical registers for x86_64 under the SysV AMD64 ABI.
@@ -367,19 +386,24 @@ impl TargetOps for X86_64 {
         let src = X86Operand::VReg(lhs);
         lir.push_instr(block, X86Instr::Mov { dest, src, bytes: 8 });
         let src = X86Operand::Imm(imm);
-        lir.push_instr(block, X86Instr::Imul { dest, src, bytes: 8, checked: false });
+        lir.push_instr(
+            block,
+            X86Instr::Alu { op: AluOp::Mul, dest, src, bytes: 8, checked: false },
+        );
     }
 
     fn add_vregs(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, rhs: VReg) {
         let src = X86Operand::VReg(lhs);
         lir.push_instr(block, X86Instr::Mov { dest, src, bytes: 8 });
         let src = X86Operand::VReg(rhs);
-        lir.push_instr(block, X86Instr::Add { dest, src, bytes: 8, checked: false });
+        let instr = X86Instr::Alu { op: AluOp::Add, dest, src, bytes: 8, checked: false };
+        lir.push_instr(block, instr);
     }
 
     fn add_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, imm: i64) {
         let src = X86Operand::Imm(imm);
-        lir.push_instr(block, X86Instr::Add { dest, src, bytes: 8, checked: false });
+        let instr = X86Instr::Alu { op: AluOp::Add, dest, src, bytes: 8, checked: false };
+        lir.push_instr(block, instr);
     }
 
     #[inline(always)]
@@ -405,21 +429,14 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::Mov { dest, .. } | Self::MovFloat { dest, .. }
             | Self::MovFromStack { dest, .. } | Self::Lea { dest, .. }
-            | Self::StackAddr { dest, .. } | Self::Movzx { dest, .. }
-            | Self::Movsx { dest, .. } | Self::Add { dest, .. }
-            | Self::Sub { dest, .. } | Self::Imul { dest, .. }
-            | Self::Neg { dest, .. } | Self::And { dest, .. }
-            | Self::Or { dest, .. } | Self::Xor { dest, .. }
+            | Self::StackAddr { dest, .. } | Self::Extend { dest, .. }
+            | Self::Alu { dest, .. } | Self::AluFloat { dest, .. }
+            | Self::Unary { dest, .. }
+            | Self::Shift { dest, .. }
             | Self::Setcc { dest, .. } | Self::Cmov { dest, .. }
-            | Self::AddFloat { dest, .. }
-            | Self::SubFloat { dest, .. } | Self::MulFloat { dest, .. }
-            | Self::DivFloat { dest, .. } | Self::TruncFloat { dest, .. }
+            | Self::TruncFloat { dest, .. }
             | Self::FieldLoad { dest, .. }
-            | Self::PtrLoad { dest, .. } | Self::XorFloat { dest, .. }
-            | Self::CmpEqFloat { dest, .. } | Self::AndNotFloat { dest, .. }
-            | Self::Not { dest, .. } | Self::Shl { dest, .. }
-            | Self::Shr { dest, .. }
-            | Self::Sar { dest, .. } => std::slice::from_ref(dest),
+            | Self::PtrLoad { dest, .. } => std::slice::from_ref(dest),
 
             Self::IDiv { result, .. } | Self::WideMul { result, .. } => std::slice::from_ref(result),
 
@@ -442,29 +459,15 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::Mov { src: X86Operand::VReg(v), .. }
             | Self::MovFloat { src: X86Operand::VReg(v), .. }
-            | Self::Movzx { src: X86Operand::VReg(v), .. }
-            | Self::Movsx { src: X86Operand::VReg(v), .. }
+            | Self::Extend { src: X86Operand::VReg(v), .. }
             | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
 
             Self::TruncFloat { src, .. } => uses.push(*src),
 
             // 2-address: dest is read+write, src is read-only
-            Self::Add { dest, src, .. }
-            | Self::Sub { dest, src, .. }
-            | Self::Imul { dest, src, .. }
-            | Self::And { dest, src, .. }
-            | Self::Or { dest, src, .. }
-            | Self::Xor { dest, src, .. }
-            | Self::AddFloat { dest, src, .. }
-            | Self::SubFloat { dest, src, .. }
-            | Self::MulFloat { dest, src, .. }
-            | Self::DivFloat { dest, src, .. }
-            | Self::XorFloat { dest, src, .. }
-            | Self::CmpEqFloat { dest, src, .. }
-            | Self::AndNotFloat { dest, src, .. }
-            | Self::Shl { dest, src, .. }
-            | Self::Shr { dest, src, .. }
-            | Self::Sar { dest, src, .. } => {
+            Self::Alu { dest, src, .. }
+            | Self::AluFloat { dest, src, .. }
+            | Self::Shift { dest, src, .. } => {
                 uses.push(*dest);
                 if let X86Operand::VReg(v) = src {
                     uses.push(*v);
@@ -485,7 +488,7 @@ impl Instruction<X86_64> for X86Instr {
             }
             Self::PtrLoad { ptr, .. } | Self::PtrStore { ptr, .. } => uses.push(*ptr),
 
-            Self::Neg { dest, .. } | Self::Not { dest, .. } => uses.push(*dest),
+            Self::Unary { dest, .. } => uses.push(*dest),
 
             Self::Cmov { dest, src, .. } => {
                 uses.push(*dest);
@@ -538,9 +541,7 @@ impl Instruction<X86_64> for X86Instr {
         match self {
             Self::IDiv { precoloured_uses, .. }
             | Self::WideMul { precoloured_uses, .. } => precoloured_uses,
-            Self::Shl { precoloured_uses, .. }
-            | Self::Shr { precoloured_uses, .. }
-            | Self::Sar { precoloured_uses, .. } => precoloured_uses.as_slice(),
+            Self::Shift { precoloured_uses, .. } => precoloured_uses.as_slice(),
             _ => &[],
         }
     }
@@ -561,12 +562,10 @@ impl Instruction<X86_64> for X86Instr {
         !matches!(
             self,
             Self::Mov { .. } | Self::MovFloat { .. } | Self::MovFromStack { .. }
-            | Self::Lea { .. } | Self::StackAddr { .. }
-            | Self::Movzx { .. } | Self::Movsx { .. }
-            | Self::Not { .. } | Self::Setcc { .. } | Self::Cmov { .. }
-            | Self::AddFloat { .. } | Self::SubFloat { .. } | Self::MulFloat { .. }
-            | Self::DivFloat { .. } | Self::XorFloat { .. } | Self::TruncFloat { .. }
-            | Self::CmpEqFloat { .. } | Self::AndNotFloat { .. }
+            | Self::Lea { .. } | Self::StackAddr { .. } | Self::Extend { .. }
+            | Self::Unary { op: UnaryOp::Not, .. }
+            | Self::Setcc { .. } | Self::Cmov { .. }
+            | Self::AluFloat { .. } | Self::TruncFloat { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. }
         )
@@ -583,7 +582,9 @@ impl Instruction<X86_64> for X86Instr {
     #[inline]
     fn zero_extension(&self) -> Option<(VReg, VReg)> {
         match self {
-            Self::Movzx { dest, src: X86Operand::VReg(src), .. } => Some((*dest, *src)),
+            Self::Extend { dest, src: X86Operand::VReg(src), signed: false, .. } => {
+                Some((*dest, *src))
+            },
             _ => None,
         }
     }
@@ -645,6 +646,68 @@ impl X86Instr {
             signed,
             remainder,
             precoloured_uses: [(dividend, X86Reg::Rax)],
+        }
+    }
+}
+
+impl AluOp {
+    #[rustfmt::skip]
+    pub const fn mnemonic<'s>(self) -> &'s str {
+        match self {
+            Self::Add => "add", Self::Sub => "sub", Self::Mul => "imul",
+            Self::And => "and", Self::Or => "or",   Self::Xor => "xor",
+        }
+    }
+
+    /// only `imul` reports *signed* overflow whatever the operands are
+    #[inline]
+    pub const fn overflows_signed(self) -> bool {
+        matches!(self, Self::Mul)
+    }
+
+    #[inline]
+    pub const fn overflow_panic(self) -> Panic {
+        match self {
+            Self::Add => Panic::AddOverflow,
+            Self::Sub => Panic::SubOverflow,
+            _ => Panic::MulOverflow,
+        }
+    }
+}
+
+impl FloatOp {
+    /// the mnemonic stem and the suffix family it takes
+    #[rustfmt::skip]
+    pub const fn mnemonic<'s>(self) -> (&'s str, SuffixKind) {
+        match self {
+            Self::Add => ("add", SuffixKind::Scalar),
+            Self::Sub => ("sub", SuffixKind::Scalar),
+            Self::Mul => ("mul", SuffixKind::Scalar),
+            Self::Div => ("div", SuffixKind::Scalar),
+            Self::CmpEq => ("cmpeq", SuffixKind::Scalar),
+            Self::Xor => ("xor", SuffixKind::Packed),
+            Self::AndNot => ("andn", SuffixKind::Packed),
+        }
+    }
+}
+
+impl UnaryOp {
+    #[inline]
+    pub const fn mnemonic<'s>(self) -> &'s str {
+        match self {
+            Self::Neg => "neg",
+            Self::Not => "not",
+        }
+    }
+}
+
+impl ShiftOp {
+    #[inline]
+    pub const fn mnemonic<'s>(self) -> &'s str {
+        match self {
+            Self::Left => "shl",
+            Self::Right => "shr",
+            Self::ArithmeticRight => "sar",
         }
     }
 }
@@ -711,11 +774,8 @@ impl PhysicalReg for X86Reg {
 impl Checked for X86Instr {
     fn overflow_panic(&self) -> Option<Panic> {
         match self {
-            Self::Add { checked: true, .. } => Some(Panic::AddOverflow),
-            Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
-            Self::Imul { checked: true, .. } | Self::WideMul { checked: true, .. } => {
-                Some(Panic::MulOverflow)
-            },
+            Self::Alu { op, checked: true, .. } => Some(op.overflow_panic()),
+            Self::WideMul { checked: true, .. } => Some(Panic::MulOverflow),
             _ => None,
         }
     }
