@@ -153,10 +153,16 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
 
                         match is_float {
                             true => {
-                                let op = FloatOp::from_binary(operation);
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
-                                let instr = A64Instr::AluFloat { op, dest, lhs, rhs, bytes };
-                                self.lir.push_instr(id, instr);
+                                match operation {
+                                    B::Rem => self.lower_remainder(id, dest, lhs, rhs, lhs_mt),
+                                    _ => {
+                                        let op = FloatOp::from_binary(operation);
+                                        let instr =
+                                            A64Instr::AluFloat { op, dest, lhs, rhs, bytes };
+                                        self.lir.push_instr(id, instr);
+                                    },
+                                }
                             },
 
                             _ => {
@@ -218,8 +224,6 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                 }
                             },
                         }
-
-                        todo!()
                     },
                 }
             },
