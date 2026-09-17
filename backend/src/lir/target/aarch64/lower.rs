@@ -18,7 +18,7 @@ use crate::{
         self, BlockId, MachineType, TypeExt, VReg,
         target::{
             self, AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps,
-            aarch64::{A64Cond, A64Instr, A64Operand, AArch64},
+            aarch64::{A64Cond, A64Instr, A64Operand, AArch64, AluOp, FloatOp, UnaryOp},
             aggregate_copy,
         },
     },
@@ -100,19 +100,25 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let src = self.operand(rhs, id);
 
                 match operation {
-                    U::Neg => match is_float {
-                        true => self.lir.push_instr(id, A64Instr::FNeg { dest, src, bytes }),
-                        false => self.lir.push_instr(id, A64Instr::Neg { dest, src, bytes }),
+                    U::Neg => {
+                        let op = match is_float {
+                            true => UnaryOp::FloatNeg,
+                            false => UnaryOp::Neg,
+                        };
+                        self.lir.push_instr(id, A64Instr::Unary { op, dest, src, bytes });
                     },
                     // boolean NOT: XOR with 1
                     // integer NOT: MVN instruction
                     U::Not => match typ.kind() == TypeKind::Bool {
                         true => {
-                            #[rustfmt::skip]
-                            let instr = A64Instr::Eor { dest, lhs: src, rhs: A64Operand::Imm(1), bytes: 4 };
+                            let rhs = A64Operand::Imm(1);
+                            let (bytes, checked, op) = (4, false, AluOp::Eor);
+                            let instr = A64Instr::Alu { op, dest, lhs: src, rhs, bytes, checked };
                             self.lir.push_instr(id, instr);
                         },
-                        _ => self.lir.push_instr(id, A64Instr::Mvn { dest, src, bytes }),
+                        _ => self
+                            .lir
+                            .push_instr(id, A64Instr::Unary { op: UnaryOp::Not, dest, src, bytes }),
                     },
                     U::Deref => unreachable!(),
                     U::Ref | U::RefMut => unreachable!(
@@ -145,115 +151,75 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                         // we need both operands in registers
                         let lhs = self.ensure_vreg(lhs, lhs_type, id);
 
-                        match operation {
-                            B::Add => {
-                                let instr = match is_float {
-                                    #[rustfmt::skip]
-                                    true => A64Instr::FAdd { dest, lhs, rhs: self.ensure_vreg(rhs, lhs_type, id), bytes },
-                                    false => A64Instr::Add {
-                                        dest,
-                                        lhs,
-                                        rhs: self.fit_add_sub_operand(rhs, lhs_type, id),
-                                        bytes,
-                                        checked,
-                                    },
-                                };
-                                self.lir.push_instr(id, instr);
-                                if !checked && !is_float {
-                                    self.normalise_subword(dest, lhs_type, bytes, id);
-                                }
-                            },
-
-                            B::Sub => {
-                                #[rustfmt::skip]
-                                let instr = match is_float {
-                                    true => A64Instr::FSub { dest, lhs, rhs: self.ensure_vreg(rhs, lhs_type, id), bytes },
-                                    false => A64Instr::Sub {
-                                        dest,
-                                        lhs,
-                                        rhs: self.fit_add_sub_operand(rhs, lhs_type, id),
-                                        bytes,
-                                        checked,
-                                    },
-                                };
-
-                                self.lir.push_instr(id, instr);
-                                if !checked && !is_float {
-                                    self.normalise_subword(dest, lhs_type, bytes, id);
-                                }
-                            },
-
-                            B::Mul => {
+                        match is_float {
+                            true => {
+                                let op = FloatOp::from_binary(operation);
                                 let rhs = self.ensure_vreg(rhs, lhs_type, id);
-                                let instr = match is_float {
-                                    true => A64Instr::FMul { dest, lhs, rhs, bytes },
-                                    false => A64Instr::Mul { dest, lhs, rhs, bytes, checked },
-                                };
-                                self.lir.push_instr(id, instr);
-                                if !checked && !is_float {
-                                    self.normalise_subword(dest, lhs_type, bytes, id);
-                                }
-                            },
-
-                            B::Div => {
-                                let constant = rhs.clone();
-                                let rhs = self.ensure_vreg(rhs, lhs_type, id);
-
-                                if !is_float {
-                                    self.zero_check(id, &constant, rhs, bytes);
-                                }
-
-                                let instr = match is_float {
-                                    true => A64Instr::FDiv { dest, lhs, rhs, bytes },
-                                    false => {
-                                        let signed =
-                                            lhs_type.machine_type(self.layouts).is_signed();
-                                        A64Instr::SDiv { dest, lhs, rhs, bytes, signed }
-                                    },
-                                };
+                                let instr = A64Instr::AluFloat { op, dest, lhs, rhs, bytes };
                                 self.lir.push_instr(id, instr);
                             },
 
-                            B::Rem => {
-                                let constant = rhs.clone();
-                                let rhs = self.ensure_vreg(rhs, lhs_type, id);
+                            _ => {
                                 let mt = lhs_type.machine_type(self.layouts);
+                                let signed = mt.is_signed();
 
-                                if !is_float {
-                                    self.zero_check(id, &constant, rhs, bytes);
-                                }
+                                match operation {
+                                    B::Add
+                                    | B::Sub
+                                    | B::And
+                                    | B::BitAnd
+                                    | B::Or
+                                    | B::BitOr
+                                    | B::BitXor
+                                    | B::Shl
+                                    | B::Shr => {
+                                        let op = AluOp::from_binary(operation, signed);
+                                        #[rustfmt::skip]
+                                        let rhs = match operation {
+                                            B::Add | B::Sub => self.fit_add_sub_operand(rhs, lhs_type, id),
+                                            B::Shl | B::Shr => self.fit_shift_operand(rhs, rhs_type, bytes, id),
+                                            _ => self.fit_logical_operand(rhs, rhs_type, bytes, id),
+                                        };
 
-                                self.lower_remainder(id, dest, lhs, rhs, mt);
-                            },
-
-                            B::And | B::BitAnd => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
-                                self.lir.push_instr(id, A64Instr::And { dest, lhs, rhs, bytes });
-                            },
-                            B::Or | B::BitOr => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
-                                self.lir.push_instr(id, A64Instr::Or { dest, lhs, rhs, bytes });
-                            },
-                            B::BitXor => {
-                                let rhs = self.fit_logical_operand(rhs, rhs_type, bytes, id);
-                                self.lir.push_instr(id, A64Instr::Eor { dest, lhs, rhs, bytes });
-                            },
-                            B::Shl | B::Shr => {
-                                let rhs = self.fit_shift_operand(rhs, rhs_type, bytes, id);
-                                let instr = match operation {
-                                    B::Shl => A64Instr::Lsl { dest, lhs, rhs, bytes },
-                                    B::Shr => match lhs_type.machine_type(self.layouts).is_signed()
-                                    {
-                                        true => A64Instr::Asr { dest, lhs, rhs, bytes },
-                                        _ => A64Instr::Lsr { dest, lhs, rhs, bytes },
+                                        let checked =
+                                            checked && matches!(operation, B::Add | B::Sub);
+                                        let instr =
+                                            A64Instr::Alu { op, dest, lhs, rhs, bytes, checked };
+                                        self.lir.push_instr(id, instr);
                                     },
+
+                                    B::Mul => {
+                                        let rhs = self.ensure_vreg(rhs, lhs_type, id);
+                                        let instr =
+                                            A64Instr::Mul { dest, lhs, rhs, bytes, checked };
+                                        self.lir.push_instr(id, instr);
+                                    },
+
+                                    B::Div | B::Rem => {
+                                        let divisor = rhs.clone();
+                                        let rhs = self.ensure_vreg(rhs, lhs_type, id);
+                                        self.zero_check(id, &divisor, rhs, bytes);
+
+                                        match operation {
+                                            B::Div => {
+                                                #[rustfmt::skip]
+                                                let instr = A64Instr::SDiv { dest, lhs, rhs, bytes, signed };
+                                                self.lir.push_instr(id, instr);
+                                            },
+                                            _ => self.lower_remainder(id, dest, lhs, rhs, mt),
+                                        }
+                                    },
+
                                     _ => unsafe { std::hint::unreachable_unchecked() },
                                 };
-                                self.lir.push_instr(id, instr);
-                            },
 
-                            _ => unsafe { std::hint::unreachable_unchecked() },
+                                if !checked && matches!(operation, B::Add | B::Sub | B::Mul) {
+                                    self.normalise_subword(dest, lhs_type, bytes, id);
+                                }
+                            },
                         }
+
+                        todo!()
                     },
                 }
             },
@@ -476,10 +442,10 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let zero = self.lir.new_vreg(mt);
                 let label = self.lir.new_float(0, bytes == 4);
 
-                self.lir.push_instr(id, A64Instr::FDiv { dest: quotient, lhs, rhs, bytes });
-                self.lir.push_instr(id, A64Instr::FTrunc { dest: quotient, src: quotient, bytes });
-                self.lir.push_instr(id, A64Instr::FMul { dest: remainder, lhs: quotient, rhs, bytes });
-                self.lir.push_instr(id, A64Instr::FSub { dest: remainder, lhs, rhs: remainder, bytes });
+                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Div, dest: quotient, lhs, rhs, bytes });
+                self.lir.push_instr(id, A64Instr::Unary { op: UnaryOp::FloatTrunc, dest: quotient, src: quotient, bytes });
+                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Mul, dest: remainder, lhs: quotient, rhs, bytes });
+                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Sub, dest: remainder, lhs, rhs: remainder, bytes });
 
                 // a zero quotient means the remainder is the dividend itself, and an
                 // infinite divisor would have turned that zero into a NaN
@@ -493,7 +459,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let signed = mt.is_signed();
                 self.lir.push_instr(id, A64Instr::SDiv { dest: quotient, lhs, rhs, bytes, signed });
                 self.lir.push_instr(id, A64Instr::Mul { dest: quotient, lhs: quotient, rhs, bytes, checked: false });
-                self.lir.push_instr(id, A64Instr::Sub { dest, lhs, rhs: A64Operand::VReg(quotient), bytes, checked: false });
+                self.lir.push_instr(id, A64Instr::Alu { op: AluOp::Sub, dest, lhs, rhs: A64Operand::VReg(quotient), bytes, checked: false });
             },
         }
     }

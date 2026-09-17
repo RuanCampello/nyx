@@ -17,7 +17,7 @@ use crate::{
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
-            aarch64::{A64Cond, A64Instr, A64Operand, A64Reg, AArch64},
+            aarch64::{A64Cond, A64Instr, A64Operand, A64Reg, AArch64, AluOp},
             resolve_parallel_moves,
         },
     },
@@ -330,9 +330,7 @@ impl Function<AArch64> {
                 emit_store_operand(out, alloc, src, &dest, *bytes, *is_float);
             },
 
-            // integer arithmetic
-            A64Instr::Add { dest, lhs, rhs, bytes, checked }
-            | A64Instr::Sub { dest, lhs, rhs, bytes, checked } => {
+            A64Instr::Alu { op, dest, lhs, rhs, bytes, checked } => {
                 let signed = self.is_signed(dest);
                 let slot = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
@@ -342,28 +340,17 @@ impl Function<AArch64> {
                 // a sub-word result is checked and narrowed against its own width
                 // below, so the operation itself is always done unchecked
                 let wide = *checked && *bytes >= 4;
+                let mnemonic = op.mnemonic(wide);
 
-                #[rustfmt::skip]
-                match instruction {
-                    A64Instr::Sub { .. } => {
-                        let op = if wide { "subs" } else { "sub" };
-                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
-                    },
-                    A64Instr::Add { .. } => {
-                        let op = if wide { "adds" } else { "add" };
-                        emit!(out, "{op}    {dest}, {lhs}, {rhs}")
-                    },
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                };
+                emit!(out, "{mnemonic:<8}{dest}, {lhs}, {rhs}");
 
                 match instruction.overflow_panic() {
                     Some(panic) if wide => {
                         let symbol = panic.require();
-                        match (instruction, signed) {
+                        match (op, signed) {
                             (_, true) => emit!(out, "b.vs    {symbol}"),
-                            (A64Instr::Add { .. }, false) => emit!(out, "b.hs    {symbol}"),
-                            (A64Instr::Sub { .. }, false) => emit!(out, "b.lo    {symbol}"),
-                            _ => unsafe { std::hint::unreachable_unchecked() },
+                            (AluOp::Add, false) => emit!(out, "b.hs    {symbol}"),
+                            (_, false) => emit!(out, "b.lo    {symbol}"),
                         }
                     },
                     Some(panic) => emit_narrow_check(out, dest, dest, *bytes, signed, panic),
@@ -392,50 +379,24 @@ impl Function<AArch64> {
                 let rhs = alloc.location(rhs, bytes);
                 let (dest, lhs, rhs) = resolve_alu(out, &slot, &lhs, &rhs, *bytes);
 
-                match instruction {
-                    A64Instr::Mul { .. } => emit!(out, "mul     {dest}, {lhs}, {rhs}"),
-                    A64Instr::SDiv { signed: true, .. } => {
-                        emit!(out, "sdiv    {dest}, {lhs}, {rhs}")
-                    },
-                    A64Instr::SDiv { .. } => emit!(out, "udiv    {dest}, {lhs}, {rhs}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
+                let mnemonic = match instruction {
+                    A64Instr::Mul { .. } => "mul",
+                    A64Instr::SDiv { signed: true, .. } => "sdiv",
+                    _ => "udiv",
+                };
+
+                emit!(out, "{mnemonic:<8}{dest}, {lhs}, {rhs}");
 
                 if is_mem(&slot) {
                     emit_store(out, dest, &slot, *bytes);
                 }
             },
 
-            A64Instr::And { dest, lhs, rhs, bytes }
-            | A64Instr::Or { dest, lhs, rhs, bytes }
-            | A64Instr::Eor { dest, lhs, rhs, bytes }
-            | A64Instr::Lsl { dest, lhs, rhs, bytes }
-            | A64Instr::Lsr { dest, lhs, rhs, bytes }
-            | A64Instr::Asr { dest, lhs, rhs, bytes } => {
-                let slot = alloc.location(dest, bytes);
-                let lhs = alloc.location(lhs, bytes);
-                let rhs = self.operand(alloc, rhs, bytes);
-                let (dest, lhs, rhs) = resolve_alu(out, &slot, &lhs, &rhs, *bytes);
-
-                match instruction {
-                    A64Instr::And { .. } => emit!(out, "and     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Or { .. } => emit!(out, "orr     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Eor { .. } => emit!(out, "eor     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Lsl { .. } => emit!(out, "lsl     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Lsr { .. } => emit!(out, "lsr     {dest}, {lhs}, {rhs}"),
-                    A64Instr::Asr { .. } => emit!(out, "asr     {dest}, {lhs}, {rhs}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
-
-                if is_mem(&slot) {
-                    emit_store(out, dest, &slot, *bytes);
-                }
-            },
-
-            A64Instr::Mvn { dest, src, bytes } => {
+            A64Instr::Unary { op, dest, src, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let src = alloc.location(src, bytes);
-                emit!(out, "mvn     {dest}, {src}");
+
+                emit!(out, "{:<8}{dest}, {src}", op.mnemonic());
             },
 
             #[rustfmt::skip]
@@ -532,39 +493,12 @@ impl Function<AArch64> {
                 emit!(out, "fcmp    {lhs}, {rhs}");
             },
 
-            A64Instr::FAdd { dest, lhs, rhs, bytes }
-            | A64Instr::FSub { dest, lhs, rhs, bytes }
-            | A64Instr::FMul { dest, lhs, rhs, bytes }
-            | A64Instr::FDiv { dest, lhs, rhs, bytes } => {
+            A64Instr::AluFloat { op, dest, lhs, rhs, bytes } => {
                 let dest = alloc.location(dest, bytes);
                 let lhs = alloc.location(lhs, bytes);
                 let rhs = alloc.location(rhs, bytes);
 
-                match instruction {
-                    A64Instr::FAdd { .. } => emit!(out, "fadd    {dest}, {lhs}, {rhs}"),
-                    A64Instr::FSub { .. } => emit!(out, "fsub    {dest}, {lhs}, {rhs}"),
-                    A64Instr::FMul { .. } => emit!(out, "fmul    {dest}, {lhs}, {rhs}"),
-                    A64Instr::FDiv { .. } => emit!(out, "fdiv    {dest}, {lhs}, {rhs}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
-            },
-
-            A64Instr::FTrunc { dest, src, bytes } => {
-                let dest = alloc.location(dest, bytes);
-                let src = alloc.location(src, bytes);
-
-                emit!(out, "frintz  {dest}, {src}");
-            },
-
-            A64Instr::Neg { dest, src, bytes } | A64Instr::FNeg { dest, src, bytes } => {
-                let dest = alloc.location(dest, bytes);
-                let src = alloc.location(src, bytes);
-
-                match instruction {
-                    A64Instr::Neg { .. } => emit!(out, "neg     {dest}, {src}"),
-                    A64Instr::FNeg { .. } => emit!(out, "fneg    {dest}, {src}"),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
+                emit!(out, "{:<8}{dest}, {lhs}, {rhs}", op.mnemonic());
             },
 
             A64Instr::Call { target, moves, ret, stack_args, .. } => {

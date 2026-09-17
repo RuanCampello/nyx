@@ -40,23 +40,15 @@ pub enum A64Instr {
     /// load a stack-passed param
     LdrParam { dest: VReg, fp_offset: i32, bytes: u8, signed: bool },
 
-    // integer arithmetic
-    Add { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
-    Sub { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
+    /// 3-address arithmetic and logic: `dest = lhs <op> rhs`
+    Alu { op: AluOp, dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8, checked: bool },
+    /// `dest = <op> src`, integer or float: they share this shape exactly
+    Unary { op: UnaryOp, dest: VReg, src: VReg, bytes: u8 },
+    /// multiplication takes no immediate, and a checked one expands to a sequence
     Mul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8, checked: bool },
     /// `sdiv` treats the top bit as a sign, so an unsigned dividend above the
     /// signed maximum needs `udiv` instead
     SDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8, signed: bool },
-    Neg { dest: VReg, src: VReg, bytes: u8 },
-
-    // logical operations
-    And { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Or { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Eor { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Mvn { dest: VReg, src: VReg, bytes: u8 },
-    Lsl { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Lsr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
-    Asr { dest: VReg, lhs: VReg, rhs: A64Operand, bytes: u8 },
 
     // comparisons
     Cmp { lhs: VReg, rhs: A64Operand, bytes: u8 },
@@ -74,14 +66,8 @@ pub enum A64Instr {
     FMov { dest: VReg, src: VReg, bytes: u8 },
     FLiteral { dest: VReg, label: String, bytes: u8 },
 
-    // float arithmetic
-    FAdd { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
-    FSub { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
-    FMul { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
-    FDiv { dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
-    FNeg { dest: VReg, src: VReg, bytes: u8 },
-    /// `frintz`, rounding towards zero
-    FTrunc { dest: VReg, src: VReg, bytes: u8 },
+    /// 3-address float arithmetic, which never takes an immediate
+    AluFloat { op: FloatOp, dest: VReg, lhs: VReg, rhs: VReg, bytes: u8 },
 
     // float comparison
     FCmp { lhs: VReg, rhs: VReg, bytes: u8 },
@@ -129,6 +115,32 @@ pub enum A64Cond {
     // unsigned — used after FCMP
     Lo, Ls,
     Hi, Hs,
+}
+
+/// The operation of a 3-address [alu instruction](A64Instr::Alu)
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
+pub enum AluOp {
+    Add, Sub,
+    And, Or, Eor,
+    Lsl, Lsr, Asr,
+}
+
+/// The operation of an [alu float instruction](A64Instr::AluFloat)
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
+pub enum FloatOp {
+    Add, Sub, Mul, Div,
+}
+
+/// The operation of an [unary instruction](A64Instr::Unary)
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[rustfmt::skip]
+pub enum UnaryOp {
+    Neg, Not,
+    FloatNeg,
+    /// round towards zero
+    FloatTrunc,
 }
 
 impl A64Cond {
@@ -435,12 +447,16 @@ impl TargetOps for AArch64 {
 
     fn add_vregs(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, lhs: VReg, rhs: VReg) {
         let rhs = A64Operand::VReg(rhs);
-        lir.push_instr(block, A64Instr::Add { dest, lhs, rhs, bytes: 8, checked: false });
+        let instr = A64Instr::Alu { op: AluOp::Add, dest, lhs, rhs, bytes: 8, checked: false };
+        lir.push_instr(block, instr);
     }
 
     fn add_imm(lir: &mut lir::Function<Self>, block: &BlockId, dest: VReg, imm: i64) {
         let rhs = A64Operand::Imm(imm);
-        lir.push_instr(block, A64Instr::Add { dest, lhs: dest, rhs, bytes: 8, checked: false });
+        let (op, bytes, checked) = (AluOp::Add, 8, false);
+        let instr = A64Instr::Alu { op, dest, lhs: dest, rhs, bytes, checked };
+
+        lir.push_instr(block, instr);
     }
 
     #[inline(always)]
@@ -463,103 +479,65 @@ impl TargetOps for AArch64 {
 impl Instruction<AArch64> for A64Instr {
     #[rustfmt::skip]
     fn defs(&self) -> &[VReg] {
+        use A64Instr::*;
         match self {
-            Self::MovImm { dest, .. } | Self::Mov { dest, .. }
-            | Self::LdrParam { dest, .. } | Self::Add { dest, .. }
-            | Self::Sub { dest, .. } | Self::Mul { dest, .. }
-            | Self::SDiv { dest, .. } | Self::Neg { dest, .. }
-            | Self::Mvn { dest, .. } | Self::And { dest, .. }
-            | Self::Or { dest, .. } | Self::Eor { dest, .. }
-            | Self::Lsl { dest, .. } | Self::Lsr { dest, .. }
-            | Self::Asr { dest, .. } | Self::Cset { dest, .. }
-            | Self::Csel { dest, .. } | Self::FCsel { dest, .. } | Self::Adr { dest, .. }
-            | Self::FMov { dest, .. } | Self::FLiteral { dest, .. }
-            | Self::FAdd { dest, .. } | Self::FSub { dest, .. }
-            | Self::FMul { dest, .. } | Self::FDiv { dest, .. }
-            | Self::FNeg { dest, .. } | Self::FTrunc { dest, .. }
-            | Self::FieldLoad { dest, .. }
-            | Self::StackAddr { dest, .. } | Self::PtrLoad { dest, .. }
-            | Self::Extend { dest, .. } => std::slice::from_ref(dest),
-
-            Self::Cmp { .. } | Self::FCmp { .. }
-            | Self::BoundsCheck { .. } | Self::ZeroCheck { .. } => &[],
-            Self::Call { ret: Some(r), .. } | Self::Syscall { ret: Some(r), .. } => {
-               std::slice::from_ref(r)
-            },
-            Self::Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
-            Self::FieldStore { .. } | Self::PtrStore { .. }
-            | Self::Syscall { ret: None, .. } => &[],
+            MovImm { dest, .. } | Mov { dest, .. } | LdrParam { dest, .. } | Alu { dest, .. }
+            | AluFloat { dest, .. } | Unary { dest, .. } | Mul { dest, .. } | SDiv { dest, .. }
+            | Cset { dest, .. } | Csel { dest, .. } | FCsel { dest, .. } | Adr { dest, .. }
+            | FMov { dest, .. } | FLiteral { dest, .. } | FieldLoad { dest, .. }
+            | StackAddr { dest, .. } | PtrLoad { dest, .. }
+            | Extend { dest, .. } => std::slice::from_ref(dest),
+            Cmp { .. } | FCmp { .. } | BoundsCheck { .. } | ZeroCheck { .. } => &[],
+            Call { ret: Some(r), .. } | Syscall { ret: Some(r), .. } => std::slice::from_ref(r),
+            Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
+            FieldStore { .. } | PtrStore { .. } | Syscall { ret: None, .. } => &[],
         }
     }
 
-    #[rustfmt::skip]
     fn uses(&self, uses: &mut Vec<VReg>) {
+        use A64Instr::*;
         match self {
-            Self::Mov { src, .. } | Self::Neg { src, .. }
-            | Self::Mvn { src, .. } | Self::FMov { src, .. }
-            | Self::Extend { src, .. } | Self::FNeg { src, .. }
-            | Self::FTrunc { src, .. } => uses.push(*src),
-
-
-            Self::Add { lhs, rhs, .. } | Self::Sub { lhs, rhs, .. }
-            | Self::And { lhs, rhs, .. } | Self::Or { lhs, rhs, .. }
-            | Self::Eor { lhs, rhs, .. } | Self::Lsl { lhs, rhs, .. }
-            | Self::Lsr { lhs, rhs, .. } | Self::Asr { lhs, rhs, .. }
-            | Self::Cmp { lhs, rhs, .. } => {
+            Mov { src, .. } | Unary { src, .. } | FMov { src, .. } | Extend { src, .. } => {
+                uses.push(*src)
+            },
+            Alu { lhs, rhs, .. } | Cmp { lhs, rhs, .. } => {
                 uses.push(*lhs);
 
                 if let A64Operand::VReg(rhs) = rhs {
                     uses.push(*rhs);
                 }
             },
-
-            Self::Mul { lhs, .. } | Self::SDiv { lhs, .. }
-            | Self::FAdd { lhs, .. } | Self::FSub { lhs, .. }
-            | Self::FMul { lhs, .. } | Self::FDiv { lhs, .. } => {
+            Mul { lhs, rhs, .. } | SDiv { lhs, rhs, .. } | AluFloat { lhs, rhs, .. } => {
                 uses.push(*lhs);
-                match self {
-                    Self::Mul { rhs, .. } | Self::SDiv { rhs, .. }
-                    | Self::FAdd { rhs, .. } | Self::FSub { rhs, .. }
-                    | Self::FMul { rhs, .. } | Self::FDiv { rhs, .. } => uses.push(*rhs),
-                    _ => unsafe { std::hint::unreachable_unchecked() },
-                }
+                uses.push(*rhs);
             },
-
-            Self::ZeroCheck { divisor, .. } => uses.push(*divisor),
-            Self::BoundsCheck { index, bound } => {
+            ZeroCheck { divisor, .. } => uses.push(*divisor),
+            BoundsCheck { index, bound } => {
                 uses.push(*index);
                 if let A64Operand::VReg(bound) = bound {
                     uses.push(*bound);
                 }
             },
-
-            Self::FCmp { lhs, rhs, .. }
-            | Self::Csel { lhs, rhs, .. }
-            | Self::FCsel { lhs, rhs, .. } => {
+            FCmp { lhs, rhs, .. } | Csel { lhs, rhs, .. } | FCsel { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 uses.push(*rhs);
             },
 
-            Self::Call { uses: instruction_uses, .. }
-            | Self::Syscall { uses: instruction_uses, .. } => {
-                uses.extend_from_slice(instruction_uses)
+            Call { uses: instr_uses, .. } | Syscall { uses: instr_uses, .. } => {
+                uses.extend_from_slice(instr_uses)
             },
-
-            Self::FieldStore { origin, src: A64Operand::VReg(v), .. } => {
+            FieldStore { origin, src: A64Operand::VReg(v), .. } => {
                 uses.push(*origin);
                 uses.push(*v);
             },
-
-            Self::FieldLoad { origin, .. } | Self::FieldStore { origin, .. } => uses.push(*origin),
-            Self::StackAddr { origin, .. } | Self::PtrLoad { ptr: origin, .. } => uses.push(*origin),
-            Self::PtrStore { ptr, src: A64Operand::VReg(v), .. } => {
+            FieldLoad { origin, .. } | FieldStore { origin, .. } => uses.push(*origin),
+            StackAddr { origin, .. } | PtrLoad { ptr: origin, .. } => uses.push(*origin),
+            PtrStore { ptr, src: A64Operand::VReg(v), .. } => {
                 uses.push(*ptr);
                 uses.push(*v);
             },
-            Self::PtrStore { ptr, .. } => uses.push(*ptr),
-
-            Self::MovImm { .. } | Self::LdrParam { .. } | Self::FLiteral { .. }
-            | Self::Adr { .. } | Self::Cset { .. } => {},
+            PtrStore { ptr, .. } => uses.push(*ptr),
+            MovImm { .. } | LdrParam { .. } | FLiteral { .. } | Adr { .. } | Cset { .. } => {},
         }
     }
 
@@ -584,20 +562,16 @@ impl Instruction<AArch64> for A64Instr {
     #[inline]
     fn writes_flags(&self) -> bool {
         match self {
-            Self::Add { checked, .. } | Self::Sub { checked, .. }
-            | Self::Mul { checked, .. } => *checked,
-
+            // only the flag-setting form of an operation that can overflow
+            Self::Alu { op, checked, .. } => *checked && op.sets_flags(),
+            Self::Mul { checked, .. } => *checked,
             Self::MovImm { .. } | Self::Mov { .. } | Self::Extend { .. }
-            | Self::LdrParam { .. } | Self::SDiv { .. } | Self::Neg { .. }
-            | Self::And { .. } | Self::Or { .. } | Self::Eor { .. } | Self::Mvn { .. }
-            | Self::Lsl { .. } | Self::Lsr { .. } | Self::Asr { .. }
+            | Self::LdrParam { .. } | Self::SDiv { .. } | Self::Unary { .. }
             | Self::Cset { .. } | Self::Csel { .. } | Self::FCsel { .. }
             | Self::FMov { .. } | Self::FLiteral { .. }
-            | Self::FAdd { .. } | Self::FSub { .. } | Self::FMul { .. }
-            | Self::FDiv { .. } | Self::FNeg { .. } | Self::FTrunc { .. } | Self::Adr { .. }
+            | Self::AluFloat { .. } | Self::Adr { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. } | Self::StackAddr { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. } => false,
-
             _ => true,
         }
     }
@@ -698,10 +672,85 @@ impl PhysicalReg for A64Reg {
 impl Checked for A64Instr {
     fn overflow_panic(&self) -> Option<Panic> {
         match self {
-            Self::Add { checked: true, .. } => Some(Panic::AddOverflow),
-            Self::Sub { checked: true, .. } => Some(Panic::SubOverflow),
+            Self::Alu { op, checked: true, .. } => op.overflow_panic(),
             Self::Mul { checked: true, .. } => Some(Panic::MulOverflow),
             _ => None,
+        }
+    }
+}
+
+impl AluOp {
+    #[inline]
+    pub const fn sets_flags(self) -> bool {
+        matches!(self, Self::Add | Self::Sub)
+    }
+
+    #[rustfmt::skip]
+    pub const fn mnemonic<'s>(self, sets_flags: bool) -> &'s str {
+        match (self, sets_flags) {
+            (Self::Add, false) => "add", (Self::Add, true) => "adds",
+            (Self::Sub, false) => "sub", (Self::Sub, true) => "subs",
+            (Self::And, _) => "and",
+            (Self::Or, _)  => "orr",
+            (Self::Eor, _) => "eor",
+            (Self::Lsl, _) => "lsl",
+            (Self::Lsr, _) => "lsr",
+            (Self::Asr, _) => "asr",
+        }
+    }
+
+    #[inline]
+    pub const fn overflow_panic(self) -> Option<Panic> {
+        match self {
+            Self::Add => Some(Panic::AddOverflow),
+            Self::Sub => Some(Panic::SubOverflow),
+            _ => None,
+        }
+    }
+
+    pub const fn from_binary(operation: &BinaryOperator, signed: bool) -> Self {
+        match operation {
+            BinaryOperator::Add => Self::Add,
+            BinaryOperator::Sub => Self::Sub,
+            BinaryOperator::And | BinaryOperator::BitAnd => Self::And,
+            BinaryOperator::Or | BinaryOperator::BitOr => Self::Or,
+            BinaryOperator::BitXor => Self::Eor,
+            BinaryOperator::Shl => Self::Lsl,
+            BinaryOperator::Shr => match signed {
+                true => Self::Asr,
+                false => Self::Lsr,
+            },
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+}
+
+impl FloatOp {
+    #[rustfmt::skip]
+    pub const fn mnemonic<'s>(self) -> &'s str {
+        match self {
+            Self::Add => "fadd", Self::Sub => "fsub",
+            Self::Mul => "fmul", Self::Div => "fdiv",
+        }
+    }
+
+    pub const fn from_binary(operation: &BinaryOperator) -> Self {
+        match operation {
+            BinaryOperator::Add => Self::Add,
+            BinaryOperator::Sub => Self::Sub,
+            BinaryOperator::Mul => Self::Mul,
+            BinaryOperator::Div => Self::Div,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+}
+
+impl UnaryOp {
+    #[rustfmt::skip]
+    pub const fn mnemonic<'s>(self) -> &'s str {
+        match self {
+            Self::Neg => "neg",       Self::Not => "mvn",
+            Self::FloatNeg => "fneg", Self::FloatTrunc => "frintz",
         }
     }
 }
