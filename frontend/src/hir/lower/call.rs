@@ -69,8 +69,15 @@ where
     ) -> Option<(SymbolId, T)> {
         generic.bounds.iter().find_map(|bound| {
             let interface = self.bound_interface(bound)?;
-            let item = project(self.scope.interfaces.defs.get(&interface)?)?;
-            Some((interface, item))
+            let signature = self.scope.interfaces.defs.get(&interface)?;
+
+            match project(signature) {
+                Some(item) => Some((interface, item)),
+                _ => signature.all_superinterfaces.iter().find_map(|&inherited| {
+                    let parent = self.scope.interfaces.defs.get(&inherited)?;
+                    Some((inherited, project(parent)?))
+                }),
+            }
         })
     }
 
@@ -688,7 +695,7 @@ where
     }
 }
 
-fn infer_type_args<'hir>(
+pub(super) fn infer_type_args<'hir>(
     open_params: &[Type<'hir>],
     arg_types: &[Type<'hir>],
     count: usize,

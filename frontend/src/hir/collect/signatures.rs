@@ -147,6 +147,7 @@ impl<'hir> ItemTable<'hir> {
                 name,
                 is_pub: interface.is_pub,
                 superinterfaces,
+                all_superinterfaces: Vec::new(),
                 methods,
                 constants,
                 generic_params,
@@ -158,6 +159,7 @@ impl<'hir> ItemTable<'hir> {
             self.interfaces.defs.insert(name, signature);
         }
 
+        self.elaborate_superinterfaces();
         Ok(())
     }
 
@@ -378,6 +380,73 @@ impl<'hir> ItemTable<'hir> {
             }
         }
         Ok(())
+    }
+
+    fn elaborate_superinterfaces(&mut self) {
+        let names: Vec<_> = self.interfaces.defs.keys().copied().collect();
+        let reachable: HashMap<_, _> =
+            names.iter().map(|&name| (name, self.reachable_superinterfaces(name))).collect();
+
+        for &name in &names {
+            let closure = &reachable[&name];
+            if closure.contains(&name) {
+                self.report_cycle(name, closure, &reachable);
+            }
+
+            let elaborated: Vec<_> =
+                closure.iter().copied().filter(|&parent| parent != name).collect();
+
+            self.interfaces
+                .defs
+                .get_mut(&name)
+                .expect("name came from defs")
+                .all_superinterfaces = elaborated;
+        }
+    }
+
+    fn reachable_superinterfaces(&self, start: SymbolId) -> Vec<SymbolId> {
+        let mut found = Vec::new();
+        let mut queue = self.interfaces.defs[&start].superinterfaces.clone();
+
+        while let Some(parent) = queue.pop() {
+            if found.contains(&parent) {
+                continue;
+            }
+            found.push(parent);
+
+            if let Some(def) = self.interfaces.defs.get(&parent) {
+                queue.extend(def.superinterfaces.iter().copied());
+            }
+        }
+
+        found
+    }
+
+    fn report_cycle(
+        &self,
+        name: SymbolId,
+        closure: &[SymbolId],
+        reachable: &HashMap<SymbolId, Vec<SymbolId>>,
+    ) {
+        let declared_at = |symbol: SymbolId| self.interfaces.defs[&symbol].decl_span.start;
+        let through = closure
+            .iter()
+            .copied()
+            .filter(|&other| {
+                other != name && reachable.get(&other).is_some_and(|set| set.contains(&name))
+            })
+            .min_by_key(|&other| declared_at(other));
+
+        // no mutual participant means the interface names itself directly
+        let through = through.unwrap_or(name);
+        if declared_at(through) < declared_at(name) {
+            return;
+        }
+
+        let interface = &self.interfaces.defs[&name];
+        let owned = self.arena.alloc_str(self.symbols.get(name));
+        let cycle = self.arena.alloc_str(self.symbols.get(through));
+        self.soft(hir_error!(interface.decl_span, CyclicSuperinterface { name: owned, cycle }));
     }
 
     fn push_method_signature<'h>(

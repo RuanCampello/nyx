@@ -431,6 +431,14 @@ pub enum HirErrorKind<'h> {
     UnknownInterface { name: &'h str },
 
     #[diagnostic(
+        code = "E166",
+        message = "Interface {name!} extends itself",
+        primary = "the cycle closes through {cycle!}",
+        help = "Break the cycle by dropping one of the superinterface clauses"
+    )]
+    CyclicSuperinterface { name: &'h str, cycle: &'h str },
+
+    #[diagnostic(
         code = "E158",
         message = "{method_name!} must be {`const`} to implement {interface_name*}",
         primary = "this implementation is not {`const`}",

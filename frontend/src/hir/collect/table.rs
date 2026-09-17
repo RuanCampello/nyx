@@ -129,6 +129,8 @@ pub struct InterfaceSignature<'hir> {
     pub name: SymbolId,
     pub is_pub: bool,
     pub superinterfaces: Vec<SymbolId>,
+    /// every interface reachable through [Self::superinterfaces], computed once after collection
+    pub all_superinterfaces: Vec<SymbolId>,
     pub methods: Vec<InterfaceMethodSignature<'hir>>,
     pub constants: Vec<InterfaceConstSignature<'hir>>,
     pub generic_params: Vec<SymbolId>,

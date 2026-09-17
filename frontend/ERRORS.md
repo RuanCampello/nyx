@@ -1044,6 +1044,24 @@ fn show(p: Point) {
 Interpolate the parts that do print — `"{p.x}, {p.y}"` — until a formatting
 interface exists.
 
+### E166: cyclic superinterface hierarchy
+
+An interface cannot reach itself by following superinterface clauses. The
+hierarchy has to be acyclic, otherwise the set of methods a bound provides
+could never be determined.
+
+```rust
+interface A: B { fn a(&self): i32; }
+interface B: A { fn b(&self): i32; }  // error: A extends itself through B
+```
+
+Drop one of the clauses so the hierarchy forms a tree:
+
+```rust
+interface A { fn a(&self): i32; }
+interface B: A { fn b(&self): i32; }
+```
+
 ### E165: required generic after a defaulted one
 
 Generic arguments are matched left to right, so a parameter that may be omitted
