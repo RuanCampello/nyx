@@ -43,7 +43,12 @@ where
                     statements_vec.push(statement);
                     returns |= did_return;
                 },
-                Err(error) => self.soft(error),
+                // a poisoned tail has already reported the real problem, so the
+                // return-completeness check must not blame the same expression again
+                Err(error) => {
+                    self.soft(error);
+                    returns |= is_tail && idx == last_idx;
+                },
             }
         }
 
