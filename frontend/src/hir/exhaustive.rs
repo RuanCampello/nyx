@@ -67,16 +67,9 @@ enum PattKind<'hir> {
 }
 
 impl<'a, 'hir> Context<'a, 'hir> {
-    /// values of `scrutinee` that no arm matches, at most `limit` of them
-    ///
-    /// An empty result means the match is exhaustive
-    /// A guarded arm is left out of the matrix: its guard can fail at runtime, so it covers nothing on its own
-    pub fn missing_patterns(
-        &self,
-        scrutinee: Type<'hir>,
-        arms: &[Row<'_, 'hir>],
-        limit: usize,
-    ) -> Vec<Witness> {
+    /// every value of `scrutinee` that no arm matches
+    /// an empty result means the match is exhaustive
+    pub fn missing_patterns(&self, scrutinee: Type<'hir>, arms: &[Row<'_, 'hir>]) -> Vec<Witness> {
         let scrutinee = peel(scrutinee);
         if !is_checkable(scrutinee) {
             return Vec::new();
@@ -91,7 +84,6 @@ impl<'a, 'hir> Context<'a, 'hir> {
 
         self.usefulness(&matrix, &query)
             .into_iter()
-            .take(limit)
             .map(|witness| {
                 let mut rendered = String::new();
                 render(self, witness.first().unwrap_or(&query[0]), &mut rendered);

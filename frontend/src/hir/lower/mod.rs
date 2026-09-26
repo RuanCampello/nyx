@@ -305,6 +305,11 @@ where
             TypeKind::Raw { mutable, to } => {
                 types.raw(Self::resolve_deep(infer, arrays, types, to), mutable)
             },
+            TypeKind::Adt(id, args) if args.iter().any(|arg| arg.is_infer()) => {
+                let resolved: Vec<_> =
+                    args.iter().map(|&arg| Self::resolve_deep(infer, arrays, types, arg)).collect();
+                types.adt(id, &resolved)
+            },
             _ => infer.resolve_or_default(typ),
         }
     }
@@ -405,6 +410,18 @@ where
             if lhs.len == rhs.len {
                 return self.check_type_at(lhs.element, rhs.element, span, annotation);
             }
+        }
+
+        if let (Adt(want_id, want), Adt(found_id, got)) = (expected.kind(), found.kind())
+            && want_id == found_id
+            && want.len() == got.len()
+            && want.iter().chain(got).any(|typ| typ.is_infer())
+        {
+            let mut agreed = true;
+            for (&want, &got) in want.iter().zip(got) {
+                agreed &= self.check_type_at(want, got, span, annotation)?;
+            }
+            return Ok(agreed);
         }
 
         self.soft(Self::mismatch(expected, found, span, annotation));
@@ -516,11 +533,32 @@ where
     where
         F: NamedField<'src>,
     {
+        let slots = self.struct_field_slots(id, fields, span, allow_missing)?;
+        let mut lowered = Vec::with_capacity(slots.len());
+
+        for ((field_symbol, declared), field) in slots.into_iter().zip(fields) {
+            let expected = declared.subst(&self.scope.types, &self.scope.arrays, generic_args);
+            lowered.push((field_symbol, lower_field(self, field_symbol, expected, field)?));
+        }
+
+        Ok(lowered)
+    }
+
+    fn struct_field_slots<F>(
+        &mut self,
+        id: AdtId,
+        fields: &[F],
+        span: Span,
+        allow_missing: bool,
+    ) -> Result<Vec<(SymbolId, Type<'hir>)>, HirError<'hir>>
+    where
+        F: NamedField<'src>,
+    {
         let definition_name = self.scope[id].name;
         let struct_name = self.arena.alloc_str(self.scope.symbols.get(definition_name));
 
         let mut seen = HashSet::with_capacity(fields.len());
-        let mut lowered = Vec::with_capacity(fields.len());
+        let mut slots = Vec::with_capacity(fields.len());
 
         for field in fields {
             let field_symbol = self.scope.symbols.insert(field.name());
@@ -528,15 +566,12 @@ where
                 return Err(hir_error!(field.field_span(), DuplicateField { name: field.name() }));
             }
 
-            let expected = self.scope[id]
-                .field(field_symbol)
-                .map(|f| f.typ.subst(&self.scope.types, &self.scope.arrays, generic_args))
-                .ok_or_else(|| {
-                    let (field, span) = (field.name(), field.field_span());
-                    hir_error!(span, UnknownField { struct_name, field })
-                })?;
+            let declared = self.scope[id].field(field_symbol).map(|f| f.typ).ok_or_else(|| {
+                let (field, span) = (field.name(), field.field_span());
+                hir_error!(span, UnknownField { struct_name, field })
+            })?;
 
-            lowered.push((field_symbol, lower_field(self, field_symbol, expected, field)?));
+            slots.push((field_symbol, declared));
         }
 
         if !allow_missing
@@ -547,7 +582,7 @@ where
             return Err(hir_error!(span, MissingField { struct_name, field }));
         }
 
-        Ok(lowered)
+        Ok(slots)
     }
 
     fn push_scope(&mut self) {

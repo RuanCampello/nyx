@@ -4,7 +4,10 @@ use crate::{
         PatternKind, Res, Statement, Static, StaticId, SymbolId, Type, TypeKind, collect,
         error::{HirError, hir_error},
         exhaustive, lang,
-        lower::{FunctionBuilder, Lowered, call::GenericCall},
+        lower::{
+            FunctionBuilder, Lowered,
+            call::{GenericCall, infer_type_args},
+        },
         place_base_local,
         symbols::qualified,
     },
@@ -29,6 +32,9 @@ enum TryFamily {
     Optional,
     Result,
 }
+
+/// how many uncovered patterns a single diagnostic names before it starts counting
+const WITNESS_LIMIT: usize = 3;
 
 impl<'s, 'f, 'hir, 'src> FunctionBuilder<'s, 'f, 'hir, 'src>
 where
@@ -608,6 +614,12 @@ where
                         .get(&symbol)
                         .copied()
                         .ok_or_else(|| hir_error!(*span, UnknownType { name }))?;
+
+                    // an open generic struct takes its arguments from the values its
+                    // fields are given, so those have to be lowered before a type exists
+                    if !self.scope.adts.defs[id].generics.is_empty() {
+                        return self.lower_inferred_struct(name, id, fields, *span);
+                    }
                     self.scope.types.adt(id, &[])
                 };
 
@@ -841,6 +853,43 @@ where
         }
     }
 
+    /// infers a generic struct's arguments from the values its literal supplies
+    fn lower_inferred_struct(
+        &mut self,
+        name: &'src str,
+        id: AdtId,
+        fields: &[expression::StructField<'src>],
+        span: Span,
+    ) -> Result<Lowered<'hir>, HirError<'hir>> {
+        let slots = self.struct_field_slots(id, fields, span, false)?;
+
+        let mut values = Vec::with_capacity(fields.len());
+        for field in fields {
+            values.push(self.lower_expr(&field.value, None)?);
+        }
+
+        let declared: Vec<_> = slots.iter().map(|&(_, typ)| typ).collect();
+        let actual: Vec<_> = values.iter().map(|value| value.typ).collect();
+        let count = self.scope.adts.defs[id].generics.len();
+
+        let typ =
+            self.scope
+                .generic_adt(name, &infer_type_args(&declared, &actual, count), span)?;
+        let TypeKind::Adt(_, generic_args) = typ.kind() else {
+            unreachable!("struct literal type must be an ADT")
+        };
+
+        let mut lowered = Vec::with_capacity(values.len());
+        for ((&(field_symbol, declared), value), field) in slots.iter().zip(&values).zip(fields) {
+            let expected = declared.subst(&self.scope.types, &self.scope.arrays, generic_args);
+            self.assert_type(expected, value.typ, field.value.span())?;
+            lowered.push((field_symbol, value.expr));
+        }
+
+        let fields = self.arena.alloc_slice_copy(&lowered);
+        Ok(self.alloc(ExpressionKind::Struct { id, fields }, typ, span))
+    }
+
     fn lower_method_call(
         &mut self,
         receiver: &expression::Expression<'src>,
@@ -1017,10 +1066,12 @@ where
             .map(|arm| exhaustive::Row { pattern: arm.pattern, guarded: arm.guard.is_some() })
             .collect();
 
-        let Some(witness) = context.missing_patterns(scrutinee, &rows, 1).into_iter().next() else {
+        let witnesses = context.missing_patterns(scrutinee, &rows);
+        if witnesses.is_empty() {
             return Ok(());
-        };
-        let missing = self.arena.alloc_str(&witness.0);
+        }
+
+        let missing = self.arena.alloc_str(&render_witnesses(&witnesses));
         Err(hir_error!(span, NonExhaustiveMatch { typ: scrutinee, missing }))
     }
 
@@ -1736,5 +1787,25 @@ impl TryFamily {
             Self::Optional => "None",
             Self::Result => "Failure",
         }
+    }
+}
+
+fn render_witnesses(witnesses: &[exhaustive::Witness]) -> String {
+    let shown = witnesses.len().min(WITNESS_LIMIT);
+    let elided = witnesses.len() - shown;
+    let mut rendered = String::new();
+
+    for (at, witness) in witnesses[..shown].iter().enumerate() {
+        rendered.push_str(match at {
+            0 => "",
+            _ if at + 1 == shown && elided == 0 => " and ",
+            _ => ", ",
+        });
+        rendered.push_str(&witness.0);
+    }
+
+    match elided {
+        0 => rendered,
+        more => format!("{rendered} and {more} more"),
     }
 }
