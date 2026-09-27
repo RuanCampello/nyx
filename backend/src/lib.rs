@@ -19,8 +19,8 @@ pub enum NyxError {
     Io(std::io::Error),
     Assembler(i32),
     Linker(i32),
-    // A required tool wasn't found on `PATH`
-    ToolNotFound(String),
+    /// A required tool wasn't found on `PATH`, named by the binary looked up
+    ToolNotFound(&'static str),
 }
 
 pub mod optimisation {
@@ -168,10 +168,11 @@ pub fn assemble(assembly: &Path, output: &Path) -> Result<(), NyxError> {
 pub fn assemble_for(assembly: &Path, output: &Path, target: TargetArch) -> Result<(), NyxError> {
     use std::process::Command;
 
-    let as_status = Command::new(target.assembler())
+    let assembler = target.assembler();
+    let as_status = Command::new(assembler)
         .args(["-o", output.to_str().unwrap(), assembly.to_str().unwrap()])
         .status()
-        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+        .map_err(|_| NyxError::ToolNotFound(assembler))?;
 
     if !as_status.success() {
         std::fs::remove_file(output).ok();
@@ -195,15 +196,16 @@ pub fn link_for(
 ) -> Result<(), NyxError> {
     use std::process::Command;
 
-    let ld_status = Command::new(target.linker())
+    let linker = target.linker();
+    let ld_status = Command::new(linker)
         .args(args)
         .args(["-o", output.to_str().unwrap(), object.to_str().unwrap()])
         .status()
-        .map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+        .map_err(|_| NyxError::ToolNotFound(linker))?;
 
     if !ld_status.success() {
         std::fs::remove_file(output).ok();
-        return Err(NyxError::Assembler(ld_status.code().unwrap_or(-1)));
+        return Err(NyxError::Linker(ld_status.code().unwrap_or(-1)));
     }
 
     Ok(())
@@ -224,6 +226,11 @@ fn report(diagnostics: Vec<diagnostic::RichDiagnostic>) -> Result<(), NyxError> 
     Ok(())
 }
 
+// the tool names below also assume the host is one of the targets, so another
+// host could not even cross-compile. Refusing to build says so up front
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("nyx only runs on x86_64 and aarch64 hosts for now");
+
 impl TargetArch {
     #[inline(always)]
     pub const fn host() -> Self {
@@ -231,9 +238,6 @@ impl TargetArch {
         return Self::AArch64;
         #[cfg(target_arch = "x86_64")]
         return Self::X86_64;
-
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        unreachable!("this target is not yet implemented")
     }
 
     #[inline(always)]

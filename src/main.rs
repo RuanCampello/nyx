@@ -223,8 +223,7 @@ fn cmd_run(entry: &Path, project: &str) -> Result<i32, NyxError> {
             return Ok(0);
         }
 
-        let status =
-            Command::new(&exe).status().map_err(|e| NyxError::ToolNotFound(e.to_string()))?;
+        let status = Command::new(&exe).status().map_err(NyxError::Io)?;
 
         Ok(status.code().unwrap_or(1))
     })();
@@ -480,7 +479,12 @@ fn resolve_target(target: Option<String>) -> Result<TargetArch, NyxError> {
 fn temp_exe_path(source: &Path) -> PathBuf {
     let stem = source.file_stem().unwrap_or(source.as_os_str()).to_string_lossy();
 
-    source.parent().unwrap_or(Path::new(".")).join(format!("{stem}.run.tmp"))
+    let dir = source
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    dir.join(format!("{stem}.run.tmp"))
 }
 
 #[cfg(test)]
