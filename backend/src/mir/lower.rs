@@ -128,6 +128,15 @@ pub fn lower<'hir>(hir: Hir<'hir>) -> Result<Mir<'hir>, MirError> {
     })
 }
 
+/// operators that trap on overflow in debug builds, as rustc's [overflow-checks] do
+///
+/// [overflow-checks]: https://doc.rust-lang.org/beta/std/intrinsics/fn.overflow_checks.html
+#[inline(always)]
+const fn checked_in_debug(operator: BinaryOperator) -> bool {
+    use BinaryOperator as B;
+    matches!(operator, B::Add | B::Sub | B::Mul | B::Shl | B::Shr)
+}
+
 fn temp_value_type<'hir>(typ: Type<'hir>) -> Type<'hir> {
     match typ.kind() {
         TypeKind::Unit | TypeKind::Never => Type::from(TypeKind::I32),
@@ -722,10 +731,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 let dest = self.fresh_temporary(temp_value_type(typ));
 
                 let is_integer = typ.is_integer();
-                let is_arithmetic = matches!(
-                    operator,
-                    BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul
-                );
+                let is_arithmetic = checked_in_debug(*operator);
                 let overflow = match is_integer && is_arithmetic && optimisation::is_debug() {
                     true => OverflowMode::Checked,
                     _ => OverflowMode::Unchecked,
@@ -1433,8 +1439,7 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let rhs = self.lower_expr(value)?;
         let dest = self.fresh_temporary(temp_value_type(typ));
 
-        let is_arithmetic =
-            matches!(operator, BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul);
+        let is_arithmetic = checked_in_debug(operator);
         let overflow = match typ.is_integer() && is_arithmetic && optimisation::is_debug() {
             true => OverflowMode::Checked,
             _ => OverflowMode::Unchecked,
@@ -1484,11 +1489,12 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         }
     }
 
-    /// `(element, element_size)` of an indexable type (array or slice)
+    /// `(element, element_size)` of an indexable type (array, slice, or a reference to one)
     fn element_info(&self, typ: Type<'hir>) -> (Type<'hir>, u32) {
         let element = match typ.kind() {
             TypeKind::Array(id) => self.context.arrays.get(id).element,
             TypeKind::Slice { element, .. } => element.into(),
+            TypeKind::Ref { to, .. } => return self.element_info(to.into()),
             _ => unreachable!("element_info on a non-indexable type: {typ}"),
         };
         let LoweringContext { types, arrays, adts, .. } = self.context;
@@ -1554,28 +1560,11 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
         let (element, stride) = self.element_info(base_type);
 
         match base_type.kind() {
-            TypeKind::Slice { .. } => {
-                let slice = match self.lower_expr(base)? {
-                    Operand::Place(place) => place,
-                    Operand::Const(_) => unreachable!("indexing a constant slice"),
+            TypeKind::Slice { .. } | TypeKind::Ref { .. } => {
+                let Operand::Place(place) = self.lower_expr(base)? else {
+                    unreachable!("indexing through a constant")
                 };
-                let pointer = self.context.types.refer(self.context.types.common.u8, false);
-                let ptr = self.fresh_temporary(pointer);
-                let instr = InstructionKind::FieldLoad {
-                    src: Operand::Place(slice),
-                    offset: 0,
-                    typ: pointer,
-                };
-                self.emit(ptr, instr);
-
-                let len = self.fresh_temporary(TypeKind::Uptr.into());
-                let instr = InstructionKind::FieldLoad {
-                    src: Operand::Place(slice),
-                    offset: 8,
-                    typ: TypeKind::Uptr.into(),
-                };
-                self.emit(len, instr);
-                Ok((Operand::Place(ptr), Operand::Place(len), element, stride))
+                Ok(self.indirect_operands(place, base_type, element, stride))
             },
             _ => {
                 let (_, _, len) = self.array_info(base_type);
@@ -1586,6 +1575,45 @@ impl<'a, 'hir> FunctionLower<'a, 'hir> {
                 };
 
                 Ok((base, bound, element, stride))
+            },
+        }
+    }
+
+    /// `place` holds a slice or a reference, so the elements sit behind it
+    fn indirect_operands(
+        &mut self,
+        place: Place<'hir>,
+        typ: Type<'hir>,
+        element: Type<'hir>,
+        stride: u32,
+    ) -> (Operand<'hir>, Operand<'hir>, Type<'hir>, u32) {
+        let uptr = TypeKind::Uptr.into();
+        let src = Operand::Place(place);
+
+        match typ.kind() {
+            TypeKind::Ref { to, .. } => match to.kind() {
+                TypeKind::Array(_) => {
+                    let (_, _, len) = self.array_info(to.into());
+                    let bound = Operand::Const(Const::Int(len as i64, uptr));
+                    (Operand::Place(place), bound, element, stride)
+                },
+                _ => {
+                    let inner = self.fresh_temporary(to.into());
+                    let instr = InstructionKind::FieldLoad { src, offset: 0, typ: to.into() };
+                    self.emit(inner, instr);
+                    self.indirect_operands(inner, to.into(), element, stride)
+                },
+            },
+            _ => {
+                let pointer = self.context.types.refer(self.context.types.common.u8, false);
+                let ptr = self.fresh_temporary(pointer);
+                let instr = InstructionKind::FieldLoad { src, offset: 0, typ: pointer };
+                self.emit(ptr, instr);
+
+                let len = self.fresh_temporary(uptr);
+                let instr = InstructionKind::FieldLoad { src, offset: 8, typ: uptr };
+                self.emit(len, instr);
+                (Operand::Place(ptr), Operand::Place(len), element, stride)
             },
         }
     }
