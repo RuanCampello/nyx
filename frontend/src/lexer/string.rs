@@ -3,6 +3,7 @@
 use crate::lexer::cursor::Cursor;
 use crate::lexer::error::{LexError, LexErrorKind};
 use crate::lexer::token::{BytePos, Span, Token, TokenKind, Tokenize};
+use std::borrow::Cow;
 
 /// Tokenizer for double-quoted string literals.
 ///
@@ -74,6 +75,32 @@ impl<'src> Tokenize<'src> for StringLiteral {
             }
         }
     }
+}
+
+/// decodes the escapes [StringLiteral] validated
+pub fn unescape(raw: &str) -> Cow<'_, str> {
+    if !raw.contains('\\') {
+        return Cow::Borrowed(raw);
+    }
+
+    let mut decoded = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        decoded.push(match c {
+            '\\' => match chars.next() {
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some('r') => '\r',
+                Some('0') => '\0',
+                Some(other) => other,
+                // the lexer rejects a trailing backslash
+                None => unsafe { std::hint::unreachable_unchecked() },
+            },
+            other => other,
+        });
+    }
+
+    Cow::Owned(decoded)
 }
 
 #[cfg(test)]

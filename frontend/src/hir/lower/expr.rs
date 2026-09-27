@@ -11,7 +11,7 @@ use crate::{
         place_base_local,
         symbols::qualified,
     },
-    lexer::{Spanned, token::Span},
+    lexer::{Spanned, token::Span, unescape},
     parser::{
         expression::{self, BinaryOperator, UnaryOperator},
         statement::{self},
@@ -343,7 +343,7 @@ where
             },
 
             Expr::String(value, span) => {
-                let sym = self.scope.symbols.insert(value);
+                let sym = self.scope.symbols.insert(&unescape(value));
                 Ok(self.alloc(
                     ExpressionKind::Literal(Literal::Str(sym)),
                     self.scope.types.common.str,
@@ -459,8 +459,14 @@ where
                 };
 
                 // PERFORMANCE: fold unary operations when operand is a constant literal
+                // an inference variable only ever stands for an integer, so an
+                // un-annotated literal is as valid an operand as a typed one
+                let operand = self.infer.resolve_shallow(expr.typ);
                 let expected = match operator {
-                    UnaryOperator::Neg => match expr.typ.is_number() {
+                    UnaryOperator::Neg => match operand.is_number() || operand.is_infer() {
+                        true if operand.is_unsigned() => {
+                            return Err(hir_error!(*span, NegateUnsigned { typ: operand }));
+                        },
                         true => expr.typ,
                         _ => {
                             let (expected, found) = (self.scope.types.common.i32, expr.typ);
@@ -469,7 +475,10 @@ where
                     },
 
                     UnaryOperator::Not => {
-                        match expr.typ == self.scope.types.common.bool || expr.typ.is_integer() {
+                        match operand == self.scope.types.common.bool
+                            || operand.is_integer()
+                            || operand.is_infer()
+                        {
                             true => expr.typ,
                             _ => {
                                 let (expected, found) = (self.scope.types.common.bool, expr.typ);
@@ -1132,7 +1141,7 @@ where
             for segment in segments {
                 match segment {
                     Segment::Text(text) => {
-                        let symbol = self.scope.symbols.insert(text);
+                        let symbol = self.scope.symbols.insert(&unescape(text));
                         let kind = ExpressionKind::Literal(Literal::Str(symbol));
 
                         lowered.push(self.alloc(kind, self.scope.types.common.str, *span).expr);

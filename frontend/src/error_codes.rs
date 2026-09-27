@@ -1083,6 +1083,24 @@ Interpolate the parts that do print — `"{p.x}, {p.y}"` — until a formatting
 interface exists.
 "#;
 
+E167 => "negation of an unsigned integer", r#"
+Unary minus is only defined for signed integers and floats. An unsigned type has
+no negative values, so negating one is rejected rather than silently wrapping
+around to a large positive number.
+
+```nyx
+let x: u32 = -1;              // error: `u32` has no negative values
+let a: [i32; 3] = [1, 2, 3];
+let y = a[-1];                // error: an index is a `uptr`
+```
+
+Use a signed type when the value can be negative:
+
+```nyx
+let x: i32 = -1;
+```
+"#;
+
 E166 => "cyclic superinterface hierarchy", r#"
 An interface cannot reach itself by following superinterface clauses. The
 hierarchy has to be acyclic, otherwise the set of methods a bound provides

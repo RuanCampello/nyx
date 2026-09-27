@@ -26,6 +26,7 @@ use cursor::Cursor;
 use error::LexError;
 use identifier::Identifier;
 use number::NumberLiteral;
+pub use string::unescape;
 use string::StringLiteral;
 use token::{Punct, Span, Token, TokenKind, Tokenize};
 

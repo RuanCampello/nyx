@@ -1,0 +1,7 @@
+// an un-annotated literal is an integer inference variable, which negation and
+// bitwise not accept like any typed integer
+fn main(): i32 {
+    let negative = -5;
+    let ones = !0;
+    negative + ones + 6
+}

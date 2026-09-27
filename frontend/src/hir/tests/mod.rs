@@ -2346,3 +2346,42 @@ fn a_generic_argument_is_checked_against_its_substituted_parameter() {
         assert!(matches!(err.kind, HirErrorKind::TypeMismatch { .. }), "got {:?}", err.kind);
     });
 }
+
+#[rstest]
+#[case::annotated("fn main(): i32 { let x: u32 = -1; 0 }")]
+#[case::index("fn main(): i32 { let a: [i32; 3] = [1, 2, 3]; a[-1] }")]
+fn negating_an_unsigned_value_is_rejected(#[case] source: &str) {
+    with_lowered_err(source, |err| {
+        assert!(matches!(err.kind, HirErrorKind::NegateUnsigned { .. }), "got {:?}", err.kind);
+    });
+}
+
+#[test]
+fn unary_operators_accept_an_unannotated_integer() {
+    with_lowered("fn main(): i32 { let x = -5; let y = !0; x + y }", |_| {});
+}
+
+#[test]
+fn a_generic_parameter_is_named_as_declared_in_diagnostics() {
+    let source = r#"
+        fn pick<Left, Right>(l: Left, r: Right): Right = l;
+        fn main() { let b = pick(1, true); }
+    "#;
+    let arena = bumpalo::Bump::new();
+    let hir = super::lower(Parser::new(source).parse().expect("parse failed"), &arena);
+
+    let messages: Vec<_> = hir.diagnostics.iter().map(|error| error.message.as_str()).collect();
+    assert!(messages.iter().any(|message| message.contains("Left") && message.contains("Right")));
+    assert!(messages.iter().all(|message| !message.contains("T0")), "{messages:?}");
+}
+
+#[test]
+fn a_superinterface_declared_later_still_lends_its_associated_types() {
+    let source = r#"
+        interface Top: Mid { fn thrice(&self): Self::Out; }
+        interface Mid: Base { fn twice(&self): Self::Out; }
+        interface Base { type Out; fn get(&self): Self::Out; }
+        fn main(): i32 { 0 }
+    "#;
+    with_lowered(source, |_| {});
+}

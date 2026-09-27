@@ -431,6 +431,14 @@ pub enum HirErrorKind<'h> {
     UnknownInterface { name: &'h str },
 
     #[diagnostic(
+        code = "E167",
+        message = "Cannot negate a value of unsigned type {typ!}",
+        primary = "{typ~} has no negative values",
+        help = "Use a signed type such as {`i32`}, or subtract from a larger value instead"
+    )]
+    NegateUnsigned { typ: Type<'h> },
+
+    #[diagnostic(
         code = "E166",
         message = "Interface {name!} extends itself",
         primary = "the cycle closes through {cycle!}",
