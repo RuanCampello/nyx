@@ -311,6 +311,35 @@ fn non_pub_return_unknown_function() {
 }
 
 #[test]
+fn a_namespace_import_cannot_reach_a_private_function() {
+    let arena = bumpalo::Bump::new();
+    let fs = VirtualFS::default()
+        .add(
+            "/project/math.nyx",
+            r#"
+            pub fn open(): i32 = 1;
+            fn secret(): i32 = 7;
+            "#,
+        )
+        .add(
+            "/project/main.nyx",
+            r#"
+            use my_app::math;
+            fn main(): i32 { math::open() + math::secret() }
+            "#,
+        );
+
+    let hir = vloader(fs, &arena).load(Path::new("/project/main.nyx")).unwrap();
+    let exported: Vec<_> = hir
+        .diagnostics
+        .iter()
+        .filter(|error| error.message.contains("is not exported"))
+        .collect();
+    assert_eq!(exported.len(), 1, "{:?}", hir.diagnostics);
+    assert!(exported[0].message.contains("secret"));
+}
+
+#[test]
 fn transitive_dependency() {
     let arena = bumpalo::Bump::new();
     let fs = VirtualFS::default()

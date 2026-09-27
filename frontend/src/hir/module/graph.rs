@@ -246,8 +246,8 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         let exports = exports(&statements);
 
         self.by_path.insert(canonical.to_path_buf(), idx);
-        self.nodes
-            .push(ModuleNode { path: canonical.to_path_buf(), statements, exports, in_std });
+        let path = canonical.to_path_buf();
+        self.nodes.push(ModuleNode { path, statements, exports, in_std });
 
         let uses: Vec<_> = self.nodes[idx]
             .statements
@@ -260,6 +260,7 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
             })
             .collect();
 
+        let mut namespaces = HashMap::new();
         for declaration in uses {
             let Some((import, import_idx)) =
                 self.import(idx, &declaration.path.segments, declaration.span)?
@@ -269,7 +270,12 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
 
             let items = match declaration.items {
                 UseItems::Named(items) => items,
-                _ => Vec::new(),
+                UseItems::Namespace => {
+                    let alias =
+                        declaration.path.segments.last().expect("resolved paths are non-empty");
+                    namespaces.insert(*alias, (import, import_idx));
+                    continue;
+                },
             };
 
             for item in items {
@@ -286,22 +292,23 @@ impl<'src, F: FileSystem> GraphBuilder<'_, 'src, F> {
         }
 
         for (path, name, span) in qualified_calls(&self.nodes[idx].statements) {
-            if !self.resolver.is_known_root(path[0]) {
-                continue;
-            }
-
-            let Some((import, import_idx)) = self.import(idx, &path, span)? else {
+            // a namespace import makes its last segment an alias for the module,
+            // and a call through it must pass the same export check a named import does
+            let Some((import, idx)) =
+                namespaces.get(path[0]).filter(|_| path.len() == 1).cloned().or_else(|| {
+                    self.resolver
+                        .is_known_root(path[0])
+                        .then(|| self.import(idx, &path, span).ok()?)
+                        .flatten()
+                })
+            else {
                 continue;
             };
 
-            if !self.nodes[import_idx].exports.contains(name) {
-                let kind = declared_kind(&self.nodes[import_idx].statements, name);
-                self.soft(ModuleError::UnknownExport {
-                    path: import,
-                    name: name.into(),
-                    kind,
-                    span,
-                });
+            if !self.nodes[idx].exports.contains(name) {
+                let kind = declared_kind(&self.nodes[idx].statements, name);
+                let name = name.to_string();
+                self.soft(ModuleError::UnknownExport { path: import, name, kind, span });
             }
         }
 
