@@ -254,6 +254,14 @@ impl<'hir> Type<'hir> {
     }
 
     #[inline]
+    pub const fn is_unsigned(self) -> bool {
+        matches!(
+            self.kind(),
+            TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 | TypeKind::Uptr
+        )
+    }
+
+    #[inline]
     pub const fn is_float(self) -> bool {
         matches!(self.kind(), TypeKind::F32 | TypeKind::F64)
     }
@@ -441,7 +449,7 @@ impl std::fmt::Display for TypeKind<'_> {
             Self::String => f.write_str("String"),
             Self::SelfType => f.write_str("Self"),
             Self::Never => f.write_str("!"),
-            Self::GenericParam(index) => write!(f, "T{index}"),
+            Self::GenericParam(index) => diagnostic::write_generic_name(f, index),
             Self::Adt(id, args) => {
                 diagnostic::write_adt_name(f, id.0)?;
                 if !args.is_empty() {

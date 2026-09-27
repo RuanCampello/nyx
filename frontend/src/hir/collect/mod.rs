@@ -11,6 +11,7 @@ pub(in crate::hir) use signatures::open_impl_env;
 pub use table::*;
 
 use crate::{
+    diagnostic,
     hir::{
         self, Function, FunctionId, FunctionKind, Owner, SymbolId, constants,
         declarations::Declarations,
@@ -206,16 +207,17 @@ impl<'hir> ItemTable<'hir> {
             };
 
             let impl_type = impl_type.as_deref().map(|name| &*arena.alloc_str(name));
-            let function =
+            let names = lower::generic_names(&env).into_iter().map(str::to_owned).collect();
+            let function = diagnostic::with_generic_names(names, || {
                 lower::FunctionBuilder::new_instance(self, id, &function, arena, env, impl_type)
-                    .lower();
+                    .lower()
+                    .map_err(|error| self.soft(error))
+                    .ok()
+            });
 
-            match function {
-                Ok(function) => {
-                    self.collect_generic_callees(&function, &mut worklist);
-                    lowered.insert(id, function);
-                },
-                Err(error) => self.soft(error),
+            if let Some(function) = function {
+                self.collect_generic_callees(&function, &mut worklist);
+                lowered.insert(id, function);
             }
         }
 

@@ -85,6 +85,7 @@ pub(crate) const SUGGEST: Color = Color::Rgb(137, 180, 250);
 thread_local! {
     static SOURCE_MAP: RefCell<SourceMap> = RefCell::new(SourceMap::default());
     static TYPE_NAMES: RefCell<TypeNames> = RefCell::new(TypeNames::default());
+    static GENERIC_NAMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Clear the per-thread source map and type-name registry
@@ -122,6 +123,15 @@ pub(crate) fn write_adt_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result
 
 pub(crate) fn write_array_name(f: &mut fmt::Formatter<'_>, id: u32) -> fmt::Result {
     TYPE_NAMES.with_borrow(|names| names.write(f, TypeNameKind::Array, id))
+}
+
+pub(crate) fn write_generic_name(f: &mut fmt::Formatter<'_>, index: u8) -> fmt::Result {
+    GENERIC_NAMES.with_borrow(|names| {
+        names
+            .get(index as usize)
+            .map(|name| f.write_str(name))
+            .unwrap_or_else(|| write!(f, "T{index}"))
+    })
 }
 
 impl RichDiagnostic {
@@ -467,4 +477,11 @@ impl<'i> AsDiagnostic for ParserError<'i> {
     fn message(self) -> String {
         self.kind.message()
     }
+}
+
+pub(crate) fn with_generic_names<R>(names: Vec<String>, render: impl FnOnce() -> R) -> R {
+    let previous = GENERIC_NAMES.replace(names);
+    let result = render();
+    GENERIC_NAMES.set(previous);
+    result
 }

@@ -4,7 +4,7 @@
 use crate::{
     hir::{
         AdtDef, AdtId, Constant, ExprId, Expression, ExpressionKind, Function, FunctionId, Local,
-        LocalId, Parameter, SymbolId, SymbolTable, TyInterner, Type, TypeKind, TypeckResults,
+        LocalId, Parameter, SymbolId, TyInterner, Type, TypeKind, TypeckResults,
         collect::{self, ArrayTable, GenericEnv, ItemTable},
         error::{HirError, hir_error},
         ids::IndexVec,
@@ -239,7 +239,9 @@ where
         }
 
         self.resolve_inference();
-        let generics = declared_fn_names(&self.generic_env, &self.scope.symbols);
+        let generics = generic_names(&self.generic_env)
+            .into_iter()
+            .map(|name| self.scope.symbols.insert(name));
 
         Ok(Function {
             id,
@@ -257,7 +259,7 @@ where
             owner: signature.owner,
             typeck: self.typeck,
             body,
-            generics,
+            generics: generics.collect(),
         })
     }
 
@@ -594,7 +596,8 @@ where
     }
 }
 
-fn declared_fn_names<'hir>(env: &GenericEnv<'hir>, symbols: &SymbolTable) -> Vec<SymbolId> {
+/// The names `env` declares, ordered by the [TypeKind::GenericParam] index each stands for
+pub(in crate::hir) fn generic_names<'e>(env: &'e GenericEnv<'_>) -> Vec<&'e str> {
     let mut named: Vec<(u8, &str)> = Vec::with_capacity(env.len());
     for (name, typ) in env {
         match typ.kind() {
@@ -605,7 +608,7 @@ fn declared_fn_names<'hir>(env: &GenericEnv<'hir>, symbols: &SymbolTable) -> Vec
 
     named.sort_unstable_by_key(|&(index, _)| index);
     match named.iter().enumerate().all(|(at, &(index, _))| at == index as usize) {
-        true => named.into_iter().map(|(_, name)| symbols.insert(name)).collect(),
+        true => named.into_iter().map(|(_, name)| name).collect(),
         _ => Vec::new(),
     }
 }
