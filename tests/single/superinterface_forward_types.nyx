@@ -1,0 +1,36 @@
+// a superinterface declared after the interfaces naming it still lends them
+// its associated types, through every level of the hierarchy
+interface Top: Mid {
+    fn thrice(&self): Self::Out;
+}
+
+interface Mid: Base {
+    fn twice(&self): Self::Out;
+}
+
+interface Base {
+    type Out;
+    fn get(&self): Self::Out;
+}
+
+struct S {
+    v: i32,
+}
+
+impl S with Base {
+    type Out = i32;
+    fn get(&self): i32 = self.v;
+}
+
+impl S with Mid {
+    fn twice(&self): i32 = self.v * 2;
+}
+
+impl S with Top {
+    fn thrice(&self): i32 = self.v * 3;
+}
+
+fn main(): i32 {
+    let s = S { v: 4 };
+    s.get() + s.twice() + s.thrice() - 24
+}

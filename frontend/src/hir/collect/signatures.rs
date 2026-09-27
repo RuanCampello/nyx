@@ -32,22 +32,45 @@ impl<'hir> ItemTable<'hir> {
     where
         's: 'hir,
     {
+        let mut accepted = Vec::with_capacity(declarations.interfaces.len());
+
         for interface in &declarations.interfaces {
             let name = self.symbols.insert(interface.name);
-            let already_exists = self.interfaces.defs.contains_key(&name);
-            if self.declare_or_error(already_exists, |this| {
-                let previous = source_span(this.interfaces.defs[&name].decl_span);
-                hir_error!(interface.span, DuplicateInterface { name: interface.name, previous })
-            }) {
+
+            if let Some(existing) = self.interfaces.defs.get(&name) {
+                let previous = source_span(existing.decl_span);
+                self.declare_or_error(true, |_| {
+                    hir_error!(
+                        interface.span,
+                        DuplicateInterface { name: interface.name, previous }
+                    )
+                });
                 continue;
             }
 
-            let superinterfaces: Vec<_> =
-                interface.superinterfaces.iter().map(|name| self.symbols.insert(name)).collect();
+            let intern = |&s| self.symbols.insert(s);
 
-            let generic_params =
-                interface.generics.iter().map(|g| self.symbols.insert(g.name)).collect();
+            let signature = InterfaceSignature {
+                name,
+                is_pub: interface.is_pub,
+                superinterfaces: interface.superinterfaces.iter().map(intern).collect(),
+                generic_params: interface.generics.iter().map(|g| intern(&g.name)).collect(),
+                associated_types: interface.types.iter().map(|t| intern(&t.name)).collect(),
+                decl_span: interface.span,
+                name_span: interface.name_span,
+                all_superinterfaces: Vec::new(),
+                methods: Vec::new(),
+                constants: Vec::new(),
+                generic_defaults: Vec::new(),
+            };
 
+            self.interfaces.defs.insert(name, signature);
+            accepted.push((name, interface))
+        }
+
+        self.elaborate_superinterfaces();
+
+        for (name, interface) in accepted {
             let mut param_env: GenericEnv<'hir> = interface
                 .generics
                 .iter()
@@ -55,17 +78,13 @@ impl<'hir> ItemTable<'hir> {
                 .map(|(i, g)| (g.name.to_owned(), self.types.generic_param(i as u8)))
                 .collect();
 
-            let mut associated_types: Vec<_> =
-                interface.types.iter().map(|t| self.symbols.insert(t.name)).collect();
-            let inherited: Vec<_> = superinterfaces
-                .iter()
-                .filter_map(|parent| self.interfaces.defs.get(parent))
-                .flat_map(|parent| parent.associated_types.iter().copied())
-                .collect();
-
-            for name in inherited {
-                if !associated_types.contains(&name) {
-                    associated_types.push(name);
+            let signature = &self.interfaces.defs[&name];
+            let mut associated_types = signature.associated_types.clone();
+            for parent in &signature.all_superinterfaces {
+                for &inherited in &self.interfaces.defs[parent].associated_types {
+                    if !associated_types.contains(&inherited) {
+                        associated_types.push(inherited);
+                    }
                 }
             }
 
@@ -143,23 +162,13 @@ impl<'hir> ItemTable<'hir> {
                 })
                 .collect();
 
-            let signature = InterfaceSignature {
-                name,
-                is_pub: interface.is_pub,
-                superinterfaces,
-                all_superinterfaces: Vec::new(),
-                methods,
-                constants,
-                generic_params,
-                generic_defaults,
-                associated_types,
-                decl_span: interface.span,
-                name_span: interface.name_span,
-            };
-            self.interfaces.defs.insert(name, signature);
+            let signature = self.interfaces.defs.get_mut(&name).expect("registered above");
+            signature.methods = methods;
+            signature.constants = constants;
+            signature.generic_defaults = generic_defaults;
+            signature.associated_types = associated_types;
         }
 
-        self.elaborate_superinterfaces();
         Ok(())
     }
 
