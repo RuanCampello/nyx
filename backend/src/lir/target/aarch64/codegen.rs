@@ -13,7 +13,7 @@
 use crate::{
     emit, label,
     lir::{
-        Checked, Function, MachineType, Panic, Term, VReg,
+        Checked, FloatConstant, Function, MachineType, Panic, Routine, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
@@ -61,6 +61,61 @@ impl Emittable<AArch64> for Function<AArch64> {
         }
         emit!(out, "mov     x8, #93");
         emit!(out, "svc     #0");
+    }
+
+    fn emit_routines(out: &mut String) {
+        for routine in Routine::required() {
+            let symbol = routine.symbol();
+            let (f, x, inf, sign) = match routine.is_f32() {
+                true => ("s", "w", "#0x7f80, lsl #16", "#0x80000000"),
+                _ => ("d", "x", "#0x7ff0, lsl #48", "#0x8000000000000000"),
+            };
+
+            label!(out, ".globl {symbol}");
+            label!(out, "{symbol}:");
+            emit!(out, "fabs    {f}2, {f}0");
+            emit!(out, "fabs    {f}3, {f}1");
+            emit!(out, "fcmp    {f}3, #0.0");
+            emit!(out, "b.le    .L{symbol}_nan");
+            emit!(out, "movz    {x}9, {inf}");
+            emit!(out, "fmov    {f}4, {x}9");
+            emit!(out, "fcmp    {f}2, {f}4");
+            emit!(out, "b.vs    .L{symbol}_nan");
+            emit!(out, "b.ge    .L{symbol}_nan");
+            emit!(out, "fcmp    {f}2, {f}3");
+            emit!(out, "b.lt    .L{symbol}_done");
+            emit!(out, "fmov    {f}4, {f}3");
+            emit!(out, "mov     x10, #0");
+            label!(out, ".L{symbol}_up:");
+            emit!(out, "fadd    {f}5, {f}4, {f}4");
+            emit!(out, "fcmp    {f}2, {f}5");
+            emit!(out, "b.lt    .L{symbol}_down");
+            emit!(out, "fmov    {f}4, {f}5");
+            emit!(out, "add     x10, x10, #1");
+            emit!(out, "b       .L{symbol}_up");
+            label!(out, ".L{symbol}_down:");
+            emit!(out, "fmov    {f}6, #0.5");
+            label!(out, ".L{symbol}_step:");
+            emit!(out, "fcmp    {f}2, {f}4");
+            emit!(out, "b.lt    .L{symbol}_skip");
+            emit!(out, "fsub    {f}2, {f}2, {f}4");
+            label!(out, ".L{symbol}_skip:");
+            emit!(out, "fmul    {f}4, {f}4, {f}6");
+            emit!(out, "subs    x10, x10, #1");
+            emit!(out, "b.ge    .L{symbol}_step");
+            emit!(out, "fmov    {x}11, {f}0");
+            emit!(out, "and     {x}11, {x}11, {sign}");
+            emit!(out, "fmov    {x}12, {f}2");
+            emit!(out, "orr     {x}12, {x}12, {x}11");
+            emit!(out, "fmov    {f}0, {x}12");
+            label!(out, ".L{symbol}_done:");
+            emit!(out, "ret");
+            // zero or NaN divisor, infinite or NaN dividend
+            label!(out, ".L{symbol}_nan:");
+            emit!(out, "fmul    {f}0, {f}0, {f}1");
+            emit!(out, "fdiv    {f}0, {f}0, {f}0");
+            emit!(out, "ret");
+        }
     }
 
     fn emit_panic_handlers(out: &mut String) {
@@ -123,20 +178,15 @@ impl Function<AArch64> {
         }
 
         label!(out, ".section .rodata");
-        for (bits, label) in &self.floats {
-            let is_32 = label.contains("_f32_");
-            let align = if is_32 {
-                4
-            } else {
-                8
-            };
+        for (FloatConstant { bits, bytes, packed }, label) in &self.floats {
+            assert!(!packed, "AArch64 has no packed float operand reading .rodata");
 
-            label!(out, ".align {align}");
+            label!(out, ".align {bytes}");
             label!(out, "{label}:");
 
-            match is_32 {
-                true => label!(out, "    .word {}", *bits as u32),
-                false => label!(out, "    .xword {bits}"),
+            match bytes {
+                4 => label!(out, "    .word {bits}"),
+                _ => label!(out, "    .xword {bits}"),
             }
         }
 
@@ -434,26 +484,6 @@ impl Function<AArch64> {
                 }
             },
 
-            #[rustfmt::skip]
-            A64Instr::FCsel { dest, lhs, rhs, cond, bytes } => {
-                let destination = alloc.location(dest, bytes);
-                let lhs = alloc.location(lhs, bytes);
-                let lhs = load_src_if_mem_with_scratch(out, &lhs, *bytes, true, A64Reg::X16, A64Reg::D16);
-                let rhs = alloc.location(rhs, bytes);
-                let rhs = load_src_if_mem_with_scratch(out, &rhs, *bytes, true, A64Reg::X17, A64Reg::D17);
-
-                let cond = cond.as_str();
-
-                match is_mem(&destination) {
-                    true => {
-                        let scratch = A64Reg::D16.name(*bytes);
-                        emit!(out, "fcsel   {scratch}, {lhs}, {rhs}, {cond}");
-                        emit_store(out, scratch, &destination, *bytes);
-                    },
-                    false => emit!(out, "fcsel   {destination}, {lhs}, {rhs}, {cond}"),
-                }
-            },
-
             A64Instr::ZeroCheck { divisor, bytes } => {
                 let divisor = alloc.location(divisor, bytes);
                 let divisor = load_src_if_mem_with_scratch(
@@ -467,6 +497,47 @@ impl Function<AArch64> {
                 let symbol = Panic::DivisionByZero.require();
 
                 emit!(out, "cbz     {divisor}, {symbol}");
+            },
+
+            A64Instr::DivOverflowCheck { dividend, divisor, bytes } => {
+                let width = (*bytes).max(4);
+                let dividend = alloc.location(dividend, &width);
+                let (gpr, fpr) = (A64Reg::X16, A64Reg::D16);
+                let dividend = load_src_if_mem_with_scratch(out, &dividend, width, false, gpr, fpr);
+
+                let divisor = alloc.location(divisor, &width);
+                let (gpr, fpr) = (A64Reg::X17, A64Reg::D17);
+                let divisor = load_src_if_mem_with_scratch(out, &divisor, width, false, gpr, fpr);
+                let symbol = Panic::DivisionOverflow.require();
+
+                let (dividend, divisor) = match *bytes {
+                    1 | 2 => {
+                        let (extend, shift) = match *bytes {
+                            1 => ("sxtb", 24),
+                            _ => ("sxth", 16),
+                        };
+                        emit!(out, "lsl     w16, {dividend}, #{shift}");
+                        emit!(out, "{extend:<8}w17, {divisor}");
+                        ("w16", "w17")
+                    },
+                    _ => (dividend, divisor),
+                };
+
+                emit!(out, "cmn     {divisor}, #1");
+                emit!(out, "ccmp    {dividend}, #1, #0, eq");
+                emit!(out, "b.vs    {symbol}");
+            },
+
+            A64Instr::ShiftCheck { amount, bytes, bits } => {
+                let width = (*bytes).max(4);
+                let amount = alloc.location(amount, &width);
+                let (gpr, fpr) = (A64Reg::X16, A64Reg::D16);
+                let amount = load_src_if_mem_with_scratch(out, &amount, width, false, gpr, fpr);
+                let symbol = Panic::ShiftOverflow.require();
+
+                let mask = !(u64::from(*bits) - 1) & u64::MAX >> (64 - 8 * u32::from(*bytes));
+                emit!(out, "tst     {amount}, #{mask:#x}");
+                emit!(out, "b.ne    {symbol}");
             },
 
             A64Instr::BoundsCheck { index, bound } => {
@@ -1126,7 +1197,7 @@ fn emit_save_regs(out: &mut String, regs: &[A64Reg]) {
         match pair {
             [a, b] => emit!(out, "stp     {}, {}, [sp, #-16]!", a.name(8), b.name(8)),
             [a] => emit!(out, "str     {}, [sp, #-16]!", a.name(8)),
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => unreachable!("`chunks(2)` yields one or two registers"),
         }
     }
 }

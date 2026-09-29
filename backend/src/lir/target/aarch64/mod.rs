@@ -55,12 +55,16 @@ pub enum A64Instr {
     Cset { dest: VReg, cond: A64Cond },
     /// `dest = cond ? lhs : rhs`
     Csel { dest: VReg, lhs: VReg, rhs: VReg, cond: A64Cond, bytes: u8 },
-    /// `Csel` for floats
-    FCsel { dest: VReg, lhs: VReg, rhs: VReg, cond: A64Cond, bytes: u8 },
     /// abort through the index-out-of-bounds handler when `index >= bound` (unsigned)
     BoundsCheck { index: VReg, bound: A64Operand },
     /// abort through the division-by-zero handler when `divisor` is zero
     ZeroCheck { divisor: VReg, bytes: u8 },
+    /// abort through the division-overflow handler when `dividend` is the signed
+    /// minimum and `divisor` is `-1`, whose quotient does not fit the type
+    DivOverflowCheck { dividend: VReg, divisor: VReg, bytes: u8 },
+    /// abort through the shift-overflow handler when the `bytes`-wide `amount`
+    /// is not below `bits`, the width of the value being shifted
+    ShiftCheck { amount: VReg, bytes: u8, bits: u8 },
 
     // float movs
     FMov { dest: VReg, src: VReg, bytes: u8 },
@@ -139,8 +143,6 @@ pub enum FloatOp {
 pub enum UnaryOp {
     Neg, Not,
     FloatNeg,
-    /// round towards zero
-    FloatTrunc,
 }
 
 impl A64Cond {
@@ -373,8 +375,8 @@ impl TargetOperand for A64Operand {
     }
 
     #[inline(always)]
-    fn from_label(label: String) -> Self {
-        Self::Label(label)
+    fn from_label(label: &str) -> Self {
+        Self::Label(label.to_owned())
     }
 
     #[inline(always)]
@@ -483,11 +485,12 @@ impl Instruction<AArch64> for A64Instr {
         match self {
             MovImm { dest, .. } | Mov { dest, .. } | LdrParam { dest, .. } | Alu { dest, .. }
             | AluFloat { dest, .. } | Unary { dest, .. } | Mul { dest, .. } | SDiv { dest, .. }
-            | Cset { dest, .. } | Csel { dest, .. } | FCsel { dest, .. } | Adr { dest, .. }
+            | Cset { dest, .. } | Csel { dest, .. } | Adr { dest, .. }
             | FMov { dest, .. } | FLiteral { dest, .. } | FieldLoad { dest, .. }
             | StackAddr { dest, .. } | PtrLoad { dest, .. }
             | Extend { dest, .. } => std::slice::from_ref(dest),
-            Cmp { .. } | FCmp { .. } | BoundsCheck { .. } | ZeroCheck { .. } => &[],
+            Cmp { .. } | FCmp { .. } | BoundsCheck { .. } | ZeroCheck { .. }
+            | DivOverflowCheck { .. } | ShiftCheck { .. } => &[],
             Call { ret: Some(r), .. } | Syscall { ret: Some(r), .. } => std::slice::from_ref(r),
             Call { aggregate_ret, ret: None, .. } => aggregate_ret.as_slice(),
             FieldStore { .. } | PtrStore { .. } | Syscall { ret: None, .. } => &[],
@@ -511,14 +514,18 @@ impl Instruction<AArch64> for A64Instr {
                 uses.push(*lhs);
                 uses.push(*rhs);
             },
-            ZeroCheck { divisor, .. } => uses.push(*divisor),
+            ZeroCheck { divisor, .. } | ShiftCheck { amount: divisor, .. } => uses.push(*divisor),
+            DivOverflowCheck { dividend, divisor, .. } => {
+                uses.push(*dividend);
+                uses.push(*divisor);
+            },
             BoundsCheck { index, bound } => {
                 uses.push(*index);
                 if let A64Operand::VReg(bound) = bound {
                     uses.push(*bound);
                 }
             },
-            FCmp { lhs, rhs, .. } | Csel { lhs, rhs, .. } | FCsel { lhs, rhs, .. } => {
+            FCmp { lhs, rhs, .. } | Csel { lhs, rhs, .. } => {
                 uses.push(*lhs);
                 uses.push(*rhs);
             },
@@ -567,7 +574,7 @@ impl Instruction<AArch64> for A64Instr {
             Self::Mul { checked, .. } => *checked,
             Self::MovImm { .. } | Self::Mov { .. } | Self::Extend { .. }
             | Self::LdrParam { .. } | Self::SDiv { .. } | Self::Unary { .. }
-            | Self::Cset { .. } | Self::Csel { .. } | Self::FCsel { .. }
+            | Self::Cset { .. } | Self::Csel { .. }
             | Self::FMov { .. } | Self::FLiteral { .. }
             | Self::AluFloat { .. } | Self::Adr { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. } | Self::StackAddr { .. }
@@ -720,7 +727,7 @@ impl AluOp {
                 true => Self::Asr,
                 false => Self::Lsr,
             },
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => panic!("not an integer ALU operator"),
         }
     }
 }
@@ -740,7 +747,7 @@ impl FloatOp {
             BinaryOperator::Sub => Self::Sub,
             BinaryOperator::Mul => Self::Mul,
             BinaryOperator::Div => Self::Div,
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => panic!("not a float ALU operator"),
         }
     }
 }
@@ -750,7 +757,7 @@ impl UnaryOp {
     pub const fn mnemonic<'s>(self) -> &'s str {
         match self {
             Self::Neg => "neg",       Self::Not => "mvn",
-            Self::FloatNeg => "fneg", Self::FloatTrunc => "frintz",
+            Self::FloatNeg => "fneg",
         }
     }
 }

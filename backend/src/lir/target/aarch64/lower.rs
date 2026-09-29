@@ -17,7 +17,7 @@ use crate::{
     lir::{
         self, BlockId, MachineType, TypeExt, VReg,
         target::{
-            self, AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps,
+            AggregateCopy, Lower, Lowerable, MemOps, Target, TargetOps,
             aarch64::{A64Cond, A64Instr, A64Operand, AArch64, AluOp, FloatOp, UnaryOp},
             aggregate_copy,
         },
@@ -76,24 +76,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         let is_float = typ.is_float();
 
         match &instruction.kind {
-            I::Assign(operand) => {
-                let value = &self.value;
-                let layouts = self.layouts;
-                if let Some(instr) = target::lower_assign(
-                    &mut self.lir,
-                    id,
-                    dest,
-                    typ,
-                    operand,
-                    self.strings,
-                    layouts,
-                    |vid| value[vid],
-                    |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
-                ) {
-                    self.lir.push_instr(id, instr);
-                }
-            },
-
+            I::Assign(operand) => self.lower_assign(id, dest, typ, operand),
             I::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
 
@@ -183,7 +166,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                         #[rustfmt::skip]
                                         let rhs = match operation {
                                             B::Add | B::Sub => self.fit_add_sub_operand(rhs, lhs_type, id),
-                                            B::Shl | B::Shr => self.fit_shift_operand(rhs, rhs_type, bytes, id),
+                                            B::Shl | B::Shr => self.fit_shift_operand(rhs, rhs_type, bytes, checked, id),
                                             _ => self.fit_logical_operand(rhs, rhs_type, bytes, id),
                                         };
 
@@ -206,6 +189,14 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                         let rhs = self.ensure_vreg(rhs, lhs_type, id);
                                         self.zero_check(id, &divisor, rhs, bytes);
 
+                                        if signed
+                                            && !matches!(divisor, A64Operand::Imm(n) if n != -1)
+                                        {
+                                            #[rustfmt::skip]
+                                            let instr = A64Instr::DivOverflowCheck { dividend: lhs, divisor: rhs, bytes };
+                                            self.lir.push_instr(id, instr);
+                                        }
+
                                         match operation {
                                             B::Div => {
                                                 #[rustfmt::skip]
@@ -216,7 +207,9 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                                         }
                                     },
 
-                                    _ => unsafe { std::hint::unreachable_unchecked() },
+                                    _ => unreachable!(
+                                        "every other integer operator is lowered by an earlier arm"
+                                    ),
                                 };
 
                                 if !checked && matches!(operation, B::Add | B::Sub | B::Mul) {
@@ -231,7 +224,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
             I::Syscall { code, args, returns } => {
                 let value = &self.value;
                 let layouts = self.layouts;
-                let (syscall_moves, syscall_uses) = lir::target::prepare_syscall_args(
+                let (moves, uses) = lir::target::prepare_syscall_args(
                     &mut self.lir,
                     id,
                     args,
@@ -240,15 +233,9 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 );
 
                 let ret = (*returns && typ.kind() != TypeKind::Unit).then_some(dest);
-                self.lir.push_instr(
-                    id,
-                    A64Instr::Syscall {
-                        id: AArch64::syscall_code(*code),
-                        moves: syscall_moves,
-                        uses: syscall_uses,
-                        ret,
-                    },
-                );
+                let instr =
+                    A64Instr::Syscall { id: AArch64::syscall_code(*code), moves, uses, ret };
+                self.lir.push_instr(id, instr);
             },
             I::FieldLoad { src, offset, typ } => {
                 if typ.is_aggregate_lir(self.layouts) {
@@ -258,19 +245,12 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                     };
 
                     let size = typ.machine_type(self.layouts).stack_size() as u32;
-                    return aggregate_copy(
-                        &mut self.lir,
-                        id,
-                        AggregateCopy {
-                            src: origin,
-                            dest,
-                            src_ref: src.typ().is_pointer(),
-                            dest_ref: false,
-                            src_base: *offset as i32,
-                            dest_base: 0,
-                            size,
-                        },
-                    );
+                    let (src_ref, src_base) = (src.typ().is_pointer(), *offset as i32);
+                    let (dest_ref, dest_base) = (false, 0);
+
+                    #[rustfmt::skip]
+                    let copy = AggregateCopy { src: origin, dest, src_ref, dest_ref, src_base, dest_base, size };
+                    return aggregate_copy(&mut self.lir, id, copy);
                 }
 
                 let mt = typ.machine_type(self.layouts);
@@ -278,17 +258,11 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let signed = mt.is_signed();
 
                 match src {
+                    #[rustfmt::skip]
                     Operand::Place(place) => {
                         let origin = self.value[place.id];
-                        let instruction = AArch64::scalar_load(
-                            place.typ.is_pointer(),
-                            dest,
-                            origin,
-                            *offset as i32,
-                            bytes,
-                            typ.is_float(),
-                            signed,
-                        );
+                        let (is_ref, is_float, offset) = (place.typ.is_pointer(), typ.is_float(), *offset as i32);
+                        let instruction = AArch64::scalar_load(is_ref, dest, origin, offset, bytes, is_float, signed);
                         self.lir.push_instr(id, instruction);
                     },
 
@@ -300,26 +274,7 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
                 let offset = *offset as i32;
 
                 if value.typ().is_aggregate_lir(self.layouts) {
-                    let Operand::Place(src) = value else {
-                        unreachable!("aggregate field store source must be a place");
-                    };
-
-                    let src_vreg = self.value[src.id];
-                    let size = value.typ().machine_type(self.layouts).stack_size() as u32;
-                    let (src_ref, dest_ref) = (src.typ.is_pointer(), typ.is_pointer());
-                    return aggregate_copy(
-                        &mut self.lir,
-                        id,
-                        AggregateCopy {
-                            src: src_vreg,
-                            dest,
-                            src_ref,
-                            dest_ref,
-                            src_base: 0,
-                            dest_base: offset,
-                            size,
-                        },
-                    );
+                    return self.lower_aggregate_store(id, dest, typ.is_pointer(), offset, value);
                 }
 
                 let is_float = value.typ().is_float();
@@ -435,35 +390,23 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         self.lir.push_instr(id, A64Instr::ZeroCheck { divisor: reg, bytes });
     }
 
-    #[rustfmt::skip]
     fn lower_remainder(&mut self, id: &BlockId, dest: VReg, lhs: VReg, rhs: VReg, mt: MachineType) {
-        let quotient = self.lir.new_vreg(mt);
         let bytes = mt.bytes();
 
-        match matches!(mt, MachineType::Float { .. }) {
-            true => {
-                let remainder = self.lir.new_vreg(mt);
-                let zero = self.lir.new_vreg(mt);
-                let label = self.lir.new_float(0, bytes == 4);
-
-                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Div, dest: quotient, lhs, rhs, bytes });
-                self.lir.push_instr(id, A64Instr::Unary { op: UnaryOp::FloatTrunc, dest: quotient, src: quotient, bytes });
-                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Mul, dest: remainder, lhs: quotient, rhs, bytes });
-                self.lir.push_instr(id, A64Instr::AluFloat { op: FloatOp::Sub, dest: remainder, lhs, rhs: remainder, bytes });
-
-                // a zero quotient means the remainder is the dividend itself, and an
-                // infinite divisor would have turned that zero into a NaN
-                self.lir.push_instr(id, A64Instr::FLiteral { dest: zero, label, bytes });
-                self.lir.push_instr(id, A64Instr::FCmp { lhs: quotient, rhs: zero, bytes });
-                let instr = A64Instr::FCsel { dest, lhs, rhs: remainder, cond: A64Cond::Eq, bytes };
-                self.lir.push_instr(id, instr);
-            },
-
+        match mt {
+            MachineType::Float { .. } => self.lower_float_remainder(id, dest, lhs, rhs, bytes),
             _ => {
+                let quotient = self.lir.new_vreg(mt);
                 let signed = mt.is_signed();
-                self.lir.push_instr(id, A64Instr::SDiv { dest: quotient, lhs, rhs, bytes, signed });
-                self.lir.push_instr(id, A64Instr::Mul { dest: quotient, lhs: quotient, rhs, bytes, checked: false });
-                self.lir.push_instr(id, A64Instr::Alu { op: AluOp::Sub, dest, lhs, rhs: A64Operand::VReg(quotient), bytes, checked: false });
+
+                let instr = A64Instr::SDiv { dest: quotient, lhs, rhs, bytes, signed };
+                self.lir.push_instr(id, instr);
+                let instr =
+                    A64Instr::Mul { dest: quotient, lhs: quotient, rhs, bytes, checked: false };
+                self.lir.push_instr(id, instr);
+                let rhs = A64Operand::VReg(quotient);
+                let instr = A64Instr::Alu { op: AluOp::Sub, dest, lhs, rhs, bytes, checked: false };
+                self.lir.push_instr(id, instr);
             },
         }
     }
@@ -573,28 +516,40 @@ impl<'f, 'hir> Lower<'f, 'hir, AArch64> {
         }
     }
 
-    /// for LSL/LSR/ASR: shift amount can be immediate (0..31 for 32-bit, 0..63 for 64-bit) or a register
-    #[inline(always)]
+    /// the amount LSL/LSR/ASR take: an immediate below the width, or a register
     fn fit_shift_operand(
         &mut self,
         op: A64Operand,
         hint_type: Type,
         bytes: u8,
+        checked: bool,
         block: &BlockId,
     ) -> A64Operand {
-        match op {
-            A64Operand::Imm(n) => {
-                let max = match bytes == 8 {
-                    true => 63,
-                    _ => 31,
-                };
-                match n >= 0 && n <= max {
-                    true => A64Operand::Imm(n),
-                    _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
-                }
+        let bits = bytes * 8;
+        if let A64Operand::Imm(n) = op
+            && (!checked || (0..i64::from(bits)).contains(&n))
+        {
+            return A64Operand::Imm(n.rem_euclid(i64::from(bits)));
+        }
+
+        let amount = self.ensure_vreg(op, hint_type, block);
+        match checked {
+            true => {
+                let amount_bytes = hint_type.machine_type(self.layouts).bytes();
+                let check = A64Instr::ShiftCheck { amount, bytes: amount_bytes, bits };
+                self.lir.push_instr(block, check);
+                A64Operand::VReg(amount)
             },
-            A64Operand::VReg(_) => op,
-            _ => A64Operand::VReg(self.ensure_vreg(op, hint_type, block)),
+            false if bits < 32 => {
+                let masked = self.lir.new_vreg(MachineType::Int { bytes: 4, signed: false });
+                let (op, rhs) = (AluOp::And, A64Operand::Imm(i64::from(bits) - 1));
+
+                let (dest, lhs) = (masked, amount);
+                let and = A64Instr::Alu { op, dest, lhs, rhs, bytes: 4, checked: false };
+                self.lir.push_instr(block, and);
+                A64Operand::VReg(dest)
+            },
+            _ => A64Operand::VReg(amount),
         }
     }
 }
