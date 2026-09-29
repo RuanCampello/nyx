@@ -73,6 +73,8 @@ pub trait Emittable<T: Target> {
     fn emit(&self, alloc: regalloc::Allocation<T>, out: &mut String);
     fn start(out: &mut String, main: &str, returns_value: bool);
     fn emit_panic_handlers(out: &mut String);
+    /// the body of every [lir::Routine] called by the functions emitted so far
+    fn emit_routines(out: &mut String);
 }
 
 /// A named physical register on a specific target.
@@ -169,7 +171,7 @@ pub trait MemOps: Target {
 pub trait TargetOperand: Clone {
     fn from_vreg(v: VReg) -> Self;
     fn from_imm(imm: i64) -> Self;
-    fn from_label(label: String) -> Self;
+    fn from_label(label: &str) -> Self;
     fn as_vreg(&self) -> Option<VReg>;
 }
 
@@ -653,6 +655,61 @@ where
         }
     }
 
+    /// target-independent assignment lowering
+    pub(crate) fn lower_assign(&mut self, block: &BlockId, dest: VReg, typ: Type, op: &Operand) {
+        if typ.is_aggregate_lir(self.layouts) {
+            return self.lower_aggregate_store(block, dest, false, 0, op);
+        }
+
+        let bytes = typ.machine_type(self.layouts).bytes();
+        let src = self.lower_operand(op, block);
+        self.lir.push_instr(block, T::mov_op(dest, src, bytes, typ.is_float()));
+    }
+
+    /// write an aggregate operand into `dest` at `dest_base`, through it when `dest_ref`
+    pub(crate) fn lower_aggregate_store(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        dest_ref: bool,
+        dest_base: i32,
+        op: &Operand,
+    ) {
+        let src = match op {
+            Operand::Place(src) => self.value[src.id],
+            Operand::Const(Const::Str(str_id)) => {
+                let lir = &mut self.lir;
+                let strings = self.strings;
+                return store_const_str(lir, block, dest, dest_ref, dest_base, *str_id, strings);
+            },
+            Operand::Const(_) => unreachable!("an aggregate source is a place or a `&str` literal"),
+        };
+
+        let size = op.typ().machine_type(self.layouts).stack_size() as u32;
+        let (src_ref, src_base) = (false, 0);
+        let copy = AggregateCopy { src, dest, src_ref, dest_ref, src_base, dest_base, size };
+
+        aggregate_copy(&mut self.lir, block, copy);
+    }
+
+    /// float `%` is the exact IEEE remainder
+    pub(crate) fn lower_float_remainder(
+        &mut self,
+        block: &BlockId,
+        dest: VReg,
+        lhs: VReg,
+        rhs: VReg,
+        bytes: u8,
+    ) {
+        let register =
+            |index| T::param(index, RegClass::Float).expect("two float argument registers");
+        let moves = vec![(lhs, register(0)), (rhs, register(1))];
+        let symbol = lir::Routine::fmod(bytes).require().to_string();
+
+        self.lir
+            .push_instr(block, T::build_call(symbol, moves, Vec::new(), Some(dest), Vec::new()));
+    }
+
     pub(crate) fn lower_call(
         &mut self,
         block: &BlockId,
@@ -875,16 +932,15 @@ where
             _ => 0,
         }),
         Operand::Const(Const::Float(v, typ)) => {
-            let is_32 = typ.kind() == TypeKind::F32;
-            let bits = match is_32 {
-                true => (*v as f32).to_bits() as u64,
-                _ => v.to_bits(),
+            let (bits, bytes) = match typ.kind() == TypeKind::F32 {
+                true => (u64::from((*v as f32).to_bits()), 4),
+                _ => (v.to_bits(), 8),
             };
 
-            let label = lir.new_float(bits, is_32);
+            let label = lir.new_float(lir::FloatConstant { bits, bytes, packed: false });
             T::Operand::from_label(label)
         },
-        Operand::Const(Const::Str(id)) => T::Operand::from_label(format!(".L_str_{id}")),
+        Operand::Const(Const::Str(id)) => T::Operand::from_label(&format!(".L_str_{id}")),
         Operand::Const(Const::Unit) => unreachable!("unit operand"),
     }
 }
@@ -938,64 +994,32 @@ pub fn lower_const_str_aggregate<T: TargetOps>(
 where
     T::Operand: TargetOperand,
 {
-    let len = strings.len_of(str_id);
     let temp = lir.new_vreg(MachineType::Struct { size: 16, align: 8 });
-    let ptr = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-    let label = format!(".L_str_{str_id}");
-
-    lir.push_instr(block, T::load_label(ptr, label, false, 8));
-    lir.push_instr(block, T::field_store(temp, T::Operand::from_vreg(ptr), 0, 8, false));
-    lir.push_instr(block, T::field_store(temp, T::Operand::from_imm(len as i64), 8, 8, false));
+    store_const_str(lir, block, temp, false, 0, str_id, strings);
 
     stack_addr(lir, block, temp)
 }
 
-/// Target-independent assignment lowering
-pub fn lower_assign<T: TargetOps>(
+fn store_const_str<T: TargetOps>(
     lir: &mut lir::Function<T>,
     block: &BlockId,
     dest: VReg,
-    typ: Type,
-    op: &Operand,
+    dest_ref: bool,
+    base: i32,
+    str_id: mir::StringId,
     strings: &mir::StringPool,
-    layouts: Layouts,
-    mut vreg_map: impl FnMut(ValueId) -> VReg,
-    mut lower_operand: impl FnMut(&mut lir::Function<T>, &Operand, &BlockId) -> T::Operand,
-) -> Option<T::Instruction>
-where
+) where
     T::Operand: TargetOperand,
 {
-    if typ.is_aggregate_lir(layouts) {
-        if typ.kind() == TypeKind::Str && matches!(op, Operand::Const(Const::Str(_))) {
-            let Operand::Const(Const::Str(str_id)) = op else {
-                unreachable!()
-            };
+    let ptr = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
+    let instr = T::load_label(ptr, format!(".L_str_{str_id}"), false, 8);
+    lir.push_instr(block, instr);
 
-            let ptr = lir.new_vreg(MachineType::Int { bytes: 8, signed: false });
-            let label = format!(".L_str_{str_id}");
-            lir.push_instr(block, T::load_label(ptr, label, false, 8));
-
-            let src_ptr = T::Operand::from_vreg(ptr);
-            let src_len = T::Operand::from_imm(strings.len_of(*str_id) as i64);
-
-            lir.push_instr(block, T::field_store(dest, src_ptr, 0, 8, false));
-            lir.push_instr(block, T::field_store(dest, src_len, 8, 8, false));
-            return None;
-        }
-
-        let Operand::Place(src) = op else {
-            unreachable!("aggregate copy source must be a place");
-        };
-        let size = typ.machine_type(layouts).stack_size() as u32;
-        let src_vreg = vreg_map(src.id);
-        aggregate_copy(lir, block, AggregateCopy::new(src_vreg, dest, size));
-        return None;
-    }
-
-    let bytes = typ.machine_type(layouts).bytes();
-    let src = lower_operand(lir, op, block);
-
-    Some(T::mov_op(dest, src, bytes, typ.is_float()))
+    let len = T::Operand::from_imm(strings.len_of(str_id) as i64);
+    let instr = T::scalar_store(dest_ref, dest, T::Operand::from_vreg(ptr), base, 8, false);
+    lir.push_instr(block, instr);
+    let instr = T::scalar_store(dest_ref, dest, len, base + 8, 8, false);
+    lir.push_instr(block, instr);
 }
 
 /// Call argument preparation

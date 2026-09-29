@@ -32,11 +32,8 @@ pub struct Function<T: Target> {
     /// VRegs that must be pinned to specific physical registers.
     pub(in crate::lir) precolours: Vec<(VReg, T::Reg)>,
 
-    /// float constants needed for `.rodata` labels
-    ///
-    /// - *key* = bit pattern
-    /// - *value* = key
-    floats: BTreeMap<u64, String>,
+    /// float constants needed for `.rodata`, each with its label
+    floats: BTreeMap<FloatConstant, String>,
     float_counter: u32,
 }
 
@@ -54,6 +51,14 @@ pub struct Layouts<'a, 'hir> {
     pub adts: &'a HashMap<Type<'hir>, Layout>,
     pub adt_reprs: &'a [Option<EnumRepr>],
     pub arrays: &'a [Layout],
+}
+
+/// A float constant in `.rodata`, `bytes` wide
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub struct FloatConstant {
+    pub bits: u64,
+    pub bytes: u8,
+    pub packed: bool,
 }
 
 /// All control-flow terminators
@@ -111,6 +116,17 @@ pub enum Panic {
     MulOverflow,
     IndexOutOfBounds,
     DivisionByZero,
+    DivisionOverflow,
+    ShiftOverflow,
+}
+
+/// A runtime routine the compiler writes itself, emitted once per program when some instruction calls it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Routine {
+    /// the exact IEEE remainder of `f32` division, libm's `fmodf`
+    FmodF32,
+    /// the exact IEEE remainder of `f64` division, libm's `fmod`
+    FmodF64,
 }
 
 pub trait TypeExt {
@@ -118,8 +134,14 @@ pub trait TypeExt {
     fn machine_type(&self, layouts: Layouts) -> MachineType;
 }
 
+/// An instruction that may trap on overflow, mapping to the [Panic] it raises
+pub trait Checked {
+    fn overflow_panic(&self) -> Option<Panic>;
+}
+
 thread_local! {
     static PANIC_HANDLERS: std::cell::Cell<u8> = Default::default();
+    static ROUTINES: std::cell::Cell<u8> = Default::default();
 }
 
 const DEFAULT_SIZE: usize = 1 << 10;
@@ -166,6 +188,7 @@ where
     }
 
     Function::<T>::emit_panic_handlers(&mut out);
+    Function::<T>::emit_routines(&mut out);
 
     // emit a `_start` trampoline if the program defines `fn main`
     //
@@ -261,12 +284,14 @@ fn emit_statics(statics: &[Static], symbols: &SymbolTable, layouts: Layouts, out
 }
 
 impl Panic {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::AddOverflow,
         Self::SubOverflow,
         Self::MulOverflow,
         Self::IndexOutOfBounds,
         Self::DivisionByZero,
+        Self::DivisionOverflow,
+        Self::ShiftOverflow,
     ];
 
     #[inline]
@@ -282,6 +307,8 @@ impl Panic {
             Self::MulOverflow => "__nyx_panic_mul_overflow",
             Self::IndexOutOfBounds => "__nyx_panic_index_out_of_bounds",
             Self::DivisionByZero => "__nyx_panic_division_by_zero",
+            Self::DivisionOverflow => "__nyx_panic_division_overflow",
+            Self::ShiftOverflow => "__nyx_panic_shift_overflow",
         }
     }
 
@@ -300,9 +327,49 @@ impl Panic {
     }
 }
 
-/// An instruction that may trap on overflow, mapping to the [Panic] it raises
-pub trait Checked {
-    fn overflow_panic(&self) -> Option<Panic>;
+impl Routine {
+    const ALL: [Self; 2] = [Self::FmodF32, Self::FmodF64];
+
+    #[inline]
+    const fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+
+    #[inline]
+    pub const fn fmod(bytes: u8) -> Self {
+        match bytes {
+            4 => Self::FmodF32,
+            8 => Self::FmodF64,
+            _ => panic!("a float is four or eight bytes wide"),
+        }
+    }
+
+    #[inline]
+    pub const fn symbol<'s>(self) -> &'s str {
+        match self {
+            Self::FmodF32 => "__nyx_fmod_f32",
+            Self::FmodF64 => "__nyx_fmod_f64",
+        }
+    }
+
+    #[inline]
+    pub const fn is_f32(self) -> bool {
+        matches!(self, Self::FmodF32)
+    }
+
+    /// record that this routine must be emitted and return the symbol to call
+    #[inline]
+    pub fn require<'s>(self) -> &'s str {
+        ROUTINES.with(|routines| routines.set(routines.get() | self.bit()));
+        self.symbol()
+    }
+
+    /// drain the routines required by the functions emitted so far
+    #[inline]
+    pub fn required() -> impl Iterator<Item = Self> {
+        let bits = ROUTINES.with(|routines| routines.take());
+        Self::ALL.into_iter().filter(move |routine| bits & routine.bit() != 0)
+    }
 }
 
 impl<T: Target> Function<T> {
@@ -361,23 +428,14 @@ impl<T: Target> Function<T> {
         self.blocks[block.0 as usize].term = term;
     }
 
-    pub fn new_float(&mut self, bits: u64, is_32: bool) -> String {
-        if let Some(label) = self.floats.get(&bits) {
-            return label.clone();
-        }
+    pub fn new_float(&mut self, constant: FloatConstant) -> &str {
+        self.floats.entry(constant).or_insert_with(|| {
+            let idx = self.float_counter;
+            self.float_counter += 1;
 
-        let idx = self.float_counter;
-        self.float_counter += 1;
-
-        let prefix = if is_32 {
-            "f32"
-        } else {
-            "f64"
-        };
-        let label = format!(".LC_{}_{prefix}_{idx}_{bits}", self.name);
-
-        self.floats.insert(bits, label.clone());
-        label
+            let FloatConstant { bits, bytes, .. } = constant;
+            format!(".LC_{}_f{}_{idx}_{bits}", self.name, bytes * 8)
+        })
     }
 
     #[inline(always)]
