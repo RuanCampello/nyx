@@ -66,30 +66,9 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
         let is_float = typ.is_float();
 
         match &instruction.kind {
-            Inst::Assign(op) => {
-                let value = &self.value;
-                let layouts = self.layouts;
-
-                if let Some(instr) = target::lower_assign(
-                    &mut self.lir,
-                    id,
-                    dest,
-                    typ,
-                    op,
-                    self.strings,
-                    layouts,
-                    |vid| value[vid],
-                    |lir, op, block| target::lower_operand(lir, op, block, |vid| value[vid]),
-                ) {
-                    self.lir.push_instr(id, instr);
-                }
-            },
-
+            Inst::Assign(op) => self.lower_assign(id, dest, typ, op),
             Inst::Unary { operation, rhs } => {
                 use crate::parser::expression::UnaryOperator as U;
-
-                const NEG_ZERO: u64 = (-0.0f64).to_bits();
-                const NEG_ZERO_32: u64 = (-0.0f32).to_bits() as u64;
 
                 let src = self.lower_operand(rhs, id);
 
@@ -104,10 +83,11 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 match operation {
                     U::Neg if is_float => {
                         let bits = match typ.is_32_bit() {
-                            true => NEG_ZERO_32,
-                            _ => NEG_ZERO,
+                            true => u64::from((-0.0f32).to_bits()),
+                            _ => (-0.0f64).to_bits(),
                         };
-                        let label = self.lir.new_float(bits, typ.is_32_bit());
+                        let float = lir::FloatConstant { bits, bytes, packed: true };
+                        let label = self.lir.new_float(float);
                         let src = X86Operand::RipRel(format!("{label}(%rip)"));
                         let instr = X86Instr::AluFloat { op: FloatOp::Xor, dest, src, bytes };
 
@@ -148,6 +128,7 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                 let is_signed = lhs_mt.is_signed();
                 let lhs_type = lhs.typ();
                 let is_float = lhs_type.is_float();
+                let rhs_bytes = rhs.typ().machine_type(self.layouts).bytes();
                 let lhs = self.lower_operand(lhs, id);
                 let rhs = self.lower_operand(rhs, id);
                 let checked = overflow.is_checked();
@@ -162,33 +143,22 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                         let dividend = self.lir.new_vreg(mt);
                         let remainder = matches!(operation, B::Rem);
 
-                        if let Some(divisor) = self.divisor_check(id, &rhs, mt) {
+                        if let Some(divisor) = self.divisor_check(id, &rhs, mt, 0) {
                             self.lir.push_instr(id, X86Instr::ZeroCheck { divisor, bytes });
                         }
 
                         self.lir.push_instr(id, X86Instr::Mov { dest: dividend, src: lhs, bytes });
+
+                        if is_signed && let Some(divisor) = self.divisor_check(id, &rhs, mt, -1) {
+                            self.lir.push_instr(id, X86Instr::DivOverflowCheck { dividend, divisor, bytes });
+                        }
                         self.lir.push_instr(id, X86Instr::idiv(dest, dividend, rhs, bytes, is_signed, remainder));
                     }
 
                     B::Rem => {
-                        let mt = lhs_type.machine_type(self.layouts);
-                        let quotient = self.lir.new_vreg(mt);
-                        let product = self.lir.new_vreg(mt);
-                        let zero = self.lir.new_float(0, lhs_type.is_32_bit());
-
-                        self.lir.push_instr(id, X86Instr::MovFloat { dest: quotient, src: lhs.clone(), bytes });
-                        self.lir.push_instr(id, X86Instr::AluFloat { op: FloatOp::Div, dest: quotient, src: rhs.clone(), bytes });
-                        self.lir.push_instr(id, X86Instr::TruncFloat { dest: quotient, src: quotient, bytes });
-                        self.lir.push_instr(id, X86Instr::MovFloat { dest: product, src: X86Operand::VReg(quotient), bytes });
-                        self.lir.push_instr(id, X86Instr::AluFloat { op: FloatOp::Mul, dest: product, src: rhs, bytes });
-
-                        // a zero quotient means the remainder is the dividend itself, and
-                        // an infinite divisor would have turned that zero into a NaN
-                        self.lir.push_instr(id, X86Instr::AluFloat { op: FloatOp::CmpEq, dest: quotient, src: X86Operand::RipRel(format!("{zero}(%rip)")), bytes });
-                        self.lir.push_instr(id, X86Instr::AluFloat { op: FloatOp::AndNot, dest: quotient, src: X86Operand::VReg(product), bytes });
-
-                        self.lir.push_instr(id, X86Instr::MovFloat { dest, src: lhs, bytes });
-                        self.lir.push_instr(id, X86Instr::AluFloat { op: FloatOp::Sub, dest, src: X86Operand::VReg(quotient), bytes });
+                        let lhs = self.float_reg(id, lhs, bytes);
+                        let rhs = self.float_reg(id, rhs, bytes);
+                        self.lower_float_remainder(id, dest, lhs, rhs, bytes);
                     }
 
                     // two-operand 'imul' has no one-byte form at all, and its overflow
@@ -232,21 +202,29 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                             B::BitOr => X86Instr::Alu { op: AluOp::Or, dest, src: rhs, bytes, checked: false },
                             B::BitXor => X86Instr::Alu { op: AluOp::Xor, dest, src: rhs, bytes, checked: false },
                             B::Shl | B::Shr => {
+                                let bits = bytes * 8;
                                 let (src, precoloured_uses) = match rhs {
-                                    X86Operand::Imm(i) => (X86Operand::Imm(i), Vec::new()),
-                                    X86Operand::VReg(v) => {
-                                        let cl_vreg = self.lir.new_vreg(MachineType::Int {
-                                            bytes: 1,
-                                            signed: false,
-                                        });
+                                    X86Operand::Imm(n) if !checked || (0..i64::from(bits)).contains(&n) => {
+                                        (X86Operand::Imm(n.rem_euclid(i64::from(bits))), Vec::new())
+                                    },
+                                    amount => {
+                                        let amount = self.ensure_reg(id, amount, rhs_bytes);
+                                        if checked {
+                                            self.lir.push_instr(id, X86Instr::ShiftCheck { amount, bytes: rhs_bytes, bits });
+                                        }
 
-                                        self.lir.add_precolour(cl_vreg, X86Reg::Rcx);
-                                        let instr = X86Instr::Mov { dest: cl_vreg, src: X86Operand::VReg(v), bytes: 1 };
-                                        self.lir.push_instr( id, instr);
+                                        let count = self.lir.new_vreg(MachineType::Int { bytes: 1, signed: false });
+                                        self.lir.add_precolour(count, X86Reg::Rcx);
+                                        self.lir.push_instr(id, X86Instr::Mov { dest: count, src: X86Operand::VReg(amount), bytes: 1 });
 
-                                        (X86Operand::VReg(cl_vreg), vec![(cl_vreg, X86Reg::Rcx)])
-                                    }
-                                    _ => unsafe { std::hint::unreachable_unchecked() },
+                                        if !checked && bits < 32 {
+                                            let mask = X86Operand::Imm(i64::from(bits) - 1);
+                                            let instr = X86Instr::Alu { op: AluOp::And, dest: count, src: mask, bytes: 1, checked: false };
+                                            self.lir.push_instr(id, instr);
+                                        }
+
+                                        (X86Operand::VReg(count), vec![(count, X86Reg::Rcx)])
+                                    },
                                 };
 
                                 match operation {
@@ -255,11 +233,11 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
                                         true => X86Instr::Shift { op: ShiftOp::ArithmeticRight, dest, src, bytes, precoloured_uses },
                                         _ => X86Instr::Shift { op: ShiftOp::Right, dest, src, bytes, precoloured_uses },
                                     }
-                                    _ => unsafe { std::hint::unreachable_unchecked() },
+                                    _ => unreachable!("the enclosing arm only admits `<<` and `>>`"),
                                 }
                             }
 
-                            _ => unsafe { std::hint::unreachable_unchecked() },
+                            _ => unreachable!("every other integer operator is lowered by an earlier arm"),
                         };
 
                         self.lir.push_instr(id, arith);
@@ -314,25 +292,8 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
 
             Inst::FieldStore { value, offset } => {
                 if value.typ().is_aggregate_lir(self.layouts) {
-                    let Operand::Place(src) = value else {
-                        unreachable!("aggregate field store source must be a place");
-                    };
-                    let size = value.typ().machine_type(self.layouts).stack_size() as u32;
-                    let src_vreg = self.value[src.id];
-
-                    return aggregate_copy(
-                        &mut self.lir,
-                        id,
-                        AggregateCopy {
-                            src: src_vreg,
-                            dest,
-                            src_ref: false,
-                            dest_ref: typ.is_pointer(),
-                            src_base: 0,
-                            dest_base: *offset as i32,
-                            size,
-                        },
-                    );
+                    let (dest_ref, dest_base) = (typ.is_pointer(), *offset as i32);
+                    return self.lower_aggregate_store(id, dest, dest_ref, dest_base, value);
                 }
 
                 let mt = value.typ().machine_type(self.layouts);
@@ -504,18 +465,31 @@ impl<'f, 'hir> Lower<'f, 'hir, X86_64> {
         self.widen_flag(id, dest, flag);
     }
 
-    /// the register an integer division must test before it runs
-    fn divisor_check(&mut self, id: &BlockId, rhs: &X86Operand, mt: MachineType) -> Option<VReg> {
+    /// the divisor as a register when it may be `trapping`, the one value that faults
+    fn divisor_check(
+        &mut self,
+        id: &BlockId,
+        rhs: &X86Operand,
+        mt: MachineType,
+        trapping: i64,
+    ) -> Option<VReg> {
         match rhs {
             X86Operand::VReg(reg) => Some(*reg),
-            X86Operand::Imm(0) => {
-                let divisor = self.lir.new_vreg(mt);
-                let src = X86Operand::Imm(0);
-                self.lir.push_instr(id, X86Instr::Mov { dest: divisor, src, bytes: mt.bytes() });
-
-                Some(divisor)
+            X86Operand::Imm(value) if *value == trapping => {
+                Some(self.ensure_reg(id, X86Operand::Imm(trapping), mt.bytes()))
             },
             _ => None,
+        }
+    }
+
+    fn ensure_reg(&mut self, id: &BlockId, operand: X86Operand, bytes: u8) -> VReg {
+        match operand {
+            X86Operand::VReg(reg) => reg,
+            src => {
+                let dest = self.lir.new_vreg(MachineType::Int { bytes, signed: true });
+                self.lir.push_instr(id, X86Instr::Mov { dest, src, bytes });
+                dest
+            },
         }
     }
 

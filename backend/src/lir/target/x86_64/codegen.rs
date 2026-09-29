@@ -8,7 +8,7 @@
 use crate::{
     emit, label,
     lir::{
-        self, Checked, Function, MachineType, Panic, Term, VReg,
+        self, Checked, FloatConstant, Function, MachineType, Panic, Routine, Term, VReg,
         regalloc::{Allocation, Location},
         target::{
             Emittable, PANIC_EXIT_CODE, ParallelMove, PhysicalReg, RegClass, Target, TargetOperand,
@@ -59,6 +59,86 @@ impl Emittable<X86_64> for Function<X86_64> {
         }
         emit!(out, "movl    $60, %eax"); // syscall: exit
         emit!(out, "syscall");
+    }
+
+    fn emit_routines(out: &mut String) {
+        for routine in Routine::required() {
+            let symbol = routine.symbol();
+            let (s, p) = match routine.is_f32() {
+                true => ("ss", "s"),
+                _ => ("sd", "d"),
+            };
+
+            let constant = |out: &mut String, bits: u64, reg: &str| match routine.is_f32() {
+                true => {
+                    emit!(out, "movl    ${bits:#x}, %eax");
+                    emit!(out, "movd    %eax, %{reg}");
+                },
+                _ => {
+                    emit!(out, "movabsq ${bits:#x}, %rax");
+                    emit!(out, "movq    %rax, %{reg}");
+                },
+            };
+
+            let (abs, inf, half, sign) = match routine.is_f32() {
+                true => {
+                    let sign = (-0.0f32).to_bits();
+                    let bits = |value: f32| u64::from(value.to_bits());
+                    (u64::from(!sign), bits(f32::INFINITY), bits(0.5), u64::from(sign))
+                },
+                _ => {
+                    let sign = (-0.0f64).to_bits();
+                    (!sign, f64::INFINITY.to_bits(), 0.5f64.to_bits(), sign)
+                },
+            };
+
+            label!(out, ".globl {symbol}");
+            label!(out, "{symbol}:");
+            constant(out, abs, "xmm5");
+            emit!(out, "movap{p}  %xmm0, %xmm2");
+            emit!(out, "andp{p}   %xmm5, %xmm2");
+            emit!(out, "movap{p}  %xmm1, %xmm3");
+            emit!(out, "andp{p}   %xmm5, %xmm3");
+            emit!(out, "xorp{p}   %xmm4, %xmm4");
+            emit!(out, "ucomi{s}  %xmm4, %xmm3");
+            emit!(out, "jbe     .L{symbol}_nan");
+            constant(out, inf, "xmm4");
+            emit!(out, "ucomi{s}  %xmm4, %xmm2");
+            emit!(out, "jp      .L{symbol}_nan");
+            emit!(out, "jae     .L{symbol}_nan");
+            emit!(out, "ucomi{s}  %xmm3, %xmm2");
+            emit!(out, "jb      .L{symbol}_done");
+            emit!(out, "movap{p}  %xmm3, %xmm4");
+            emit!(out, "xorl    %ecx, %ecx");
+            label!(out, ".L{symbol}_up:");
+            emit!(out, "movap{p}  %xmm4, %xmm5");
+            emit!(out, "add{s}   %xmm4, %xmm5");
+            emit!(out, "ucomi{s}  %xmm5, %xmm2");
+            emit!(out, "jb      .L{symbol}_down");
+            emit!(out, "movap{p}  %xmm5, %xmm4");
+            emit!(out, "incl    %ecx");
+            emit!(out, "jmp     .L{symbol}_up");
+            label!(out, ".L{symbol}_down:");
+            constant(out, half, "xmm5");
+            label!(out, ".L{symbol}_step:");
+            emit!(out, "ucomi{s}  %xmm4, %xmm2");
+            emit!(out, "jb      .L{symbol}_skip");
+            emit!(out, "sub{s}   %xmm4, %xmm2");
+            label!(out, ".L{symbol}_skip:");
+            emit!(out, "mul{s}   %xmm5, %xmm4");
+            emit!(out, "decl    %ecx");
+            emit!(out, "jns     .L{symbol}_step");
+            constant(out, sign, "xmm5");
+            emit!(out, "andp{p}   %xmm5, %xmm0");
+            emit!(out, "orp{p}    %xmm2, %xmm0");
+            label!(out, ".L{symbol}_done:");
+            emit!(out, "ret");
+            // zero or NaN divisor, infinite or NaN dividend
+            label!(out, ".L{symbol}_nan:");
+            emit!(out, "mul{s}   %xmm1, %xmm0");
+            emit!(out, "div{s}   %xmm0, %xmm0");
+            emit!(out, "ret");
+        }
     }
 
     fn emit_panic_handlers(out: &mut String) {
@@ -127,20 +207,20 @@ impl Function<X86_64> {
         }
 
         label!(out, ".section .rodata");
-        for (bits, label) in &self.floats {
-            let is_32 = label.contains("_f32_");
-            let align = if is_32 {
-                4
-            } else {
-                8
+        for (&FloatConstant { bits, bytes, packed }, label) in &self.floats {
+            let (align, lanes) = match packed {
+                true => (16, 16 / bytes),
+                _ => (bytes, 1),
+            };
+            let directive = match bytes {
+                4 => ".long",
+                _ => ".quad",
             };
 
             label!(out, ".align {align}");
             label!(out, "{label}:");
-
-            match is_32 {
-                true => label!(out, "    .long {}", *bits as u32),
-                _ => label!(out, "    .quad {bits}"),
+            for _ in 0..lanes {
+                label!(out, "    {directive} {bits}");
             }
         }
 
@@ -490,18 +570,6 @@ impl Function<X86_64> {
                 }
             },
 
-            Inst::TruncFloat { dest, src, bytes } => {
-                let mnemonic = match *bytes == 4 {
-                    true => "roundss",
-                    _ => "roundsd",
-                };
-                let dest = alloc.location(dest, bytes);
-                let src = alloc.location(src, bytes);
-
-                // mode 3 truncates towards zero, bit 3 suppresses the inexact exception
-                emit!(out, "{mnemonic} $11, {src}, {dest}");
-            },
-
             Inst::Ucomis { lhs, rhs, bytes, .. } => {
                 let suffix = float_suffix(bytes);
                 let lhs = alloc.location(lhs, bytes);
@@ -551,6 +619,28 @@ impl Function<X86_64> {
 
                 emit!(out, "cmp{suffix}    $0, {divisor}");
                 emit!(out, "je      {symbol}");
+            },
+
+            Inst::DivOverflowCheck { dividend, divisor, bytes } => {
+                let suffix = suffix(bytes);
+                let dividend = alloc.location(dividend, bytes);
+                let divisor = alloc.location(divisor, bytes);
+                let symbol = Panic::DivisionOverflow.require();
+
+                emit!(out, "cmp{suffix}    $-1, {divisor}");
+                emit!(out, "jne     1f");
+                emit!(out, "cmp{suffix}    $1, {dividend}");
+                emit!(out, "jo      {symbol}");
+                label!(out, "1:");
+            },
+
+            Inst::ShiftCheck { amount, bytes, bits } => {
+                let suffix = suffix(bytes);
+                let amount = alloc.location(amount, bytes);
+                let symbol = Panic::ShiftOverflow.require();
+
+                emit!(out, "test{suffix}   $-{bits}, {amount}");
+                emit!(out, "jne     {symbol}");
             },
 
             Inst::BoundsCheck { index, bound } => {

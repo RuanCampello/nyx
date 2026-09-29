@@ -82,8 +82,6 @@ pub enum X86Instr {
         precoloured_uses: [(VReg, X86Reg); 1],
     },
 
-    /// `roundss`/`roundsd` truncating towards zero, the float half of a remainder
-    TruncFloat { dest: VReg, src: VReg, bytes: u8 },
 
     // comparison
     Cmp { lhs: VReg, rhs: X86Operand, bytes: u8 },
@@ -91,6 +89,12 @@ pub enum X86Instr {
     BoundsCheck { index: VReg, bound: X86Operand },
     /// abort through the division-by-zero handler when `divisor` is zero
     ZeroCheck { divisor: VReg, bytes: u8 },
+    /// abort through the division-overflow handler when `dividend` is the signed
+    /// minimum and `divisor` is `-1`, whose quotient does not fit the type
+    DivOverflowCheck { dividend: VReg, divisor: VReg, bytes: u8 },
+    /// abort through the shift-overflow handler when the `bytes`-wide `amount`
+    /// is not below `bits`, the width of the value being shifted
+    ShiftCheck { amount: VReg, bytes: u8, bits: u8 },
     /// float comparison
     /// uses `%xmm15` as a scratch, that register is never allocatable
     Ucomis { lhs: VReg, rhs: X86Operand, bytes: u8 },
@@ -138,7 +142,7 @@ pub enum AluOp {
 #[rustfmt::skip]
 pub enum FloatOp {
     Add, Sub, Mul, Div,
-    Xor, AndNot, CmpEq,
+    Xor,
 }
 
 /// Which mnemonic suffix family an operation takes: `l`/`q` and `ss`/`sd` are
@@ -321,7 +325,7 @@ impl TargetOperand for X86Operand {
     }
 
     #[inline(always)]
-    fn from_label(label: String) -> Self {
+    fn from_label(label: &str) -> Self {
         Self::RipRel(format!("{label}(%rip)"))
     }
 
@@ -434,7 +438,6 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Unary { dest, .. }
             | Self::Shift { dest, .. }
             | Self::Setcc { dest, .. } | Self::Cmov { dest, .. }
-            | Self::TruncFloat { dest, .. }
             | Self::FieldLoad { dest, .. }
             | Self::PtrLoad { dest, .. } => std::slice::from_ref(dest),
 
@@ -443,7 +446,8 @@ impl Instruction<X86_64> for X86Instr {
             Self::FieldStore { .. } | Self::PtrStore { .. }
             | Self::Cmp { .. }
             | Self::Ucomis { .. } | Self::BoundsCheck { .. }
-            | Self::ZeroCheck { .. } => &[],
+            | Self::ZeroCheck { .. } | Self::DivOverflowCheck { .. }
+            | Self::ShiftCheck { .. } => &[],
 
             Self::Call { ret: Some(ret), .. } | Self::Syscall { ret: Some(ret), .. } => {
                 std::slice::from_ref(ret)
@@ -461,8 +465,6 @@ impl Instruction<X86_64> for X86Instr {
             | Self::MovFloat { src: X86Operand::VReg(v), .. }
             | Self::Extend { src: X86Operand::VReg(v), .. }
             | Self::Lea { src: X86Operand::VReg(v), .. } => uses.push(*v),
-
-            Self::TruncFloat { src, .. } => uses.push(*src),
 
             // 2-address: dest is read+write, src is read-only
             Self::Alu { dest, src, .. }
@@ -503,7 +505,14 @@ impl Instruction<X86_64> for X86Instr {
                 }
             }
 
-            Self::ZeroCheck { divisor, .. } => uses.push(*divisor),
+            Self::ZeroCheck { divisor, .. } | Self::ShiftCheck { amount: divisor, .. } => {
+                uses.push(*divisor)
+            },
+
+            Self::DivOverflowCheck { dividend, divisor, .. } => {
+                uses.push(*dividend);
+                uses.push(*divisor);
+            },
 
             Self::BoundsCheck { index, bound } => {
                 uses.push(*index);
@@ -565,7 +574,7 @@ impl Instruction<X86_64> for X86Instr {
             | Self::Lea { .. } | Self::StackAddr { .. } | Self::Extend { .. }
             | Self::Unary { op: UnaryOp::Not, .. }
             | Self::Setcc { .. } | Self::Cmov { .. }
-            | Self::AluFloat { .. } | Self::TruncFloat { .. }
+            | Self::AluFloat { .. }
             | Self::FieldLoad { .. } | Self::FieldStore { .. }
             | Self::PtrLoad { .. } | Self::PtrStore { .. }
         )
@@ -684,9 +693,7 @@ impl FloatOp {
             Self::Sub => ("sub", SuffixKind::Scalar),
             Self::Mul => ("mul", SuffixKind::Scalar),
             Self::Div => ("div", SuffixKind::Scalar),
-            Self::CmpEq => ("cmpeq", SuffixKind::Scalar),
             Self::Xor => ("xor", SuffixKind::Packed),
-            Self::AndNot => ("andn", SuffixKind::Packed),
         }
     }
 }
