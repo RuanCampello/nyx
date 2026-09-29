@@ -1,0 +1,13 @@
+use std::io;
+
+fn main(): i32 {
+    let tabbed = "a\tb";
+    if tabbed.len() != 3 return 1;
+    if "\\\"\n\r\0".len() != 5 return 2;
+
+    let n = 7;
+    io::println("tab\there \"quoted\" \\ back");
+    io::println("n={n}\t{{braces}}");
+
+    0
+}

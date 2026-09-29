@@ -1,0 +1,20 @@
+// a shift amount at or past the operand's width panics in debug, as rustc's
+// overflow checks do, and otherwise wraps modulo that width as rustc's `<<` does,
+// which the hardware only does by itself from 32 bits up
+fn shl(value: i32, amount: i32): i32 = value << amount;
+
+fn shl8(value: u8, amount: u8): u8 = value << amount;
+
+fn shr16(value: i16, amount: i16): i16 = value >> amount;
+
+fn main(): i32 {
+    if shl(1, 31) != -2147483648 return 1;
+
+    let wrapped = shl(1, 32);
+    if wrapped != 1 return 69;
+
+    if shl8(3, 9) != 6 return 2;
+    if shr16(-32768, 17) != -16384 return 3;
+
+    0
+}

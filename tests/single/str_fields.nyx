@@ -1,0 +1,32 @@
+// a `&str` literal reaches a struct field as a constant rather than a place,
+// whether the struct is built, reassigned, written through a pointer or nested
+struct User {
+    id: i32,
+    name: &str,
+}
+
+struct Tagged {
+    user: User,
+    tag: &str,
+}
+
+fn rename(user: &mut User) {
+    user.name = "through a pointer";
+}
+
+fn main(): i32 {
+    let mut user = User { id: 1, name: "ada" };
+    if user.name.len() != 3 return 1;
+
+    user.name = "grace";
+    if user.name.len() != 5 return 2;
+
+    rename(&mut user);
+    if user.name.len() != 17 return 3;
+
+    let tagged = Tagged { user: User { id: 2, name: "nested" }, tag: "t" };
+    if tagged.user.name.len() != 6 return 4;
+    if tagged.tag.len() != 1 return 5;
+
+    0
+}

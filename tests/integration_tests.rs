@@ -10,7 +10,7 @@ use std::{
 /// fixtures whose result legitimately depends on the optimisation level, with
 /// what they are expected to produce above `debug`
 const LEVEL_DEPENDENT: &[(&str, i32)] =
-    &[("overflow", 0), ("mul_overflow", 0), ("narrow_overflow", 0)];
+    &[("overflow", 0), ("mul_overflow", 0), ("narrow_overflow", 0), ("shift_overflow", 0)];
 
 /// what a fixture is expected to produce, keyed by its file stem
 fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
@@ -64,7 +64,9 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
         "inline_complex" => Some(38),
         "inline_methods" => Some(30),
         "overflow" | "mul_overflow" | "narrow_overflow" | "array_oob_panic" | "slice_oob_panic"
-        | "division_by_zero" => Some(101),
+        | "division_by_zero" | "division_overflow" | "shift_overflow" | "reference_index_oob" => {
+            Some(101)
+        },
         "string_len" => Some(11),
         "array_features" => Some(36),
         "array_sorting" | "slice_mut" => Some(12),
@@ -76,6 +78,7 @@ fn expectation<'s>(name: &str) -> (Option<i32>, &'s str) {
     let stdout = match name {
         "hello_world" => "hello, world!\nJohn Doe is 42 years old!",
         "modules" => "Initialising...\nDone.\n",
+        "string_escapes" => "tab\there \"quoted\" \\ back\nn=7\t{braces}\n",
         "interpolation" => {
             "hello ruan with 43\n\
              floor=-9223372036854775808 ceiling=18446744073709551615\n\

@@ -1,0 +1,12 @@
+// the one signed quotient that does not fit its type panics at every level: x86_64 would raise SIGFPE and AArch64 would silently wrap
+fn div(a: i64, b: i64): i64 = a / b;
+
+fn rem(a: i8, b: i8): i8 = a % b;
+
+fn main(): i32 {
+    if div(-9, -1) != 9 return 1;
+    if rem(-100, -1) != 0 return 2;
+
+    let min = -9223372036854775807 - 1;
+    div(min, -1) as i32
+}

@@ -1,0 +1,7 @@
+// a reference to an array keeps the array's length, so the bound still holds
+fn get(values: &[i32; 3], at: i32): i32 = values[at];
+
+fn main(): i32 {
+    let values: [i32; 3] = [1, 2, 3];
+    get(&values, 3)
+}

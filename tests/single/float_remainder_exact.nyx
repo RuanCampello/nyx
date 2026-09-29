@@ -1,0 +1,30 @@
+// float `%` is the exact IEEE remainder, which `a - trunc(a / b) * b` is not
+// once the quotient outgrows the mantissa
+//
+// The literals also sit in the float pool, whose sign mask must be 16-byte aligned for negation's `xorpd`
+fn rem(a: f64, b: f64): f64 = a % b;
+
+fn remf(a: f32, b: f32): f32 = a % b;
+
+fn same(x: f64, y: f64): bool = x == y && 1.0 / x == 1.0 / y;
+
+fn main(): i32 {
+    if rem(1.0, 1000000000000000019884624838656.0) != 1.0 return 1;
+    if rem(5.5, 2.0) != 1.5 return 2;
+    if rem(-5.5, 2.0) != -1.5 return 3;
+    if rem(100000000000000000.0, 3.0) != 1.0 return 4;
+    if rem(10000000000000000000000.0, 3.0) != 1.0 return 5;
+    if rem(7.0, 0.1) != 0.09999999999999962 return 6;
+
+    let zero: f64 = 0.0;
+    if !same(rem(-6.0, 3.0), -zero) return 7;
+
+    let nan = rem(1.0, zero);
+    if nan == nan return 8;
+    if rem(2.5, 1.0 / zero) != 2.5 return 9;
+
+    if remf(100000000.0, 3.0) != 1.0 return 10;
+    if remf(-7.5, 2.0) != -1.5 return 11;
+
+    0
+}
